@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
 import { RepositoryMutex } from "../idempotency.js";
-import type { TaskManifest } from "../types.js";
+import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
 
 const exec = promisify(execFile);
@@ -118,6 +118,8 @@ test("renders schema-v2 intent, artifacts, and task contracts from semantic valu
 	assert.match(await readFile(join(root, "agent-artifacts", "structured", "specs", "contract.md"), "utf8"), /AC-001/);
 	assert.match(await readFile(join(root, "agent-artifacts", "structured", "tasks", "render-contract", "acceptance.md"), "utf8"), /## Criterion Contributions/);
 	assert.equal((await store.read("structured")).artifacts.find((artifact) => artifact.id === "contract")?.narrativeSchemaVersion, 2);
+	const dangling: EvaluationManifest = { schemaVersion: 1, id: "dangling", type: "spec-review", scope: { workItem: "structured" }, status: "planned", required: true, attempt: 0, methods: ["review"], criteria: ["contract#AC-999"] };
+	await assert.rejects(store.defineEvaluation("structured", dangling), /Dangling criterion reference/);
 });
 
 test("serializes complete canonical commits across independent mutex instances", async (t) => {

@@ -11,6 +11,14 @@ const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions" } as const;
 type MutableArtifactType = keyof typeof ARTIFACT_DIRECTORIES;
 
+function collectQualifiedCriteria(value: unknown, found = new Set<string>()): string[] {
+	if (typeof value === "string") {
+		for (const match of value.matchAll(/\b([a-z0-9]+(?:-[a-z0-9]+)*)#(AC-\d{3})\b/g)) found.add(`${match[1]}#${match[2]}`);
+	} else if (Array.isArray(value)) value.forEach((entry) => collectQualifiedCriteria(entry, found));
+	else if (value && typeof value === "object") Object.values(value).forEach((entry) => collectQualifiedCriteria(entry, found));
+	return [...found];
+}
+
 function validateId(id: string, label: string): void {
 	if (!ID_PATTERN.test(id)) throw new HarnessError("INVALID_ARTIFACT", `${label} must be a kebab-case identifier`);
 }
@@ -380,6 +388,7 @@ export class WorkItemStore {
 				}
 			}
 		}
+		if (narrativeSchemaVersion === 2) await this.validateCriterionReferences(index, collectQualifiedCriteria(input.acceptanceSections));
 		const taskRoot = join(root, "tasks", input.manifest.id);
 		const manifestPath = join(taskRoot, "task.yaml");
 		const briefPath = join(taskRoot, "brief.md");
@@ -472,6 +481,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.validateCriterionReferences(index, manifest.criteria ?? []);
 		if (index.evaluations.some((item) => item.id === manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Evaluation already exists: ${manifest.id}`);
 		const evaluationRoot = join(root, "evaluations", manifest.id);
 		const manifestPath = join(evaluationRoot, "evaluation.yaml");
@@ -694,6 +704,20 @@ export class WorkItemStore {
 		} catch (error) {
 			await this.restore([{ path: indexPath, content: previous }]);
 			throw error;
+		}
+	}
+
+	private async validateCriterionReferences(index: WorkItemIndex, references: string[]): Promise<void> {
+		for (const reference of references) {
+			const [artifactId, criterionId] = reference.split("#");
+			const artifact = index.artifacts.find((candidate) => candidate.id === artifactId && candidate.type === "spec");
+			if (!artifact || artifact.narrativeSchemaVersion !== 2) {
+				throw new HarnessError("INVALID_ARTIFACT", `Criterion reference ${reference} requires a schema-v2 specification`);
+			}
+			const content = await readFile(join(this.workItemRoot(index.id), artifact.path), "utf8");
+			if (!criterionId || (!content.includes(`**${criterionId}:**`) && !content.includes(`**${criterionId}**`))) {
+				throw new HarnessError("INVALID_ARTIFACT", `Dangling criterion reference: ${reference}`);
+			}
 		}
 	}
 

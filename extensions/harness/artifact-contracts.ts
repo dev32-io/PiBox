@@ -55,7 +55,13 @@ export function renderArtifact(type: NarrativeArtifactType, title: string, secti
 	const lines = [`# ${title.trim()}`, ""];
 	for (const key of [...profile.required, ...profile.optional]) {
 		if (sections[key] === undefined) continue;
-		lines.push(`## ${HEADINGS[key]}`, "", renderValue(sections[key]), "");
+		const body = key === "acceptanceCriteria" && Array.isArray(sections[key])
+			? sections[key].map((criterion) => {
+				const value = criterion as { id?: unknown; statement?: unknown };
+				return `- **${String(value.id)}:** ${String(value.statement)}`;
+			}).join("\n")
+			: renderValue(sections[key]);
+		lines.push(`## ${HEADINGS[key]}`, "", body, "");
 	}
 	const additional = sections.additionalSections;
 	if (additional !== undefined) {
