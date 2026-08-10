@@ -17,7 +17,7 @@ import type {
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "models", "roles", "orchestrator", "limits"]);
 const MODEL_KEYS = new Set(["provider", "model", "capabilityRank"]);
-const ROLE_KEYS = new Set(["prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "models"]);
+const ROLE_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "models"]);
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "protocolNudges", "repairRounds"]);
 
@@ -95,6 +95,7 @@ function parseRole(value: unknown, path: string): RoleConfig {
 	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must be a mapping`);
 	rejectUnknownKeys(value, ROLE_KEYS, path);
 	const role: RoleConfig = {};
+	if (value.extends !== undefined) role.extends = expectString(value.extends, `${path}.extends`);
 	if (value.prompt !== undefined) role.prompt = expectString(value.prompt, `${path}.prompt`);
 	if (value.skills !== undefined) {
 		if (!Array.isArray(value.skills)) throw new HarnessError("CONFIG_INVALID", `${path}.skills must be an array`);
@@ -144,8 +145,21 @@ export function validateHarnessConfig(value: unknown): HarnessConfig {
 		};
 	}
 
+	const parsedRoles: Record<string, RoleConfig> = {};
+	for (const [name, raw] of Object.entries(value.roles)) parsedRoles[name] = parseRole(raw, `roles.${name}`);
 	const roles: Record<string, RoleConfig> = {};
-	for (const [name, raw] of Object.entries(value.roles)) roles[name] = parseRole(raw, `roles.${name}`);
+	const resolveRole = (name: string, stack: string[] = []): RoleConfig => {
+		if (roles[name]) return roles[name];
+		const role = parsedRoles[name];
+		if (!role) throw new HarnessError("CONFIG_INVALID", `Unknown extended role: ${name}`);
+		if (stack.includes(name)) throw new HarnessError("CONFIG_INVALID", `Role inheritance cycle: ${[...stack, name].join(" -> ")}`);
+		const parent = role.extends ? resolveRole(role.extends, [...stack, name]) : {};
+		const resolved = mergeConfigValues(parent, role) as RoleConfig;
+		delete resolved.extends;
+		roles[name] = resolved;
+		return resolved;
+	};
+	for (const name of Object.keys(parsedRoles)) resolveRole(name);
 
 	rejectUnknownKeys(value.orchestrator, ORCHESTRATOR_KEYS, "orchestrator");
 	rejectUnknownKeys(value.limits, LIMIT_KEYS, "limits");

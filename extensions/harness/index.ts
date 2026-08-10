@@ -1,4 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
@@ -47,6 +50,13 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd">): Promise<Harnes
 
 async function idempotentMutation<T>(runtime: HarnessRuntime, operationId: string, payload: unknown, operation: () => Promise<T>): Promise<T> {
 	return runtime.operations.execute(operationId, payload, () => runtime.mutex.run(operationId, operation));
+}
+
+function resolveConfiguredPath(repositoryRoot: string, configuredPath: string): string | undefined {
+	const candidates = isAbsolute(configuredPath)
+		? [configuredPath]
+		: [join(repositoryRoot, ".pi", configuredPath), join(homedir(), ".pi", "agent", "harness", configuredPath)];
+	return candidates.find((candidate) => existsSync(candidate));
 }
 
 function requireTrusted(ctx: ExtensionContext): void {
@@ -121,7 +131,9 @@ export default function harness(pi: ExtensionAPI): void {
 			if (task.status !== "ready" && task.status !== "failed" && task.status !== "protocol_failed" && task.status !== "running" && task.status !== "paused") {
 				throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not launchable from status ${task.status}`);
 			}
-			const roleCandidates = runtime.config.roles[task.execution.assignment.role]?.models ?? [];
+			const rolePolicy = runtime.config.roles[task.execution.assignment.role];
+			if (!rolePolicy) throw new HarnessError("INVALID_ARTIFACT", `Unknown task role: ${task.execution.assignment.role}`);
+			const roleCandidates = rolePolicy.models ?? [];
 			const plannedCandidate = { model: task.execution.assignment.model, effort: task.execution.assignment.effort };
 			const candidates = [plannedCandidate, ...roleCandidates.filter((candidate) => candidate.model !== plannedCandidate.model || candidate.effort !== plannedCandidate.effort)];
 			const allAvailable = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
@@ -147,6 +159,13 @@ export default function harness(pi: ExtensionAPI): void {
 				baseCommit: allocation.baseCommit,
 				planningRevision: item.planning.revision,
 				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: `${plannedCandidate.model}:${plannedCandidate.effort}` },
+				...(rolePolicy.prompt && resolveConfiguredPath(runtime.identity.root, rolePolicy.prompt)
+					? { rolePrompt: readFileSync(resolveConfiguredPath(runtime.identity.root, rolePolicy.prompt) as string, "utf8") }
+					: {}),
+				...(rolePolicy.tools ? { tools: rolePolicy.tools } : {}),
+				...(rolePolicy.skills
+					? { skillPaths: rolePolicy.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) }
+					: {}),
 				...(signal ? { signal } : {}),
 				...(onUpdate ? { onUpdate } : {}),
 			});
@@ -388,6 +407,7 @@ export default function harness(pi: ExtensionAPI): void {
 					model: resolution.model.id,
 					effort: resolution.effort,
 					tools: role.tools ?? defaultTools[params.role] ?? ["read", "grep", "find"],
+					...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
 					...(signal ? { signal } : {}),
 					...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: params.role, state: "running" })) } : {}),
 				});

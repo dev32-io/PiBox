@@ -19,6 +19,7 @@ export interface ModelCandidateConfig {
 }
 
 export interface RoleConfig {
+	extends?: string;
 	prompt?: string;
 	skills?: string[];
 	tools?: string[];

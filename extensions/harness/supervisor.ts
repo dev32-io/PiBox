@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { HarnessError } from "./errors.js";
 import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
@@ -16,6 +17,8 @@ export interface LaunchModel {
 	requested: string;
 }
 
+const ROLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "roles");
+
 export interface LaunchTaskOptions {
 	identity: RepositoryIdentity;
 	workItemId: string;
@@ -25,6 +28,9 @@ export interface LaunchTaskOptions {
 	baseCommit: string;
 	planningRevision: number;
 	model: LaunchModel;
+	rolePrompt?: string;
+	tools?: string[];
+	skillPaths?: string[];
 	signal?: AbortSignal;
 	onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void;
 }
@@ -53,9 +59,11 @@ function finalAssistantText(events: unknown[]): string {
 	return "";
 }
 
-function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean): string {
+function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean, builtInRolePrompt: string): string {
 	const checks = options.task.verification.taskChecks.length ? options.task.verification.taskChecks.map((check) => `- ${check}`).join("\n") : "- None assigned at this boundary.";
 	return [
+		options.rolePrompt ?? builtInRolePrompt,
+		"",
 		"You are a supervised PiBox implementer. The main Pi session is the user-facing authority.",
 		`Work item: ${options.workItemId}`,
 		`Task: ${options.task.id} — ${options.task.title}`,
@@ -188,19 +196,22 @@ export class SubagentSupervisor {
 	): Promise<{ exitCode: number; stderr: string; finalText: string }> {
 		const promptDirectory = await mkdtemp(join(tmpdir(), "pibox-harness-prompt-"));
 		const promptPath = join(promptDirectory, "implementer.md");
-		await writeFile(promptPath, taskPrompt(options, protocolNudge), { encoding: "utf8", mode: 0o600 });
-		const tools = [
+		const builtInRolePrompt = await readFile(join(ROLE_ROOT, `${options.task.execution.assignment.role}.md`), "utf8").catch(() => "");
+		await writeFile(promptPath, taskPrompt(options, protocolNudge, builtInRolePrompt), { encoding: "utf8", mode: 0o600 });
+		const defaultTools = [
 			"read", "grep", "find", "bash", "edit", "write",
 			"task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete",
 		];
+		const tools = options.tools ?? defaultTools;
 		const args = [
 			"--mode", "json", "-p", "--no-session",
 			"--model", `${options.model.provider}/${options.model.model}`,
 			"--thinking", options.model.effort,
 			"--tools", tools.join(","),
 			"--append-system-prompt", promptPath,
-			protocolNudge ? "Complete the required terminal protocol for the existing task contribution." : `Implement harness task ${options.task.id}.`,
 		];
+		for (const skillPath of options.skillPaths ?? []) args.push("--skill", skillPath);
+		args.push(protocolNudge ? "Complete the required terminal protocol for the existing task contribution." : `Implement harness task ${options.task.id}.`);
 		const invocation = this.invocationResolver(args);
 		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
 		const events: unknown[] = [];

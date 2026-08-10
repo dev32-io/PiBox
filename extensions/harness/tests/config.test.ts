@@ -29,6 +29,19 @@ test("loads user then repository configuration and records a stable digest", () 
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
 });
 
+test("resolves explicit role inheritance while preserving array replacement", () => {
+	const config = validateHarnessConfig({
+		...structuredClone(DEFAULT_HARNESS_CONFIG),
+		roles: {
+			...structuredClone(DEFAULT_HARNESS_CONFIG.roles),
+			custom: { extends: "implementer", tools: ["read"], models: [{ model: "luna", effort: "low" }] },
+		},
+	});
+	assert.equal(config.roles.custom?.workspace, "worktree");
+	assert.deepEqual(config.roles.custom?.tools, ["read"]);
+	assert.deepEqual(config.roles.custom?.models, [{ model: "luna", effort: "low" }]);
+});
+
 test("fails closed on unknown top-level configuration", () => {
 	assert.throws(
 		() => validateHarnessConfig({ ...structuredClone(DEFAULT_HARNESS_CONFIG), unsafeOverride: true }),
