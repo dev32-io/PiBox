@@ -11,6 +11,11 @@ function economyConfig() {
 	const roleNames = Object.keys(DEFAULT_HARNESS_CONFIG.roles);
 	return {
 		schemaVersion: 1,
+		models: {
+			sol: { provider: "openai-codex", model: "gpt-5.6-luna", capabilityRank: 100 },
+			terra: { provider: "openai-codex", model: "gpt-5.6-luna", capabilityRank: 100 },
+			luna: { provider: "openai-codex", model: "gpt-5.6-luna", capabilityRank: 100 },
+		},
 		roles: Object.fromEntries(
 			roleNames.map((role) => [
 				role,

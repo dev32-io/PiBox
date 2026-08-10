@@ -44,7 +44,7 @@ function task(): TaskManifest {
 			assignment: { role: "implementer", model: "terra", effort: "high", minimumCapabilityRank: 100, allowFallback: true, rationale: "fixture" },
 		},
 		assembly: { integrationUnit: "feature-unit", intermediateState: "complete" },
-		verification: { timing: "integration-unit", methods: ["test"], taskChecks: [], rationale: "assembled check" },
+		verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f feature.txt"], rationale: "assembled check" },
 	};
 }
 
@@ -77,7 +77,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 		status: "contribution_complete",
 		runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit, completedCommit },
 	});
-	const integrated = await manager.integrateUnit("feature", "feature-unit", ["test -f feature.txt"]);
+	const integrated = await manager.integrateUnit("feature", "feature-unit");
 	assert.equal(await readFile(join(root, "feature.txt"), "utf8"), "implemented\n");
 	assert.equal((await store.readTask("feature", "add-feature")).status, "integrated");
 	assert.match(await git(root, "show", "-s", "--format=%B", integrated.commit), /Harness-Integration-Unit: feature-unit/);

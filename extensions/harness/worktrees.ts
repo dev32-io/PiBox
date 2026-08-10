@@ -116,7 +116,7 @@ export class WorktreeManager {
 		return { path, branch, baseCommit };
 	}
 
-	async integrateUnit(workItemId: string, unitId: string, checks: string[] = []): Promise<IntegrationResult> {
+	async integrateUnit(workItemId: string, unitId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId);
 		if (item.planning.status !== "approved") throw new HarnessError("STALE_PLANNING_REVISION", "Planning is not approved");
@@ -135,6 +135,7 @@ export class WorktreeManager {
 		await mkdir(join(this.identity.privateRoot, "integration", workItemId), { recursive: true, mode: 0o700 });
 		await runGit(this.identity.root, ["worktree", "add", "--detach", candidatePath, expectedBase]);
 		const checkResults: IntegrationResult["checks"] = [];
+		const effectiveChecks = checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
 		try {
 			for (const task of tasks) {
 				await runGit(candidatePath, ["cherry-pick", "--no-commit", `${task.runtime?.baseCommit}..${task.runtime?.branch}`]).catch(async (error) => {
@@ -142,7 +143,7 @@ export class WorktreeManager {
 					throw new HarnessError("GIT_OPERATION_FAILED", `Integration conflict while applying ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
 				});
 			}
-			for (const command of checks) {
+			for (const command of effectiveChecks) {
 				const result = await runShell(command, candidatePath);
 				checkResults.push({ command, ...result });
 				if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Integration check failed: ${command}`, result);

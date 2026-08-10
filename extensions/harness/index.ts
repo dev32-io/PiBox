@@ -401,7 +401,7 @@ export default function harness(pi: ExtensionAPI): void {
 			intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]),
 			verificationTiming: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]),
 			verificationMethods: Type.Optional(Type.Array(Type.String())),
-			taskChecks: Type.Optional(Type.Array(Type.String())),
+			taskChecks: Type.Optional(Type.Array(Type.String({ description: "Executable shell command to run at the declared verification boundary, for example: test -f index.html" }))),
 			verificationRationale: Type.String(),
 		}),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
@@ -688,14 +688,14 @@ export default function harness(pi: ExtensionAPI): void {
 		name: "task_integrate",
 		label: "Integrate Harness Unit",
 		description: "Assemble all contribution-complete tasks in an integration unit, run its declared checks, and atomically fast-forward the canonical branch.",
-		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String(), checks: Type.Optional(Type.Array(Type.String())) }),
+		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String(), checks: Type.Optional(Type.Array(Type.String({ description: "Optional shell-command override; omitted uses task manifests' declared taskChecks." }))) }),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const manager = new WorktreeManager(runtime.identity);
-					const integrated = await manager.integrateUnit(params.workItemId, params.integrationUnit, params.checks ?? []);
+					const integrated = await manager.integrateUnit(params.workItemId, params.integrationUnit, params.checks);
 					await runtime.events.append("integration.completed", integrated);
 					return textResult(`Integrated ${params.integrationUnit} as ${integrated.commit.slice(0, 12)} with ${integrated.tasks.length} task contribution(s).`, integrated);
 				});

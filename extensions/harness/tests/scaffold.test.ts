@@ -30,6 +30,8 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): initialize economy policy");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 	const loaded = loadHarnessConfig(root, { home: join(root, "unused-home") });
+	assert.equal(loaded.config.models.sol?.model, "gpt-5.6-luna");
+	assert.equal(loaded.config.models.sol?.capabilityRank, 100);
 	assert.deepEqual(loaded.config.roles.implementer?.models, [{ model: "luna", effort: "medium" }]);
 	assert.deepEqual(loaded.config.roles["quality-reviewer"]?.models, [{ model: "luna", effort: "low" }]);
 	assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /Scaffold profile: economy/);
