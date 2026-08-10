@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const ROLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "roles");
 
 export interface DirectAgentOptions {
@@ -56,6 +57,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	}
 	await writeFile(promptFile, rolePrompt, { encoding: "utf8", mode: 0o600 });
 	const args = [
+		"-e", HARNESS_EXTENSION_PATH,
 		"--mode", "json", "-p", "--no-session",
 		"--model", `${options.provider}/${options.model}`,
 		"--thinking", options.effort,

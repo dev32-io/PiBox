@@ -17,6 +17,7 @@ export interface LaunchModel {
 	requested: string;
 }
 
+const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const ROLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "roles");
 
 export interface LaunchTaskOptions {
@@ -204,6 +205,7 @@ export class SubagentSupervisor {
 		const taskCapabilities = ["task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 		const tools = [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])];
 		const args = [
+			"-e", HARNESS_EXTENSION_PATH,
 			"--mode", "json", "-p", "--no-session",
 			"--model", `${options.model.provider}/${options.model.model}`,
 			"--thinking", options.model.effort,
