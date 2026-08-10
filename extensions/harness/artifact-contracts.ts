@@ -1,6 +1,6 @@
 import { HarnessError } from "./errors.js";
 
-export type NarrativeArtifactType = "intent" | "spec" | "design" | "decision";
+export type NarrativeArtifactType = "intent" | "spec" | "design" | "decision" | "taskBrief" | "taskAcceptance";
 export type SemanticSections = Record<string, unknown>;
 
 const PLACEHOLDER = /^(?:n\/?a|none|tbd|todo|placeholder|coming soon)[.!]?$/i;
@@ -10,6 +10,8 @@ const PROFILES: Record<NarrativeArtifactType, { required: string[]; optional: st
 	spec: { required: ["context", "requiredBehaviors", "acceptanceCriteria"], optional: ["actors", "constraints", "edgeCases", "assumptions", "outOfScope", "openQuestions"] },
 	design: { required: ["designGoal", "chosenApproach", "verificationBoundaries"], optional: ["componentsAndInterfaces", "dataAndControlFlow", "failureAndRecovery", "securityAndPrivacy", "compatibilityAndMigration", "alternativesConsidered", "openQuestions"] },
 	decision: { required: ["decision", "context", "rationale", "consequences"], optional: ["alternativesConsidered", "revisitWhen"] },
+	taskBrief: { required: ["contributionGoal", "boundaryIncluded", "requiredWork", "integrationExpectation"], optional: ["boundaryExcluded", "interfacesAndDependencies", "constraints", "risksAndUncertainties"] },
+	taskAcceptance: { required: ["deliverables", "criterionContributions", "boundaryProof"], optional: ["expectedIntermediateState", "integrationProof"] },
 };
 
 const HEADINGS: Record<string, string> = {
@@ -17,6 +19,8 @@ const HEADINGS: Record<string, string> = {
 	context: "Context", actors: "Actors", requiredBehaviors: "Required Behaviors", acceptanceCriteria: "Acceptance Criteria", constraints: "Constraints", edgeCases: "Edge Cases", assumptions: "Assumptions", outOfScope: "Out of Scope", openQuestions: "Open Questions",
 	designGoal: "Design Goal", chosenApproach: "Chosen Approach", componentsAndInterfaces: "Components and Interfaces", dataAndControlFlow: "Data and Control Flow", failureAndRecovery: "Failure and Recovery", securityAndPrivacy: "Security and Privacy", compatibilityAndMigration: "Compatibility and Migration", verificationBoundaries: "Verification Boundaries", alternativesConsidered: "Alternatives Considered",
 	decision: "Decision", rationale: "Rationale", consequences: "Consequences", revisitWhen: "Revisit When",
+	contributionGoal: "Contribution Goal", boundaryIncluded: "Boundary — Included", boundaryExcluded: "Boundary — Excluded", requiredWork: "Required Work", interfacesAndDependencies: "Interfaces and Dependencies", integrationExpectation: "Integration Expectation", risksAndUncertainties: "Risks and Uncertainties",
+	deliverables: "Deliverables", criterionContributions: "Criterion Contributions", boundaryProof: "Boundary Proof", expectedIntermediateState: "Expected Intermediate State", integrationProof: "Integration Proof",
 };
 
 export function isSubstantive(value: unknown): boolean {

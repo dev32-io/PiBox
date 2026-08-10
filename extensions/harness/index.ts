@@ -273,13 +273,15 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "work_item_create",
 		label: "Create Work Item",
-		description: "Create and atomically commit a managed change or story with its initial intent. Requires a clean trusted repository.",
+		description: "Create and atomically commit a managed change or story. Prefer schema-v2 semantic intent sections; Markdown is rendered deterministically.",
 		promptSnippet: "Create a committed managed change or story after deciding harness ceremony is warranted",
 		parameters: Type.Object({
 			id: Type.String({ description: "Stable kebab-case work-item id" }),
 			title: Type.String({ description: "Human-readable title" }),
 			kind: Type.Union([Type.Literal("change"), Type.Literal("story")]),
-			intent: Type.String({ description: "Initial Markdown intent and desired outcome" }),
+			narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
+			intentSections: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Problem, desiredOutcome, scopeIncluded, and successSignals plus optional intent fields" })),
+			intent: Type.Optional(Type.String({ description: "Legacy schema-v1 Markdown intent" })),
 		}),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -394,8 +396,11 @@ export default function harness(pi: ExtensionAPI): void {
 			workItemId: Type.String(),
 			id: Type.String(),
 			title: Type.String(),
-			brief: Type.String(),
-			acceptance: Type.String(),
+			narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
+			briefSections: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+			acceptanceSections: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+			brief: Type.Optional(Type.String({ description: "Legacy schema-v1 task brief" })),
+			acceptance: Type.Optional(Type.String({ description: "Legacy schema-v1 acceptance contract" })),
 			dependsOn: Type.Optional(Type.Array(Type.String())),
 			specs: Type.Optional(Type.Array(Type.String())),
 			designs: Type.Optional(Type.Array(Type.String())),
@@ -457,7 +462,15 @@ export default function harness(pi: ExtensionAPI): void {
 						rationale: params.verificationRationale,
 					},
 				};
-				const item = await runtime.workItems.defineTask({ workItemId: params.workItemId, manifest, brief: params.brief, acceptance: params.acceptance });
+				const item = await runtime.workItems.defineTask({
+					workItemId: params.workItemId,
+					manifest,
+					...(params.narrativeSchemaVersion ? { narrativeSchemaVersion: params.narrativeSchemaVersion } : {}),
+					...(params.briefSections ? { briefSections: params.briefSections } : {}),
+					...(params.acceptanceSections ? { acceptanceSections: params.acceptanceSections } : {}),
+					...(params.brief ? { brief: params.brief } : {}),
+					...(params.acceptance ? { acceptance: params.acceptance } : {}),
+				});
 				await runtime.events.append("task.defined", { workItemId: item.id, taskId: manifest.id, revision: item.planning.revision });
 				return textResult(`Defined task ${manifest.id} in integration unit ${manifest.assembly.integrationUnit}; planning r${item.planning.revision}.`, item);
 				});

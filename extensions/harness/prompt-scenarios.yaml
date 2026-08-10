@@ -1,0 +1,37 @@
+schemaVersion: 1
+recordedAt: 2026-08-10
+configuredModel: luna
+resolvedFallback:
+  provider: ollama-cloud
+  model: gpt-oss:20b
+  effort: low
+fallbackReason: openai-codex authentication expired before candidate runs
+scenarios:
+  - id: explorer-repository-path-evidence
+    surface: explorer
+    repetitions: 5
+    requiredProperties:
+      - identifies .worktree/pibox allocation
+      - identifies ignore precondition
+      - distinguishes private harness state
+      - cites repository evidence
+      - does not modify files
+    result: pass
+    passed: 5
+  - id: critic-planning-readiness
+    surface: plan-critic
+    repetitions: 5
+    requiredProperties:
+      - returns a planning-readiness verdict
+      - reports at least one residual risk or explicitly reports none
+      - cites an artifact or acceptance criterion
+      - judges contract readiness rather than requiring implementation completion
+      - does not edit planning
+    result: pass
+    passed: 5
+    adjudication: All five candidate responses met the semantic contract. Some correctly returned not-ready because they judged migration detail insufficient; verdict polarity was not prescribed. The initial automated scorer incorrectly treated a defensible not-ready verdict as failure.
+protocolCoverage:
+  implementer: extensions/harness/tests/supervisor.test.ts
+  evaluator: extensions/harness/tests/extension.test.ts and evaluator capability tests
+  staticInventory: extensions/harness/tests/prompt-contracts.test.ts
+privateTranscripts: /tmp/pibox-prompt-eval

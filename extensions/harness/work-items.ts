@@ -189,9 +189,17 @@ export class WorkItemStore {
 		return parseWorkItemIndex(await readFile(path, "utf8"), path);
 	}
 
-	async create(input: { id: string; title: string; kind: WorkItemKind; intent: string }): Promise<WorkItemIndex> {
+	async create(input: { id: string; title: string; kind: WorkItemKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
 		validateId(input.id, "Work-item id");
-		if (!input.title.trim() || !input.intent.trim()) throw new HarnessError("INVALID_ARTIFACT", "Title and intent must not be empty");
+		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
+		const intent = narrativeSchemaVersion === 2
+			? (() => {
+				if (!input.intentSections) throw new HarnessError("INVALID_ARTIFACT", "schema-v2 work item requires intentSections");
+				if (input.intent !== undefined) throw new HarnessError("INVALID_ARTIFACT", "schema-v2 work item does not accept raw intent Markdown");
+				return renderArtifact("intent", `Intent: ${input.title}`, input.intentSections);
+			})()
+			: input.intent;
+		if (!input.title.trim() || !intent?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Title and intent must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.id);
 		if (await pathExists(root)) throw new HarnessError("WORK_ITEM_EXISTS", `Work item already exists: ${input.id}`);
@@ -199,7 +207,7 @@ export class WorkItemStore {
 		const temporary = join(this.artifactRoot, `.${input.id}.tmp-${randomUUID()}`);
 		await mkdir(temporary, { recursive: true });
 		try {
-			await writeFile(join(temporary, "intent.md"), `${input.intent.trim()}\n`, "utf8");
+			await writeFile(join(temporary, "intent.md"), `${intent.trim()}\n`, "utf8");
 			const digest = await computeContractDigest(temporary);
 			const index: WorkItemIndex = {
 				schemaVersion: 1,
@@ -209,7 +217,7 @@ export class WorkItemStore {
 				phase: "planning",
 				state: "active",
 				planning: { revision: 1, status: "draft", contractDigest: digest },
-				artifacts: [{ id: "intent", type: "intent", path: "intent.md", status: "draft" }],
+				artifacts: [{ id: "intent", type: "intent", path: "intent.md", status: "draft", narrativeSchemaVersion }],
 				tasks: [],
 				integrationUnits: [],
 				evaluations: [],
@@ -340,9 +348,22 @@ export class WorkItemStore {
 		}
 	}
 
-	async defineTask(input: { workItemId: string; manifest: TaskManifest; brief: string; acceptance: string }): Promise<WorkItemIndex> {
+	async defineTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
 		validateId(input.manifest.id, "Task id");
-		if (!input.brief.trim() || !input.acceptance.trim()) throw new HarnessError("INVALID_ARTIFACT", "Task brief and acceptance must not be empty");
+		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
+		if (narrativeSchemaVersion === 2 && input.manifest.assembly.intermediateState === "partial" && !input.acceptanceSections?.expectedIntermediateState) {
+			throw new HarnessError("INVALID_ARTIFACT", "Partial task acceptance requires expectedIntermediateState");
+		}
+		if (narrativeSchemaVersion === 2 && (input.manifest.dependsOn.length > 0 || input.manifest.execution.resourceClaims.length > 0) && !input.briefSections?.interfacesAndDependencies) {
+			throw new HarnessError("INVALID_ARTIFACT", "Task dependencies or resource claims require interfacesAndDependencies");
+		}
+		const brief = narrativeSchemaVersion === 2
+			? renderArtifact("taskBrief", `Task Brief: ${input.manifest.title}`, input.briefSections ?? {})
+			: input.brief;
+		const acceptance = narrativeSchemaVersion === 2
+			? renderArtifact("taskAcceptance", `Task Acceptance: ${input.manifest.title}`, input.acceptanceSections ?? {})
+			: input.acceptance;
+		if (!brief?.trim() || !acceptance?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Task brief and acceptance must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
@@ -382,8 +403,8 @@ export class WorkItemStore {
 		const priorIndex = await readFile(indexPath, "utf8");
 		try {
 			await atomicWriteFile(manifestPath, stringify(input.manifest));
-			await atomicWriteFile(briefPath, `${input.brief.trim()}\n`);
-			await atomicWriteFile(acceptancePath, `${input.acceptance.trim()}\n`);
+			await atomicWriteFile(briefPath, `${brief.trim()}\n`);
+			await atomicWriteFile(acceptancePath, `${acceptance.trim()}\n`);
 			index.planning.contractDigest = await computeContractDigest(root);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([taskRoot, indexPath], `harness(${input.workItemId}): define task ${input.manifest.id}`);
