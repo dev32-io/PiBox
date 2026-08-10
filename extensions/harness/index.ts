@@ -3,15 +3,20 @@ import { Type } from "typebox";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { RepositoryEventStore } from "./event-store.js";
+import { resolveHarnessModel } from "./model-resolver.js";
 import { discoverRepository, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
+import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
+import { SubagentSupervisor } from "./supervisor.js";
+import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
 
 interface HarnessRuntime {
 	identity: RepositoryIdentity;
 	events: RepositoryEventStore;
 	workItems: WorkItemStore;
 	configDigest: string;
+	config: ReturnType<typeof loadHarnessConfig>["config"];
 }
 
 const textResult = (text: string, details: unknown = null) => ({
@@ -24,10 +29,11 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd">): Promise<Harnes
 	const loaded = loadHarnessConfig(identity.root);
 	const events = new RepositoryEventStore(identity);
 	await events.initialize();
-	return { identity, events, workItems: new WorkItemStore(identity.root), configDigest: loaded.digest };
+	return { identity, events, workItems: new WorkItemStore(identity.root), configDigest: loaded.digest, config: loaded.config };
 }
 
 function requireTrusted(ctx: ExtensionContext): void {
+	if (isWorkerProcess()) throw new HarnessError("CAPABILITY_DENIED", "Worker runs cannot invoke orchestrator capabilities");
 	if (!ctx.isProjectTrusted()) throw new HarnessError("CAPABILITY_DENIED", "Harness mutations require a trusted repository");
 }
 
@@ -50,6 +56,8 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 
 export default function harness(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
+	const supervisor = new SubagentSupervisor();
+	registerWorkerCapabilities(pi);
 
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
 		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
@@ -233,6 +241,112 @@ export default function harness(pi: ExtensionAPI): void {
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
+		},
+	});
+
+	pi.registerTool({
+		name: "task_launch",
+		label: "Launch Harness Task",
+		description: "Resolve the planned model, allocate an isolated worktree, and supervise an approved implementation task through its structured handoff.",
+		parameters: Type.Object({ workItemId: Type.String(), taskId: Type.String() }),
+		async execute(_id, params, signal, onUpdate, ctx) {
+			let locks: ResourceLockSet | undefined;
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const item = await runtime.workItems.read(params.workItemId);
+				if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) {
+					throw new HarnessError("STALE_PLANNING_REVISION", "Task launch requires current direct user approval");
+				}
+				const task = await runtime.workItems.readTask(params.workItemId, params.taskId);
+				if (task.status !== "ready" && task.status !== "failed" && task.status !== "protocol_failed") {
+					throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not launchable from status ${task.status}`);
+				}
+				const roleCandidates = runtime.config.roles[task.execution.assignment.role]?.models ?? [];
+				const plannedCandidate = { model: task.execution.assignment.model, effort: task.execution.assignment.effort };
+				const candidates = [plannedCandidate, ...roleCandidates.filter((candidate) => candidate.model !== plannedCandidate.model || candidate.effort !== plannedCandidate.effort)];
+				const allAvailable = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+				const resolution = resolveHarnessModel(runtime.config, allAvailable, {
+					candidates,
+					minimumCapabilityRank: task.execution.assignment.minimumCapabilityRank,
+					strict: !task.execution.assignment.allowFallback,
+				});
+				if (resolution.status === "waiting_model") {
+					await runtime.events.append("task.waiting_model", { workItemId: item.id, taskId: task.id, attempts: resolution.attempts });
+					return textResult(`MODEL_UNAVAILABLE: No acceptable model is currently available for ${task.id}.`, resolution);
+				}
+				const manager = new WorktreeManager(runtime.identity);
+				locks = new ResourceLockSet(runtime.identity.privateRoot);
+				await locks.acquire(task.execution.resourceClaims, `${item.id}/${task.id}`);
+				const allocation = await manager.allocate(item.id, task);
+				const launched = await supervisor.launchTask({
+					identity: runtime.identity,
+					workItemId: item.id,
+					task,
+					workspace: allocation.path,
+					branch: allocation.branch,
+					baseCommit: allocation.baseCommit,
+					planningRevision: item.planning.revision,
+					model: {
+						provider: resolution.model.provider,
+						model: resolution.model.id,
+						effort: resolution.effort,
+						requested: `${plannedCandidate.model}:${plannedCandidate.effort}`,
+					},
+					...(signal ? { signal } : {}),
+					...(onUpdate ? { onUpdate } : {}),
+				});
+				await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
+				return textResult(
+					`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}:${resolution.effort}${resolution.fallbackUsed ? " (visible fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
+					launched,
+				);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			} finally {
+				await locks?.release();
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "task_integrate",
+		label: "Integrate Harness Unit",
+		description: "Assemble all contribution-complete tasks in an integration unit, run its declared checks, and atomically fast-forward the canonical branch.",
+		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String(), checks: Type.Optional(Type.Array(Type.String())) }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const manager = new WorktreeManager(runtime.identity);
+				const integrated = await manager.integrateUnit(params.workItemId, params.integrationUnit, params.checks ?? []);
+				await runtime.events.append("integration.completed", integrated);
+				return textResult(`Integrated ${params.integrationUnit} as ${integrated.commit.slice(0, 12)} with ${integrated.tasks.length} task contribution(s).`, integrated);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_status",
+		label: "Harness Agent Status",
+		description: "List active supervised harness run ids in this Pi process.",
+		parameters: Type.Object({}),
+		async execute() {
+			const active = supervisor.activeRunIds();
+			return textResult(active.length ? `Active runs:\n${active.map((id) => `- ${id}`).join("\n")}` : "No active supervised runs.", { active });
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_control",
+		label: "Control Harness Agent",
+		description: "Stop an active supervised harness run. Pause, resume, and restart use recovery commands in later phases.",
+		parameters: Type.Object({ runId: Type.String(), action: Type.Literal("stop") }),
+		async execute(_id, params) {
+			const stopped = supervisor.stop(params.runId);
+			return textResult(stopped ? `Stop requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
 		},
 	});
 
