@@ -6,6 +6,7 @@ import { RepositoryEventStore } from "./event-store.js";
 import { runDirectAgent } from "./direct-agent.js";
 import { HarnessRunStore } from "./run-store.js";
 import { resolveHarnessModel } from "./model-resolver.js";
+import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { assertCleanRepository, discoverRepository, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
@@ -19,6 +20,8 @@ interface HarnessRuntime {
 	workItems: WorkItemStore;
 	configDigest: string;
 	config: ReturnType<typeof loadHarnessConfig>["config"];
+	operations: IdempotencyStore;
+	mutex: RepositoryMutex;
 }
 
 const textResult = (text: string, details: unknown = null) => ({
@@ -31,7 +34,19 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd">): Promise<Harnes
 	const loaded = loadHarnessConfig(identity.root);
 	const events = new RepositoryEventStore(identity);
 	await events.initialize();
-	return { identity, events, workItems: new WorkItemStore(identity.root), configDigest: loaded.digest, config: loaded.config };
+	return {
+		identity,
+		events,
+		workItems: new WorkItemStore(identity.root),
+		configDigest: loaded.digest,
+		config: loaded.config,
+		operations: new IdempotencyStore(identity.privateRoot),
+		mutex: new RepositoryMutex(identity.privateRoot),
+	};
+}
+
+async function idempotentMutation<T>(runtime: HarnessRuntime, operationId: string, payload: unknown, operation: () => Promise<T>): Promise<T> {
+	return runtime.operations.execute(operationId, payload, () => runtime.mutex.run(operationId, operation));
 }
 
 function requireTrusted(ctx: ExtensionContext): void {
@@ -174,13 +189,15 @@ export default function harness(pi: ExtensionAPI): void {
 			kind: Type.Union([Type.Literal("change"), Type.Literal("story")]),
 			intent: Type.String({ description: "Initial Markdown intent and desired outcome" }),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
-				const item = await runtime.workItems.create({ ...params, kind: params.kind as WorkItemKind });
-				await runtime.events.append("work_item.created", { id: item.id, revision: item.planning.revision });
-				return textResult(`Created and committed ${item.kind} ${item.id} at planning revision ${item.planning.revision}.`, item);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const item = await runtime.workItems.create({ ...params, kind: params.kind as WorkItemKind });
+					await runtime.events.append("work_item.created", { id: item.id, revision: item.planning.revision });
+					return textResult(`Created and committed ${item.kind} ${item.id} at planning revision ${item.planning.revision}.`, item);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -198,17 +215,19 @@ export default function harness(pi: ExtensionAPI): void {
 				type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]),
 				content: Type.String({ description: "Complete Markdown artifact content" }),
 			}),
-			async execute(_id, params, _signal, _onUpdate, ctx) {
+			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 				try {
 					requireTrusted(ctx);
 					const runtime = await runtimeFor(ctx);
-					const item = await runtime.workItems.putArtifact({ ...params, operation });
-					await runtime.events.append(`artifact.${operation}d`, {
-						workItemId: item.id,
-						artifactId: params.id,
-						revision: item.planning.revision,
+					return idempotentMutation(runtime, toolCallId, params, async () => {
+						const item = await runtime.workItems.putArtifact({ ...params, operation });
+						await runtime.events.append(`artifact.${operation}d`, {
+							workItemId: item.id,
+							artifactId: params.id,
+							revision: item.planning.revision,
+						});
+						return textResult(`${operation === "create" ? "Created" : "Updated"} ${params.type} ${params.id}; planning is ${item.planning.status} at r${item.planning.revision}.`, item);
 					});
-					return textResult(`${operation === "create" ? "Created" : "Updated"} ${params.type} ${params.id}; planning is ${item.planning.status} at r${item.planning.revision}.`, item);
 				} catch (error) {
 					return textResult(describeHarnessError(error), { error: true });
 				}
@@ -247,10 +266,11 @@ export default function harness(pi: ExtensionAPI): void {
 			taskChecks: Type.Optional(Type.Array(Type.String())),
 			verificationRationale: Type.String(),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
 				const manifest: TaskManifest = {
 					schemaVersion: 1,
 					id: params.id,
@@ -283,6 +303,7 @@ export default function harness(pi: ExtensionAPI): void {
 				const item = await runtime.workItems.defineTask({ workItemId: params.workItemId, manifest, brief: params.brief, acceptance: params.acceptance });
 				await runtime.events.append("task.defined", { workItemId: item.id, taskId: manifest.id, revision: item.planning.revision });
 				return textResult(`Defined task ${manifest.id} in integration unit ${manifest.assembly.integrationUnit}; planning r${item.planning.revision}.`, item);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -302,10 +323,11 @@ export default function harness(pi: ExtensionAPI): void {
 			required: Type.Boolean(),
 			methods: Type.Array(Type.String()),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
 				const manifest: EvaluationManifest = {
 					schemaVersion: 1,
 					id: params.id,
@@ -319,6 +341,7 @@ export default function harness(pi: ExtensionAPI): void {
 				const item = await runtime.workItems.defineEvaluation(params.workItemId, manifest);
 				await runtime.events.append("evaluation.defined", { workItemId: item.id, evaluationId: manifest.id });
 				return textResult(`Defined ${manifest.type} evaluation ${manifest.id}.`, item);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -382,8 +405,13 @@ export default function harness(pi: ExtensionAPI): void {
 		label: "Launch Harness Task",
 		description: "Resolve the planned model, allocate an isolated worktree, and supervise an approved implementation task through its structured handoff.",
 		parameters: Type.Object({ workItemId: Type.String(), taskId: Type.String() }),
-		async execute(_id, params, signal, onUpdate, ctx) {
-			return launchManagedTask(ctx, params.workItemId, params.taskId, signal, onUpdate);
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			try {
+				const runtime = await runtimeFor(ctx);
+				return runtime.operations.execute(toolCallId, params, () => launchManagedTask(ctx, params.workItemId, params.taskId, signal, onUpdate));
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
 		},
 	});
 
@@ -392,14 +420,16 @@ export default function harness(pi: ExtensionAPI): void {
 		label: "Integrate Harness Unit",
 		description: "Assemble all contribution-complete tasks in an integration unit, run its declared checks, and atomically fast-forward the canonical branch.",
 		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String(), checks: Type.Optional(Type.Array(Type.String())) }),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
-				const manager = new WorktreeManager(runtime.identity);
-				const integrated = await manager.integrateUnit(params.workItemId, params.integrationUnit, params.checks ?? []);
-				await runtime.events.append("integration.completed", integrated);
-				return textResult(`Integrated ${params.integrationUnit} as ${integrated.commit.slice(0, 12)} with ${integrated.tasks.length} task contribution(s).`, integrated);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const manager = new WorktreeManager(runtime.identity);
+					const integrated = await manager.integrateUnit(params.workItemId, params.integrationUnit, params.checks ?? []);
+					await runtime.events.append("integration.completed", integrated);
+					return textResult(`Integrated ${params.integrationUnit} as ${integrated.commit.slice(0, 12)} with ${integrated.tasks.length} task contribution(s).`, integrated);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -439,13 +469,15 @@ export default function harness(pi: ExtensionAPI): void {
 			report: Type.String(),
 			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }))),
 		}),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
-				const evaluation = await runtime.workItems.recordEvaluation({ ...params, evidence: params.evidence ?? [] });
-				await runtime.events.append("evaluation.recorded", { workItemId: params.workItemId, evaluationId: evaluation.id, verdict: params.verdict, attempt: evaluation.attempt });
-				return textResult(`Recorded ${evaluation.id} attempt ${evaluation.attempt}: ${params.verdict}.`, evaluation);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const evaluation = await runtime.workItems.recordEvaluation({ ...params, evidence: params.evidence ?? [] });
+					await runtime.events.append("evaluation.recorded", { workItemId: params.workItemId, evaluationId: evaluation.id, verdict: params.verdict, attempt: evaluation.attempt });
+					return textResult(`Recorded ${evaluation.id} attempt ${evaluation.attempt}: ${params.verdict}.`, evaluation);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -457,13 +489,15 @@ export default function harness(pi: ExtensionAPI): void {
 		label: "Complete Harness Work Item",
 		description: "Apply the deterministic completion gate and atomically commit the final outcome.",
 		parameters: Type.Object({ workItemId: Type.String(), outcome: Type.String() }),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
-				const item = await runtime.workItems.completeWorkItem(params.workItemId, params.outcome);
-				await runtime.events.append("work_item.completed", { workItemId: item.id });
-				return textResult(`Completed ${item.id}.`, item);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const item = await runtime.workItems.completeWorkItem(params.workItemId, params.outcome);
+					await runtime.events.append("work_item.completed", { workItemId: item.id });
+					return textResult(`Completed ${item.id}.`, item);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -475,13 +509,15 @@ export default function harness(pi: ExtensionAPI): void {
 		label: "Submit Harness Planning",
 		description: "Freeze the current deliverable-contract digest and mark a managed work item as awaiting direct user approval.",
 		parameters: Type.Object({ workItemId: Type.String({ description: "Managed work-item id" }) }),
-		async execute(_id, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
-				const item = await runtime.workItems.submitPlanning(params.workItemId);
-				await runtime.events.append("planning.submitted", { id: item.id, revision: item.planning.revision });
-				return textResult(`Planning for ${item.id} r${item.planning.revision} is awaiting user approval.`, item);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const item = await runtime.workItems.submitPlanning(params.workItemId);
+					await runtime.events.append("planning.submitted", { id: item.id, revision: item.planning.revision });
+					return textResult(`Planning for ${item.id} r${item.planning.revision} is awaiting user approval.`, item);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -506,12 +542,13 @@ export default function harness(pi: ExtensionAPI): void {
 					return;
 				}
 				if (command === "recover" && !target) {
+					const staleLockRecovered = await runtime.mutex.recoverStale();
 					const recovered = [];
 					for (const item of await runtime.workItems.list()) {
 						recovered.push(...(await new HarnessRunStore(runtime.identity.privateRoot, item.id).recoverInterrupted()));
 					}
-					await runtime.events.append("recovery.inspected", { interruptedRuns: recovered.map((run) => run.id) });
-					ctx.ui.notify(recovered.length ? `Recovered ${recovered.length} interrupted run(s):\n${recovered.map((run) => `${run.taskId ?? run.id}`).join("\n")}` : "No newly interrupted runs found.", recovered.length ? "warning" : "info");
+					await runtime.events.append("recovery.inspected", { interruptedRuns: recovered.map((run) => run.id), staleLockRecovered });
+					ctx.ui.notify(recovered.length || staleLockRecovered ? `Recovered ${recovered.length} interrupted run(s)${staleLockRecovered ? " and one stale canonical lock" : ""}.${recovered.length ? `\n${recovered.map((run) => `${run.taskId ?? run.id}`).join("\n")}` : ""}` : "No newly interrupted runs or stale locks found.", recovered.length || staleLockRecovered ? "warning" : "info");
 					return;
 				}
 				if ((command === "pause" || command === "stop") && target && extra.length === 0) {
@@ -549,9 +586,11 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		try {
 			sessionRuntime = await createRuntime(ctx);
+			const staleLockRecovered = await sessionRuntime.mutex.recoverStale();
 			await sessionRuntime.events.append("session.started", {
 				reason: event.reason,
 				sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+				staleLockRecovered,
 			});
 			const recovered = [];
 			for (const item of await sessionRuntime.workItems.list()) {

@@ -554,6 +554,7 @@ export class WorkItemStore {
 			index.state = "waiting_user";
 			index.planning.contractDigest = digest;
 		} else {
+			if (index.planning.status === "approved" && index.planning.approvedRevision === index.planning.revision && digest === index.planning.contractDigest) return index;
 			if (index.planning.status !== "awaiting_approval") {
 				throw new HarnessError("STALE_PLANNING_REVISION", `Work item ${id} is not awaiting approval`);
 			}

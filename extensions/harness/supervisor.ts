@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { HarnessError } from "./errors.js";
+import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.js";
 import type { TaskManifest } from "./types.js";
@@ -41,12 +42,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const executable = basename(process.execPath).toLowerCase();
 	if (!/^(node|bun)(\.exe)?$/.test(executable)) return { command: process.execPath, args };
 	return { command: "pi", args };
-}
-
-function classifyFailure(stderr: string, finalText: string): "waiting_capacity" | "failed" {
-	const text = `${stderr}\n${finalText}`.toLowerCase();
-	if (/subscription|quota|rate.?limit|too many requests|http.?429|capacity/.test(text)) return "waiting_capacity";
-	return "failed";
 }
 
 function finalAssistantText(events: unknown[]): string {
@@ -130,8 +125,9 @@ export class SubagentSupervisor {
 					await workItems.updateTask(options.workItemId, options.task.id, { status: termination });
 					return { run, stderr, finalText };
 				}
-				const state = classifyFailure(execution.stderr, execution.finalText);
-				const run = await runs.update(created.record.id, { state, exitCode: execution.exitCode, error: execution.stderr || execution.finalText }, `run.${state}`);
+				const failure = classifyFailure({ message: `${execution.stderr}\n${execution.finalText}`, exitCode: execution.exitCode });
+				const state = failure.capacityRelated ? "waiting_capacity" : "failed";
+				const run = await runs.update(created.record.id, { state, exitCode: execution.exitCode, error: `${failure.class}: ${execution.stderr || execution.finalText}` }, `run.${state}`);
 				await workItems.updateTask(options.workItemId, options.task.id, { status: state === "waiting_capacity" ? "ready" : "failed" });
 				return { run, stderr, finalText };
 			}
