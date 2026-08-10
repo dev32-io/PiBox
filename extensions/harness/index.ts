@@ -801,22 +801,26 @@ export default function harness(pi: ExtensionAPI): void {
 		name: "work_item_complete",
 		label: "Complete Harness Work Item",
 		description: "Apply the completion gate and render a structured outcome from delivered work, canonical verification, deviations, findings, and residual risk.",
-		parameters: Type.Object({
-			workItemId: Type.String(),
-			outcome: Type.Optional(Type.String({ description: "Legacy schema-v1 outcome Markdown" })),
-			outcomeSections: Type.Optional(Type.Object({
-				delivered: Type.Array(Type.String()),
-				deviations: Type.Optional(Type.Array(Type.String())),
-				residualRisks: Type.Optional(Type.Array(Type.String())),
-				followUp: Type.Optional(Type.Array(Type.String())),
-			})),
-		}),
+		parameters: Type.Union([
+			Type.Object({
+				workItemId: Type.String(),
+				outcomeSections: Type.Object({
+					delivered: Type.Array(Type.String()),
+					deviations: Type.Optional(Type.Array(Type.String())),
+					residualRisks: Type.Optional(Type.Array(Type.String())),
+					followUp: Type.Optional(Type.Array(Type.String())),
+				}, { additionalProperties: false }),
+			}, { additionalProperties: false }),
+			Type.Object({ workItemId: Type.String(), outcome: Type.String({ description: "Legacy schema-v1 outcome Markdown" }) }, { additionalProperties: false }),
+		]),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = await runtime.workItems.completeWorkItem(params.workItemId, params.outcome, params.outcomeSections);
+					const item = "outcome" in params
+						? await runtime.workItems.completeWorkItem(params.workItemId, params.outcome)
+						: await runtime.workItems.completeWorkItem(params.workItemId, undefined, params.outcomeSections);
 					await runtime.events.append("work_item.completed", { workItemId: item.id });
 					return textResult(`Completed ${item.id}.`, item);
 				});
