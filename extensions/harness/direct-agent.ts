@@ -16,7 +16,9 @@ export interface DirectAgentOptions {
 	tools: string[];
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
+	onSpawn?: (pid: number | undefined) => void;
 	promptPath?: string;
+	env?: Record<string, string>;
 }
 
 export interface DirectAgentResult {
@@ -67,7 +69,13 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	let buffer = "";
 	try {
 		const exitCode = await new Promise<number>((resolveExit) => {
-			const child = spawn(selected.command, selected.args, { cwd: options.cwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+			const child = spawn(selected.command, selected.args, {
+				cwd: options.cwd,
+				shell: false,
+				stdio: ["ignore", "pipe", "pipe"],
+				env: { ...process.env, ...options.env },
+			});
+			options.onSpawn?.(child.pid);
 			const processLine = (line: string) => {
 				if (!line.trim()) return;
 				try {

@@ -6,16 +6,44 @@ import { Type } from "typebox";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { RepositoryEventStore } from "./event-store.js";
+import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { runDirectAgent } from "./direct-agent.js";
 import { HarnessRunStore } from "./run-store.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
-import { assertCleanRepository, discoverRepository, type RepositoryIdentity } from "./repository.js";
+import { assertCleanRepository, discoverRepository, runGit, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
+
+const WORKER_TOOL_NAMES = new Set([
+	"task_context",
+	"task_checkpoint",
+	"task_request_change",
+	"task_report_decision",
+	"task_blocked",
+	"task_complete",
+]);
+const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
+const ORCHESTRATOR_TOOL_NAMES = new Set([
+	"harness_status",
+	"work_item_create",
+	"artifact_create",
+	"artifact_update",
+	"task_define",
+	"evaluation_define",
+	"agent_run",
+	"evaluation_launch",
+	"task_launch",
+	"task_integrate",
+	"agent_status",
+	"agent_control",
+	"evaluation_record",
+	"work_item_complete",
+	"planning_submit",
+]);
 
 interface HarnessRuntime {
 	identity: RepositoryIdentity;
@@ -104,6 +132,7 @@ export default function harness(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
 	const supervisor = new SubagentSupervisor();
 	registerWorkerCapabilities(pi);
+	registerEvaluatorCapabilities(pi);
 
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
 		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
@@ -422,6 +451,107 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "evaluation_launch",
+		label: "Launch Harness Evaluation",
+		description: "Run a planned evaluation in a fresh specialist session and atomically record its structured verdict and evidence.",
+		parameters: Type.Object({
+			workItemId: Type.String(),
+			evaluationId: Type.String(),
+			model: Type.Optional(Type.String()),
+			effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
+			strict: Type.Optional(Type.Boolean()),
+		}),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return runtime.operations.execute(toolCallId, params, async () => {
+					const item = await runtime.workItems.read(params.workItemId);
+					if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", "Evaluation requires current approved planning");
+					const evaluation = await runtime.workItems.readEvaluation(item.id, params.evaluationId);
+					if (evaluation.attempt >= runtime.config.limits.repairRounds + 1) throw new HarnessError("INVALID_HANDOFF", `Evaluation repair budget exhausted for ${evaluation.id}`);
+					const roleName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
+					const role = runtime.config.roles[roleName];
+					if (!role) throw new HarnessError("CONFIG_INVALID", `Missing evaluator role: ${roleName}`);
+					const roleCandidates = role.models ?? [];
+					const requested = params.model ? [{ model: params.model, effort: (params.effort ?? "high") as HarnessEffort }] : roleCandidates;
+					const candidates = [...requested, ...roleCandidates.filter((candidate) => !requested.some((itemCandidate) => itemCandidate.model === candidate.model && itemCandidate.effort === candidate.effort))];
+					const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+					const resolution = resolveHarnessModel(runtime.config, available, { candidates, strict: params.strict ?? false });
+					if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
+					await assertCleanRepository(runtime.identity.root);
+					const runs = new HarnessRunStore(runtime.identity.privateRoot, item.id);
+					const requestedModel = params.model ?? roleCandidates[0]?.model;
+					const created = await runs.create({
+						repositoryId: runtime.identity.id,
+						workItemId: item.id,
+						evaluationId: evaluation.id,
+						role: roleName,
+						attempt: evaluation.attempt + 1,
+						state: "running",
+						workspace: runtime.identity.root,
+						baseCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]),
+						planningRevision: item.planning.revision,
+						...(requestedModel ? { requestedModel } : {}),
+						resolvedProvider: resolution.model.provider,
+						resolvedModel: resolution.model.id,
+						resolvedEffort: resolution.effort,
+					});
+					const prompt = [
+						`Evaluate planned boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
+						"Call evaluation_context before judging. Use fresh evidence and do not modify product or canonical artifact files.",
+						"If runtime evidence files are needed, place them outside the repository and reference their absolute paths.",
+						"Finish by calling evaluation_complete. A prose-only response is invalid.",
+					].join("\n");
+					const runEvaluator = (taskPrompt: string) => runDirectAgent({
+						role: roleName,
+						task: taskPrompt,
+						cwd: runtime.identity.root,
+						provider: resolution.model.provider,
+						model: resolution.model.id,
+						effort: resolution.effort,
+						tools: [...new Set([
+							...(role.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]),
+							"evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete",
+						])],
+						env: {
+							PIBOX_HARNESS_RUN_ID: created.record.id,
+							PIBOX_HARNESS_WORK_ITEM: item.id,
+							PIBOX_HARNESS_EVALUATION: evaluation.id,
+							PIBOX_HARNESS_CREDENTIAL: created.credential,
+						},
+						...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
+						onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
+						...(signal ? { signal } : {}),
+						...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { runId: created.record.id, state: "running" })) } : {}),
+					});
+					let direct = await runEvaluator(prompt);
+					await assertCleanRepository(runtime.identity.root);
+					let handoff = await runs.readEvaluationHandoff(created.record.id);
+					if (!handoff && direct.exitCode === 0) {
+						await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
+						direct = await runEvaluator(`PROTOCOL NUDGE: The previous evaluator settled without evaluation_complete. Reinspect the assigned boundary as needed and call evaluation_complete now.\n\n${prompt}`);
+						await assertCleanRepository(runtime.identity.root);
+						handoff = await runs.readEvaluationHandoff(created.record.id);
+					}
+					if (!handoff || handoff.runId !== created.record.id || handoff.evaluationId !== evaluation.id) {
+						await runs.update(created.record.id, { state: "protocol_failed", exitCode: direct.exitCode, error: "Missing or invalid evaluation_complete handoff" }, "run.protocol_failed");
+						return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, direct });
+					}
+					const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, () =>
+						runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings }),
+					);
+					await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
+					await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, verdict: handoff.verdict });
+					return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, evaluation: recorded, handoff });
+				});
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
 		name: "task_launch",
 		label: "Launch Harness Task",
 		description: "Resolve the planned model, allocate an isolated worktree, and supervise an approved implementation task through its structured handoff.",
@@ -616,6 +746,11 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		const disallowed = new Set<string>();
+		if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
 		try {
 			sessionRuntime = await createRuntime(ctx);
 			const staleLockRecovered = await sessionRuntime.mutex.recoverStale();
@@ -624,11 +759,13 @@ export default function harness(pi: ExtensionAPI): void {
 				sessionFile: ctx.sessionManager.getSessionFile() ?? null,
 				staleLockRecovered,
 			});
-			const recovered = [];
-			for (const item of await sessionRuntime.workItems.list()) {
-				recovered.push(...(await new HarnessRunStore(sessionRuntime.identity.privateRoot, item.id).recoverInterrupted()));
+			if (!isWorkerProcess() && !isEvaluatorProcess()) {
+				const recovered = [];
+				for (const item of await sessionRuntime.workItems.list()) {
+					recovered.push(...(await new HarnessRunStore(sessionRuntime.identity.privateRoot, item.id).recoverInterrupted()));
+				}
+				if (recovered.length > 0) ctx.ui.notify(`Harness recovered ${recovered.length} interrupted run(s). Use /harness recover or /harness resume <task>.`, "warning");
 			}
-			if (recovered.length > 0) ctx.ui.notify(`Harness recovered ${recovered.length} interrupted run(s). Use /harness recover or /harness resume <task>.`, "warning");
 		} catch (error) {
 			sessionRuntime = undefined;
 			if (error instanceof HarnessError && error.code === "NOT_A_GIT_REPOSITORY") return;

@@ -201,11 +201,8 @@ export class SubagentSupervisor {
 		const promptPath = join(promptDirectory, "implementer.md");
 		const builtInRolePrompt = await readFile(join(ROLE_ROOT, `${options.task.execution.assignment.role}.md`), "utf8").catch(() => "");
 		await writeFile(promptPath, taskPrompt(options, protocolNudge, builtInRolePrompt), { encoding: "utf8", mode: 0o600 });
-		const defaultTools = [
-			"read", "grep", "find", "bash", "edit", "write",
-			"task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete",
-		];
-		const tools = options.tools ?? defaultTools;
+		const taskCapabilities = ["task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
+		const tools = [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])];
 		const args = [
 			"--mode", "json", "-p", "--no-session",
 			"--model", `${options.model.provider}/${options.model.model}`,

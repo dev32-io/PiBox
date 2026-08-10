@@ -41,6 +41,26 @@ export interface RunRecord {
 	error?: string;
 }
 
+export interface EvaluationHandoff {
+	schemaVersion: 1;
+	type: "evaluation_complete";
+	runId: string;
+	evaluationId: string;
+	verdict: "pass" | "fail" | "blocked" | "not_applicable";
+	report: string;
+	evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
+	findings: Array<{
+		id: string;
+		severity: "low" | "medium" | "high" | "critical";
+		status: "open" | "accepted" | "rejected" | "duplicate" | "deferred" | "resolved" | "needs_user";
+		criterion?: string;
+		location?: string;
+		summary: string;
+		blocking: boolean;
+	}>;
+	completedAt: string;
+}
+
 export interface TaskHandoff {
 	schemaVersion: 1;
 	type: "task_complete";
@@ -175,5 +195,15 @@ export class HarnessRunStore {
 	async readHandoff(runId: string): Promise<TaskHandoff | undefined> {
 		const content = await readTextIfExists(join(this.runRoot(runId), "handoff.json"));
 		return content ? (JSON.parse(content) as TaskHandoff) : undefined;
+	}
+
+	async writeEvaluationHandoff(runId: string, handoff: EvaluationHandoff): Promise<void> {
+		await atomicWriteFile(join(this.runRoot(runId), "evaluation-handoff.json"), `${JSON.stringify(handoff, null, 2)}\n`, 0o600);
+		await this.appendEvent(runId, "run.evaluation_handoff", { verdict: handoff.verdict });
+	}
+
+	async readEvaluationHandoff(runId: string): Promise<EvaluationHandoff | undefined> {
+		const content = await readTextIfExists(join(this.runRoot(runId), "evaluation-handoff.json"));
+		return content ? (JSON.parse(content) as EvaluationHandoff) : undefined;
 	}
 }
