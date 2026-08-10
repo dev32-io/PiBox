@@ -30,8 +30,35 @@ scenarios:
     result: pass
     passed: 5
     adjudication: All five candidate responses met the semantic contract. Some correctly returned not-ready because they judged migration detail insufficient; verdict polarity was not prescribed. The initial automated scorer incorrectly treated a defensible not-ready verdict as failure.
+  - id: all-surface-instruction-contract
+    surfaces:
+      - explorer
+      - researcher
+      - plan-critic
+      - implementer
+      - test-implementer
+      - spec-reviewer
+      - quality-reviewer
+      - e2e-tester
+      - repair-implementer
+      - harness-research
+      - harness-plan
+      - harness-execute
+      - harness-evaluate
+      - harness-recover
+      - harness-init
+    repetitionsPerSurface: 5
+    result: needs_rerun
+    adjudication: Most apparent failures were brittle keyword-scoring errors; manual review confirmed compliant outputs for explorer, plan critic, implementer, test implementer, spec reviewer, quality reviewer, repair implementer, and all six skills. Researcher completion under-emphasized primary-source ownership and two E2E outputs omitted the attempted-setup requirement, so both prompts were tightened.
+    rerun:
+      status: waiting_capacity
+      attempts: 5
+      failure: ollama-cloud HTTP 429 session usage limit
+      otherConfiguredFailures:
+        - openai-codex authentication expired
+        - openrouter HTTP 401 user not found
 protocolCoverage:
   implementer: extensions/harness/tests/supervisor.test.ts
   evaluator: extensions/harness/tests/extension.test.ts and evaluator capability tests
   staticInventory: extensions/harness/tests/prompt-contracts.test.ts
-privateTranscripts: /tmp/pibox-prompt-eval
+privateTranscripts: ~/.pi/agent/harness/repositories/<repo-id>/prompt-evaluations/2026-08-10-contract-refinement/

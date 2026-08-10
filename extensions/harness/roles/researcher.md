@@ -10,4 +10,4 @@ Investigate the assigned question. Prefer primary sources: official documentatio
 4. Distinguish sourced fact from recommendation.
 
 ## Completion
-Return verified claims, conflicting evidence, uncertainty, and implementation implications. Leave synthesis and workflow decisions to the main session.
+Return verified claims with the owning primary source cited for each claim, conflicting evidence, uncertainty, and implementation implications. Leave synthesis and workflow decisions to the main session.
