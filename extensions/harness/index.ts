@@ -387,12 +387,12 @@ export default function harness(pi: ExtensionAPI): void {
 			specs: Type.Optional(Type.Array(Type.String())),
 			designs: Type.Optional(Type.Array(Type.String())),
 			decisions: Type.Optional(Type.Array(Type.String())),
-			isolation: Type.Optional(Type.Union([Type.Literal("worktree"), Type.Literal("repository")])),
+			isolation: Type.Optional(Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for implementer, test-implementer, and repair-implementer roles." })),
 			parallelism: Type.Optional(Type.Union([Type.Literal("allowed"), Type.Literal("serial")])),
 			resourceClaims: Type.Optional(Type.Array(Type.String())),
 			complexity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
-			role: Type.Optional(Type.String()),
-			model: Type.String(),
+			role: Type.Optional(Type.String({ description: "Configured role name, normally implementer." })),
+			model: Type.String({ description: "Configured model alias such as sol, terra, or luna; never a raw model id." }),
 			effort: Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]),
 			minimumCapabilityRank: Type.Optional(Type.Integer({ minimum: 0 })),
 			allowFallback: Type.Optional(Type.Boolean()),
@@ -409,6 +409,12 @@ export default function harness(pi: ExtensionAPI): void {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
+				const roleName = params.role ?? "implementer";
+				const rolePolicy = runtime.config.roles[roleName];
+				if (!rolePolicy) throw new HarnessError("CONFIG_INVALID", `Unknown task role: ${roleName}. Configured roles: ${Object.keys(runtime.config.roles).join(", ")}`);
+				if (!runtime.config.models[params.model]) throw new HarnessError("CONFIG_INVALID", `Task model must be a configured alias, not a raw model id. Configured aliases: ${Object.keys(runtime.config.models).join(", ")}`);
+				const isolation = params.isolation ?? "worktree";
+				if (rolePolicy.workspace === "worktree" && isolation !== "worktree") throw new HarnessError("CONFIG_INVALID", `Role ${roleName} requires worktree isolation`);
 				const manifest: TaskManifest = {
 					schemaVersion: 1,
 					id: params.id,
@@ -417,12 +423,12 @@ export default function harness(pi: ExtensionAPI): void {
 					dependsOn: params.dependsOn ?? [],
 					references: { specs: params.specs ?? [], designs: params.designs ?? [], decisions: params.decisions ?? [] },
 					execution: {
-						isolation: params.isolation ?? "worktree",
+						isolation,
 						parallelism: params.parallelism ?? "allowed",
 						resourceClaims: params.resourceClaims ?? [],
 						complexity: params.complexity,
 						assignment: {
-							role: params.role ?? "implementer",
+							role: roleName,
 							model: params.model,
 							effort: params.effort as HarnessEffort,
 							minimumCapabilityRank: params.minimumCapabilityRank ?? 0,
