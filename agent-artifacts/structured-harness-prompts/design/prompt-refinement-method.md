@@ -6,7 +6,7 @@ Replace generic role-playing and list-only harness prompts with compact instruct
 
 ## Chosen Approach
 
-Use prompt TDD one surface at a time: establish a no-change baseline, classify observed failures, rewrite the minimum instructions needed, rerun identical scenarios, and refine only against remaining variance. Keep mechanical invariants in capabilities. Use Luna for repeated scenarios and stronger judgment only for final adversarial review.
+Use prompt TDD one surface at a time: establish a no-change baseline, classify observed failures, rewrite the minimum instructions needed, rerun identical scenarios, and refine only against remaining variance. Keep mechanical invariants in capabilities. Use the configured Luna alias for repeated scenarios and stronger judgment only for final adversarial review.
 
 Apply these writing rules:
 
@@ -29,21 +29,24 @@ Reference influences are pinned to Superpowers 6.2.0, GitHub Spec Kit commit `9d
 
 Inject a small main-session contract through Pi's agent-start system-prompt hook. It defines user authority, ad-hoc versus managed routing, current-phase selection, skill disclosure, canonical ownership, approval, and evidence-backed completion. Detailed research, planning, execution, evaluation, and recovery procedures remain in their skills.
 
-### Prompt contract registry
+### Authoritative prompt inventory
 
-Inventory and classify every surface:
+Commit one registry entry per surface with stable ID, category, source path or source symbol, invocation mode, required tools, completion protocol, and scenario IDs. Discovery scans these authoritative roots and symbols:
 
-- Skills: harness-research, harness-plan, harness-execute, harness-evaluate, harness-recover, harness-init.
-- Roles: explorer, researcher, plan-critic, implementer, test-implementer, spec-reviewer, quality-reviewer, e2e-tester, repair-implementer.
-- Dynamic prompts: supervised task and planned evaluator.
-- Exceptional prompts: protocol nudges and missing-role fallback.
-- Context pointers: skill descriptions and tool descriptions.
+- `skills/harness-*/SKILL.md`;
+- `extensions/harness/roles/*.md`;
+- named dynamic prompt builders in `extensions/harness/supervisor.ts`, `extensions/harness/direct-agent.ts`, and `extensions/harness/index.ts`;
+- registered harness tool descriptions in `extensions/harness/index.ts`, `worker-capabilities.ts`, and `evaluator-capabilities.ts`.
 
-Each surface records invocation context, available inputs/tools, instructions, completion contract, escalation contract, and prohibited authority only where mechanically necessary.
+Static tests fail when discovery finds an unregistered surface or a registry path/symbol no longer exists.
+
+### Prompt contracts
+
+Each registry entry records invocation context, authoritative inputs, instructions, completion criteria, escalation criteria, and hard authority limits only where necessary. Skill descriptions contain trigger conditions only. Prompt source files are validated as prompt code, not rendered through canonical artifact profiles.
 
 ### Scenario corpus and rubric
 
-Store fixed scenarios and expected behavioral properties, not preferred prose. Score:
+Store fixed scenarios and expected behavioral properties, not preferred prose. Score binary properties for:
 
 - correct workflow routing;
 - authoritative source inspection;
@@ -53,22 +56,32 @@ Store fixed scenarios and expected behavioral properties, not preferred prose. S
 - escalation correctness;
 - premature completion;
 - unnecessary work or ceremony;
-- tool protocol compliance;
-- turns and retained transcript size.
+- tool protocol compliance.
 
-Record baseline and candidate results with model, effort, prompt digest, config digest, scenario digest, outcome, and observed failure labels.
+Record turns and retained transcript size as efficiency metrics. Every result records alias, resolved provider/model, effort, prompt digest, config digest, scenario digest, attempt, outcome, and observed failure labels.
+
+For each scenario, baseline and candidate use the same resolved model, effort, repository fixture, and config digest. Capacity or provider failures invalidate the pair and are retried later; they are not semantic failures. Wording-sensitive and discipline scenarios run five fresh-context repetitions per variant. Deterministic protocol scenarios run three.
+
+Acceptance thresholds:
+
+- Critical properties—authority, destructive scope, approval, canonical ownership, and terminal handoff—pass every candidate repetition.
+- Other required properties pass at least four of five repetitions, or every repetition in a three-run protocol scenario.
+- No property that already passed every baseline repetition may regress.
+- Median turns may not increase by more than twenty percent unless the candidate fixes a previously failing required property; the aggregate record must state that trade-off.
+- Every flagged result is read and adjudicated; aggregate counts alone do not accept a prompt.
 
 ## Data and Control Flow
 
 For each prompt surface:
 
-1. Run representative and pressure scenarios against the existing prompt.
-2. Preserve exact prompts, model routing, transcript, and scored observations privately; commit concise scenario definitions and aggregate results.
-3. Classify failures as routing, discipline, output-shape, omission, ambiguity, or no-op/sprawl.
-4. Select wording form: positive recipe for output shape, structural field for omission, observable condition for branching, or hard guardrail plus rationalization defense only for demonstrated discipline failures.
-5. Rewrite one surface without changing unrelated prompts.
-6. Rerun the same scenarios and compare behavior, turns, and protocol success.
-7. Commit only after the surface meets its rubric; then move to the next surface.
+1. Resolve the configured Luna alias and pin its provider, model, effort, and config digest for the baseline/candidate pair.
+2. Run representative and pressure scenarios against the existing prompt.
+3. Preserve exact prompts, routing, transcript, and scored observations privately; commit concise scenario definitions and aggregate results.
+4. Classify failures as routing, discipline, output-shape, omission, ambiguity, or no-op/sprawl.
+5. Select wording form: positive recipe for output shape, structural field for omission, observable condition for branching, or hard guardrail plus rationalization defense only for demonstrated discipline failures.
+6. Rewrite one surface without changing unrelated prompts.
+7. Rerun the same scenarios and apply the acceptance thresholds.
+8. Commit only after the surface meets its rubric; then move to the next surface.
 
 Refinement order:
 
@@ -95,15 +108,15 @@ Refinement order:
 
 ## Failure and Recovery
 
-Scenario runs retain prompt and transcript digests so interrupted evaluation can resume without losing comparison context. A prompt that improves one scenario but regresses another remains unaccepted. Provider or capacity failures are recorded separately from semantic failures. Prompt commits are isolated so any regression can be reverted without undoing artifact-contract infrastructure.
+Scenario runs retain prompt and transcript digests so interrupted evaluation can resume without losing comparison context. A prompt that improves one scenario but regresses another remains unaccepted unless the explicit efficiency exception applies. Provider and capacity failures remain separate from semantic results. Prompt commits are isolated so any regression can be reverted without undoing artifact-contract infrastructure.
 
 ## Security and Privacy
 
-Scenario fixtures contain synthetic repositories and no secrets. Private transcripts remain outside Git. Committed aggregate results exclude credentials and sensitive model payloads. Prompt changes cannot widen role tools or authority without an explicit design update and capability test.
+Scenario fixtures contain synthetic repositories and no secrets. Private transcripts remain outside Git. Committed aggregate results exclude credentials and sensitive provider payloads. Prompt changes cannot widen role tools or authority without an explicit design update and capability test.
 
 ## Compatibility and Migration
 
-Repository-local custom role prompts remain supported but can be linted against the prompt contract. Existing skill names remain stable. The orchestrator injection is compact and does not require managed ceremony for ad-hoc work. Tool and role configuration semantics remain unchanged unless a separate approved contract says otherwise.
+Repository-local custom role prompts remain supported and may opt into prompt linting; built-in prompt validation is strict. Existing skill names remain stable. The orchestrator injection is compact and does not require managed ceremony for ad-hoc work. Tool and role configuration semantics remain unchanged unless a separate approved contract says otherwise.
 
 ## Verification Boundaries
 
@@ -111,7 +124,7 @@ Repository-local custom role prompts remain supported but can be linted against 
 - Prompt contract tests check identity-preamble removal, trigger-only descriptions, required completion/escalation slots, and duplicate instruction sources.
 - Behavioral scenario runs gate each individual rewrite outside normal offline CI.
 - Supervised-child tests verify structured terminal handoffs after worker and evaluator prompt changes.
-- Final E2E covers natural-language routing through approval, execution, evaluation, completion, and recovery.
+- Final E2E covers natural-language routing through approval, execution, evaluation, and completion; focused recovery scenarios cover interruption and resume.
 
 ## Alternatives Considered
 
