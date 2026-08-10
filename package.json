@@ -22,11 +22,13 @@
   ],
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "tsx --test extensions/tui/*/tests/*.test.ts",
+    "test": "find extensions -name '*.test.ts' -print0 | xargs -0 tsx --test",
     "verify": "npm run check && npm test"
   },
   "pi": {
     "extensions": [
+      "./extensions/providers/ollama-cloud/index.ts",
+      "./extensions/providers/local-llm/index.ts",
       "./extensions/tui/chat-input/index.ts",
       "./extensions/tui/status-bar/index.ts",
       "./extensions/tui/styled-outputs/index.ts",

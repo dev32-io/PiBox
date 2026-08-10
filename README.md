@@ -1,6 +1,6 @@
 # PiBox
 
-PiBox is an original visual TUI package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme plus independent chat-input, status-bar, styled-output, spinner, and startup components.
+PiBox is a visual and provider package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; and `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints.
 
 The design and behavior contract lives in [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md).
 
@@ -15,6 +15,8 @@ Local preview, without loading globally installed extensions:
 
 ```bash
 pi --no-extensions \
+  -e ./extensions/providers/ollama-cloud/index.ts \
+  -e ./extensions/providers/local-llm/index.ts \
   -e ./extensions/tui/chat-input/index.ts \
   -e ./extensions/tui/status-bar/index.ts \
   -e ./extensions/tui/styled-outputs/index.ts \

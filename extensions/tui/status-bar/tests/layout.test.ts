@@ -35,18 +35,19 @@ test("selects explicit responsive modes", () => {
 test("every status layout stays within terminal width", () => {
 	for (const width of [44, 60, 72, 90, 110, 140]) {
 		const lines = renderStatusBar(width, data);
-		assert.equal(lines.length, 2);
+		assert.equal(lines.length, 4);
 		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
 	}
 });
 
 test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
-	assert.match(text, /42%/);
-	assert.match(text, /42k\/100k/);
-	assert.match(text, /↑12k/);
-	assert.match(text, /↓810/);
-	assert.match(text, /\$0\.042/);
+	assert.match(text, /42\.0%/);
+	assert.match(text, /\/ 100k/);
+	assert.match(text, /Thinking: MEDIUM/);
+	assert.match(text, /↑ 12k/);
+	assert.match(text, /↓ 810/);
+	assert.match(text, /\$0\.04/);
 });
 
 test("medium layout preserves the higher-priority context segment", () => {
@@ -54,7 +55,7 @@ test("medium layout preserves the higher-priority context segment", () => {
 		...ctx,
 		model: { ...ctx.model!, name: "An Extremely Long Local Model Name That Must Yield" },
 	} as ExtensionContext;
-	const firstLine = renderStatusBar(72, { ...data, ctx: longModelContext })[0] ?? "";
-	assert.match(firstLine, /42%/);
+	const firstLine = renderStatusBar(72, { ...data, ctx: longModelContext })[1] ?? "";
+	assert.match(firstLine, /42\.0%/);
 	assert.ok(visibleWidth(firstLine) <= 72);
 });

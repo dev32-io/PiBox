@@ -7,53 +7,84 @@ export interface StartupKeys {
 	thinking: string;
 }
 
+const PI_ART = [
+	"██████╗ ██╗",
+	"██╔══██╗██║",
+	"██████╔╝██║",
+	"██╔═══╝ ██║",
+	"╚═╝     ╚═╝",
+];
+
 function fit(value: string, width: number): string {
 	const clipped = truncateToWidth(value, width, "");
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
 }
 
-function titledRule(theme: Theme, width: number): string {
-	const title = ` PiBox · Pi ${VERSION} `;
-	if (width <= visibleWidth(title) + 2) return theme.fg("borderMuted", "─".repeat(width));
-	return theme.fg("borderMuted", "┌─") + theme.fg("accent", title) + theme.fg("borderMuted", `${"─".repeat(width - visibleWidth(title) - 3)}┐`);
+function center(value: string, width: number): string {
+	const remaining = Math.max(0, width - visibleWidth(value));
+	const left = Math.floor(remaining / 2);
+	return " ".repeat(left) + value + " ".repeat(remaining - left);
+}
+
+function plural(value: number, label: string): string {
+	return `${value} ${label}${value === 1 ? "" : "s"}`;
 }
 
 export function renderStartup(theme: Theme, counts: StartupCounts, keys: StartupKeys, width: number): string[] {
 	if (width < 24) return [truncateToWidth(theme.fg("accent", `PiBox · Pi ${VERSION}`), width, "")];
-	if (width < 52) {
-		const details = `${counts.models} models · ${counts.components} TUI${counts.contextFiles === undefined ? "" : ` · ${counts.contextFiles} context`}`;
+	if (width < 64) {
+		const details = `${plural(counts.models, "model")} · ${counts.components} visual components${counts.contextFiles === undefined ? "" : ` · ${plural(counts.contextFiles, "context file")}`}`;
 		return [
-			theme.fg("accent", `PiBox`) + theme.fg("dim", ` · Pi ${VERSION}`),
+			`${theme.fg("accent", "PiBox")}${theme.fg("dim", ` · Pi ${VERSION}`)}`,
 			truncateToWidth(theme.fg("muted", details), width, ""),
 			truncateToWidth(theme.fg("dim", `/ commands · ! bash · ${keys.model} model · ${keys.thinking} thinking`), width, "…"),
 			"",
 		];
 	}
 
-	const boxWidth = Math.min(width, 96);
-	const inner = boxWidth - 2;
-	const leftWidth = Math.min(30, Math.floor(inner * 0.38));
-	const rightWidth = inner - leftWidth;
+	const boxWidth = Math.min(width, 82);
+	const innerWidth = boxWidth - 2;
+	const artWidth = 20;
+	const countWidth = 27;
+	const tipsWidth = innerWidth - artWidth - countWidth;
+	const border = (value: string) => theme.fg("borderMuted", value);
+	const title = ` PiBox · Pi ${VERSION} `;
+	const titleFill = Math.max(1, boxWidth - visibleWidth(title) - 4);
 	const countLines = [
-		`${theme.fg("success", String(counts.models))} model${counts.models === 1 ? "" : "s"}`,
-		`${theme.fg("success", String(counts.components))} visual components`,
-		...(counts.contextFiles === undefined
-			? []
-			: [`${theme.fg(counts.contextFiles > 0 ? "success" : "dim", String(counts.contextFiles))} context file${counts.contextFiles === 1 ? "" : "s"}`]),
+		plural(counts.models, "model"),
+		plural(counts.components, "visual component"),
+		...(counts.contextFiles === undefined ? [] : [plural(counts.contextFiles, "context file")]),
 	];
 	const tips = [
-		`${theme.fg("accent", "/")} commands`,
-		`${theme.fg("warning", "!")} bash`,
-		`${theme.fg("muted", keys.model)} model`,
-		`${theme.fg("muted", keys.thinking)} thinking`,
+		`${theme.fg("accent", "/")} for commands`,
+		`${theme.fg("warning", "!")} to run bash`,
+		`${theme.fg("dim", keys.model)} cycle model`,
+		`${theme.fg("dim", keys.thinking)} cycle thinking`,
 	];
-	const rows = Math.max(countLines.length, tips.length, 4);
-	const lines = ["", titledRule(theme, boxWidth)];
+	const art = ["", ...PI_ART.map((line) => center(theme.bold(theme.fg("accent", line)), artWidth)), ""];
+	const countColumn = [
+		"",
+		...countLines.map((line) => {
+			const [number, ...rest] = line.split(" ");
+			return `${theme.fg("dim", "•")} ${theme.fg("success", number ?? "0")} ${rest.join(" ")}`;
+		}),
+		"",
+	];
+	const tipColumn = ["", ...tips, ""];
+	const rows = Math.max(art.length, countColumn.length, tipColumn.length);
+	const lines = [
+		"",
+		`${border("┌──")}${theme.fg("accent", title)}${border(`${"─".repeat(titleFill)}┐`)}`,
+	];
 	for (let index = 0; index < rows; index++) {
-		const left = index === 0 ? theme.bold(theme.fg("text", "  PI / BOX")) : `  ${countLines[index - 1] ?? ""}`;
-		const right = `  ${tips[index] ?? ""}`;
-		lines.push(theme.fg("borderMuted", "│") + fit(left, leftWidth) + fit(right, rightWidth) + theme.fg("borderMuted", "│"));
+		lines.push(
+			border("│") +
+				fit(art[index] ?? "", artWidth) +
+				fit(` ${countColumn[index] ?? ""}`, countWidth) +
+				fit(` ${tipColumn[index] ?? ""}`, tipsWidth) +
+				border("│"),
+		);
 	}
-	lines.push(theme.fg("borderMuted", `└${"─".repeat(inner)}┘`), "");
+	lines.push(border(`└${"─".repeat(innerWidth)}┘`), "");
 	return lines;
 }
