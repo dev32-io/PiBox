@@ -69,6 +69,7 @@ export type TaskStatus =
 	| "blocked"
 	| "ready"
 	| "running"
+	| "paused"
 	| "contribution_complete"
 	| "reviewing"
 	| "changes_requested"

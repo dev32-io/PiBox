@@ -86,7 +86,7 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid identity`);
 	}
 	const statuses: TaskStatus[] = [
-		"draft", "blocked", "ready", "running", "contribution_complete", "reviewing", "changes_requested", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
+		"draft", "blocked", "ready", "running", "paused", "contribution_complete", "reviewing", "changes_requested", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
 	];
 	if (!task.status || !statuses.includes(task.status) || !Array.isArray(task.dependsOn)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid lifecycle fields`);
 	if (!task.references || !Array.isArray(task.references.specs) || !Array.isArray(task.references.designs) || !Array.isArray(task.references.decisions)) {
@@ -344,6 +344,20 @@ export class WorkItemStore {
 			await this.restore([{ path, content: previous }]);
 			throw error;
 		}
+	}
+
+	async refreshReadyTasks(workItemId: string): Promise<TaskManifest[]> {
+		const item = await this.read(workItemId);
+		const changed: TaskManifest[] = [];
+		for (const catalog of item.tasks) {
+			const task = await this.readTask(workItemId, catalog.id);
+			if (task.status !== "blocked") continue;
+			const dependencies = await Promise.all(task.dependsOn.map((dependency) => this.readTask(workItemId, dependency)));
+			if (dependencies.every((dependency) => dependency.status === "integrated")) {
+				changed.push(await this.updateTask(workItemId, task.id, { status: "ready" }));
+			}
+		}
+		return changed;
 	}
 
 	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n"): Promise<WorkItemIndex> {

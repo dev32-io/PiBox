@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
@@ -87,6 +87,42 @@ export class HarnessRunStore {
 		await atomicWriteFile(join(root, "run.yaml"), stringify(record), 0o600);
 		await appendFile(join(root, "events.jsonl"), `${JSON.stringify({ sequence: 1, at: now, type: "run.created", data: { state: record.state } })}\n`, { mode: 0o600 });
 		return { record, credential };
+	}
+
+	async list(): Promise<RunRecord[]> {
+		const root = join(this.workItemPrivateRoot, "runs");
+		const entries = await readdir(root, { withFileTypes: true }).catch((error: unknown) => {
+			if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return [];
+			throw error;
+		});
+		const records: RunRecord[] = [];
+		for (const entry of entries) {
+			if (!entry.isDirectory()) continue;
+			try {
+				records.push(await this.read(entry.name));
+			} catch {
+				// Recovery surfaces valid records and leaves corrupt directories untouched.
+			}
+		}
+		return records.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+	}
+
+	async recoverInterrupted(): Promise<RunRecord[]> {
+		const recovered: RunRecord[] = [];
+		for (const run of await this.list()) {
+			if (run.state !== "running" && run.state !== "launching") continue;
+			let alive = false;
+			if (run.pid) {
+				try {
+					process.kill(run.pid, 0);
+					alive = true;
+				} catch {
+					alive = false;
+				}
+			}
+			if (!alive) recovered.push(await this.update(run.id, { state: "interrupted", error: "Supervisor process was not alive during recovery" }, "run.recovered_interrupted"));
+		}
+		return recovered;
 	}
 
 	async read(runId: string): Promise<RunRecord> {

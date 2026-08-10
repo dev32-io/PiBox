@@ -83,6 +83,7 @@ function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean): string 
 
 export class SubagentSupervisor {
 	#active = new Map<string, ChildProcess>();
+	#termination = new Map<string, "paused" | "cancelled">();
 
 	async launchTask(options: LaunchTaskOptions): Promise<LaunchTaskResult> {
 		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
@@ -121,6 +122,14 @@ export class SubagentSupervisor {
 				return { run, handoff, stderr, finalText };
 			}
 			if (execution.exitCode !== 0) {
+				const termination = this.#termination.get(created.record.id);
+				if (termination) {
+					this.#termination.delete(created.record.id);
+					const runState = termination === "paused" ? "interrupted" : "cancelled";
+					const run = await runs.update(created.record.id, { state: runState, exitCode: execution.exitCode, error: `Run ${termination} by orchestrator` }, `run.${runState}`);
+					await workItems.updateTask(options.workItemId, options.task.id, { status: termination });
+					return { run, stderr, finalText };
+				}
 				const state = classifyFailure(execution.stderr, execution.finalText);
 				const run = await runs.update(created.record.id, { state, exitCode: execution.exitCode, error: execution.stderr || execution.finalText }, `run.${state}`);
 				await workItems.updateTask(options.workItemId, options.task.id, { status: state === "waiting_capacity" ? "ready" : "failed" });
@@ -132,9 +141,18 @@ export class SubagentSupervisor {
 		return { run, stderr, finalText };
 	}
 
+	pause(runId: string): boolean {
+		return this.terminate(runId, "paused");
+	}
+
 	stop(runId: string): boolean {
+		return this.terminate(runId, "cancelled");
+	}
+
+	private terminate(runId: string, state: "paused" | "cancelled"): boolean {
 		const child = this.#active.get(runId);
 		if (!child) return false;
+		this.#termination.set(runId, state);
 		child.kill("SIGTERM");
 		setTimeout(() => {
 			if (!child.killed) child.kill("SIGKILL");

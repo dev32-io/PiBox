@@ -101,7 +101,9 @@ export class WorktreeManager {
 			const actualBranch = await runGit(path, ["branch", "--show-current"]);
 			if (actualBranch !== branch) throw new HarnessError("GIT_OPERATION_FAILED", `Existing worktree belongs to ${actualBranch || "detached HEAD"}`);
 			const status = await runGit(path, ["status", "--porcelain=v1"]);
-			if (status) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Recovered task worktree is dirty: ${path}`, { status });
+			if (status && task.status !== "running" && task.status !== "paused") {
+				throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Recovered task worktree is dirty outside a resumable run: ${path}`, { status });
+			}
 			return { path, branch, baseCommit: task.runtime?.baseCommit ?? baseCommit };
 		}
 
@@ -158,6 +160,7 @@ export class WorktreeManager {
 			}
 			await runGit(this.identity.root, ["merge", "--ff-only", commit]);
 			for (const task of tasks) await this.workItems.updateTask(workItemId, task.id, { status: "integrated" });
+			await this.workItems.refreshReadyTasks(workItemId);
 			return { commit, unitId, tasks: tasks.map((task) => task.id), checks: checkResults };
 		} finally {
 			await runGit(this.identity.root, ["worktree", "remove", "--force", candidatePath]).catch(() => undefined);

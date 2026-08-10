@@ -4,6 +4,7 @@ import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { runDirectAgent } from "./direct-agent.js";
+import { HarnessRunStore } from "./run-store.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { assertCleanRepository, discoverRepository, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
@@ -65,6 +66,66 @@ export default function harness(pi: ExtensionAPI): void {
 			return sessionRuntime;
 		}
 		return createRuntime(ctx);
+	};
+
+	const launchManagedTask = async (
+		ctx: ExtensionContext,
+		workItemId: string,
+		taskId: string,
+		signal?: AbortSignal,
+		onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void,
+	) => {
+		let locks: ResourceLockSet | undefined;
+		try {
+			requireTrusted(ctx);
+			const runtime = await runtimeFor(ctx);
+			const item = await runtime.workItems.read(workItemId);
+			if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) {
+				throw new HarnessError("STALE_PLANNING_REVISION", "Task launch requires current direct user approval");
+			}
+			const task = await runtime.workItems.readTask(workItemId, taskId);
+			if (task.status !== "ready" && task.status !== "failed" && task.status !== "protocol_failed" && task.status !== "running" && task.status !== "paused") {
+				throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not launchable from status ${task.status}`);
+			}
+			const roleCandidates = runtime.config.roles[task.execution.assignment.role]?.models ?? [];
+			const plannedCandidate = { model: task.execution.assignment.model, effort: task.execution.assignment.effort };
+			const candidates = [plannedCandidate, ...roleCandidates.filter((candidate) => candidate.model !== plannedCandidate.model || candidate.effort !== plannedCandidate.effort)];
+			const allAvailable = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+			const resolution = resolveHarnessModel(runtime.config, allAvailable, {
+				candidates,
+				minimumCapabilityRank: task.execution.assignment.minimumCapabilityRank,
+				strict: !task.execution.assignment.allowFallback,
+			});
+			if (resolution.status === "waiting_model") {
+				await runtime.events.append("task.waiting_model", { workItemId: item.id, taskId: task.id, attempts: resolution.attempts });
+				return textResult(`MODEL_UNAVAILABLE: No acceptable model is currently available for ${task.id}.`, resolution);
+			}
+			const manager = new WorktreeManager(runtime.identity);
+			locks = new ResourceLockSet(runtime.identity.privateRoot);
+			await locks.acquire(task.execution.resourceClaims, `${item.id}/${task.id}`);
+			const allocation = await manager.allocate(item.id, task);
+			const launched = await supervisor.launchTask({
+				identity: runtime.identity,
+				workItemId: item.id,
+				task,
+				workspace: allocation.path,
+				branch: allocation.branch,
+				baseCommit: allocation.baseCommit,
+				planningRevision: item.planning.revision,
+				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: `${plannedCandidate.model}:${plannedCandidate.effort}` },
+				...(signal ? { signal } : {}),
+				...(onUpdate ? { onUpdate } : {}),
+			});
+			await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
+			return textResult(
+				`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}:${resolution.effort}${resolution.fallbackUsed ? " (visible fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
+				launched,
+			);
+		} catch (error) {
+			return textResult(describeHarnessError(error), { error: true });
+		} finally {
+			await locks?.release();
+		}
 	};
 
 	pi.registerTool({
@@ -303,62 +364,7 @@ export default function harness(pi: ExtensionAPI): void {
 		description: "Resolve the planned model, allocate an isolated worktree, and supervise an approved implementation task through its structured handoff.",
 		parameters: Type.Object({ workItemId: Type.String(), taskId: Type.String() }),
 		async execute(_id, params, signal, onUpdate, ctx) {
-			let locks: ResourceLockSet | undefined;
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				const item = await runtime.workItems.read(params.workItemId);
-				if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) {
-					throw new HarnessError("STALE_PLANNING_REVISION", "Task launch requires current direct user approval");
-				}
-				const task = await runtime.workItems.readTask(params.workItemId, params.taskId);
-				if (task.status !== "ready" && task.status !== "failed" && task.status !== "protocol_failed") {
-					throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not launchable from status ${task.status}`);
-				}
-				const roleCandidates = runtime.config.roles[task.execution.assignment.role]?.models ?? [];
-				const plannedCandidate = { model: task.execution.assignment.model, effort: task.execution.assignment.effort };
-				const candidates = [plannedCandidate, ...roleCandidates.filter((candidate) => candidate.model !== plannedCandidate.model || candidate.effort !== plannedCandidate.effort)];
-				const allAvailable = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-				const resolution = resolveHarnessModel(runtime.config, allAvailable, {
-					candidates,
-					minimumCapabilityRank: task.execution.assignment.minimumCapabilityRank,
-					strict: !task.execution.assignment.allowFallback,
-				});
-				if (resolution.status === "waiting_model") {
-					await runtime.events.append("task.waiting_model", { workItemId: item.id, taskId: task.id, attempts: resolution.attempts });
-					return textResult(`MODEL_UNAVAILABLE: No acceptable model is currently available for ${task.id}.`, resolution);
-				}
-				const manager = new WorktreeManager(runtime.identity);
-				locks = new ResourceLockSet(runtime.identity.privateRoot);
-				await locks.acquire(task.execution.resourceClaims, `${item.id}/${task.id}`);
-				const allocation = await manager.allocate(item.id, task);
-				const launched = await supervisor.launchTask({
-					identity: runtime.identity,
-					workItemId: item.id,
-					task,
-					workspace: allocation.path,
-					branch: allocation.branch,
-					baseCommit: allocation.baseCommit,
-					planningRevision: item.planning.revision,
-					model: {
-						provider: resolution.model.provider,
-						model: resolution.model.id,
-						effort: resolution.effort,
-						requested: `${plannedCandidate.model}:${plannedCandidate.effort}`,
-					},
-					...(signal ? { signal } : {}),
-					...(onUpdate ? { onUpdate } : {}),
-				});
-				await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
-				return textResult(
-					`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}:${resolution.effort}${resolution.fallbackUsed ? " (visible fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
-					launched,
-				);
-			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
-			} finally {
-				await locks?.release();
-			}
+			return launchManagedTask(ctx, params.workItemId, params.taskId, signal, onUpdate);
 		},
 	});
 
@@ -464,7 +470,7 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("harness", {
-		description: "Control the PiBox harness: status | approve <work-item-id>",
+		description: "Control the PiBox harness: status | approve | pause | resume | stop | recover",
 		handler: async (args, ctx) => {
 			const [command = "status", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 			try {
@@ -476,14 +482,45 @@ export default function harness(pi: ExtensionAPI): void {
 				if (command === "approve" && target && extra.length === 0) {
 					requireTrusted(ctx);
 					const item = await runtime.workItems.approve(target);
-					await runtime.events.append("planning.approved", {
-						id: item.id,
-						revision: item.planning.approvedRevision,
-					});
+					await runtime.events.append("planning.approved", { id: item.id, revision: item.planning.approvedRevision });
 					ctx.ui.notify(`Approved ${item.id} planning revision ${item.planning.approvedRevision}.`, "info");
 					return;
 				}
-				ctx.ui.notify("Usage: /harness status | /harness approve <work-item-id>", "warning");
+				if (command === "recover" && !target) {
+					const recovered = [];
+					for (const item of await runtime.workItems.list()) {
+						recovered.push(...(await new HarnessRunStore(runtime.identity.privateRoot, item.id).recoverInterrupted()));
+					}
+					await runtime.events.append("recovery.inspected", { interruptedRuns: recovered.map((run) => run.id) });
+					ctx.ui.notify(recovered.length ? `Recovered ${recovered.length} interrupted run(s):\n${recovered.map((run) => `${run.taskId ?? run.id}`).join("\n")}` : "No newly interrupted runs found.", recovered.length ? "warning" : "info");
+					return;
+				}
+				if ((command === "pause" || command === "stop") && target && extra.length === 0) {
+					for (const item of await runtime.workItems.list()) {
+						const catalog = item.tasks.find((task) => task.id === target);
+						if (!catalog) continue;
+						const task = await runtime.workItems.readTask(item.id, target);
+						const stopped = task.runtime?.lastRunId
+							? command === "pause" ? supervisor.pause(task.runtime.lastRunId) : supervisor.stop(task.runtime.lastRunId)
+							: false;
+						if (command === "pause" && !stopped) await runtime.workItems.updateTask(item.id, target, { status: "paused" });
+						ctx.ui.notify(`${command === "pause" ? "Pause" : "Stop"} ${stopped ? "requested" : "recorded; no active local process"} for ${target}.`, "warning");
+						return;
+					}
+					ctx.ui.notify(`Unknown task: ${target}`, "error");
+					return;
+				}
+				if (command === "resume" && target && extra.length === 0) {
+					for (const item of await runtime.workItems.list()) {
+						if (!item.tasks.some((task) => task.id === target)) continue;
+						const launch = await launchManagedTask(ctx, item.id, target);
+						ctx.ui.notify(launch.content[0]?.text ?? `Resume settled for ${target}.`, "info");
+						return;
+					}
+					ctx.ui.notify(`Unknown task: ${target}`, "error");
+					return;
+				}
+				ctx.ui.notify("Usage: /harness status | approve <work-item> | pause <task> | resume <task> | stop <task> | recover", "warning");
 			} catch (error) {
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}
@@ -497,6 +534,11 @@ export default function harness(pi: ExtensionAPI): void {
 				reason: event.reason,
 				sessionFile: ctx.sessionManager.getSessionFile() ?? null,
 			});
+			const recovered = [];
+			for (const item of await sessionRuntime.workItems.list()) {
+				recovered.push(...(await new HarnessRunStore(sessionRuntime.identity.privateRoot, item.id).recoverInterrupted()));
+			}
+			if (recovered.length > 0) ctx.ui.notify(`Harness recovered ${recovered.length} interrupted run(s). Use /harness recover or /harness resume <task>.`, "warning");
 		} catch (error) {
 			sessionRuntime = undefined;
 			if (error instanceof HarnessError && error.code === "NOT_A_GIT_REPOSITORY") return;
