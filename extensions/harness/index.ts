@@ -9,6 +9,7 @@ import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { runDirectAgent } from "./direct-agent.js";
 import { HarnessRunStore } from "./run-store.js";
+import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { assertCleanRepository, discoverRepository, runGit, type RepositoryIdentity } from "./repository.js";
@@ -29,6 +30,7 @@ const WORKER_TOOL_NAMES = new Set([
 const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"harness_status",
+	"harness_init",
 	"work_item_create",
 	"work_item_status",
 	"artifact_create",
@@ -225,6 +227,33 @@ export default function harness(pi: ExtensionAPI): void {
 			try {
 				const status = await snapshot(await runtimeFor(ctx));
 				return textResult(formatStatus(status), status);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_init",
+		label: "Initialize Harness Repository",
+		description: "Scaffold and commit trusted repository-local PiBox harness policy. Use when asked to scaffold or prepare a project for the harness.",
+		promptSnippet: "Scaffold repository-local harness policy before creating managed work",
+		parameters: Type.Object({
+			profile: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("economy")])),
+			overwrite: Type.Optional(Type.Boolean()),
+		}),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const scaffold = await scaffoldHarness(runtime.identity.root, params.profile ?? "standard", params.overwrite ?? false);
+					const loaded = loadHarnessConfig(runtime.identity.root);
+					runtime.config = loaded.config;
+					runtime.configDigest = loaded.digest;
+					await runtime.events.append("repository.scaffolded", scaffold);
+					return textResult(scaffold.created ? `Initialized ${scaffold.profile} harness policy at .pi/harness.yaml and committed ${scaffold.commit?.slice(0, 12)}.` : "Harness policy already exists; validated without overwriting it.", scaffold);
+				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
 			}
@@ -770,13 +799,24 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("harness", {
-		description: "Control the PiBox harness: status | approve | pause | resume | stop | recover",
+		description: "Control the PiBox harness: init | status | approve | pause | resume | stop | recover",
 		handler: async (args, ctx) => {
 			const [command = "status", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 			try {
 				const runtime = await runtimeFor(ctx);
 				if (command === "status" && !target) {
 					ctx.ui.notify(formatStatus(await snapshot(runtime)), "info");
+					return;
+				}
+				if (command === "init" && extra.length === 0 && (!target || target === "standard" || target === "economy")) {
+					requireTrusted(ctx);
+					const profile = (target ?? "standard") as HarnessScaffoldProfile;
+					const scaffold = await runtime.mutex.run(`init:${profile}`, () => scaffoldHarness(runtime.identity.root, profile));
+					const loaded = loadHarnessConfig(runtime.identity.root);
+					runtime.config = loaded.config;
+					runtime.configDigest = loaded.digest;
+					await runtime.events.append("repository.scaffolded", scaffold);
+					ctx.ui.notify(scaffold.created ? `Initialized ${profile} harness policy and committed it.` : "Harness policy already exists and is valid.", "info");
 					return;
 				}
 				if (command === "approve" && target && extra.length === 0) {
@@ -821,7 +861,7 @@ export default function harness(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Unknown task: ${target}`, "error");
 					return;
 				}
-				ctx.ui.notify("Usage: /harness status | approve <work-item> | pause <task> | resume <task> | stop <task> | recover", "warning");
+				ctx.ui.notify("Usage: /harness init [standard|economy] | status | approve <work-item> | pause <task> | resume <task> | stop <task> | recover", "warning");
 			} catch (error) {
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}

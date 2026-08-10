@@ -1093,6 +1093,7 @@ A managed work item completes only when:
 ### 16.1 Orchestrator artifact capabilities
 
 ```text
+harness_init
 work_item_create
 work_item_status
 artifact_create
@@ -1356,6 +1357,7 @@ The orchestrator translates user intent into capabilities.
 Commands remain available when a model is unavailable or exact control is preferred:
 
 ```text
+/harness init [standard|economy]
 /harness status
 /harness agents
 /harness approve <work-item>

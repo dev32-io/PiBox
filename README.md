@@ -14,6 +14,7 @@ Design and behavior contracts:
 The harness extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. It supports planning artifacts, direct user approval, configurable specialist roles and model routing, supervised task worktrees, structured worker handoffs, integration-unit assembly, evidence manifests, completion gates, and crash/capacity recovery.
 
 ```text
+/harness init [standard|economy]
 /harness status
 /harness approve <work-item-id>
 /harness pause <task-id>

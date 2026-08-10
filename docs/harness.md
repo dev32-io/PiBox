@@ -14,11 +14,20 @@ pi --no-extensions \
   --theme ./themes/rattle.json
 ```
 
-When PiBox is installed as a package, the harness extension and its five workflow skills load from `package.json`. After pulling a newer local package revision, use `/reload` or restart Pi.
+When PiBox is installed as a package, the harness extension and its six workflow skills load from `package.json`. After pulling a newer local package revision, use `/reload` or restart Pi.
 
 ## Workflow
 
-You can speak naturally:
+Initialize a repository deterministically or through natural language:
+
+```text
+/harness init [standard|economy]
+Scaffold this project to be ready for the harness using the economy profile.
+```
+
+Initialization validates and commits `.pi/harness.yaml`. It never overwrites an existing policy or hides unrelated dirty work unless explicitly directed.
+
+You can then speak naturally:
 
 ```text
 Research and plan a story for replacing the session model.
@@ -72,6 +81,7 @@ A task can intentionally be partial. Review and tests may be deferred until its 
 ### Control and recovery
 
 ```text
+/harness init [standard|economy]
 /harness status
 /harness pause <task-id>
 /harness resume <task-id>
