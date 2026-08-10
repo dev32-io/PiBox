@@ -8,6 +8,7 @@ Design and behavior contracts:
 - [`docs/specs/feedback-hooks.md`](docs/specs/feedback-hooks.md)
 - [`docs/specs/agent-harness.md`](docs/specs/agent-harness.md)
 - [`docs/harness.md`](docs/harness.md) — setup, workflow, configuration, and verification
+- [`docs/harness-e2e.md`](docs/harness-e2e.md) — real empty-repository E2E exercise and fixes
 
 ## Agent harness
 
