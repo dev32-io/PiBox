@@ -3,10 +3,10 @@ id: structured-harness-prompts
 kind: change
 title: Refine harness prompts and canonical artifact structure
 phase: planning
-state: active
+state: waiting_user
 planning:
   revision: 14
-  status: draft
+  status: awaiting_approval
   contractDigest: sha256:cb204e1d507bf072a7edd94526992ccb3a6ada5a7c2d5defe1d4b54e11747c8d
 artifacts:
   - id: intent
