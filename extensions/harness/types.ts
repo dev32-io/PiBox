@@ -146,6 +146,7 @@ export interface EvaluationManifest {
 	required: boolean;
 	attempt: number;
 	methods: string[];
+	criteria?: string[];
 	findings?: EvaluationFinding[];
 	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string };
 }

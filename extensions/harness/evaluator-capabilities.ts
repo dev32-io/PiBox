@@ -76,10 +76,11 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "evaluation_complete",
 		label: "Complete Evaluation",
-		description: "Submit the required terminal evaluator verdict, report, findings, and evidence references.",
+		description: "Submit the terminal verdict with observations, evidence, discrete findings, and residual uncertainty.",
 		parameters: Type.Object({
 			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
-			report: Type.String(),
+			report: Type.String({ description: "Concise evaluation observations; canonical report structure is rendered by the capability." }),
+			residualRisks: Type.Optional(Type.Array(Type.String())),
 			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }))),
 			findings: Type.Optional(Type.Array(Type.Object({
 				id: Type.String(),
@@ -102,6 +103,7 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 					evaluationId: auth.scope.evaluationId,
 					verdict: params.verdict,
 					report: params.report,
+					residualRisks: params.residualRisks ?? [],
 					evidence: params.evidence ?? [],
 					findings: params.findings ?? [],
 					completedAt: new Date().toISOString(),

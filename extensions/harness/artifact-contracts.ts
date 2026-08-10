@@ -68,6 +68,21 @@ export function renderArtifact(type: NarrativeArtifactType, title: string, secti
 	return `${lines.join("\n").trim()}\n`;
 }
 
+export function renderEvaluationReport(input: {
+	id: string;
+	boundary: unknown;
+	criteria?: string[];
+	observations: string;
+	evidence: Array<{ command?: string; result: string; description?: string }>;
+	findings: Array<{ id: string; severity: string; status: string; summary: string }>;
+	verdict: string;
+	residualRisks?: string[];
+}): string {
+	const evidence = input.evidence.length ? input.evidence.map((entry, index) => `- **EV-${String(index + 1).padStart(3, "0")}:** ${entry.description ?? entry.command ?? "Recorded evidence"} — ${entry.result}`).join("\n") : "None recorded.";
+	const findings = input.findings.length ? input.findings.map((finding) => `- **${finding.id}** (${finding.severity}, ${finding.status}): ${finding.summary}`).join("\n") : "None recorded.";
+	return `# Evaluation Report: ${input.id}\n\n## Boundary\n\n${JSON.stringify(input.boundary)}\n\n## Criteria Evaluated\n\n${input.criteria?.length ? input.criteria.map((criterion) => `- ${criterion}`).join("\n") : "No qualified criteria declared."}\n\n## Observations\n\n${input.observations.trim()}\n\n## Evidence\n\n${evidence}\n\n## Findings\n\n${findings}\n\n## Verdict\n\n${input.verdict}\n\n## Residual Risk\n\n${input.residualRisks?.length ? input.residualRisks.map((risk) => `- ${risk}`).join("\n") : "None recorded."}\n`;
+}
+
 export function acceptanceCriterionIds(sections: SemanticSections): string[] {
 	const criteria = sections.acceptanceCriteria;
 	if (!Array.isArray(criteria)) return [];

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
-import { acceptanceCriterionIds, renderArtifact, type SemanticSections } from "./artifact-contracts.js";
+import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import type { EvaluationManifest, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
@@ -489,6 +489,7 @@ export class WorkItemStore {
 		report: string;
 		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
 		findings?: NonNullable<EvaluationManifest["findings"]>;
+		residualRisks?: string[];
 	}): Promise<EvaluationManifest> {
 		if (!input.report.trim()) throw new HarnessError("INVALID_ARTIFACT", "Evaluation report must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
@@ -536,7 +537,16 @@ export class WorkItemStore {
 				report: "report.md",
 				evidence: `../../evidence/${input.evaluationId}/manifest.yaml`,
 			};
-			await atomicWriteFile(reportPath, `${input.report.trim()}\n`);
+			await atomicWriteFile(reportPath, renderEvaluationReport({
+				id: evaluation.id,
+				boundary: evaluation.scope,
+				...(evaluation.criteria ? { criteria: evaluation.criteria } : {}),
+				observations: input.report,
+				evidence: input.evidence,
+				findings: input.findings ?? [],
+				verdict: input.verdict,
+				...(input.residualRisks ? { residualRisks: input.residualRisks } : {}),
+			}));
 			await atomicWriteFile(evaluationPath, stringify(evaluation));
 			index.phase = "evaluation";
 			await atomicWriteFile(indexPath, stringify(index));

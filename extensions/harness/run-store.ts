@@ -49,6 +49,7 @@ export interface EvaluationHandoff {
 	verdict: "pass" | "fail" | "blocked" | "not_applicable";
 	report: string;
 	evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
+	residualRisks?: string[];
 	findings: Array<{
 		id: string;
 		severity: "low" | "medium" | "high" | "critical";

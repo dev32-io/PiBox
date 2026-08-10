@@ -502,6 +502,7 @@ export default function harness(pi: ExtensionAPI): void {
 			scopeId: Type.String(),
 			required: Type.Boolean(),
 			methods: Type.Array(Type.String()),
+			criteria: Type.Optional(Type.Array(Type.String({ description: "Qualified references such as specification-id#AC-001" }))),
 		}),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -517,6 +518,7 @@ export default function harness(pi: ExtensionAPI): void {
 					required: params.required,
 					attempt: 0,
 					methods: params.methods,
+					criteria: params.criteria ?? [],
 				};
 				const item = await runtime.workItems.defineEvaluation(params.workItemId, manifest);
 				await runtime.events.append("evaluation.defined", { workItemId: item.id, evaluationId: manifest.id });
@@ -673,7 +675,7 @@ export default function harness(pi: ExtensionAPI): void {
 						return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, direct });
 					}
 					const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, () =>
-						runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings }),
+						runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) }),
 					);
 					await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
 					await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, verdict: handoff.verdict });
@@ -751,7 +753,8 @@ export default function harness(pi: ExtensionAPI): void {
 			workItemId: Type.String(),
 			evaluationId: Type.String(),
 			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
-			report: Type.String(),
+			report: Type.String({ description: "Evaluation observations; canonical report headings are rendered deterministically." }),
+			residualRisks: Type.Optional(Type.Array(Type.String())),
 			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }))),
 			findings: Type.Optional(Type.Array(Type.Object({
 				id: Type.String(),
