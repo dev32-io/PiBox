@@ -149,7 +149,7 @@ export default function harness(pi: ExtensionAPI): void {
 			const manager = new WorktreeManager(runtime.identity);
 			locks = new ResourceLockSet(runtime.identity.privateRoot);
 			await locks.acquire(task.execution.resourceClaims, `${item.id}/${task.id}`);
-			const allocation = await manager.allocate(item.id, task);
+			const allocation = await runtime.mutex.run(`allocate:${item.id}:${task.id}`, () => manager.allocate(item.id, task));
 			const launched = await supervisor.launchTask({
 				identity: runtime.identity,
 				workItemId: item.id,
@@ -166,6 +166,7 @@ export default function harness(pi: ExtensionAPI): void {
 				...(rolePolicy.skills
 					? { skillPaths: rolePolicy.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) }
 					: {}),
+				canonicalMutation: (owner, operation) => runtime.mutex.run(owner, operation),
 				...(signal ? { signal } : {}),
 				...(onUpdate ? { onUpdate } : {}),
 			});
@@ -567,7 +568,7 @@ export default function harness(pi: ExtensionAPI): void {
 				}
 				if (command === "approve" && target && extra.length === 0) {
 					requireTrusted(ctx);
-					const item = await runtime.workItems.approve(target);
+					const item = await runtime.mutex.run(`approve:${target}`, () => runtime.workItems.approve(target));
 					await runtime.events.append("planning.approved", { id: item.id, revision: item.planning.approvedRevision });
 					ctx.ui.notify(`Approved ${item.id} planning revision ${item.planning.approvedRevision}.`, "info");
 					return;
@@ -590,7 +591,7 @@ export default function harness(pi: ExtensionAPI): void {
 						const stopped = task.runtime?.lastRunId
 							? command === "pause" ? supervisor.pause(task.runtime.lastRunId) : supervisor.stop(task.runtime.lastRunId)
 							: false;
-						if (command === "pause" && !stopped) await runtime.workItems.updateTask(item.id, target, { status: "paused" });
+						if (command === "pause" && !stopped) await runtime.mutex.run(`pause:${item.id}:${target}`, () => runtime.workItems.updateTask(item.id, target, { status: "paused" }));
 						ctx.ui.notify(`${command === "pause" ? "Pause" : "Stop"} ${stopped ? "requested" : "recorded; no active local process"} for ${target}.`, "warning");
 						return;
 					}

@@ -26,10 +26,11 @@ test("serializes canonical mutations and only recovers locks owned by dead proce
 	const root = await mkdtemp(join(tmpdir(), "pibox-mutex-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const mutex = new RepositoryMutex(root);
+	const competingProcess = new RepositoryMutex(root);
 	let release!: () => void;
 	const held = mutex.run("first", () => new Promise<void>((resolve) => (release = resolve)));
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	await assert.rejects(mutex.run("second", async () => undefined), (error: unknown) => error instanceof HarnessError && error.code === "RESOURCE_LOCKED");
+	await assert.rejects(competingProcess.run("second", async () => undefined), (error: unknown) => error instanceof HarnessError && error.code === "RESOURCE_LOCKED");
 	assert.equal(await mutex.recoverStale(), false);
 	release();
 	await held;

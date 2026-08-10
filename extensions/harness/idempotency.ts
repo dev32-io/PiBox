@@ -18,6 +18,7 @@ function digest(value: unknown): string {
 
 export class RepositoryMutex {
 	readonly path: string;
+	#tail: Promise<void> = Promise.resolve();
 
 	constructor(repositoryPrivateRoot: string) {
 		this.path = join(repositoryPrivateRoot, "locks", "canonical");
@@ -44,6 +45,10 @@ export class RepositoryMutex {
 	}
 
 	async run<T>(owner: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.#tail;
+		let releaseQueue!: () => void;
+		this.#tail = new Promise<void>((resolve) => (releaseQueue = resolve));
+		await previous;
 		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
 		try {
 			await mkdir(this.path);
@@ -55,12 +60,14 @@ export class RepositoryMutex {
 			} catch {
 				// Preserve the lock and report it rather than guessing that it is stale.
 			}
+			releaseQueue();
 			throw new HarnessError("RESOURCE_LOCKED", `Canonical repository operation is locked by ${currentOwner.trim()}`);
 		}
 		try {
 			return await operation();
 		} finally {
 			await rm(this.path, { recursive: true, force: true });
+			releaseQueue();
 		}
 	}
 }

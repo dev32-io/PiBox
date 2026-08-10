@@ -31,6 +31,7 @@ export interface LaunchTaskOptions {
 	rolePrompt?: string;
 	tools?: string[];
 	skillPaths?: string[];
+	canonicalMutation?: <T>(owner: string, operation: () => Promise<T>) => Promise<T>;
 	signal?: AbortSignal;
 	onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void;
 }
@@ -96,6 +97,8 @@ export class SubagentSupervisor {
 	async launchTask(options: LaunchTaskOptions): Promise<LaunchTaskResult> {
 		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
 		const workItems = new WorkItemStore(options.identity.root);
+		const updateTask = <T>(owner: string, operation: () => Promise<T>) =>
+			options.canonicalMutation ? options.canonicalMutation(owner, operation) : operation();
 		const created = await runs.create({
 			repositoryId: options.identity.id,
 			workItemId: options.workItemId,
@@ -111,10 +114,10 @@ export class SubagentSupervisor {
 			resolvedModel: options.model.model,
 			resolvedEffort: options.model.effort,
 		});
-		await workItems.updateTask(options.workItemId, options.task.id, {
+		await updateTask(`run-start:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, {
 			status: "running",
 			runtime: { branch: options.branch, worktree: options.workspace, baseCommit: options.baseCommit, lastRunId: created.record.id },
-		});
+		}));
 
 		let stderr = "";
 		let finalText = "";
@@ -127,7 +130,7 @@ export class SubagentSupervisor {
 				const currentItem = await workItems.read(options.workItemId);
 				if (currentItem.planning.status !== "approved" || currentItem.planning.revision !== options.planningRevision) {
 					const run = await runs.update(created.record.id, { state: "interrupted", error: `Planning changed to ${currentItem.planning.status} r${currentItem.planning.revision}` }, "run.context_stale");
-					await workItems.updateTask(options.workItemId, options.task.id, { status: "paused" });
+					await updateTask(`context-stale:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "paused" }));
 					return { run, stderr, finalText };
 				}
 				const { runGit } = await import("./repository.js");
@@ -137,11 +140,11 @@ export class SubagentSupervisor {
 				const artifactChanges = await runGit(options.workspace, ["diff", "--name-only", `${options.baseCommit}..HEAD`, "--", "agent-artifacts"]);
 				if (handoff.runId !== created.record.id || handoff.taskId !== options.task.id || status || artifactChanges || !handoff.commits.includes(head) || handoff.commits.some((commit) => !actualCommits.includes(commit))) {
 					await runs.update(created.record.id, { state: "protocol_failed", error: "Terminal handoff failed supervisor Git/scope validation" }, "run.invalid_handoff");
-					await workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" });
+					await updateTask(`invalid-handoff:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" }));
 					return { run: await runs.read(created.record.id), stderr, finalText };
 				}
 				const run = await runs.update(created.record.id, { state: "completed", exitCode: execution.exitCode }, "run.completed");
-				await workItems.updateTask(options.workItemId, options.task.id, { status: "contribution_complete", runtime: { completedCommit: head } });
+				await updateTask(`run-complete:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "contribution_complete", runtime: { completedCommit: head } }));
 				return { run, handoff, stderr, finalText };
 			}
 			if (execution.exitCode !== 0) {
@@ -150,18 +153,18 @@ export class SubagentSupervisor {
 					this.#termination.delete(created.record.id);
 					const runState = termination === "paused" ? "interrupted" : "cancelled";
 					const run = await runs.update(created.record.id, { state: runState, exitCode: execution.exitCode, error: `Run ${termination} by orchestrator` }, `run.${runState}`);
-					await workItems.updateTask(options.workItemId, options.task.id, { status: termination });
+					await updateTask(`run-terminated:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: termination }));
 					return { run, stderr, finalText };
 				}
 				const failure = classifyFailure({ message: `${execution.stderr}\n${execution.finalText}`, exitCode: execution.exitCode });
 				const state = failure.capacityRelated ? "waiting_capacity" : "failed";
 				const run = await runs.update(created.record.id, { state, exitCode: execution.exitCode, error: `${failure.class}: ${execution.stderr || execution.finalText}` }, `run.${state}`);
-				await workItems.updateTask(options.workItemId, options.task.id, { status: state === "waiting_capacity" ? "ready" : "failed" });
+				await updateTask(`run-failed:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: state === "waiting_capacity" ? "ready" : "failed" }));
 				return { run, stderr, finalText };
 			}
 		}
 		const run = await runs.update(created.record.id, { state: "protocol_failed", error: "Missing task_complete handoff after one protocol nudge" }, "run.protocol_failed");
-		await workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" });
+		await updateTask(`protocol-failed:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" }));
 		return { run, stderr, finalText };
 	}
 
