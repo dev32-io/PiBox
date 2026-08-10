@@ -17,6 +17,7 @@
     "extensions",
     "themes",
     "sound-themes",
+    "skills",
     "docs",
     "README.md",
     "LICENSE"
@@ -38,6 +39,9 @@
       "./extensions/tui/spinners/index.ts",
       "./extensions/tui/startup/index.ts"
     ],
+    "skills": [
+      "./skills"
+    ],
     "themes": [
       "./themes/rattle.json"
     ]
@@ -45,7 +49,8 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^0.84.1",
@@ -53,10 +58,10 @@
     "@earendil-works/pi-tui": "^0.84.1",
     "@types/node": "^24.10.0",
     "tsx": "^4.21.0",
+    "typebox": "^1.3.12",
     "typescript": "^5.9.3"
   },
   "dependencies": {
-    "typebox": "^1.3.12",
     "yaml": "^2.9.0"
   }
 }

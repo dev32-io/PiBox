@@ -10,14 +10,20 @@ Design and behavior contracts:
 
 ## Agent harness
 
-The harness extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. Initial capabilities cover work-item creation, spec/design/decision artifact mutation, planning submission, direct user approval, configuration/model policy, and status inspection.
+The harness extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. It supports planning artifacts, direct user approval, configurable specialist roles and model routing, supervised task worktrees, structured worker handoffs, integration-unit assembly, evidence manifests, completion gates, and crash/capacity recovery.
 
 ```text
 /harness status
 /harness approve <work-item-id>
+/harness pause <task-id>
+/harness resume <task-id>
+/harness stop <task-id>
+/harness recover
 ```
 
-Canonical mutations require a trusted, clean Git repository and create traceable commits. The remaining scheduler, supervised subagents, integration units, and recovery controls are being implemented against the harness specification.
+Canonical mutations require a trusted, clean Git repository and create traceable commits. Child implementers cannot mutate `agent-artifacts/`; they communicate through run-scoped capabilities. Review and testing are proportionate and may be skipped, deferred, batched, or combined at meaningful integration boundaries.
+
+Configuration merges built-ins, `~/.pi/agent/harness/config.yaml`, and `<repository>/.pi/harness.yaml`. Model aliases default to `sol`, `terra`, and `luna`; unavailable or under-ranked candidates produce visible fallback attempts or a recoverable waiting state.
 
 ## Sound feedback
 

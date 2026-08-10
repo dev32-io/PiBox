@@ -161,4 +161,6 @@ export interface HarnessStatusSnapshot {
 	repositoryId: string;
 	configDigest: string;
 	workItems: WorkItemIndex[];
+	taskCounts: Record<string, Record<string, number>>;
+	runs: Array<{ id: string; workItemId: string; taskId?: string; role: string; state: string; model?: string }>;
 }

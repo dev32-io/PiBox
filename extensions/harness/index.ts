@@ -40,20 +40,39 @@ function requireTrusted(ctx: ExtensionContext): void {
 }
 
 async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot> {
-	return {
-		repositoryRoot: runtime.identity.root,
-		repositoryId: runtime.identity.id,
-		configDigest: runtime.configDigest,
-		workItems: await runtime.workItems.list(),
-	};
+	const workItems = await runtime.workItems.list();
+	const taskCounts: Record<string, Record<string, number>> = {};
+	const runs: HarnessStatusSnapshot["runs"] = [];
+	for (const item of workItems) {
+		const counts: Record<string, number> = {};
+		for (const task of item.tasks) {
+			const manifest = await runtime.workItems.readTask(item.id, task.id);
+			counts[manifest.status] = (counts[manifest.status] ?? 0) + 1;
+		}
+		taskCounts[item.id] = counts;
+		for (const run of await new HarnessRunStore(runtime.identity.privateRoot, item.id).list()) {
+			runs.push({
+				id: run.id,
+				workItemId: item.id,
+				role: run.role,
+				state: run.state,
+				...(run.taskId ? { taskId: run.taskId } : {}),
+				...(run.resolvedModel ? { model: `${run.resolvedProvider}/${run.resolvedModel}:${run.resolvedEffort}` } : {}),
+			});
+		}
+	}
+	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, configDigest: runtime.configDigest, workItems, taskCounts, runs };
 }
 
 function formatStatus(status: HarnessStatusSnapshot): string {
 	if (status.workItems.length === 0) return `Harness: no managed work items\nRepository: ${status.repositoryRoot}`;
-	const lines = status.workItems.map(
-		(item) => `${item.id} · ${item.kind} · ${item.phase}/${item.state} · planning ${item.planning.status} r${item.planning.revision}`,
-	);
-	return [`Harness: ${status.workItems.length} managed work item${status.workItems.length === 1 ? "" : "s"}`, ...lines].join("\n");
+	const lines = status.workItems.map((item) => {
+		const counts = status.taskCounts[item.id] ?? {};
+		const tasks = Object.entries(counts).map(([state, count]) => `${count} ${state}`).join(" · ");
+		return `${item.id} · ${item.kind} · ${item.phase}/${item.state} · planning ${item.planning.status} r${item.planning.revision}${tasks ? ` · ${tasks}` : ""}`;
+	});
+	const active = status.runs.filter((run) => run.state === "running" || run.state.startsWith("waiting_"));
+	return [`Harness: ${status.workItems.length} managed work item${status.workItems.length === 1 ? "" : "s"}`, ...lines, ...(active.length ? [`Runs: ${active.map((run) => `${run.taskId ?? run.id}=${run.state}`).join(" · ")}`] : [])].join("\n");
 }
 
 export default function harness(pi: ExtensionAPI): void {

@@ -78,6 +78,27 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	return index as WorkItemIndex;
 }
 
+const TASK_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
+	draft: ["blocked", "ready", "cancelled"],
+	blocked: ["ready", "cancelled"],
+	ready: ["running", "cancelled"],
+	running: ["paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
+	paused: ["running", "cancelled"],
+	contribution_complete: ["reviewing", "staged", "integrating", "integrated", "changes_requested"],
+	reviewing: ["changes_requested", "staged", "integrating", "integrated"],
+	changes_requested: ["running", "cancelled"],
+	staged: ["integrating", "integrated", "changes_requested"],
+	integrating: ["integrated", "changes_requested", "failed"],
+	integrated: [],
+	failed: ["running", "cancelled"],
+	protocol_failed: ["running", "cancelled"],
+	cancelled: [],
+};
+
+export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
+	return from === to || TASK_TRANSITIONS[from].includes(to);
+}
+
 export function parseTaskManifest(content: string, source = "task.yaml"): TaskManifest {
 	const value = parse(content) as unknown;
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new HarnessError("INVALID_ARTIFACT", `${source} must contain a mapping`);
@@ -334,7 +355,10 @@ export class WorkItemStore {
 		const path = join(root, catalog.path);
 		const previous = await readFile(path, "utf8");
 		const manifest = parseTaskManifest(previous, path);
-		if (update.status) manifest.status = update.status;
+		if (update.status) {
+			if (!canTransitionTask(manifest.status, update.status)) throw new HarnessError("INVALID_HANDOFF", `Invalid task transition: ${manifest.status} -> ${update.status}`);
+			manifest.status = update.status;
+		}
 		if (update.runtime) manifest.runtime = { ...manifest.runtime, ...update.runtime };
 		try {
 			await atomicWriteFile(path, stringify(manifest));
@@ -411,10 +435,12 @@ export class WorkItemStore {
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${input.evaluationId}`);
 		const evaluationPath = join(root, catalog.path);
 		const evaluationRoot = dirname(evaluationPath);
+		const indexPath = join(root, "index.yaml");
 		const reportPath = join(evaluationRoot, "report.md");
 		const evidenceRoot = join(root, "evidence", input.evaluationId);
 		const manifestPath = join(evidenceRoot, "manifest.yaml");
 		const previousEvaluation = await readFile(evaluationPath, "utf8");
+		const previousIndex = await readFile(indexPath, "utf8");
 		const previousReport = await readFile(reportPath, "utf8").catch(() => undefined);
 		const evaluation = parse(previousEvaluation) as EvaluationManifest;
 		const evidenceEntries: Array<Record<string, unknown>> = [];
@@ -447,15 +473,18 @@ export class WorkItemStore {
 			};
 			await atomicWriteFile(reportPath, `${input.report.trim()}\n`);
 			await atomicWriteFile(evaluationPath, stringify(evaluation));
+			index.phase = "evaluation";
+			await atomicWriteFile(indexPath, stringify(index));
 			await atomicWriteFile(manifestPath, stringify({ schemaVersion: 1, evaluation: input.evaluationId, recordedAt: new Date().toISOString(), entries: evidenceEntries }));
-			await this.commit([evaluationRoot, evidenceRoot], `harness(${input.workItemId}): record evaluation ${input.evaluationId}`);
+			await this.commit([evaluationRoot, evidenceRoot, indexPath], `harness(${input.workItemId}): record evaluation ${input.evaluationId}`);
 			return evaluation;
 		} catch (error) {
 			await atomicWriteFile(evaluationPath, previousEvaluation);
+			await atomicWriteFile(indexPath, previousIndex);
 			if (previousReport === undefined) await rm(reportPath, { force: true });
 			else await atomicWriteFile(reportPath, previousReport);
 			await rm(evidenceRoot, { recursive: true, force: true });
-			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, evidenceRoot)]).catch(() => undefined);
+			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, evidenceRoot), relative(this.repositoryRoot, indexPath)]).catch(() => undefined);
 			throw error;
 		}
 	}
@@ -532,6 +561,7 @@ export class WorkItemStore {
 				throw new HarnessError("STALE_PLANNING_REVISION", `Work item ${id} changed after planning submission`);
 			}
 			index.planning.status = "approved";
+			index.phase = "execution";
 			index.planning.approvedRevision = index.planning.revision;
 			index.planning.approvedAt = new Date().toISOString();
 			index.state = "active";

@@ -68,6 +68,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	await store.approve("feature");
 	const manager = new WorktreeManager(identity);
 	const allocation = await manager.allocate("feature", await store.readTask("feature", "add-feature"));
+	await store.updateTask("feature", "add-feature", { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
 	await writeFile(join(allocation.path, "feature.txt"), "implemented\n");
 	await git(allocation.path, "add", "feature.txt");
 	await git(allocation.path, "commit", "--quiet", "-m", "implement feature");
