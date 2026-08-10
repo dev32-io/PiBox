@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
+import type { TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
 
 const exec = promisify(execFile);
@@ -43,12 +44,46 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	assert.equal(amended.planning.revision, 2);
 	assert.equal(amended.artifacts[1]?.path, "specs/identity.md");
 
+	const task: TaskManifest = {
+		schemaVersion: 1,
+		id: "implement-identity",
+		title: "Implement identity",
+		status: "ready",
+		dependsOn: [],
+		references: { specs: ["identity"], designs: [], decisions: [] },
+		execution: {
+			isolation: "worktree",
+			parallelism: "allowed",
+			resourceClaims: [],
+			complexity: "high",
+			assignment: {
+				role: "implementer",
+				model: "sol",
+				effort: "high",
+				minimumCapabilityRank: 200,
+				allowFallback: true,
+				rationale: "Security-sensitive identity contract",
+			},
+		},
+		assembly: { integrationUnit: "session-runtime", intermediateState: "complete" },
+		verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["npm test"], rationale: "Runnable after assembly" },
+	};
+	const planned = await store.defineTask({
+		workItemId: "session-model",
+		manifest: task,
+		brief: "Implement server-minted identity.",
+		acceptance: "Session ids originate on the server.",
+	});
+	assert.equal(planned.planning.revision, 3);
+	assert.deepEqual(planned.integrationUnits, [{ id: "session-runtime", tasks: ["implement-identity"], intermediatePolicy: "coherent" }]);
+	assert.equal((await store.readTask("session-model", "implement-identity")).execution.assignment.model, "sol");
+
 	const submitted = await store.submitPlanning("session-model");
 	assert.equal(submitted.planning.status, "awaiting_approval");
 	assert.equal(submitted.state, "waiting_user");
 	const approved = await store.approve("session-model");
 	assert.equal(approved.planning.status, "approved");
-	assert.equal(approved.planning.approvedRevision, 2);
+	assert.equal(approved.planning.approvedRevision, 3);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

@@ -20,7 +20,15 @@ test("registers orchestrator capabilities while keeping approval command-only", 
 	} as unknown as ExtensionAPI;
 
 	harness(pi);
-	assert.deepEqual(tools, ["harness_status", "work_item_create", "artifact_create", "artifact_update", "planning_submit"]);
+	assert.deepEqual(tools, [
+		"harness_status",
+		"work_item_create",
+		"artifact_create",
+		"artifact_update",
+		"task_define",
+		"evaluation_define",
+		"planning_submit",
+	]);
 	assert.deepEqual(commands, ["harness"]);
 	assert.equal(tools.includes("planning_approve"), false);
 	assert.deepEqual(events, ["session_start", "agent_settled", "session_shutdown"]);

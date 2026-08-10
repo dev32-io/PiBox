@@ -4,7 +4,7 @@ import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { discoverRepository, type RepositoryIdentity } from "./repository.js";
-import type { HarnessStatusSnapshot, WorkItemKind } from "./types.js";
+import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
 interface HarnessRuntime {
@@ -126,6 +126,115 @@ export default function harness(pi: ExtensionAPI): void {
 			},
 		});
 	}
+
+	pi.registerTool({
+		name: "task_define",
+		label: "Define Harness Task",
+		description: "Define and atomically commit an executable task contribution, its brief, acceptance contract, assembly unit, and proportionate verification policy.",
+		parameters: Type.Object({
+			workItemId: Type.String(),
+			id: Type.String(),
+			title: Type.String(),
+			brief: Type.String(),
+			acceptance: Type.String(),
+			dependsOn: Type.Optional(Type.Array(Type.String())),
+			specs: Type.Optional(Type.Array(Type.String())),
+			designs: Type.Optional(Type.Array(Type.String())),
+			decisions: Type.Optional(Type.Array(Type.String())),
+			isolation: Type.Optional(Type.Union([Type.Literal("worktree"), Type.Literal("repository")])),
+			parallelism: Type.Optional(Type.Union([Type.Literal("allowed"), Type.Literal("serial")])),
+			resourceClaims: Type.Optional(Type.Array(Type.String())),
+			complexity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
+			role: Type.Optional(Type.String()),
+			model: Type.String(),
+			effort: Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]),
+			minimumCapabilityRank: Type.Optional(Type.Integer({ minimum: 0 })),
+			allowFallback: Type.Optional(Type.Boolean()),
+			assignmentRationale: Type.String(),
+			integrationUnit: Type.String(),
+			intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]),
+			verificationTiming: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]),
+			verificationMethods: Type.Optional(Type.Array(Type.String())),
+			taskChecks: Type.Optional(Type.Array(Type.String())),
+			verificationRationale: Type.String(),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const manifest: TaskManifest = {
+					schemaVersion: 1,
+					id: params.id,
+					title: params.title,
+					status: (params.dependsOn?.length ?? 0) > 0 ? "blocked" : "ready",
+					dependsOn: params.dependsOn ?? [],
+					references: { specs: params.specs ?? [], designs: params.designs ?? [], decisions: params.decisions ?? [] },
+					execution: {
+						isolation: params.isolation ?? "worktree",
+						parallelism: params.parallelism ?? "allowed",
+						resourceClaims: params.resourceClaims ?? [],
+						complexity: params.complexity,
+						assignment: {
+							role: params.role ?? "implementer",
+							model: params.model,
+							effort: params.effort as HarnessEffort,
+							minimumCapabilityRank: params.minimumCapabilityRank ?? 0,
+							allowFallback: params.allowFallback ?? true,
+							rationale: params.assignmentRationale,
+						},
+					},
+					assembly: { integrationUnit: params.integrationUnit, intermediateState: params.intermediateState },
+					verification: {
+						timing: params.verificationTiming,
+						methods: params.verificationMethods ?? [],
+						taskChecks: params.taskChecks ?? [],
+						rationale: params.verificationRationale,
+					},
+				};
+				const item = await runtime.workItems.defineTask({ workItemId: params.workItemId, manifest, brief: params.brief, acceptance: params.acceptance });
+				await runtime.events.append("task.defined", { workItemId: item.id, taskId: manifest.id, revision: item.planning.revision });
+				return textResult(`Defined task ${manifest.id} in integration unit ${manifest.assembly.integrationUnit}; planning r${item.planning.revision}.`, item);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "evaluation_define",
+		label: "Define Harness Evaluation",
+		description: "Define and atomically commit a proportionate evaluation at a task, integration-unit, or work-item boundary.",
+		parameters: Type.Object({
+			workItemId: Type.String(),
+			id: Type.String(),
+			type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
+			scopeType: Type.Union([Type.Literal("task"), Type.Literal("integrationUnit"), Type.Literal("workItem")]),
+			scopeId: Type.String(),
+			required: Type.Boolean(),
+			methods: Type.Array(Type.String()),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const manifest: EvaluationManifest = {
+					schemaVersion: 1,
+					id: params.id,
+					type: params.type,
+					scope: { [params.scopeType]: params.scopeId },
+					status: "planned",
+					required: params.required,
+					attempt: 0,
+					methods: params.methods,
+				};
+				const item = await runtime.workItems.defineEvaluation(params.workItemId, manifest);
+				await runtime.events.append("evaluation.defined", { workItemId: item.id, evaluationId: manifest.id });
+				return textResult(`Defined ${manifest.type} evaluation ${manifest.id}.`, item);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
 
 	pi.registerTool({
 		name: "planning_submit",

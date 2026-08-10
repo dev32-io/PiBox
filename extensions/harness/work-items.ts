@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import type { WorkItemIndex, WorkItemKind } from "./types.js";
+import type { EvaluationManifest, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions" } as const;
@@ -63,6 +63,8 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	if (!Array.isArray(index.artifacts) || !Array.isArray(index.tasks) || !Array.isArray(index.evaluations)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid catalogs`);
 	}
+	if (index.integrationUnits === undefined) index.integrationUnits = [];
+	if (!Array.isArray(index.integrationUnits)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid integration units`);
 	const artifactIds = new Set<string>();
 	for (const artifact of index.artifacts) {
 		if (!artifact || typeof artifact.id !== "string" || !ID_PATTERN.test(artifact.id) || artifactIds.has(artifact.id)) {
@@ -74,6 +76,30 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 		artifactIds.add(artifact.id);
 	}
 	return index as WorkItemIndex;
+}
+
+export function parseTaskManifest(content: string, source = "task.yaml"): TaskManifest {
+	const value = parse(content) as unknown;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new HarnessError("INVALID_ARTIFACT", `${source} must contain a mapping`);
+	const task = value as Partial<TaskManifest>;
+	if (task.schemaVersion !== 1 || typeof task.id !== "string" || !ID_PATTERN.test(task.id) || typeof task.title !== "string") {
+		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid identity`);
+	}
+	const statuses: TaskStatus[] = [
+		"draft", "blocked", "ready", "running", "contribution_complete", "reviewing", "changes_requested", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
+	];
+	if (!task.status || !statuses.includes(task.status) || !Array.isArray(task.dependsOn)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid lifecycle fields`);
+	if (!task.references || !Array.isArray(task.references.specs) || !Array.isArray(task.references.designs) || !Array.isArray(task.references.decisions)) {
+		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid references`);
+	}
+	if (!task.execution || !task.execution.assignment || !task.assembly || !task.verification) {
+		throw new HarnessError("INVALID_ARTIFACT", `${source} is missing execution, assembly, or verification policy`);
+	}
+	validateId(task.assembly.integrationUnit, "Integration-unit id");
+	if (!Array.isArray(task.execution.resourceClaims) || !Array.isArray(task.verification.methods) || !Array.isArray(task.verification.taskChecks)) {
+		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid policy arrays`);
+	}
+	return task as TaskManifest;
 }
 
 async function listFilesRecursively(root: string): Promise<string[]> {
@@ -92,6 +118,9 @@ export async function computeContractDigest(workItemRoot: string): Promise<strin
 	const candidates = [join(workItemRoot, "intent.md")];
 	for (const directory of ["specs", "design", "decisions"]) {
 		candidates.push(...(await listFilesRecursively(join(workItemRoot, directory))));
+	}
+	for (const path of await listFilesRecursively(join(workItemRoot, "tasks"))) {
+		if (basename(path) === "acceptance.md") candidates.push(path);
 	}
 	const hash = createHash("sha256");
 	for (const path of candidates.sort()) {
@@ -160,6 +189,7 @@ export class WorkItemStore {
 				planning: { revision: 1, status: "draft", contractDigest: digest },
 				artifacts: [{ id: "intent", type: "intent", path: "intent.md", status: "draft" }],
 				tasks: [],
+				integrationUnits: [],
 				evaluations: [],
 			};
 			await writeFile(join(temporary, "index.yaml"), stringify(index), "utf8");
@@ -223,6 +253,120 @@ export class WorkItemStore {
 				{ path: artifactPath, content: priorArtifact },
 				{ path: indexPath, content: priorIndex },
 			]);
+			throw error;
+		}
+	}
+
+	async defineTask(input: { workItemId: string; manifest: TaskManifest; brief: string; acceptance: string }): Promise<WorkItemIndex> {
+		validateId(input.manifest.id, "Task id");
+		if (!input.brief.trim() || !input.acceptance.trim()) throw new HarnessError("INVALID_ARTIFACT", "Task brief and acceptance must not be empty");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(input.workItemId);
+		const index = await this.read(input.workItemId);
+		if (index.tasks.some((task) => task.id === input.manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Task already exists: ${input.manifest.id}`);
+		if (input.manifest.id !== input.manifest.id.toLowerCase()) throw new HarnessError("INVALID_ARTIFACT", "Task id must be lowercase");
+		for (const dependency of input.manifest.dependsOn) {
+			if (!index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
+		}
+		for (const [kind, ids] of Object.entries(input.manifest.references)) {
+			const expectedType = kind === "specs" ? "spec" : kind === "designs" ? "design" : "decision";
+			for (const id of ids) {
+				if (!index.artifacts.some((artifact) => artifact.id === id && artifact.type === expectedType)) {
+					throw new HarnessError("INVALID_ARTIFACT", `Unknown ${expectedType} reference: ${id}`);
+				}
+			}
+		}
+		const taskRoot = join(root, "tasks", input.manifest.id);
+		const manifestPath = join(taskRoot, "task.yaml");
+		const briefPath = join(taskRoot, "brief.md");
+		const acceptancePath = join(taskRoot, "acceptance.md");
+		await mkdir(taskRoot, { recursive: true });
+		index.tasks.push({ id: input.manifest.id, path: relative(root, manifestPath) });
+		const unit = index.integrationUnits.find((item) => item.id === input.manifest.assembly.integrationUnit);
+		if (unit) unit.tasks.push(input.manifest.id);
+		else {
+			index.integrationUnits.push({
+				id: input.manifest.assembly.integrationUnit,
+				tasks: [input.manifest.id],
+				intermediatePolicy: input.manifest.assembly.intermediateState === "partial" ? "partial-allowed" : "coherent",
+			});
+		}
+		index.planning.revision += 1;
+		index.planning.status = index.planning.status === "approved" ? "stale" : "draft";
+		delete index.planning.approvedAt;
+		delete index.planning.approvedRevision;
+		const indexPath = join(root, "index.yaml");
+		const priorIndex = await readFile(indexPath, "utf8");
+		try {
+			await atomicWriteFile(manifestPath, stringify(input.manifest));
+			await atomicWriteFile(briefPath, `${input.brief.trim()}\n`);
+			await atomicWriteFile(acceptancePath, `${input.acceptance.trim()}\n`);
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([taskRoot, indexPath], `harness(${input.workItemId}): define task ${input.manifest.id}`);
+			return index;
+		} catch (error) {
+			await rm(taskRoot, { recursive: true, force: true });
+			await this.restore([{ path: indexPath, content: priorIndex }]);
+			throw error;
+		}
+	}
+
+	async readTask(workItemId: string, taskId: string): Promise<TaskManifest> {
+		validateId(taskId, "Task id");
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const catalog = index.tasks.find((task) => task.id === taskId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
+		return parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path);
+	}
+
+	async updateTask(
+		workItemId: string,
+		taskId: string,
+		update: { status?: TaskStatus; runtime?: TaskManifest["runtime"] },
+	): Promise<TaskManifest> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const catalog = index.tasks.find((task) => task.id === taskId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
+		const path = join(root, catalog.path);
+		const previous = await readFile(path, "utf8");
+		const manifest = parseTaskManifest(previous, path);
+		if (update.status) manifest.status = update.status;
+		if (update.runtime) manifest.runtime = { ...manifest.runtime, ...update.runtime };
+		try {
+			await atomicWriteFile(path, stringify(manifest));
+			await this.commit([path], `harness(${workItemId}): update task ${taskId}`);
+			return manifest;
+		} catch (error) {
+			await this.restore([{ path, content: previous }]);
+			throw error;
+		}
+	}
+
+	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n"): Promise<WorkItemIndex> {
+		validateId(manifest.id, "Evaluation id");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		if (index.evaluations.some((item) => item.id === manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Evaluation already exists: ${manifest.id}`);
+		const evaluationRoot = join(root, "evaluations", manifest.id);
+		const manifestPath = join(evaluationRoot, "evaluation.yaml");
+		const indexPath = join(root, "index.yaml");
+		const priorIndex = await readFile(indexPath, "utf8");
+		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
+		try {
+			await mkdir(evaluationRoot, { recursive: true });
+			await atomicWriteFile(manifestPath, stringify(manifest));
+			await atomicWriteFile(join(evaluationRoot, "report.md"), report);
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): define evaluation ${manifest.id}`);
+			return index;
+		} catch (error) {
+			await rm(evaluationRoot, { recursive: true, force: true });
+			await this.restore([{ path: indexPath, content: priorIndex }]);
 			throw error;
 		}
 	}

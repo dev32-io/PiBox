@@ -64,6 +64,77 @@ export interface ArtifactIndexEntry {
 	tags?: string[];
 }
 
+export type TaskStatus =
+	| "draft"
+	| "blocked"
+	| "ready"
+	| "running"
+	| "contribution_complete"
+	| "reviewing"
+	| "changes_requested"
+	| "staged"
+	| "integrating"
+	| "integrated"
+	| "failed"
+	| "protocol_failed"
+	| "cancelled";
+
+export interface TaskManifest {
+	schemaVersion: 1;
+	id: string;
+	title: string;
+	status: TaskStatus;
+	dependsOn: string[];
+	references: {
+		specs: string[];
+		designs: string[];
+		decisions: string[];
+	};
+	execution: {
+		isolation: "worktree" | "repository";
+		parallelism: "allowed" | "serial";
+		resourceClaims: string[];
+		complexity: Complexity;
+		assignment: {
+			role: string;
+			model: string;
+			effort: HarnessEffort;
+			minimumCapabilityRank: number;
+			allowFallback: boolean;
+			rationale: string;
+		};
+	};
+	assembly: {
+		integrationUnit: string;
+		intermediateState: "complete" | "partial";
+	};
+	verification: {
+		timing: "task" | "integration-unit" | "work-item" | "skipped";
+		methods: string[];
+		taskChecks: string[];
+		rationale: string;
+	};
+	runtime?: {
+		branch?: string;
+		worktree?: string;
+		baseCommit?: string;
+		completedCommit?: string;
+		lastRunId?: string;
+	};
+}
+
+export interface EvaluationManifest {
+	schemaVersion: 1;
+	id: string;
+	type: "deterministic" | "spec-review" | "quality-review" | "combined-review" | "regression" | "e2e";
+	scope: { task?: string; integrationUnit?: string; workItem?: string };
+	status: "planned" | "running" | "passed" | "failed" | "blocked" | "not_applicable";
+	required: boolean;
+	attempt: number;
+	methods: string[];
+	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string };
+}
+
 export interface WorkItemIndex {
 	schemaVersion: 1;
 	id: string;
@@ -80,6 +151,7 @@ export interface WorkItemIndex {
 	};
 	artifacts: ArtifactIndexEntry[];
 	tasks: Array<{ id: string; path: string }>;
+	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
 	evaluations: Array<{ id: string; path: string }>;
 }
 
