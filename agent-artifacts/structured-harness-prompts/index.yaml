@@ -5,9 +5,9 @@ title: Refine harness prompts and canonical artifact structure
 phase: planning
 state: active
 planning:
-  revision: 6
+  revision: 7
   status: draft
-  contractDigest: sha256:0e834f6eb7144d04e393dc13bc9bf6daa397d75f5fad7bdc2a3dcb60aa5d7237
+  contractDigest: sha256:4ae5f839c0a84eab661a92445c37cdadf31f3cd4faff6aaaf8369ce705047fd4
 artifacts:
   - id: intent
     type: intent
@@ -32,6 +32,10 @@ artifacts:
   - id: artifact-profiles
     type: design
     path: design/artifact-profiles.md
+    status: draft
+  - id: prompt-refinement-method
+    type: design
+    path: design/prompt-refinement-method.md
     status: draft
 tasks: []
 evaluations: []
