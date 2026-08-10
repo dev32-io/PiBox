@@ -64,6 +64,7 @@ export interface ArtifactIndexEntry {
 	status: string;
 	tags?: string[];
 	links?: string[];
+	narrativeSchemaVersion?: 1 | 2;
 }
 
 export type TaskStatus =

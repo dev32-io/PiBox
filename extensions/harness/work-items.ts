@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
+import { acceptanceCriterionIds, renderArtifact, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import type { EvaluationManifest, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
@@ -233,11 +234,23 @@ export class WorkItemStore {
 		workItemId: string;
 		id: string;
 		type: MutableArtifactType;
-		content: string;
+		content?: string;
+		sections?: SemanticSections;
+		title?: string;
+		narrativeSchemaVersion?: 1 | 2;
 		operation?: "create" | "update" | "upsert";
 	}): Promise<WorkItemIndex> {
 		validateId(input.id, "Artifact id");
-		if (!input.content.trim()) throw new HarnessError("INVALID_ARTIFACT", "Artifact content must not be empty");
+		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
+		const content = narrativeSchemaVersion === 2
+			? (() => {
+				if (!input.sections) throw new HarnessError("INVALID_ARTIFACT", `${input.type} schema-v2 mutation requires semantic sections`);
+				if (input.content !== undefined) throw new HarnessError("INVALID_ARTIFACT", `${input.type} schema-v2 mutation does not accept raw Markdown content`);
+				if (input.type === "spec") acceptanceCriterionIds(input.sections);
+				return renderArtifact(input.type, input.title ?? input.id, input.sections);
+			})()
+			: input.content;
+		if (!content?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Artifact content must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
@@ -252,7 +265,9 @@ export class WorkItemStore {
 		if (input.operation === "create" && existing) throw new HarnessError("INVALID_ARTIFACT", `Artifact already exists: ${input.id}`);
 		if (input.operation === "update" && !existing) throw new HarnessError("INVALID_ARTIFACT", `Artifact does not exist: ${input.id}`);
 		if (!existing) {
-			index.artifacts.push({ id: input.id, type: input.type, path: relativePath, status: "draft" });
+			index.artifacts.push({ id: input.id, type: input.type, path: relativePath, status: "draft", narrativeSchemaVersion });
+		} else if (existing.narrativeSchemaVersion !== narrativeSchemaVersion) {
+			existing.narrativeSchemaVersion = narrativeSchemaVersion;
 		}
 		index.planning.revision += 1;
 		index.planning.status = index.planning.status === "approved" ? "stale" : "draft";
@@ -264,7 +279,7 @@ export class WorkItemStore {
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
 		try {
-			await atomicWriteFile(artifactPath, `${input.content.trim()}\n`);
+			await atomicWriteFile(artifactPath, `${content.trim()}\n`);
 			index.planning.contractDigest = await computeContractDigest(root);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([artifactPath, indexPath], `harness(${input.workItemId}): update ${input.type} ${input.id}`);

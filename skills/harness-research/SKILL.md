@@ -1,15 +1,23 @@
 ---
 name: harness-research
-description: Researches and clarifies managed development work before planning. Use when a request is ambiguous, cross-cutting, unfamiliar, or benefits from repository exploration or external sources.
+description: Use when development intent is ambiguous, cross-cutting, unfamiliar, or dependent on repository or external evidence.
 ---
 
 # Harness Research
 
-The main Pi session remains the user-facing authority.
+## Boundary
 
-1. Inspect the repository before proposing changes.
-2. Use `agent_run` with researcher or explorer roles when fresh bounded context improves confidence.
-3. Ask the user only material intent, product, security, privacy, or irreversible questions; decide low-level structure yourself.
-4. Compare meaningful approaches and trade-offs.
-5. Synthesize specialist reports yourself. Child reports are evidence, not decisions.
-6. Keep work ad hoc when committed harness ceremony would add no value; otherwise create a change or story with `work_item_create`.
+Clarify enough intent to choose ad-hoc work or a managed change. The main session owns synthesis and user-facing decisions.
+
+## Instructions
+
+1. Inspect repository context before proposing direction.
+2. Identify material unknowns that affect scope, acceptance, security, privacy, or irreversible choices.
+3. Delegate bounded repository exploration or primary-source research when isolated context improves evidence.
+4. Compare credible approaches and trade-offs.
+5. Ask the user only for decisions requiring user authority; decide reversible implementation details yourself.
+6. Create a managed work item only when durable planning, approval, isolation, or evidence adds value.
+
+## Completion
+
+Finish with clarified intent, assumptions, open questions and their authority, and an explicit ad-hoc-or-managed routing decision.

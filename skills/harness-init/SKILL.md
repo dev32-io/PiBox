@@ -1,21 +1,18 @@
 ---
 name: harness-init
-description: Scaffolds a Git repository with validated repository-local PiBox harness policy. Use when asked to initialize, scaffold, prepare, or make a project ready for the harness.
+description: Use when a trusted Git repository needs PiBox harness policy or repository-local worktree preparation.
 ---
 
 # Harness Initialization
 
-1. Confirm the current directory is the intended trusted Git repository.
-2. Keep existing dirty work visible; initialization must fail rather than stash or commit unrelated files.
-3. Call `harness_init` with:
-   - `standard` for normal Sol/Terra/Luna role routing.
-   - `economy` for lightweight experiments using Luna and reduced concurrency/repair budgets.
-4. The capability writes `.pi/harness.yaml`, validates the effective merged configuration, and commits only that scaffold.
-5. Do not overwrite an existing policy unless the user explicitly asks.
-6. After initialization, inspect `harness_status` and continue naturally with ad-hoc work or managed planning.
+## Instructions
 
-Equivalent deterministic command:
+1. Confirm the intended trusted Git repository and require clean canonical state.
+2. Call `harness_init` with `standard` for normal routing or `economy` for Luna-based low-cost runs.
+3. Preserve existing policy unless overwrite was explicitly requested.
+4. Verify `.pi/harness.yaml` and an effective root `/.worktree/` ignore rule.
+5. Inspect harness status after the scaffold commit.
 
-```text
-/harness init [standard|economy]
-```
+## Completion
+
+Report the profile, changed paths, commit, and whether policy or ignore preparation already existed.

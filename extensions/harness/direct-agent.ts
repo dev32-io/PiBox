@@ -54,7 +54,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	try {
 		rolePrompt = await readFile(options.promptPath ?? join(ROLE_ROOT, `${options.role}.md`), "utf8");
 	} catch {
-		rolePrompt = `You are the PiBox ${options.role} specialist. Return a concise, evidence-grounded report to the main orchestrator. Do not claim authority over user intent or workflow decisions.`;
+		rolePrompt = `Execute the assigned ${options.role} boundary. Inspect authoritative inputs, return concise evidence and uncertainty, and leave user intent and workflow decisions to the main session.`;
 	}
 	await writeFile(promptFile, rolePrompt, { encoding: "utf8", mode: 0o600 });
 	const args = [

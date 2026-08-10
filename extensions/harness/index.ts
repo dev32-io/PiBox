@@ -28,6 +28,8 @@ const WORKER_TOOL_NAMES = new Set([
 	"task_complete",
 ]);
 const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
+const ORCHESTRATOR_CONTRACT = `PiBox harness routing:\nKeep ordinary work ad hoc unless durable planning, direct approval, isolated contributions, or evidence-backed completion adds value. For managed work, identify the current boundary and use the matching harness skill: research, plan, execute, evaluate, or recover. The user owns intent, approval, destructive actions, and explicitly reserved decisions. The main session owns synthesis, proportional workflow choices, and canonical artifacts; specialists provide bounded contributions and evidence. Use canonical capabilities instead of editing agent-artifacts directly. Treat task completion as a contribution and verify at the smallest coherent integration boundary. Make completion claims only from fresh recorded evidence and the deterministic completion gate.`;
+
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"harness_status",
 	"harness_init",
@@ -316,12 +318,15 @@ export default function harness(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name: `artifact_${operation}`,
 			label: `${operation === "create" ? "Create" : "Update"} Harness Artifact`,
-			description: `${operation === "create" ? "Create" : "Update"} and atomically commit a canonical spec, design, or decision artifact. Material changes advance the planning revision.`,
+			description: `${operation === "create" ? "Create" : "Update"} and atomically commit a canonical spec, design, or decision. Prefer schema-v2 semantic sections; the capability renders stable Markdown.`,
 			parameters: Type.Object({
 				workItemId: Type.String({ description: "Managed work-item id" }),
 				id: Type.String({ description: "Stable kebab-case artifact id" }),
 				type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]),
-				content: Type.String({ description: "Complete Markdown artifact content" }),
+				narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
+				title: Type.Optional(Type.String()),
+				sections: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Typed semantic section values for schema-v2 rendering" })),
+				content: Type.Optional(Type.String({ description: "Legacy schema-v1 complete Markdown content" })),
 			}),
 			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 				try {
@@ -624,10 +629,10 @@ export default function harness(pi: ExtensionAPI): void {
 						resolvedEffort: resolution.effort,
 					});
 					const prompt = [
-						`Evaluate planned boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
-						"Call evaluation_context before judging. Use fresh evidence and do not modify product or canonical artifact files.",
-						"If runtime evidence files are needed, place them outside the repository and reference their absolute paths.",
-						"Finish by calling evaluation_complete. A prose-only response is invalid.",
+						`Evaluate boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
+						"Call evaluation_context before judging, read the assigned criteria, and collect fresh evidence without changing the evaluated work.",
+						"Place generated runtime evidence outside the repository and reference its absolute path.",
+						"Completion: call evaluation_complete with criterion results, evidence, findings, verdict, and residual risk.",
 					].join("\n");
 					const runEvaluator = (taskPrompt: string) => runDirectAgent({
 						role: roleName,
@@ -883,6 +888,11 @@ export default function harness(pi: ExtensionAPI): void {
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}
 		},
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		if (isWorkerProcess() || isEvaluatorProcess()) return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_CONTRACT}` };
 	});
 
 	pi.on("session_start", async (event, ctx) => {

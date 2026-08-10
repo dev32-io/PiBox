@@ -1,16 +1,26 @@
 ---
 name: harness-plan
-description: Converts clarified intent into canonical specs, design, tasks, integration units, and proportionate verification, then submits the deliverable contract for direct user approval.
+description: Use when clarified work needs a durable deliverable contract before managed execution.
 ---
 
 # Harness Planning
 
-1. Create or select a managed work item.
-2. Use `artifact_create` and `artifact_update` for canonical specs, designs, and decisions. Do not edit `agent-artifacts/` directly.
-3. Define bounded contribution tasks with `task_define`.
-4. Group partial tasks into the smallest meaningful integration units. A task need not build or be independently reviewable before assembly.
-5. Put review, tests, and E2E at the cheapest meaningful boundary. Explicitly skip, defer, batch, or combine ceremony when appropriate.
-6. Map binding acceptance to credible final proof without forcing one evaluator per criterion.
-7. Use `evaluation_define` only for checks the plan actually requires.
-8. Run a fresh plan critic for risky work and triage its findings yourself.
-9. Call `planning_submit` when the deliverable contract is coherent. Tell the user to approve with `/harness approve <id>`; never self-approve.
+## Inputs
+
+Start from clarified intent and current repository evidence. Canonical capabilities are the only writers of `agent-artifacts/`.
+
+## Instructions
+
+1. Create or select the managed work item.
+2. Specify required behavior and stable acceptance criteria before technical design.
+3. Record design and standalone decisions by reference, without duplicating rationale.
+4. Decompose tracer-bullet contributions with honest dependencies, resource claims, and intermediate state.
+5. Group contributions at the smallest coherent integration boundary.
+6. Map each binding criterion to credible proof at the cheapest meaningful boundary.
+7. Declare only evaluations the plan requires.
+8. Use a fresh plan critic when risk or ambiguity warrants independent judgment; resolve every blocking finding.
+9. Submit the coherent contract for direct user approval.
+
+## Completion
+
+Planning ends at `planning_submit`. State the revision and approval command. The main session cannot approve its own plan.
