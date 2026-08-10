@@ -19,7 +19,7 @@ Both use Pi's provider and credential APIs, appear in `/login`, store secrets th
 - Discovery: `GET /models`
 - Streaming: OpenAI-compatible `POST /chat/completions`
 
-The public catalog does not expose complete Pi model metadata. Discovered entries therefore use zero/unknown cost, a 128K context default, a 32K output default, and conservative capability inference from model names and advertised capability arrays.
+The OpenAI-compatible catalog does not expose complete Pi model metadata. PiBox supplements discovered IDs with a curated table derived from the official Ollama library pages for hosted context limits, reasoning support, and image input. Endpoint-provided metadata takes precedence. Unknown models use zero/unknown cost, a 128K context default, a 32K output default, and conservative capability inference from model names and advertised capability arrays.
 
 ## Local LLM
 

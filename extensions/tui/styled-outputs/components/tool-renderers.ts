@@ -4,6 +4,8 @@ import { renderDiff } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, Text } from "@earendil-works/pi-tui";
 
 const MAX_EXPANDED_LINES = 40;
+// The patched default tool shell owns transcript indentation. Keeping it out
+// of individual renderers also aligns third-party tools during session startup.
 
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 

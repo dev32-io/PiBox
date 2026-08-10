@@ -28,6 +28,30 @@ test("maps OpenAI and Ollama model lists with conservative inferred capabilities
 	assert.deepEqual(inferModelCapabilities("deepseek-r1:70b"), { reasoning: true, images: false });
 });
 
+test("uses curated metadata as a fallback while preferring endpoint token limits", () => {
+	const models = toPiModels({
+		data: [
+			{ id: "curated-model" },
+			{ id: "remote-model", context_window: 64_000, max_output_tokens: 8_000 },
+		],
+	}, {
+		providerId: "test-provider",
+		baseUrl: "https://example.test/v1",
+		defaultContextWindow: 128_000,
+		defaultMaxTokens: 16_384,
+		modelMetadata: {
+			"curated-model": { contextWindow: 262_144, maxTokens: 32_768, reasoning: true, images: true },
+			"remote-model": { contextWindow: 1_000_000, maxTokens: 32_768 },
+		},
+	});
+	assert.equal(models[0]?.contextWindow, 262_144);
+	assert.equal(models[0]?.maxTokens, 32_768);
+	assert.equal(models[0]?.reasoning, true);
+	assert.deepEqual(models[0]?.input, ["text", "image"]);
+	assert.equal(models[1]?.contextWindow, 64_000);
+	assert.equal(models[1]?.maxTokens, 8_000);
+});
+
 test("discovers /v1/models when the supplied URL is only a host", async () => {
 	const originalFetch = globalThis.fetch;
 	const requested: string[] = [];

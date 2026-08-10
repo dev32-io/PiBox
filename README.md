@@ -1,8 +1,15 @@
 # PiBox
 
-PiBox is a visual and provider package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; and `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints.
+PiBox is a visual, feedback, and provider package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; sound feedback hooks; and `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints.
 
-The design and behavior contract lives in [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md).
+Design and behavior contracts:
+
+- [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md)
+- [`docs/specs/feedback-hooks.md`](docs/specs/feedback-hooks.md)
+
+## Sound feedback
+
+The sound-hooks extension plays a user-supplied sound when `agent_settled` confirms that Pi has finished the complete agent loop. Copyrighted audio is not distributed. See [`extensions/feedback/sound-hooks/README.md`](extensions/feedback/sound-hooks/README.md) for local installation and configuration.
 
 ## Development
 
@@ -15,6 +22,7 @@ Local preview, without loading globally installed extensions:
 
 ```bash
 pi --no-extensions \
+  -e ./extensions/feedback/sound-hooks/index.ts \
   -e ./extensions/providers/ollama-cloud/index.ts \
   -e ./extensions/providers/local-llm/index.ts \
   -e ./extensions/tui/chat-input/index.ts \

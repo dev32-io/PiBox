@@ -1,7 +1,7 @@
 {
   "name": "pibox",
   "version": "0.1.0",
-  "description": "An original cool-steel visual TUI package for the Pi coding agent",
+  "description": "A cool-steel visual, feedback, and provider package for the Pi coding agent",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -16,6 +16,7 @@
   "files": [
     "extensions",
     "themes",
+    "sound-themes",
     "docs",
     "README.md",
     "LICENSE"
@@ -27,6 +28,7 @@
   },
   "pi": {
     "extensions": [
+      "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",
       "./extensions/providers/local-llm/index.ts",
       "./extensions/tui/chat-input/index.ts",

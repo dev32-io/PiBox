@@ -1,5 +1,12 @@
 import type { Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
 
+export interface DiscoveredModelMetadata {
+	contextWindow?: number;
+	maxTokens?: number;
+	reasoning?: boolean;
+	images?: boolean;
+}
+
 export interface DiscoveryOptions {
 	providerId: string;
 	baseUrl: string;
@@ -7,6 +14,7 @@ export interface DiscoveryOptions {
 	signal: AbortSignal;
 	defaultContextWindow?: number;
 	defaultMaxTokens?: number;
+	modelMetadata?: Readonly<Record<string, DiscoveredModelMetadata>>;
 }
 
 interface RemoteModel {
@@ -98,9 +106,25 @@ export function toPiModels(
 		const id = idValue.trim();
 		seen.add(id);
 		const inferred = inferModelCapabilities(id, remote.capabilities);
-		const contextWindow = positiveInteger(remote.context_window, remote.context_length, remote.max_model_len) ?? options.defaultContextWindow ?? 128_000;
+		const metadata = options.modelMetadata?.[id];
+		const listedCapabilities = Array.isArray(remote.capabilities)
+			? remote.capabilities.map(String).map((item) => item.toLowerCase())
+			: [];
+		const reasoning = listedCapabilities.includes("thinking") || listedCapabilities.includes("reasoning")
+			? true
+			: metadata?.reasoning ?? inferred.reasoning;
+		const images = listedCapabilities.some((item) => /vision|image/.test(item))
+			? true
+			: metadata?.images ?? inferred.images;
+		const contextWindow = positiveInteger(remote.context_window, remote.context_length, remote.max_model_len)
+			?? metadata?.contextWindow
+			?? options.defaultContextWindow
+			?? 128_000;
 		const maxTokens = Math.min(
-			positiveInteger(remote.max_output_tokens, remote.max_tokens) ?? options.defaultMaxTokens ?? 16_384,
+			positiveInteger(remote.max_output_tokens, remote.max_tokens)
+				?? metadata?.maxTokens
+				?? options.defaultMaxTokens
+				?? 16_384,
 			contextWindow,
 		);
 		models.push({
@@ -109,12 +133,12 @@ export function toPiModels(
 			api: "openai-completions",
 			provider: options.providerId,
 			baseUrl: options.baseUrl,
-			reasoning: inferred.reasoning,
-			input: inferred.images ? ["text", "image"] : ["text"],
+			reasoning,
+			input: images ? ["text", "image"] : ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
 			maxTokens,
-			compat: compatibility(inferred.reasoning),
+			compat: compatibility(reasoning),
 		});
 	}
 	return models;
@@ -137,6 +161,7 @@ export async function discoverOpenAIModels(options: DiscoveryOptions): Promise<M
 				baseUrl: candidate.apiBaseUrl,
 				...(options.defaultContextWindow ? { defaultContextWindow: options.defaultContextWindow } : {}),
 				...(options.defaultMaxTokens ? { defaultMaxTokens: options.defaultMaxTokens } : {}),
+				...(options.modelMetadata ? { modelMetadata: options.modelMetadata } : {}),
 			});
 			if (models.length === 0) throw new Error("the endpoint returned no model IDs");
 			return models;

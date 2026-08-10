@@ -12,15 +12,20 @@ import {
 	type ExtensionAPI,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Markdown } from "@earendil-works/pi-tui";
+import { getKeybindings, Markdown, Spacer, visibleWidth } from "@earendil-works/pi-tui";
 import { decorateHexColors } from "./color-preview.js";
 import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "./config.js";
 import { createPrefixedMarkdown } from "./components/message-layout.js";
 import { renderToolCall, renderToolResult } from "./components/tool-renderers.js";
+import { LinePrefixedComponent } from "./components/tool-shell.js";
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched");
+// Version tool patches separately so /reload can replace an older shell patch
+// without re-wrapping the already-installed user/assistant message patches.
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v5");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
+const STYLED_TOOL_NAMES = new Set<string>(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
 interface GlobalStyleState {
 	theme: Theme | undefined;
@@ -72,7 +77,11 @@ function installMessagePatches(): void {
 					bodyColor: "text",
 				});
 			}
+			// Pi's user shell already sits behind a turn-boundary spacer. Removing its
+			// symmetric vertical padding avoids stacking three blank rows around a
+			// prompt while retaining the wider gap before each new user turn.
 			box.paddingX = 0;
+			box.paddingY = 0;
 		};
 		userPrototype[PATCH_FLAG] = true;
 	}
@@ -80,17 +89,72 @@ function installMessagePatches(): void {
 
 function installToolPatch(): void {
 	const prototype = ToolExecutionComponent.prototype as any;
-	if (prototype[PATCH_FLAG]) return;
+	if (prototype[TOOL_PATCH_FLAG]) return;
 	const originalUpdateDisplay = prototype.updateDisplay;
 	prototype.updateDisplay = function piBoxToolUpdateDisplay() {
 		originalUpdateDisplay.call(this);
+		// Native tool rows begin with a Spacer(1). That is useful for boxed tools,
+		// but makes a sequence of compact calls look double-spaced.
+		const leadingSpacer = this.children?.[0];
+		if (leadingSpacer instanceof Spacer) leadingSpacer.setLines(0);
+
+		const renderContainer = this.getRenderShell?.() === "self" ? this.selfRenderContainer : this.contentBox;
 		if (this.contentBox) {
+			// The shared shell owns transcript-body indentation for both PiBox and
+			// third-party tools. Individual renderers remain padding-independent.
 			this.contentBox.paddingX = 3;
 			this.contentBox.paddingY = 0;
 			this.contentBox.setBgFn(undefined);
 		}
+
+		// Third-party renderers already know how to summarize their domain-specific
+		// output. Decorate those components rather than replacing them, giving every
+		// tool the same lifecycle checkmark and status branch as PiBox's built-ins.
+		if (!STYLED_TOOL_NAMES.has(this.toolName) && Array.isArray(renderContainer?.children)) {
+			const theme = globalState().theme;
+			const shellIndent = this.getRenderShell?.() === "self" ? "   " : "";
+			// A versioned /reload may be running outside an older compatibility patch.
+			// Peel off its display-only wrapper before applying the current layout.
+			const unwrap = (component: any): any => {
+				while (component?.constructor?.name === "LinePrefixedComponent" && component.child) component = component.child;
+				return component;
+			};
+			const call = unwrap(renderContainer.children[0]);
+			const result = this.result ? unwrap(renderContainer.children[1]) : undefined;
+			if (theme && call) {
+				const symbol = this.isPartial
+					? theme.fg("muted", "✽")
+					: this.result?.isError
+						? theme.fg("error", "✗")
+						: theme.fg("success", "✓");
+				const prefix = `${shellIndent}${symbol} `;
+				const continuation = `${shellIndent}  `;
+				renderContainer.children[0] = new LinePrefixedComponent(
+					call, prefix, continuation, visibleWidth(prefix), visibleWidth(continuation),
+				);
+			}
+			if (theme && result) {
+				const status = this.isPartial ? "Running…" : this.result?.isError ? "Error" : "Done";
+				const color = this.isPartial ? "muted" : this.result?.isError ? "error" : "success";
+				const prefix = `${shellIndent}${theme.fg("dim", "└─")} ${theme.fg(color, status)}${theme.fg("dim", " • ")}`;
+				const continuation = `${shellIndent}   `;
+				const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
+				const suffix = !this.isPartial && !this.expanded ? theme.fg("dim", ` • ${toggle} to expand`) : "";
+				renderContainer.children[1] = new LinePrefixedComponent(
+					result,
+					prefix,
+					continuation,
+					visibleWidth(prefix),
+					visibleWidth(continuation),
+					suffix,
+					visibleWidth(suffix),
+					!this.isPartial && !this.expanded ? 1 : undefined,
+					!this.isPartial && !this.expanded ? (text) => theme.fg("muted", text) : undefined,
+				);
+			}
+		}
 	};
-	prototype[PATCH_FLAG] = true;
+	prototype[TOOL_PATCH_FLAG] = true;
 }
 
 function registerStyledTools(pi: ExtensionAPI): void {
@@ -108,6 +172,9 @@ function registerStyledTools(pi: ExtensionAPI): void {
 		pi.registerTool({
 			...tool,
 			name,
+			// Keep every built-in in the same padded shell. Edit otherwise inherits
+			// its native self-rendering shell and escapes transcript indentation.
+			renderShell: "default",
 			renderCall: (args: any, theme: Theme, ctx: any) => renderToolCall(name, args, theme, ctx),
 			renderResult: (result: any, options: any, theme: Theme, ctx: any) => renderToolResult(name, result, options, theme, ctx),
 		});

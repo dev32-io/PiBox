@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "eve-online",
+  "label": "EVE Online (user-supplied audio)",
+  "sounds": {
+    "response-complete": "eve-online-notification-ping.mp3"
+  }
+}
