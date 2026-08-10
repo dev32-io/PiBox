@@ -3,47 +3,49 @@ id: structured-harness-prompts
 kind: change
 title: Refine harness prompts and canonical artifact structure
 phase: planning
-state: waiting_user
+state: active
 planning:
   revision: 17
-  status: awaiting_approval
+  status: approved
   contractDigest: sha256:90f24021b488011dea41236d9ed2d200343e749866236df8136eccc15876aa68
+  approvedRevision: 17
+  approvedAt: 2026-08-10T23:01:44.217Z
 artifacts:
   - id: intent
     type: intent
     path: intent.md
-    status: draft
+    status: approved
   - id: prompt-and-artifact-contracts
     type: spec
     path: specs/prompt-and-artifact-contracts.md
-    status: draft
+    status: approved
   - id: contract-architecture
     type: design
     path: design/contract-architecture.md
-    status: draft
+    status: approved
   - id: artifact-contract-policy
     type: decision
     path: decisions/artifact-contract-policy.md
-    status: draft
+    status: approved
   - id: structured-artifact-rendering
     type: decision
     path: decisions/structured-artifact-rendering.md
-    status: draft
+    status: approved
   - id: artifact-profiles
     type: design
     path: design/artifact-profiles.md
-    status: draft
+    status: approved
   - id: prompt-refinement-method
     type: design
     path: design/prompt-refinement-method.md
-    status: draft
+    status: approved
   - id: execution-roadmap
     type: design
     path: design/execution-roadmap.md
-    status: draft
+    status: approved
   - id: repository-local-worktrees
     type: decision
     path: decisions/repository-local-worktrees.md
-    status: draft
+    status: approved
 tasks: []
 evaluations: []
