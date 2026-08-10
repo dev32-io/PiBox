@@ -55,5 +55,5 @@ test("registers orchestrator capabilities while keeping approval command-only", 
 	]);
 	assert.deepEqual(commands, ["harness"]);
 	assert.equal(tools.includes("planning_approve"), false);
-	assert.deepEqual(events, ["session_start", "agent_settled", "session_shutdown"]);
+	assert.deepEqual(events, ["session_start", "agent_start", "message_update", "agent_settled", "session_shutdown"]);
 });

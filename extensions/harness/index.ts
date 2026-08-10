@@ -136,6 +136,7 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 
 export default function harness(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
+	let whitespaceToolDeltaBytes = 0;
 	const supervisor = new SubagentSupervisor();
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
@@ -900,6 +901,24 @@ export default function harness(pi: ExtensionAPI): void {
 			if (error instanceof HarnessError && error.code === "NOT_A_GIT_REPOSITORY") return;
 			ctx.ui.notify(`Harness initialization failed: ${describeHarnessError(error)}`, "warning");
 		}
+	});
+
+	pi.on("agent_start", () => {
+		whitespaceToolDeltaBytes = 0;
+	});
+
+	pi.on("message_update", (event, ctx) => {
+		const update = event.assistantMessageEvent;
+		if (update.type !== "toolcall_delta") return;
+		if (update.delta.trim().length > 0) {
+			whitespaceToolDeltaBytes = 0;
+			return;
+		}
+		whitespaceToolDeltaBytes += Buffer.byteLength(update.delta, "utf8");
+		if (whitespaceToolDeltaBytes <= 16 * 1024) return;
+		whitespaceToolDeltaBytes = 0;
+		ctx.abort();
+		if (ctx.hasUI) ctx.ui.notify("Harness aborted a malformed tool call after 16 KiB of whitespace-only argument streaming.", "warning");
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
