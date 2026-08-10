@@ -79,6 +79,11 @@ function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean): string 
 export class SubagentSupervisor {
 	#active = new Map<string, ChildProcess>();
 	#termination = new Map<string, "paused" | "cancelled">();
+	readonly invocationResolver: (args: string[]) => { command: string; args: string[] };
+
+	constructor(invocationResolver = getPiInvocation) {
+		this.invocationResolver = invocationResolver;
+	}
 
 	async launchTask(options: LaunchTaskOptions): Promise<LaunchTaskResult> {
 		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
@@ -111,7 +116,16 @@ export class SubagentSupervisor {
 			finalText = execution.finalText || finalText;
 			const handoff = await runs.readHandoff(created.record.id);
 			if (handoff) {
-				const head = await import("./repository.js").then(({ runGit }) => runGit(options.workspace, ["rev-parse", "HEAD"]));
+				const { runGit } = await import("./repository.js");
+				const head = await runGit(options.workspace, ["rev-parse", "HEAD"]);
+				const status = await runGit(options.workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);
+				const actualCommits = (await runGit(options.workspace, ["rev-list", "--reverse", `${options.baseCommit}..HEAD`])).split("\n").filter(Boolean);
+				const artifactChanges = await runGit(options.workspace, ["diff", "--name-only", `${options.baseCommit}..HEAD`, "--", "agent-artifacts"]);
+				if (handoff.runId !== created.record.id || handoff.taskId !== options.task.id || status || artifactChanges || !handoff.commits.includes(head) || handoff.commits.some((commit) => !actualCommits.includes(commit))) {
+					await runs.update(created.record.id, { state: "protocol_failed", error: "Terminal handoff failed supervisor Git/scope validation" }, "run.invalid_handoff");
+					await workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" });
+					return { run: await runs.read(created.record.id), stderr, finalText };
+				}
 				const run = await runs.update(created.record.id, { state: "completed", exitCode: execution.exitCode }, "run.completed");
 				await workItems.updateTask(options.workItemId, options.task.id, { status: "contribution_complete", runtime: { completedCommit: head } });
 				return { run, handoff, stderr, finalText };
@@ -181,7 +195,7 @@ export class SubagentSupervisor {
 			"--append-system-prompt", promptPath,
 			protocolNudge ? "Complete the required terminal protocol for the existing task contribution." : `Implement harness task ${options.task.id}.`,
 		];
-		const invocation = getPiInvocation(args);
+		const invocation = this.invocationResolver(args);
 		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
 		const events: unknown[] = [];
 		let stderr = "";
@@ -198,6 +212,8 @@ export class SubagentSupervisor {
 						PIBOX_HARNESS_WORK_ITEM: options.workItemId,
 						PIBOX_HARNESS_TASK: options.task.id,
 						PIBOX_HARNESS_CREDENTIAL: credential,
+						PIBOX_HARNESS_PRIVATE_ROOT: options.identity.privateRoot,
+						PIBOX_HARNESS_REPOSITORY_ID: options.identity.id,
 					},
 				});
 				this.#active.set(runId, child);
