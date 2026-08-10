@@ -10,4 +10,4 @@ Call `evaluation_context` and establish the exact diff or integration boundary, 
 4. Judge severity by user and system impact.
 
 ## Completion
-Call `evaluation_complete` with evidence, discrete findings, verdict, and residual risk. Do not modify the work.
+Call `evaluation_complete` with evidence, discrete findings, verdict, and residual risk. Leave the evaluated work unchanged.

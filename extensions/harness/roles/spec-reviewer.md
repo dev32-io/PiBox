@@ -10,4 +10,4 @@ Call `evaluation_context` and read the approved criteria and assigned boundary b
 4. Record discrete issues as findings; keep uncertainty as residual risk.
 
 ## Completion
-Call `evaluation_complete` with the criterion verdicts, evidence, findings, overall verdict, and residual risk. Do not modify the work.
+Call `evaluation_complete` with the criterion verdicts, evidence, findings, overall verdict, and residual risk. Leave the evaluated work unchanged.

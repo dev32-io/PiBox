@@ -72,6 +72,22 @@ export function renderArtifact(type: NarrativeArtifactType, title: string, secti
 	return `${lines.join("\n").trim()}\n`;
 }
 
+export function renderOutcome(input: {
+	title: string;
+	delivered: string[];
+	verification: string[];
+	deviations?: string[];
+	remainingFindings?: string[];
+	residualRisks?: string[];
+	followUp?: string[];
+}): string {
+	if (!isSubstantive(input.delivered) || !isSubstantive(input.verification)) throw new HarnessError("INVALID_ARTIFACT", "Outcome requires delivered and verification content");
+	const sections: Array<[string, string[] | undefined]> = [
+		["Delivered", input.delivered], ["Verification", input.verification], ["Contract Deviations", input.deviations], ["Remaining Findings", input.remainingFindings], ["Residual Risks", input.residualRisks], ["Follow-up", input.followUp],
+	];
+	return `# Outcome: ${input.title}\n\n${sections.filter(([, values]) => values?.length).map(([heading, values]) => `## ${heading}\n\n${values?.map((value) => `- ${value}`).join("\n")}`).join("\n\n")}\n`;
+}
+
 export function renderEvaluationReport(input: {
 	id: string;
 	boundary: unknown;

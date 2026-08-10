@@ -678,7 +678,7 @@ export default function harness(pi: ExtensionAPI): void {
 					let handoff = await runs.readEvaluationHandoff(created.record.id);
 					if (!handoff && direct.exitCode === 0) {
 						await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
-						direct = await runEvaluator(`PROTOCOL NUDGE: The previous evaluator settled without evaluation_complete. Reinspect the assigned boundary as needed and call evaluation_complete now.\n\n${prompt}`);
+						direct = await runEvaluator(`Completion protocol: no evaluation_complete handoff was recorded. Reinspect the assigned boundary as needed and call evaluation_complete.\n\n${prompt}`);
 						await runs.flushTranscript(created.record.id);
 						await assertCleanRepository(runtime.identity.root);
 						handoff = await runs.readEvaluationHandoff(created.record.id);
@@ -799,14 +799,23 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "work_item_complete",
 		label: "Complete Harness Work Item",
-		description: "Apply the deterministic completion gate and atomically commit the final outcome.",
-		parameters: Type.Object({ workItemId: Type.String(), outcome: Type.String() }),
+		description: "Apply the completion gate and render a structured outcome from delivered work, canonical verification, deviations, findings, and residual risk.",
+		parameters: Type.Object({
+			workItemId: Type.String(),
+			outcome: Type.Optional(Type.String({ description: "Legacy schema-v1 outcome Markdown" })),
+			outcomeSections: Type.Optional(Type.Object({
+				delivered: Type.Array(Type.String()),
+				deviations: Type.Optional(Type.Array(Type.String())),
+				residualRisks: Type.Optional(Type.Array(Type.String())),
+				followUp: Type.Optional(Type.Array(Type.String())),
+			})),
+		}),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = await runtime.workItems.completeWorkItem(params.workItemId, params.outcome);
+					const item = await runtime.workItems.completeWorkItem(params.workItemId, params.outcome, params.outcomeSections);
 					await runtime.events.append("work_item.completed", { workItemId: item.id });
 					return textResult(`Completed ${item.id}.`, item);
 				});

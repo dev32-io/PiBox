@@ -11,4 +11,4 @@ Read the complete assigned planning contract and its linked artifacts before jud
 5. Rank findings by whether execution could proceed safely and verify completion.
 
 ## Completion
-Return blocking findings, non-blocking findings, and a planning-readiness verdict: whether the contract is safe and verifiable enough to begin execution, not whether implementation already exists. Do not edit planning or approve it.
+Return blocking findings, non-blocking findings, and a planning-readiness verdict: whether the contract is safe and verifiable enough to begin execution, not whether implementation already exists. Keep planning read-only; approval remains with the user.

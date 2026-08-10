@@ -80,7 +80,7 @@ function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean, builtInR
 		"",
 		"Completion: leave the worktree clean and call task_complete with actual commits, checks, expected failures, and residual risks.",
 		...(protocolNudge
-			? ["", "PROTOCOL NUDGE: The previous process settled without a valid task_complete handoff. Inspect the existing branch, finish any missing commit/check work, and call task_complete now."]
+			? ["", "Completion protocol: no valid task_complete handoff was recorded. Inspect the retained branch, finish missing commit or check work, and call task_complete."]
 			: []),
 	].join("\n");
 }

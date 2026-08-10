@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
-import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, type SemanticSections } from "./artifact-contracts.js";
+import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import type { EvaluationManifest, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
@@ -585,8 +585,8 @@ export class WorkItemStore {
 		}
 	}
 
-	async completeWorkItem(workItemId: string, outcome: string): Promise<WorkItemIndex> {
-		if (!outcome.trim()) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
+	async completeWorkItem(workItemId: string, outcome?: string, outcomeSections?: { delivered: string[]; deviations?: string[]; residualRisks?: string[]; followUp?: string[] }): Promise<WorkItemIndex> {
+		if (!outcome?.trim() && !outcomeSections) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -599,8 +599,10 @@ export class WorkItemStore {
 			}
 		}
 		const remainingFindings: Array<{ evaluation: string; id: string; severity: string; summary: string; status: string }> = [];
+		const verification: string[] = [];
 		for (const evaluation of index.evaluations) {
 			const manifest = await this.readEvaluation(workItemId, evaluation.id);
+			verification.push(`${manifest.id}: ${manifest.status}`);
 			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
 				throw new HarnessError("INVALID_HANDOFF", `Required evaluation has not passed: ${evaluation.id}`);
 			}
@@ -622,11 +624,20 @@ export class WorkItemStore {
 		if (!index.artifacts.some((artifact) => artifact.id === "outcome")) {
 			index.artifacts.push({ id: "outcome", type: "outcome", path: "outcome.md", status: "complete" });
 		}
-		const findingAppendix = remainingFindings.length
-			? `\n\n## Remaining non-blocking findings\n\n${remainingFindings.map((finding) => `- **${finding.id}** (${finding.severity}, ${finding.status}; ${finding.evaluation}): ${finding.summary}`).join("\n")}`
-			: "";
+		const findingLines = remainingFindings.map((finding) => `**${finding.id}** (${finding.severity}, ${finding.status}; ${finding.evaluation}): ${finding.summary}`);
+		const renderedOutcome = outcomeSections
+			? renderOutcome({
+				title: index.title,
+				delivered: outcomeSections.delivered,
+				verification: verification.length ? verification : ["No planned evaluations were required."],
+				...(outcomeSections.deviations ? { deviations: outcomeSections.deviations } : {}),
+				...(findingLines.length ? { remainingFindings: findingLines } : {}),
+				...(outcomeSections.residualRisks ? { residualRisks: outcomeSections.residualRisks } : {}),
+				...(outcomeSections.followUp ? { followUp: outcomeSections.followUp } : {}),
+			})
+			: `${outcome?.trim()}${findingLines.length ? `\n\n## Remaining non-blocking findings\n\n${findingLines.map((line) => `- ${line}`).join("\n")}` : ""}\n`;
 		try {
-			await atomicWriteFile(outcomePath, `${outcome.trim()}${findingAppendix}\n`);
+			await atomicWriteFile(outcomePath, renderedOutcome);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([outcomePath, indexPath], `harness(${workItemId}): complete work item`);
 			return index;

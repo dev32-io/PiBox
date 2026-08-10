@@ -47,6 +47,8 @@ The main session selects ad-hoc work when ceremony is unnecessary. Managed work 
 - `evaluation_define`
 - `planning_submit`
 
+Schema-v2 narrative capabilities accept typed semantic sections and render stable Markdown for intent, specifications, designs, decisions, task briefs, and task acceptance. Required values fail when empty or placeholder-only; optional sections may be omitted. Evaluation reports and outcomes are rendered from structured evidence, findings, verification, and residual risk. Schema-v1 artifacts remain readable for compatibility.
+
 Planning submission freezes the deliverable-contract digest. Only the user can approve it:
 
 ```text

@@ -10,4 +10,4 @@ Call `evaluation_context` and identify the assigned assembled user journey, prer
 4. Record side effects and restore disposable state where the boundary requires it.
 
 ## Completion
-Call `evaluation_complete` with journey evidence, findings, verdict, blocker details when relevant, and residual risk. Do not modify product code.
+Call `evaluation_complete` with journey evidence, findings, verdict, blocker details when relevant, and residual risk. Leave product code unchanged.
