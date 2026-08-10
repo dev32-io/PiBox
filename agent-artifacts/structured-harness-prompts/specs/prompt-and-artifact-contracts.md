@@ -2,7 +2,7 @@
 
 ## Context
 
-PiBox harness prompts currently describe identities more often than executable behavior, while harness-owned Markdown artifacts accept arbitrary non-empty prose. Prompt and artifact structure should make phase boundaries, decisions, criteria, evidence, and residual risk easy for humans and agents to locate without imposing the same ceremony on every change.
+PiBox harness prompts currently describe identities more often than executable behavior, while harness-owned Markdown artifacts accept arbitrary non-empty prose. Prompt and artifact structure should make phase boundaries, decisions, criteria, evidence, and residual risk easy for humans and agents to locate without imposing the same ceremony on every change. Task worktrees are currently stored in global private harness state even though their checkouts belong to a specific repository.
 
 ## Actors
 
@@ -29,6 +29,7 @@ PiBox harness prompts currently describe identities more often than executable b
 - Stable identifiers make acceptance criteria, findings, and evidence references checkable where practical without assigning IDs to ordinary prose.
 - Existing committed artifacts remain readable; strict validation applies to schema-v2 artifacts and explicitly migrated artifacts.
 - Canonical mutation capabilities serialize complete Git transactions before they reach the repository index.
+- New task worktrees are stored under the canonical repository's ignored `.worktree/pibox/` root; private operational state remains under the Pi home directory.
 
 ## Acceptance Criteria
 
@@ -48,6 +49,9 @@ PiBox harness prompts currently describe identities more often than executable b
 - **AC-014:** Cheap-model behavioral scenarios exercise each prompt refinement before acceptance; provider or capacity failures invalidate a comparison pair rather than counting as semantic outcomes.
 - **AC-015:** Simultaneous canonical mutation calls serialize their complete transactions, preserve idempotent replay, produce one complete commit per successful distinct mutation, and do not surface a Git `.git/index.lock` race; scheduler arrival order is not guaranteed.
 - **AC-016:** Failed validation, rendering, or transaction work leaves narrative files, structured metadata, catalogs, planning revision, and Git state unchanged.
+- **AC-017:** New task allocations resolve to `<canonical-repository>/.worktree/pibox/<work-item>/<task>`, verify the target is ignored before creation, and never create task checkouts under `~/.pi/agent/harness/worktrees/`.
+- **AC-018:** Harness initialization or explicit preparation idempotently ensures an effective root `/.worktree/` ignore rule while preserving unrelated `.gitignore` content and refusing dirty canonical state.
+- **AC-019:** Recovery continues to use recorded runtime paths for legacy external worktrees without automatically moving, deleting, or rewriting them.
 
 ## Edge Cases
 
@@ -60,6 +64,7 @@ PiBox harness prompts currently describe identities more often than executable b
 - Schema-v1 artifacts remain readable and completable under their approved work-item contract; a schema-v2 reference cannot target an unstructured legacy criterion.
 - Concurrent mutations within one process or across managed capability invocations cannot race at Git's index.
 - Dirty canonical state fails before a mutation transaction begins.
+- Existing `.gitignore` content, equivalent ignore patterns, linked-worktree invocation, `.worktree` path collisions, and legacy runtime paths are handled without destructive cleanup.
 
 ## Out of Scope
 
@@ -70,3 +75,4 @@ PiBox harness prompts currently describe identities more often than executable b
 - Rendering skills or role prompts through canonical artifact profiles.
 - Using prompt rules where an existing capability can enforce the invariant.
 - Rewriting all prompts in one untested batch.
+- Moving or deleting existing global task worktrees automatically.
