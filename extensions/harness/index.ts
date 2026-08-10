@@ -30,9 +30,13 @@ const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"harness_status",
 	"work_item_create",
+	"work_item_status",
 	"artifact_create",
 	"artifact_update",
+	"artifact_link",
+	"artifact_reconcile",
 	"task_define",
+	"task_update",
 	"evaluation_define",
 	"agent_run",
 	"evaluation_launch",
@@ -253,6 +257,24 @@ export default function harness(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerTool({
+		name: "work_item_status",
+		label: "Work Item Status",
+		description: "Inspect one managed work item with task, integration-unit, and evaluation catalogs.",
+		parameters: Type.Object({ workItemId: Type.String() }),
+		async execute(_id, params, _signal, _update, ctx) {
+			try {
+				const runtime = await runtimeFor(ctx);
+				const item = await runtime.workItems.read(params.workItemId);
+				const tasks = await Promise.all(item.tasks.map((task) => runtime.workItems.readTask(item.id, task.id)));
+				const evaluations = await Promise.all(item.evaluations.map((evaluation) => runtime.workItems.readEvaluation(item.id, evaluation.id)));
+				return textResult(`${item.id}: ${item.phase}/${item.state}, planning ${item.planning.status} r${item.planning.revision}\n${tasks.map((task) => `- ${task.id}: ${task.status}`).join("\n")}`, { item, tasks, evaluations });
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
 	for (const operation of ["create", "update"] as const) {
 		pi.registerTool({
 			name: `artifact_${operation}`,
@@ -283,6 +305,44 @@ export default function harness(pi: ExtensionAPI): void {
 			},
 		});
 	}
+
+	pi.registerTool({
+		name: "artifact_link",
+		label: "Link Harness Artifact",
+		description: "Add validated artifact-id relationships to the canonical work-item index.",
+		parameters: Type.Object({ workItemId: Type.String(), artifactId: Type.String(), links: Type.Array(Type.String()) }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const item = await runtime.workItems.linkArtifact(params.workItemId, params.artifactId, params.links);
+					return textResult(`Linked ${params.artifactId} to ${params.links.join(", ")}.`, item);
+				});
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "artifact_reconcile",
+		label: "Reconcile Harness Artifacts",
+		description: "Recompute the deliverable-contract digest after clean out-of-band committed edits and mark changed approval stale.",
+		parameters: Type.Object({ workItemId: Type.String() }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const item = await runtime.workItems.reconcile(params.workItemId);
+					return textResult(`Reconciled ${item.id}: planning ${item.planning.status} r${item.planning.revision}.`, item);
+				});
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
 
 	pi.registerTool({
 		name: "task_define",
@@ -352,6 +412,29 @@ export default function harness(pi: ExtensionAPI): void {
 				const item = await runtime.workItems.defineTask({ workItemId: params.workItemId, manifest, brief: params.brief, acceptance: params.acceptance });
 				await runtime.events.append("task.defined", { workItemId: item.id, taskId: manifest.id, revision: item.planning.revision });
 				return textResult(`Defined task ${manifest.id} in integration unit ${manifest.assembly.integrationUnit}; planning r${item.planning.revision}.`, item);
+				});
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "task_update",
+		label: "Update Harness Task",
+		description: "Apply an orchestrator-owned non-delivery task lifecycle transition. Completion and integration states require their dedicated capabilities.",
+		parameters: Type.Object({
+			workItemId: Type.String(),
+			taskId: Type.String(),
+			status: Type.Union([Type.Literal("blocked"), Type.Literal("ready"), Type.Literal("reviewing"), Type.Literal("changes_requested"), Type.Literal("paused"), Type.Literal("cancelled")]),
+		}),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const task = await runtime.workItems.updateTask(params.workItemId, params.taskId, { status: params.status });
+					return textResult(`Task ${task.id} is now ${task.status}.`, task);
 				});
 			} catch (error) {
 				return textResult(describeHarnessError(error), { error: true });
@@ -601,11 +684,11 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_control",
 		label: "Control Harness Agent",
-		description: "Stop an active supervised harness run. Pause, resume, and restart use recovery commands in later phases.",
-		parameters: Type.Object({ runId: Type.String(), action: Type.Literal("stop") }),
+		description: "Pause or stop an active supervised harness run. Resume uses the retained task identity through /harness resume <task>.",
+		parameters: Type.Object({ runId: Type.String(), action: Type.Union([Type.Literal("pause"), Type.Literal("stop")]) }),
 		async execute(_id, params) {
-			const stopped = supervisor.stop(params.runId);
-			return textResult(stopped ? `Stop requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
+			const stopped = params.action === "pause" ? supervisor.pause(params.runId) : supervisor.stop(params.runId);
+			return textResult(stopped ? `${params.action === "pause" ? "Pause" : "Stop"} requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
 		},
 	});
 

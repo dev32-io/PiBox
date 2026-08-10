@@ -81,7 +81,7 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 const TASK_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 	draft: ["blocked", "ready", "cancelled"],
 	blocked: ["ready", "cancelled"],
-	ready: ["running", "cancelled"],
+	ready: ["blocked", "running", "cancelled"],
 	running: ["paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
 	paused: ["running", "cancelled"],
 	contribution_complete: ["reviewing", "staged", "integrating", "integrated", "changes_requested"],
@@ -274,6 +274,53 @@ export class WorkItemStore {
 				{ path: artifactPath, content: priorArtifact },
 				{ path: indexPath, content: priorIndex },
 			]);
+			throw error;
+		}
+	}
+
+	async linkArtifact(workItemId: string, artifactId: string, links: string[]): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
+		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
+		for (const link of links) {
+			if (!index.artifacts.some((candidate) => candidate.id === link)) throw new HarnessError("INVALID_ARTIFACT", `Unknown linked artifact: ${link}`);
+		}
+		artifact.links = [...new Set([...(artifact.links ?? []), ...links])].sort();
+		const indexPath = join(root, "index.yaml");
+		const previous = await readFile(indexPath, "utf8");
+		try {
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([indexPath], `harness(${workItemId}): link artifact ${artifactId}`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path: indexPath, content: previous }]);
+			throw error;
+		}
+	}
+
+	async reconcile(workItemId: string): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const indexPath = join(root, "index.yaml");
+		const previous = await readFile(indexPath, "utf8").catch(() => {
+			throw new HarnessError("WORK_ITEM_NOT_FOUND", `Work item does not exist: ${workItemId}`);
+		});
+		const index = parseWorkItemIndex(previous, indexPath);
+		const digest = await computeContractDigest(root);
+		if (digest === index.planning.contractDigest) return index;
+		index.planning.revision += 1;
+		index.planning.contractDigest = digest;
+		index.planning.status = "stale";
+		delete index.planning.approvedAt;
+		delete index.planning.approvedRevision;
+		try {
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([indexPath], `harness(${workItemId}): reconcile contract digest`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path: indexPath, content: previous }]);
 			throw error;
 		}
 	}

@@ -63,6 +63,7 @@ export interface ArtifactIndexEntry {
 	path: string;
 	status: string;
 	tags?: string[];
+	links?: string[];
 }
 
 export type TaskStatus =

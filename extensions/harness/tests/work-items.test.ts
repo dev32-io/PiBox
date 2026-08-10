@@ -43,6 +43,8 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	});
 	assert.equal(amended.planning.revision, 2);
 	assert.equal(amended.artifacts[1]?.path, "specs/identity.md");
+	const linked = await store.linkArtifact("session-model", "identity", ["intent"]);
+	assert.deepEqual(linked.artifacts.find((artifact) => artifact.id === "identity")?.links, ["intent"]);
 
 	const task: TaskManifest = {
 		schemaVersion: 1,
@@ -110,4 +112,7 @@ test("detects out-of-band contract edits before approval", async (t) => {
 		store.approve("digest-check"),
 		(error: unknown) => error instanceof HarnessError && error.code === "STALE_PLANNING_REVISION",
 	);
+	const reconciled = await store.reconcile("digest-check");
+	assert.equal(reconciled.planning.status, "stale");
+	assert.equal(reconciled.planning.revision, 2);
 });
