@@ -2,8 +2,8 @@ schemaVersion: 1
 id: structured-harness-prompts
 kind: change
 title: Refine harness prompts and canonical artifact structure
-phase: planning
-state: active
+phase: complete
+state: complete
 planning:
   revision: 17
   status: approved
@@ -47,5 +47,10 @@ artifacts:
     type: decision
     path: decisions/repository-local-worktrees.md
     status: approved
+  - id: outcome
+    type: outcome
+    path: outcome.md
+    status: complete
 tasks: []
 evaluations: []
+integrationUnits: []
