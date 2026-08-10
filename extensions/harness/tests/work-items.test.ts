@@ -90,6 +90,36 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("renders schema-v2 intent, artifacts, and task contracts from semantic values", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({
+		id: "structured",
+		title: "Structured narratives",
+		kind: "change",
+		narrativeSchemaVersion: 2,
+		intentSections: { problem: "Free-form artifacts drift.", desiredOutcome: "Stable readable artifacts.", scopeIncluded: ["Harness-owned Markdown"], successSignals: ["Required fields are rendered"] },
+	});
+	await store.putArtifact({
+		workItemId: "structured", id: "contract", type: "spec", narrativeSchemaVersion: 2, title: "Narrative contract",
+		sections: { context: "Models provide semantics.", requiredBehaviors: ["Capabilities render structure."], acceptanceCriteria: [{ id: "AC-001", statement: "Markdown has stable headings." }] }, operation: "create",
+	});
+	const manifest: TaskManifest = {
+		schemaVersion: 1, id: "render-contract", title: "Render contract", status: "ready", dependsOn: [], references: { specs: ["contract"], designs: [], decisions: [] },
+		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [], complexity: "low", assignment: { role: "implementer", model: "luna", effort: "low", minimumCapabilityRank: 0, allowFallback: true, rationale: "bounded" } },
+		assembly: { integrationUnit: "contract-unit", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: [], rationale: "assembled proof" },
+	};
+	await store.defineTask({
+		workItemId: "structured", manifest, narrativeSchemaVersion: 2,
+		briefSections: { contributionGoal: "Render one contract.", boundaryIncluded: ["Renderer"], requiredWork: ["Implement rendering"], integrationExpectation: "Complete contribution for contract-unit." },
+		acceptanceSections: { deliverables: ["Renderer"], criterionContributions: [{ criteria: ["contract#AC-001"], contribution: "Stable headings" }], boundaryProof: ["Renderer unit test passes"] },
+	});
+	assert.match(await readFile(join(root, "agent-artifacts", "structured", "intent.md"), "utf8"), /## Desired Outcome/);
+	assert.match(await readFile(join(root, "agent-artifacts", "structured", "specs", "contract.md"), "utf8"), /AC-001/);
+	assert.match(await readFile(join(root, "agent-artifacts", "structured", "tasks", "render-contract", "acceptance.md"), "utf8"), /## Criterion Contributions/);
+	assert.equal((await store.read("structured")).artifacts.find((artifact) => artifact.id === "contract")?.narrativeSchemaVersion, 2);
+});
+
 test("serializes complete canonical commits across independent mutex instances", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);
