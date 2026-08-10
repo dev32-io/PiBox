@@ -33,10 +33,13 @@ test("registers orchestrator capabilities while keeping approval command-only", 
 		"artifact_update",
 		"task_define",
 		"evaluation_define",
+		"agent_run",
 		"task_launch",
 		"task_integrate",
 		"agent_status",
 		"agent_control",
+		"evaluation_record",
+		"work_item_complete",
 		"planning_submit",
 	]);
 	assert.deepEqual(commands, ["harness"]);

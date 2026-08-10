@@ -3,8 +3,9 @@ import { Type } from "typebox";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { RepositoryEventStore } from "./event-store.js";
+import { runDirectAgent } from "./direct-agent.js";
 import { resolveHarnessModel } from "./model-resolver.js";
-import { discoverRepository, type RepositoryIdentity } from "./repository.js";
+import { assertCleanRepository, discoverRepository, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
@@ -245,6 +246,58 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "agent_run",
+		label: "Run Harness Specialist",
+		description: "Directly invoke a configurable specialist role without requiring a managed work item.",
+		parameters: Type.Object({
+			role: Type.String(),
+			task: Type.String(),
+			model: Type.Optional(Type.String()),
+			effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
+			strict: Type.Optional(Type.Boolean()),
+		}),
+		async execute(_id, params, signal, onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const role = runtime.config.roles[params.role];
+				if (!role) throw new HarnessError("INVALID_ARTIFACT", `Unknown harness role: ${params.role}`);
+				const roleCandidates = role.models ?? [];
+				const requested = params.model ? [{ model: params.model, effort: (params.effort ?? "high") as HarnessEffort }] : roleCandidates;
+				const candidates = [...requested, ...roleCandidates.filter((candidate) => !requested.some((item) => item.model === candidate.model && item.effort === candidate.effort))];
+				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+				const resolution = resolveHarnessModel(runtime.config, available, { candidates, strict: params.strict ?? false });
+				if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No configured candidate is available.", resolution);
+				await assertCleanRepository(runtime.identity.root);
+				const defaultTools: Record<string, string[]> = {
+					researcher: ["web_search", "source_check", "fetch_content", "get_search_content"],
+					explorer: ["read", "grep", "find", "bash"],
+					"plan-critic": ["read", "grep", "find"],
+					"spec-reviewer": ["read", "grep", "find", "bash"],
+					"quality-reviewer": ["read", "grep", "find", "bash"],
+					"e2e-tester": ["read", "grep", "find", "bash"],
+				};
+				const direct = await runDirectAgent({
+					role: params.role,
+					task: params.task,
+					cwd: runtime.identity.root,
+					provider: resolution.model.provider,
+					model: resolution.model.id,
+					effort: resolution.effort,
+					tools: role.tools ?? defaultTools[params.role] ?? ["read", "grep", "find"],
+					...(signal ? { signal } : {}),
+					...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: params.role, state: "running" })) } : {}),
+				});
+				await assertCleanRepository(runtime.identity.root);
+				await runtime.events.append("agent.direct_completed", { role: params.role, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
+				return textResult(direct.text || direct.stderr || `Specialist exited ${direct.exitCode}.`, direct);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
 		name: "task_launch",
 		label: "Launch Harness Task",
 		description: "Resolve the planned model, allocate an isolated worktree, and supervise an approved implementation task through its structured handoff.",
@@ -347,6 +400,48 @@ export default function harness(pi: ExtensionAPI): void {
 		async execute(_id, params) {
 			const stopped = supervisor.stop(params.runId);
 			return textResult(stopped ? `Stop requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
+		},
+	});
+
+	pi.registerTool({
+		name: "evaluation_record",
+		label: "Record Harness Evaluation",
+		description: "Atomically record a completed planned evaluation, curated report, and checksummed evidence manifest.",
+		parameters: Type.Object({
+			workItemId: Type.String(),
+			evaluationId: Type.String(),
+			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
+			report: Type.String(),
+			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }))),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const evaluation = await runtime.workItems.recordEvaluation({ ...params, evidence: params.evidence ?? [] });
+				await runtime.events.append("evaluation.recorded", { workItemId: params.workItemId, evaluationId: evaluation.id, verdict: params.verdict, attempt: evaluation.attempt });
+				return textResult(`Recorded ${evaluation.id} attempt ${evaluation.attempt}: ${params.verdict}.`, evaluation);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
+		},
+	});
+
+	pi.registerTool({
+		name: "work_item_complete",
+		label: "Complete Harness Work Item",
+		description: "Apply the deterministic completion gate and atomically commit the final outcome.",
+		parameters: Type.Object({ workItemId: Type.String(), outcome: Type.String() }),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const item = await runtime.workItems.completeWorkItem(params.workItemId, params.outcome);
+				await runtime.events.append("work_item.completed", { workItemId: item.id });
+				return textResult(`Completed ${item.id}.`, item);
+			} catch (error) {
+				return textResult(describeHarnessError(error), { error: true });
+			}
 		},
 	});
 

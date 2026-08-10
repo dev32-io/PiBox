@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { discoverRepository } from "../repository.js";
-import type { TaskManifest } from "../types.js";
+import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
 import { ResourceLockSet, WorktreeManager } from "../worktrees.js";
 
@@ -53,6 +53,17 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	const store = new WorkItemStore(root);
 	await store.create({ id: "feature", title: "Feature", kind: "story", intent: "Add a feature" });
 	await store.defineTask({ workItemId: "feature", manifest: task(), brief: "Add feature.txt", acceptance: "feature.txt exists" });
+	const evaluation: EvaluationManifest = {
+		schemaVersion: 1,
+		id: "feature-check",
+		type: "deterministic",
+		scope: { integrationUnit: "feature-unit" },
+		status: "planned",
+		required: true,
+		attempt: 0,
+		methods: ["test -f feature.txt"],
+	};
+	await store.defineEvaluation("feature", evaluation);
 	await store.submitPlanning("feature");
 	await store.approve("feature");
 	const manager = new WorktreeManager(identity);
@@ -69,6 +80,17 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	assert.equal(await readFile(join(root, "feature.txt"), "utf8"), "implemented\n");
 	assert.equal((await store.readTask("feature", "add-feature")).status, "integrated");
 	assert.match(await git(root, "show", "-s", "--format=%B", integrated.commit), /Harness-Integration-Unit: feature-unit/);
+	await store.recordEvaluation({
+		workItemId: "feature",
+		evaluationId: "feature-check",
+		verdict: "pass",
+		report: "# Result\n\nThe integrated feature exists.",
+		evidence: [{ command: "test -f feature.txt", result: "passed", path: "feature.txt" }],
+	});
+	const completed = await store.completeWorkItem("feature", "# Outcome\n\nDelivered the feature with deterministic evidence.");
+	assert.equal(completed.phase, "complete");
+	assert.equal(completed.state, "complete");
+	assert.match(await readFile(join(root, "agent-artifacts", "feature", "evidence", "feature-check", "manifest.yaml"), "utf8"), /checksum: sha256:/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

@@ -43,6 +43,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 		},
 		"spec-reviewer": { workspace: "repository", canDelegate: false, models: [{ model: "sol", effort: "high" }] },
 		"quality-reviewer": { workspace: "repository", canDelegate: false, models: [{ model: "sol", effort: "high" }] },
+		"test-implementer": { workspace: "worktree", canDelegate: false, completionSchema: "implementer-v1", models: [{ model: "terra", effort: "high" }] },
 		"e2e-tester": { workspace: "repository", canDelegate: false, models: [{ model: "terra", effort: "high" }] },
 		"repair-implementer": { workspace: "worktree", canDelegate: false, models: [{ model: "sol", effort: "high" }] },
 	},

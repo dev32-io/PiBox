@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
@@ -367,6 +367,123 @@ export class WorkItemStore {
 		} catch (error) {
 			await rm(evaluationRoot, { recursive: true, force: true });
 			await this.restore([{ path: indexPath, content: priorIndex }]);
+			throw error;
+		}
+	}
+
+	async readEvaluation(workItemId: string, evaluationId: string): Promise<EvaluationManifest> {
+		validateId(evaluationId, "Evaluation id");
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const catalog = index.evaluations.find((evaluation) => evaluation.id === evaluationId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
+		const value = parse(await readFile(join(root, catalog.path), "utf8")) as EvaluationManifest;
+		if (value.schemaVersion !== 1 || value.id !== evaluationId) throw new HarnessError("INVALID_ARTIFACT", `Invalid evaluation manifest: ${evaluationId}`);
+		return value;
+	}
+
+	async recordEvaluation(input: {
+		workItemId: string;
+		evaluationId: string;
+		verdict: "pass" | "fail" | "blocked" | "not_applicable";
+		report: string;
+		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
+	}): Promise<EvaluationManifest> {
+		if (!input.report.trim()) throw new HarnessError("INVALID_ARTIFACT", "Evaluation report must not be empty");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(input.workItemId);
+		const index = await this.read(input.workItemId);
+		const catalog = index.evaluations.find((evaluation) => evaluation.id === input.evaluationId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${input.evaluationId}`);
+		const evaluationPath = join(root, catalog.path);
+		const evaluationRoot = dirname(evaluationPath);
+		const reportPath = join(evaluationRoot, "report.md");
+		const evidenceRoot = join(root, "evidence", input.evaluationId);
+		const manifestPath = join(evidenceRoot, "manifest.yaml");
+		const previousEvaluation = await readFile(evaluationPath, "utf8");
+		const previousReport = await readFile(reportPath, "utf8").catch(() => undefined);
+		const evaluation = parse(previousEvaluation) as EvaluationManifest;
+		const evidenceEntries: Array<Record<string, unknown>> = [];
+		await mkdir(join(evidenceRoot, "files"), { recursive: true });
+		try {
+			for (let indexValue = 0; indexValue < input.evidence.length; indexValue++) {
+				const evidence = input.evidence[indexValue];
+				if (!evidence) continue;
+				const entry: Record<string, unknown> = { result: evidence.result };
+				if (evidence.command) entry.command = evidence.command;
+				if (evidence.description) entry.description = evidence.description;
+				if (evidence.path) {
+					const source = resolve(this.repositoryRoot, evidence.path);
+					const info = await stat(source).catch(() => undefined);
+					if (!info?.isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence file does not exist: ${evidence.path}`);
+					const destination = join(evidenceRoot, "files", `${indexValue + 1}-${basename(source)}`);
+					await copyFile(source, destination);
+					entry.path = relative(evidenceRoot, destination);
+					entry.checksum = `sha256:${createHash("sha256").update(await readFile(destination)).digest("hex")}`;
+				}
+				evidenceEntries.push(entry);
+			}
+			const status = input.verdict === "pass" ? "passed" : input.verdict === "fail" ? "failed" : input.verdict;
+			evaluation.status = status;
+			evaluation.attempt += 1;
+			evaluation.result = {
+				verdict: input.verdict,
+				report: "report.md",
+				evidence: `../../evidence/${input.evaluationId}/manifest.yaml`,
+			};
+			await atomicWriteFile(reportPath, `${input.report.trim()}\n`);
+			await atomicWriteFile(evaluationPath, stringify(evaluation));
+			await atomicWriteFile(manifestPath, stringify({ schemaVersion: 1, evaluation: input.evaluationId, recordedAt: new Date().toISOString(), entries: evidenceEntries }));
+			await this.commit([evaluationRoot, evidenceRoot], `harness(${input.workItemId}): record evaluation ${input.evaluationId}`);
+			return evaluation;
+		} catch (error) {
+			await atomicWriteFile(evaluationPath, previousEvaluation);
+			if (previousReport === undefined) await rm(reportPath, { force: true });
+			else await atomicWriteFile(reportPath, previousReport);
+			await rm(evidenceRoot, { recursive: true, force: true });
+			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, evidenceRoot)]).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	async completeWorkItem(workItemId: string, outcome: string): Promise<WorkItemIndex> {
+		if (!outcome.trim()) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		if (index.planning.status !== "approved" || index.planning.approvedRevision !== index.planning.revision) {
+			throw new HarnessError("STALE_PLANNING_REVISION", "Completion requires the current approved contract");
+		}
+		for (const task of index.tasks) {
+			if ((await this.readTask(workItemId, task.id)).status !== "integrated") {
+				throw new HarnessError("INVALID_HANDOFF", `Task is not integrated: ${task.id}`);
+			}
+		}
+		for (const evaluation of index.evaluations) {
+			const manifest = await this.readEvaluation(workItemId, evaluation.id);
+			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
+				throw new HarnessError("INVALID_HANDOFF", `Required evaluation has not passed: ${evaluation.id}`);
+			}
+		}
+		const indexPath = join(root, "index.yaml");
+		const outcomePath = join(root, "outcome.md");
+		const previousIndex = await readFile(indexPath, "utf8");
+		const previousOutcome = await readFile(outcomePath, "utf8").catch(() => undefined);
+		index.phase = "complete";
+		index.state = "complete";
+		if (!index.artifacts.some((artifact) => artifact.id === "outcome")) {
+			index.artifacts.push({ id: "outcome", type: "outcome", path: "outcome.md", status: "complete" });
+		}
+		try {
+			await atomicWriteFile(outcomePath, `${outcome.trim()}\n`);
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([outcomePath, indexPath], `harness(${workItemId}): complete work item`);
+			return index;
+		} catch (error) {
+			await atomicWriteFile(indexPath, previousIndex);
+			if (previousOutcome === undefined) await rm(outcomePath, { force: true });
+			else await atomicWriteFile(outcomePath, previousOutcome);
+			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, indexPath), relative(this.repositoryRoot, outcomePath)]).catch(() => undefined);
 			throw error;
 		}
 	}
