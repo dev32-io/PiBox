@@ -10,28 +10,29 @@ Execute serial integration units with incremental commits. Artifact infrastructu
 
 ### Integration unit 1: canonical safety
 
-- Serialize all canonical mutation capabilities across concurrent invocations before Git operations.
-- Add a regression that invokes simultaneous artifact mutations and proves deterministic commits without `.git/index.lock` races.
+- Wrap every canonical mutation's complete validation/write/catalog/revision/commit transaction in the repository mutex.
+- Preserve idempotent replay and dirty-canonical failure.
+- Add simultaneous mutation regression tests proving complete commits without `.git/index.lock` races; scheduler arrival order is not part of the contract.
 
 ### Integration unit 2: artifact contracts
 
-- Implement the versioned contract registry, substantive-content validation, conditional triggers, qualified criterion references, and deterministic renderers.
-- Add typed inputs and schema-v1 compatibility for intent, specification, design, decision, task brief, and task acceptance.
+- Implement the versioned contract registry, substantive-content validation, declared conditional triggers, qualified criterion references, and deterministic renderers.
+- Add typed schema-v2 inputs and schema-v1 read/completion compatibility for intent, specification, design, decision, task brief, and task acceptance.
 - Extend task and evaluation manifests with structured criterion references.
 - Render evaluation reports and outcomes from structured handoffs and canonical state.
 - Update operating documentation and migration guidance.
-- Run unit, store, lifecycle, traceability, compatibility, and Git integration tests.
+- Run unit, store, lifecycle, traceability, compatibility, concurrency, and Git integration tests.
 
 ### Integration unit 3: prompt evaluation foundation
 
-- Inventory every built-in prompt surface and fail tests on unclassified additions.
-- Define the prompt contract and trigger-only description rules.
+- Add the authoritative prompt registry with paths/symbols and discovery tests that fail on unclassified additions.
+- Define prompt contracts and trigger-only description rules.
 - Add fixed scenario fixtures, prompt/config/scenario digests, private transcript storage, aggregate result records, and a comparison command.
-- Establish current baselines with Luna before changing prompts.
+- Establish current baselines with the configured Luna alias before changing prompts.
 
 ### Integration units 4–21: prompt surfaces
 
-Refine and accept one surface at a time in this order:
+Refine and accept one surface at a time:
 
 1. compact orchestrator contract;
 2. harness-research;
@@ -54,10 +55,11 @@ Refine and accept one surface at a time in this order:
 
 Every unit:
 
+- resolves and records one model/config pairing for baseline and candidate;
 - runs unchanged baseline scenarios against the prior prompt;
 - records observed failure labels and turn/protocol metrics;
 - rewrites only the selected surface;
-- reruns the same scenarios;
+- reruns the same scenarios and applies the thresholds in `prompt-refinement-method`;
 - passes static prompt-contract checks and relevant supervised-child tests;
 - commits before the next surface begins.
 
@@ -67,11 +69,15 @@ Refine protocol nudges, fallback prompts, skill descriptions, and tool-descripti
 
 ### Integration unit 23: final assembly
 
-Run the full offline suite, package and audit checks, adversarial prompt review on a stronger model, and a fresh economy-profile managed E2E covering natural-language routing, structured planning, direct approval, isolated implementation, evaluation evidence, outcome rendering, interruption, and recovery.
+- Run the complete offline suite, package dry-run, audit, and diff checks.
+- Run one adversarial whole-prompt review using the strongest configured available role candidate.
+- Run one economy-profile managed lifecycle E2E covering natural-language routing, structured planning, direct approval, isolated implementation, evaluation evidence, outcome rendering, and clean Git state.
+- Run one focused interruption/resume scenario for the changed recovery prompt using the same small fixture rather than expanding the lifecycle E2E.
+- Record model turns, elapsed time, and protocol outcomes. The final model-run budget is one lifecycle run, one focused recovery run, and one repair rerun only if a blocking finding is accepted.
 
 ## Components and Interfaces
 
-Artifact-contract implementation primarily affects `work-items.ts`, `types.ts`, capability schemas, worker/evaluator handoffs, and new focused registry/renderer modules. Prompt work affects `skills/harness-*`, `extensions/harness/roles`, dynamic prompt builders in supervisor and orchestration code, and new scenario fixtures and test helpers. Documentation points to the registry and scenario command rather than duplicating contracts.
+Artifact-contract implementation primarily affects `work-items.ts`, `types.ts`, capability schemas, worker/evaluator handoffs, and new focused registry/renderer modules. Prompt work affects `skills/harness-*`, `extensions/harness/roles`, dynamic prompt builders in supervisor and orchestration code, and new registry, scenario fixtures, and test helpers. Documentation points to source contracts rather than duplicating them.
 
 Each prompt unit consumes the accepted artifact vocabulary and prompt rubric. Later prompt units do not modify earlier prompts except through a separately recorded regression fix.
 
@@ -79,13 +85,13 @@ Each prompt unit consumes the accepted artifact vocabulary and prompt rubric. La
 
 1. Canonical serialization makes planning and implementation mutations safe.
 2. Artifact contracts establish typed inputs and rendered outputs.
-3. Scenario infrastructure captures baseline behavior.
+3. Scenario infrastructure captures reproducible baseline behavior.
 4. Prompt units progress along the real workflow chain.
-5. Final E2E proves the assembled chain and captures any residual findings.
+5. Final assembly proves the lifecycle and recovery boundary separately.
 
 ## Failure and Recovery
 
-A failed artifact integration unit leaves schema-v1 behavior intact until the candidate passes. A failed prompt candidate is reverted or corrected within its unit before later prompts begin. Capacity failures do not count as semantic prompt failures. Private scenario transcripts and aggregate digests allow interrupted comparisons to resume. Every integration unit has an independently identifiable commit range.
+A failed artifact integration unit leaves schema-v1 behavior intact until the candidate passes. A failed prompt candidate is reverted or corrected within its unit before later prompts begin. Capacity failures invalidate a comparison pair and do not count as semantic prompt failures. Private scenario transcripts and aggregate digests allow interrupted comparisons to resume. Every integration unit has an independently identifiable commit range.
 
 ## Security and Privacy
 
@@ -93,7 +99,7 @@ Synthetic scenario repositories contain no secrets. Typed renderers do not execu
 
 ## Compatibility and Migration
 
-Schema-v1 work items remain readable and completable under their approved contracts. New work items use schema-v2 structured artifacts after the artifact-contract unit lands. Repository-local custom prompts continue working; linting is advisory for custom prompts unless repository policy opts into strict validation.
+Schema-v1 work items remain readable and completable under their approved contracts. New work items use schema-v2 structured artifacts after the artifact-contract unit lands. Repository-local custom prompts continue working; linting is advisory unless repository policy opts into strict validation.
 
 ## Verification Boundaries
 
@@ -101,8 +107,8 @@ Schema-v1 work items remain readable and completable under their approved contra
 - Artifact contracts: required combined review of registry, renderers, compatibility, and traceability.
 - Each prompt surface: fixed behavioral scenario gate plus relevant deterministic tests.
 - Prompt assembly: independent standards/spec review of all prompt diffs and aggregate scenario results.
-- Final harness: required managed E2E with canonical artifacts, private run records, evidence checksums, and clean Git state.
+- Final harness: one bounded managed lifecycle E2E plus one focused recovery scenario.
 
 ## Alternatives Considered
 
-A single artifact-and-prompt integration unit was rejected because it would be too large to diagnose or review. Defining new prompts before typed artifacts was rejected because prompt completion contracts would target unstable document shapes. Independent evaluator runs for every tiny prompt edit were rejected as disproportionate; fixed behavioral scenarios provide the local gate, with independent review at meaningful assembled boundaries.
+A single artifact-and-prompt integration unit was rejected because it would be too large to diagnose or review. Defining new prompts before typed artifacts was rejected because prompt completion contracts would target unstable document shapes. Independent evaluator runs for every tiny prompt edit were rejected as disproportionate; fixed behavioral scenarios provide the local gate, with independent review at meaningful assembled boundaries. One oversized E2E was rejected because failures would be expensive and weakly attributable.
