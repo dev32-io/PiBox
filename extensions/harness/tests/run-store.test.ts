@@ -28,4 +28,12 @@ test("authorizes immutable run scope with an unguessable credential", async (t) 
 	const updated = await store.update(created.record.id, { state: "running", pid: 42 }, "run.started");
 	assert.equal(updated.state, "running");
 	assert.equal((await store.read(created.record.id)).pid, 42);
+	await Promise.all([
+		store.appendTranscript(created.record.id, { type: "message_update", delta: "redundant" }),
+		store.appendTranscript(created.record.id, { type: "message_end", message: { role: "assistant", content: [] } }),
+	]);
+	await store.flushTranscript(created.record.id);
+	const transcript = await import("node:fs/promises").then(({ readFile }) => readFile(join(store.runRoot(created.record.id), "transcript.jsonl"), "utf8"));
+	assert.equal(transcript.trim().split("\n").length, 1);
+	assert.match(transcript, /message_end/);
 });

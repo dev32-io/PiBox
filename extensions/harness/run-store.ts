@@ -78,8 +78,14 @@ function hashCredential(credential: string): string {
 	return createHash("sha256").update(credential).digest("hex");
 }
 
+export function shouldPersistTranscriptEvent(event: unknown): boolean {
+	const type = typeof event === "object" && event !== null && "type" in event ? String(event.type) : "";
+	return type === "session" || type === "message_end" || type === "tool_execution_end" || type === "tool_result_end" || type === "agent_end";
+}
+
 export class HarnessRunStore {
 	readonly workItemPrivateRoot: string;
+	#transcriptQueues = new Map<string, Promise<void>>();
 
 	constructor(repositoryPrivateRoot: string, workItemId: string) {
 		this.workItemPrivateRoot = join(repositoryPrivateRoot, "work-items", workItemId);
@@ -178,8 +184,16 @@ export class HarnessRunStore {
 		await appendFile(path, `${JSON.stringify({ sequence, at: new Date().toISOString(), type, data })}\n`, { mode: 0o600 });
 	}
 
-	async appendTranscript(runId: string, event: unknown): Promise<void> {
-		await appendFile(join(this.runRoot(runId), "transcript.jsonl"), `${JSON.stringify(event)}\n`, { mode: 0o600 });
+	appendTranscript(runId: string, event: unknown): Promise<void> {
+		if (!shouldPersistTranscriptEvent(event)) return Promise.resolve();
+		const previous = this.#transcriptQueues.get(runId) ?? Promise.resolve();
+		const next = previous.then(() => appendFile(join(this.runRoot(runId), "transcript.jsonl"), `${JSON.stringify(event)}\n`, { mode: 0o600 }));
+		this.#transcriptQueues.set(runId, next.catch(() => undefined));
+		return next;
+	}
+
+	async flushTranscript(runId: string): Promise<void> {
+		await this.#transcriptQueues.get(runId);
 	}
 
 	async writeCheckpoint(runId: string, checkpoint: unknown): Promise<void> {

@@ -646,11 +646,13 @@ export default function harness(pi: ExtensionAPI): void {
 						...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { runId: created.record.id, state: "running" })) } : {}),
 					});
 					let direct = await runEvaluator(prompt);
+					await runs.flushTranscript(created.record.id);
 					await assertCleanRepository(runtime.identity.root);
 					let handoff = await runs.readEvaluationHandoff(created.record.id);
 					if (!handoff && direct.exitCode === 0) {
 						await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
 						direct = await runEvaluator(`PROTOCOL NUDGE: The previous evaluator settled without evaluation_complete. Reinspect the assigned boundary as needed and call evaluation_complete now.\n\n${prompt}`);
+						await runs.flushTranscript(created.record.id);
 						await assertCleanRepository(runtime.identity.root);
 						handoff = await runs.readEvaluationHandoff(created.record.id);
 					}

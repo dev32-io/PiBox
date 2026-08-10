@@ -479,6 +479,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		if (index.phase === "complete") throw new HarnessError("INVALID_HANDOFF", `Work item is already complete: ${input.workItemId}`);
 		const catalog = index.evaluations.find((evaluation) => evaluation.id === input.evaluationId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${input.evaluationId}`);
 		const evaluationPath = join(root, catalog.path);
@@ -551,6 +552,7 @@ export class WorkItemStore {
 				throw new HarnessError("INVALID_HANDOFF", `Task is not integrated: ${task.id}`);
 			}
 		}
+		const remainingFindings: Array<{ evaluation: string; id: string; severity: string; summary: string; status: string }> = [];
 		for (const evaluation of index.evaluations) {
 			const manifest = await this.readEvaluation(workItemId, evaluation.id);
 			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
@@ -558,6 +560,11 @@ export class WorkItemStore {
 			}
 			if (manifest.findings?.some((finding) => finding.blocking && (finding.status === "open" || finding.status === "accepted" || finding.status === "needs_user"))) {
 				throw new HarnessError("INVALID_HANDOFF", `Evaluation has an unresolved blocking finding: ${evaluation.id}`);
+			}
+			for (const finding of manifest.findings ?? []) {
+				if (finding.status !== "resolved" && finding.status !== "rejected" && finding.status !== "duplicate") {
+					remainingFindings.push({ evaluation: evaluation.id, id: finding.id, severity: finding.severity, summary: finding.summary, status: finding.status });
+				}
 			}
 		}
 		const indexPath = join(root, "index.yaml");
@@ -569,8 +576,11 @@ export class WorkItemStore {
 		if (!index.artifacts.some((artifact) => artifact.id === "outcome")) {
 			index.artifacts.push({ id: "outcome", type: "outcome", path: "outcome.md", status: "complete" });
 		}
+		const findingAppendix = remainingFindings.length
+			? `\n\n## Remaining non-blocking findings\n\n${remainingFindings.map((finding) => `- **${finding.id}** (${finding.severity}, ${finding.status}; ${finding.evaluation}): ${finding.summary}`).join("\n")}`
+			: "";
 		try {
-			await atomicWriteFile(outcomePath, `${outcome.trim()}\n`);
+			await atomicWriteFile(outcomePath, `${outcome.trim()}${findingAppendix}\n`);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([outcomePath, indexPath], `harness(${workItemId}): complete work item`);
 			return index;

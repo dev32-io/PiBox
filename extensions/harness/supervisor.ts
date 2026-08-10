@@ -271,6 +271,7 @@ export class SubagentSupervisor {
 					else options.signal.addEventListener("abort", abort, { once: true });
 				}
 			});
+			await runs.flushTranscript(runId);
 			return { exitCode, stderr, finalText: finalAssistantText(events) };
 		} finally {
 			await rm(promptDirectory, { recursive: true, force: true });

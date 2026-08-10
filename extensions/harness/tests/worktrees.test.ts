@@ -87,10 +87,12 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 		verdict: "pass",
 		report: "# Result\n\nThe integrated feature exists.",
 		evidence: [{ command: "test -f feature.txt", result: "passed", path: "feature.txt" }],
+		findings: [{ id: "QUALITY-001", severity: "low", status: "accepted", summary: "Optional polish remains", blocking: false }],
 	});
 	const completed = await store.completeWorkItem("feature", "# Outcome\n\nDelivered the feature with deterministic evidence.");
 	assert.equal(completed.phase, "complete");
 	assert.equal(completed.state, "complete");
+	assert.match(await readFile(join(root, "agent-artifacts", "feature", "outcome.md"), "utf8"), /QUALITY-001/);
 	assert.match(await readFile(join(root, "agent-artifacts", "feature", "evidence", "feature-check", "manifest.yaml"), "utf8"), /checksum: sha256:/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
