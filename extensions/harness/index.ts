@@ -28,7 +28,7 @@ const WORKER_TOOL_NAMES = new Set([
 	"task_complete",
 ]);
 const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
-const ORCHESTRATOR_CONTRACT = `PiBox harness routing:\nKeep ordinary work ad hoc unless durable planning, direct approval, isolated contributions, or evidence-backed completion adds value. For managed work, identify the current boundary and use the matching harness skill: research, plan, execute, evaluate, or recover. The user owns intent, approval, destructive actions, and explicitly reserved decisions. The main session owns synthesis, proportional workflow choices, and canonical artifacts; specialists provide bounded contributions and evidence. Use canonical capabilities instead of editing agent-artifacts directly. Treat task completion as a contribution and verify at the smallest coherent integration boundary. Make completion claims only from fresh recorded evidence and the deterministic completion gate.`;
+const ORCHESTRATOR_CONTRACT = `PiBox harness routing:\nKeep ordinary work ad hoc unless durable planning, direct approval, isolated contributions, or evidence-backed completion adds value. For new managed work, call work_item_create first with kind change or story; then create its artifacts, tasks, evaluations, and submit planning. For existing managed work, identify the current boundary and use the matching harness skill: research, plan, execute, evaluate, or recover. The user owns intent, approval, destructive actions, and explicitly reserved decisions. The main session owns synthesis, proportional workflow choices, and canonical artifacts; specialists provide bounded contributions and evidence. Use canonical capabilities instead of editing agent-artifacts directly. Treat task completion as a contribution and verify at the smallest coherent integration boundary. Make completion claims only from fresh recorded evidence and the deterministic completion gate.`;
 
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"harness_status",
@@ -275,14 +275,17 @@ export default function harness(pi: ExtensionAPI): void {
 		label: "Create Work Item",
 		description: "Create and atomically commit a managed change or story. Prefer schema-v2 semantic intent sections; Markdown is rendered deterministically.",
 		promptSnippet: "Create a committed managed change or story after deciding harness ceremony is warranted",
-		parameters: Type.Object({
-			id: Type.String({ description: "Stable kebab-case work-item id" }),
-			title: Type.String({ description: "Human-readable title" }),
-			kind: Type.Union([Type.Literal("change"), Type.Literal("story")]),
-			narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
-			intentSections: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Problem, desiredOutcome, scopeIncluded, and successSignals plus optional intent fields" })),
-			intent: Type.Optional(Type.String({ description: "Legacy schema-v1 Markdown intent" })),
-		}),
+		parameters: Type.Union([
+			Type.Object({
+				id: Type.String({ description: "Stable kebab-case work-item id" }), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]),
+				narrativeSchemaVersion: Type.Literal(2),
+				intentSections: Type.Object({
+					problem: Type.String(), desiredOutcome: Type.String(), scopeIncluded: Type.Array(Type.String()), successSignals: Type.Array(Type.String()),
+					scopeExcluded: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())),
+				}, { additionalProperties: false }),
+			}, { additionalProperties: false }),
+			Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), intent: Type.String({ description: "Legacy schema-v1 Markdown intent" }) }, { additionalProperties: false }),
+		]),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
@@ -321,15 +324,13 @@ export default function harness(pi: ExtensionAPI): void {
 			name: `artifact_${operation}`,
 			label: `${operation === "create" ? "Create" : "Update"} Harness Artifact`,
 			description: `${operation === "create" ? "Create" : "Update"} and atomically commit a canonical spec, design, or decision. Prefer schema-v2 semantic sections; the capability renders stable Markdown.`,
-			parameters: Type.Object({
-				workItemId: Type.String({ description: "Managed work-item id" }),
-				id: Type.String({ description: "Stable kebab-case artifact id" }),
-				type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]),
-				narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
-				title: Type.Optional(Type.String()),
-				sections: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Typed semantic section values for schema-v2 rendering" })),
-				content: Type.Optional(Type.String({ description: "Legacy schema-v1 complete Markdown content" })),
-			}),
+			parameters: Type.Union([
+				Type.Object({
+					workItemId: Type.String(), id: Type.String(), type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]),
+					narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: Type.Record(Type.String(), Type.Unknown(), { description: "Semantic values named by the selected artifact contract" }),
+				}, { additionalProperties: false }),
+				Type.Object({ workItemId: Type.String(), id: Type.String(), type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]), content: Type.String({ description: "Legacy schema-v1 Markdown" }) }, { additionalProperties: false }),
+			]),
 			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 				try {
 					requireTrusted(ctx);
