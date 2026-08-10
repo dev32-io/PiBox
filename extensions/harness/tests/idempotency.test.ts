@@ -11,13 +11,14 @@ test("replays identical operations and rejects operation-id payload conflicts", 
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const store = new IdempotencyStore(root);
 	let calls = 0;
-	const first = await store.execute("operation-123", { value: 1 }, async () => ({ receipt: ++calls }));
-	const replay = await store.execute("operation-123", { value: 1 }, async () => ({ receipt: ++calls }));
+	const operationId = "call_xTpctS5CUCnFQUllaf0dJht9|fc_073ea487a273b16b";
+	const first = await store.execute(operationId, { value: 1 }, async () => ({ receipt: ++calls }));
+	const replay = await store.execute(operationId, { value: 1 }, async () => ({ receipt: ++calls }));
 	assert.deepEqual(first, { receipt: 1 });
 	assert.deepEqual(replay, first);
 	assert.equal(calls, 1);
 	await assert.rejects(
-		store.execute("operation-123", { value: 2 }, async () => ({ receipt: 3 })),
+		store.execute(operationId, { value: 2 }, async () => ({ receipt: 3 })),
 		(error: unknown) => error instanceof HarnessError && error.code === "CAPABILITY_DENIED",
 	);
 });

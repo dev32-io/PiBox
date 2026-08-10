@@ -80,12 +80,13 @@ export class IdempotencyStore {
 	}
 
 	async execute<T>(operationId: string, payload: unknown, operation: () => Promise<T>): Promise<T> {
-		if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(operationId)) {
-			throw new HarnessError("INVALID_ARTIFACT", "operationId must be 8-128 safe characters");
+		if (!operationId || operationId.length > 512 || /[\u0000-\u001f\u007f]/.test(operationId)) {
+			throw new HarnessError("INVALID_ARTIFACT", "operationId must be a non-empty value of at most 512 characters without control bytes");
 		}
 		const payloadDigest = digest(payload);
-		const path = join(this.root, `${operationId}.json`);
-		const lock = join(this.root, `${operationId}.lock`);
+		const storageKey = createHash("sha256").update(operationId).digest("hex");
+		const path = join(this.root, `${storageKey}.json`);
+		const lock = join(this.root, `${storageKey}.lock`);
 		await mkdir(this.root, { recursive: true, mode: 0o700 });
 		const existing = await this.read<T>(path);
 		if (existing) return this.resolve(existing, payloadDigest);
