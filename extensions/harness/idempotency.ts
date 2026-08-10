@@ -18,10 +18,12 @@ function digest(value: unknown): string {
 
 export class RepositoryMutex {
 	readonly path: string;
+	readonly waitTimeoutMs: number;
 	#tail: Promise<void> = Promise.resolve();
 
-	constructor(repositoryPrivateRoot: string) {
+	constructor(repositoryPrivateRoot: string, waitTimeoutMs = 30_000) {
 		this.path = join(repositoryPrivateRoot, "locks", "canonical");
+		this.waitTimeoutMs = waitTimeoutMs;
 	}
 
 	async recoverStale(): Promise<boolean> {
@@ -49,25 +51,45 @@ export class RepositoryMutex {
 		let releaseQueue!: () => void;
 		this.#tail = new Promise<void>((resolve) => (releaseQueue = resolve));
 		await previous;
-		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
 		try {
-			await mkdir(this.path);
-			await atomicWriteFile(join(this.path, "owner"), `${JSON.stringify({ owner, pid: process.pid, acquiredAt: new Date().toISOString() })}\n`, 0o600);
-		} catch {
-			let currentOwner = "unknown";
+			await this.acquire(owner);
 			try {
-				currentOwner = await readFile(join(this.path, "owner"), "utf8");
-			} catch {
-				// Preserve the lock and report it rather than guessing that it is stale.
+				return await operation();
+			} finally {
+				await rm(this.path, { recursive: true, force: true });
 			}
-			releaseQueue();
-			throw new HarnessError("RESOURCE_LOCKED", `Canonical repository operation is locked by ${currentOwner.trim()}`);
-		}
-		try {
-			return await operation();
 		} finally {
-			await rm(this.path, { recursive: true, force: true });
 			releaseQueue();
+		}
+	}
+
+	private async acquire(owner: string): Promise<void> {
+		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+		const deadline = Date.now() + this.waitTimeoutMs;
+		while (true) {
+			try {
+				await mkdir(this.path);
+				try {
+					await atomicWriteFile(join(this.path, "owner"), `${JSON.stringify({ owner, pid: process.pid, acquiredAt: new Date().toISOString() })}\n`, 0o600);
+					return;
+				} catch (error) {
+					await rm(this.path, { recursive: true, force: true });
+					throw error;
+				}
+			} catch (error) {
+				if (!(typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST")) throw error;
+			}
+			if (await this.recoverStale()) continue;
+			if (Date.now() >= deadline) {
+				let currentOwner = "unknown";
+				try {
+					currentOwner = await readFile(join(this.path, "owner"), "utf8");
+				} catch {
+					// The owner may still be writing its receipt; timeout remains fail-closed.
+				}
+				throw new HarnessError("RESOURCE_LOCKED", `Timed out waiting for canonical repository operation held by ${currentOwner.trim()}`);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
 	}
 }

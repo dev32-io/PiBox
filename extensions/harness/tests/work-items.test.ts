@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
+import { RepositoryMutex } from "../idempotency.js";
 import type { TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
 
@@ -86,6 +87,25 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	const approved = await store.approve("session-model");
 	assert.equal(approved.planning.status, "approved");
 	assert.equal(approved.planning.approvedRevision, 3);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("serializes complete canonical commits across independent mutex instances", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "concurrent", title: "Concurrent", kind: "change", intent: "Exercise canonical serialization" });
+	const privateRoot = await mkdtemp(join(tmpdir(), "pibox-private-mutex-"));
+	t.after(() => rm(privateRoot, { recursive: true, force: true }));
+	const first = new RepositoryMutex(privateRoot);
+	const second = new RepositoryMutex(privateRoot);
+	await Promise.all([
+		first.run("first-artifact", () => store.putArtifact({ workItemId: "concurrent", id: "first", type: "spec", content: "# First\n\nFirst contract.", operation: "create" })),
+		second.run("second-artifact", () => store.putArtifact({ workItemId: "concurrent", id: "second", type: "design", content: "# Second\n\nSecond contract.", operation: "create" })),
+	]);
+	const item = await store.read("concurrent");
+	assert.equal(item.planning.revision, 3);
+	assert.deepEqual(item.artifacts.map((artifact) => artifact.id).sort(), ["first", "intent", "second"]);
+	assert.equal(await git(root, "rev-list", "--count", "HEAD"), "4");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
