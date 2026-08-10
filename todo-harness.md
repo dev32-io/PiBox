@@ -20,7 +20,6 @@ Deferred ideas and follow-up work captured during the harness design brainstorm.
 
 ## Private run archive management
 
-- Design the final private control-plane path and repository identity scheme under the Pi user state directory.
 - Add explicit inspect, export, redact, and delete commands.
 - Add user-invoked cleanup by repository, work item, task, run, age, or size.
 - Add archive size accounting and warnings without automatic deletion.
@@ -57,7 +56,6 @@ Deferred ideas and follow-up work captured during the harness design brainstorm.
 
 ## Git and workspace lifecycle
 
-- Add stronger verification that child branches never modify orchestrator-owned `agent-artifacts/` directly.
 - Decide post-integration worktree and branch cleanup/retention policy.
 - Design recovery for partially created, abandoned, or externally modified worktrees.
 - Consider integration strategies beyond the initial orchestrator-controlled serial merge/cherry-pick flow.
@@ -77,16 +75,3 @@ Deferred ideas and follow-up work captured during the harness design brainstorm.
 - Compare harness versions, prompts, models, and scheduling policies through repeatable evals.
 - Add human-approved retro/promotion from run findings into project rules, skills, and test knowledge.
 - Periodically remove scaffolding that newer models no longer need; keep only empirically load-bearing harness behavior.
-
-## Current brainstorm topics still to design
-
-These remain in scope for the current design and are not deferred roadmap items:
-
-- Canonical `agent-artifacts/` metadata and artifact schemas.
-- Work-item, artifact, task, run, and evaluation state machines.
-- Per-role system prompts, tools, skills, and completion schemas.
-- Capability-based artifact and task communication APIs.
-- Context selection, reread, steer, and acknowledgement flow.
-- Planner task graph, concurrency judgment, and isolation validation.
-- Deterministic worktree allocation and orchestrator-controlled integration.
-- Evaluation, repair, evidence, and final completion workflow.

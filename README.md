@@ -7,6 +7,7 @@ Design and behavior contracts:
 - [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md)
 - [`docs/specs/feedback-hooks.md`](docs/specs/feedback-hooks.md)
 - [`docs/specs/agent-harness.md`](docs/specs/agent-harness.md)
+- [`docs/harness.md`](docs/harness.md) — setup, workflow, configuration, and verification
 
 ## Agent harness
 

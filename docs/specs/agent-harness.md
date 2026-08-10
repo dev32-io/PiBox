@@ -1,6 +1,6 @@
 # PiBox Agent Harness Design Specification
 
-**Status:** Draft for review  
+**Status:** Implemented v1
 **Date:** 2026-08-10  
 **Scope:** Full research, planning, execution, integration, evaluation, and recovery workflow
 

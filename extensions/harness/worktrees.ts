@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, runGit, type RepositoryIdentity } from "./repository.js";
@@ -79,7 +79,7 @@ export class WorktreeManager {
 	constructor(identity: RepositoryIdentity) {
 		this.identity = identity;
 		this.workItems = new WorkItemStore(identity.root);
-		this.worktreeRoot = join(identity.privateRoot, "worktrees");
+		this.worktreeRoot = join(dirname(dirname(identity.privateRoot)), "worktrees", identity.id);
 	}
 
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
