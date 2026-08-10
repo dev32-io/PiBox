@@ -1113,7 +1113,9 @@ task_launch
 agent_control
 agent_status
 task_integrate
-work_item_evaluate
+evaluation_launch
+evaluation_record
+work_item_complete
 harness_status
 ```
 
@@ -1324,16 +1326,14 @@ It never resets branches, deletes worktrees, or discards uncommitted worker chan
 ### 18.7 Agent controls
 
 ```text
-agent_steer
-agent_pause
-agent_resume
-agent_stop
-agent_restart
 agent_status
-agent_list
+agent_control(pause | stop)
+/harness pause <task>
+/harness resume <task>
+/harness stop <task>
 ```
 
-Pause is cooperative first: request a checkpoint and stop further work. After a bounded grace period it may abort the active run while preserving filesystem state. Resume may launch a fresh model session against the retained branch and checkpoint.
+Pause or stop terminates the active supervised process while preserving filesystem and private run state. Resume launches a fresh model session against the retained branch and checkpoint. Rich live steering, restart policies, and inbox controls remain deferred.
 
 ## 19. User experience
 
