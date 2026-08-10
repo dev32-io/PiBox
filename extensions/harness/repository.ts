@@ -24,6 +24,17 @@ export async function runGit(cwd: string, args: string[]): Promise<string> {
 	}
 }
 
+export async function isGitPathIgnored(repositoryRoot: string, repositoryRelativePath: string): Promise<boolean> {
+	try {
+		await execFileAsync("git", ["check-ignore", "--quiet", "--no-index", "--", repositoryRelativePath], { cwd: repositoryRoot, encoding: "utf8" });
+		return true;
+	} catch (error) {
+		if (typeof error === "object" && error !== null && "code" in error && error.code === 1) return false;
+		const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr).trim() : "";
+		throw new HarnessError("GIT_OPERATION_FAILED", stderr || `Unable to inspect Git ignore policy for ${repositoryRelativePath}`);
+	}
+}
+
 export async function discoverRepository(cwd: string, home = homedir()): Promise<RepositoryIdentity> {
 	let root: string;
 	try {

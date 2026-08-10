@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
-import { assertCleanRepository, runGit, type RepositoryIdentity } from "./repository.js";
+import { assertCleanRepository, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
 import type { TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
@@ -80,7 +80,7 @@ export class WorktreeManager {
 	constructor(identity: RepositoryIdentity) {
 		this.identity = identity;
 		this.workItems = new WorkItemStore(identity.root);
-		this.worktreeRoot = join(dirname(dirname(identity.privateRoot)), "worktrees", identity.id);
+		this.worktreeRoot = join(identity.root, ".worktree", "pibox");
 	}
 
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
@@ -95,6 +95,9 @@ export class WorktreeManager {
 		}
 		const branch = `harness/${safeSegment(workItemId)}/${safeSegment(task.id)}`;
 		const path = join(this.worktreeRoot, workItemId, task.id);
+		if (!(await isGitPathIgnored(this.identity.root, ".worktree/pibox/.ignore-check"))) {
+			throw new HarnessError("CONFIG_INVALID", "Repository-local harness worktrees require an effective /.worktree/ ignore rule. Run /harness init or add it to .gitignore before task launch.");
+		}
 		const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 		await mkdir(join(this.worktreeRoot, workItemId), { recursive: true, mode: 0o700 });
 

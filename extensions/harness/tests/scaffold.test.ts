@@ -35,7 +35,23 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.deepEqual(loaded.config.roles.implementer?.models, [{ model: "luna", effort: "medium" }]);
 	assert.deepEqual(loaded.config.roles["quality-reviewer"]?.models, [{ model: "luna", effort: "low" }]);
 	assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /Scaffold profile: economy/);
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.worktree/\n");
+	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
 	assert.equal((await scaffoldHarness(root, "standard")).created, false);
+});
+
+test("prepares the worktree ignore for an existing harness policy", async (t) => {
+	const root = await emptyRepository(t);
+	await writeFile(join(root, ".gitignore"), "dist/\n");
+	await import("node:fs/promises").then(({ mkdir }) => mkdir(join(root, ".pi"), { recursive: true }));
+	await writeFile(join(root, ".pi", "harness.yaml"), "schemaVersion: 1\n");
+	await git(root, "add", ".gitignore", ".pi/harness.yaml");
+	await git(root, "commit", "--quiet", "-m", "existing policy");
+	const result = await scaffoldHarness(root, "standard");
+	assert.equal(result.created, false);
+	assert.equal(result.worktreeIgnoreAdded, true);
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.worktree/\n");
+	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): ignore repository-local worktrees");
 });
 
 test("refuses to initialize over unrelated dirty work", async (t) => {

@@ -23,7 +23,8 @@ async function fixture(t: test.TestContext) {
 	await git(root, "config", "user.name", "Harness Test");
 	await git(root, "config", "user.email", "harness@example.test");
 	await writeFile(join(root, "README.md"), "fixture\n");
-	await git(root, "add", "README.md");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n");
+	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
 	return { parent, root, identity: await discoverRepository(root, join(parent, "home")) };
 }
@@ -68,6 +69,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	await store.approve("feature");
 	const manager = new WorktreeManager(identity);
 	const allocation = await manager.allocate("feature", await store.readTask("feature", "add-feature"));
+	assert.equal(allocation.path, join(identity.root, ".worktree", "pibox", "feature", "add-feature"));
 	await store.updateTask("feature", "add-feature", { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
 	await writeFile(join(allocation.path, "feature.txt"), "implemented\n");
 	await git(allocation.path, "add", "feature.txt");
@@ -94,6 +96,24 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	assert.equal(completed.state, "complete");
 	assert.match(await readFile(join(root, "agent-artifacts", "feature", "outcome.md"), "utf8"), /QUALITY-001/);
 	assert.match(await readFile(join(root, "agent-artifacts", "feature", "evidence", "feature-check", "manifest.yaml"), "utf8"), /checksum: sha256:/);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("refuses allocation when the repository-local worktree root is not ignored", async (t) => {
+	const { root, identity } = await fixture(t);
+	await writeFile(join(root, ".gitignore"), "");
+	await git(root, "add", ".gitignore");
+	await git(root, "commit", "--quiet", "-m", "remove ignore");
+	const store = new WorkItemStore(root);
+	await store.create({ id: "unignored", title: "Unignored", kind: "change", intent: "Test ignore enforcement" });
+	const manifest = task();
+	await store.defineTask({ workItemId: "unignored", manifest, brief: "Create a file", acceptance: "File exists" });
+	await store.submitPlanning("unignored");
+	await store.approve("unignored");
+	await assert.rejects(
+		new WorktreeManager(identity).allocate("unignored", await store.readTask("unignored", manifest.id)),
+		(error: unknown) => error instanceof Error && /\/\.worktree\//.test(error.message),
+	);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

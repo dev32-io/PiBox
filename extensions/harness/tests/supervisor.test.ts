@@ -44,7 +44,8 @@ test("supervises a child contribution through a validated terminal handoff", asy
 	await git(root, "config", "user.name", "Harness Test");
 	await git(root, "config", "user.email", "harness@example.test");
 	await writeFile(join(root, "README.md"), "fixture\n");
-	await git(root, "add", "README.md");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n");
+	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
 	const identity = await discoverRepository(root, join(parent, "home"));
 	const store = new WorkItemStore(root);

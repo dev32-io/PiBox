@@ -253,7 +253,14 @@ export default function harness(pi: ExtensionAPI): void {
 					runtime.config = loaded.config;
 					runtime.configDigest = loaded.digest;
 					await runtime.events.append("repository.scaffolded", scaffold);
-					return textResult(scaffold.created ? `Initialized ${scaffold.profile} harness policy at .pi/harness.yaml and committed ${scaffold.commit?.slice(0, 12)}.` : "Harness policy already exists; validated without overwriting it.", scaffold);
+					return textResult(
+						scaffold.created
+							? `Initialized ${scaffold.profile} harness policy and repository-local worktree ignore at ${scaffold.commit?.slice(0, 12)}.`
+							: scaffold.worktreeIgnoreAdded
+								? `Harness policy already exists; committed repository-local worktree ignore at ${scaffold.commit?.slice(0, 12)}.`
+								: "Harness policy and repository-local worktree ignore already exist; validated without overwriting them.",
+						scaffold,
+					);
 				});
 			} catch (error) {
 				throw new Error(describeHarnessError(error));

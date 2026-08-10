@@ -62,11 +62,13 @@ Task boundaries, integration grouping, and evaluator timing remain under orchest
 - Workers read canonical context through `task_context` and finish through `task_complete`.
 - `task_integrate` assembles every contribution in an integration unit, runs the supplied unit checks, creates one traceable commit, and fast-forwards the canonical branch.
 
-Worktrees live under:
+New task worktrees live inside the canonical repository under an ignored root:
 
 ```text
-~/.pi/agent/harness/worktrees/<repo-id>/<work-item>/<task>/
+<repository>/.worktree/pibox/<work-item>/<task>/
 ```
+
+`/harness init` ensures `/.worktree/` is ignored. Private run records and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
 
 A task can intentionally be partial. Review and tests may be deferred until its integration unit is meaningful.
 

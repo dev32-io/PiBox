@@ -47,10 +47,12 @@ Private run records are in:
 ~/.pi/agent/harness/repositories/<repo-id>/work-items/local-todo/runs/
 ```
 
-Task worktree:
+This pre-migration exercise used the legacy task-worktree path:
 
 ```text
 ~/.pi/agent/harness/worktrees/<repo-id>/local-todo/implement-local-todo/
 ```
+
+New allocations use `<repository>/.worktree/pibox/<work-item>/<task>/`; legacy recorded paths remain recoverable.
 
 The exercise intentionally used the small economy profile to reduce model cost while still covering configuration merge, approval, child capability loading, task completion, integration, independent evaluation, evidence, and final completion.

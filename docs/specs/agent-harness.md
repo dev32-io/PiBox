@@ -870,11 +870,11 @@ branch:
   harness/<work-item-id>/<task-id>
 
 worktree:
-  ~/.pi/agent/harness/worktrees/
-    <repo-id>/<work-item-id>/<task-id>
+  <canonical-repository>/.worktree/pibox/
+    <work-item-id>/<task-id>
 ```
 
-Allocation acquires a lock, verifies the selected base, records its exact commit, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`.
+Allocation acquires a lock, verifies the selected base, records its exact commit, proves the repository-local target is ignored, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`. Harness initialization idempotently ensures an effective root `/.worktree/` ignore rule. Private operational state remains under `~/.pi/agent/harness/`; legacy external worktrees remain recoverable at their recorded runtime paths.
 
 The harness never auto-stashes or auto-commits a dirty feature branch.
 
@@ -1209,11 +1209,9 @@ Capacity and infrastructure failures do not consume the protocol nudge or semant
 │                       ├── handoff.json
 │                       ├── checkpoint.json
 │                       └── commands/
-└── worktrees/
-    └── <repo-id>/<work-item-id>/<task-id>/
 ```
 
-Children interact through capabilities and do not choose operational paths.
+Repository-owned task checkouts live separately at `<canonical-repository>/.worktree/pibox/<work-item-id>/<task-id>/`. Children interact through capabilities and do not choose operational paths.
 
 ### 17.2 Event log
 
