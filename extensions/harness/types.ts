@@ -124,6 +124,16 @@ export interface TaskManifest {
 	};
 }
 
+export interface EvaluationFinding {
+	id: string;
+	severity: "low" | "medium" | "high" | "critical";
+	status: "open" | "accepted" | "rejected" | "duplicate" | "deferred" | "resolved" | "needs_user";
+	criterion?: string;
+	location?: string;
+	summary: string;
+	blocking: boolean;
+}
+
 export interface EvaluationManifest {
 	schemaVersion: 1;
 	id: string;
@@ -133,6 +143,7 @@ export interface EvaluationManifest {
 	required: boolean;
 	attempt: number;
 	methods: string[];
+	findings?: EvaluationFinding[];
 	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string };
 }
 

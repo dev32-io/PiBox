@@ -136,6 +136,10 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const auth = await authorized(ctx);
+				const item = await auth.workItems.read(auth.scope.workItemId);
+				if (item.planning.status !== "approved" || item.planning.revision !== auth.run.planningRevision) {
+					throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Task run is bound to planning r${auth.run.planningRevision}; canonical planning is ${item.planning.status} r${item.planning.revision}`);
+				}
 				const status = await runGit(ctx.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
 				if (status) throw new HarnessError("INVALID_HANDOFF", "Task worktree must be clean before completion", { status });
 				const head = await runGit(ctx.cwd, ["rev-parse", "HEAD"]);

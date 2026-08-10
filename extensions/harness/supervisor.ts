@@ -116,6 +116,12 @@ export class SubagentSupervisor {
 			finalText = execution.finalText || finalText;
 			const handoff = await runs.readHandoff(created.record.id);
 			if (handoff) {
+				const currentItem = await workItems.read(options.workItemId);
+				if (currentItem.planning.status !== "approved" || currentItem.planning.revision !== options.planningRevision) {
+					const run = await runs.update(created.record.id, { state: "interrupted", error: `Planning changed to ${currentItem.planning.status} r${currentItem.planning.revision}` }, "run.context_stale");
+					await workItems.updateTask(options.workItemId, options.task.id, { status: "paused" });
+					return { run, stderr, finalText };
+				}
 				const { runGit } = await import("./repository.js");
 				const head = await runGit(options.workspace, ["rev-parse", "HEAD"]);
 				const status = await runGit(options.workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);

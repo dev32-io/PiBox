@@ -426,6 +426,7 @@ export class WorkItemStore {
 		verdict: "pass" | "fail" | "blocked" | "not_applicable";
 		report: string;
 		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
+		findings?: NonNullable<EvaluationManifest["findings"]>;
 	}): Promise<EvaluationManifest> {
 		if (!input.report.trim()) throw new HarnessError("INVALID_ARTIFACT", "Evaluation report must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
@@ -466,6 +467,7 @@ export class WorkItemStore {
 			const status = input.verdict === "pass" ? "passed" : input.verdict === "fail" ? "failed" : input.verdict;
 			evaluation.status = status;
 			evaluation.attempt += 1;
+			if (input.findings) evaluation.findings = input.findings;
 			evaluation.result = {
 				verdict: input.verdict,
 				report: "report.md",
@@ -506,6 +508,9 @@ export class WorkItemStore {
 			const manifest = await this.readEvaluation(workItemId, evaluation.id);
 			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
 				throw new HarnessError("INVALID_HANDOFF", `Required evaluation has not passed: ${evaluation.id}`);
+			}
+			if (manifest.findings?.some((finding) => finding.blocking && (finding.status === "open" || finding.status === "accepted" || finding.status === "needs_user"))) {
+				throw new HarnessError("INVALID_HANDOFF", `Evaluation has an unresolved blocking finding: ${evaluation.id}`);
 			}
 		}
 		const indexPath = join(root, "index.yaml");
