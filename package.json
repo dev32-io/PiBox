@@ -28,6 +28,7 @@
   },
   "pi": {
     "extensions": [
+      "./extensions/harness/index.ts",
       "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",
       "./extensions/providers/local-llm/index.ts",
@@ -53,5 +54,9 @@
     "@types/node": "^24.10.0",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "typebox": "^1.3.12",
+    "yaml": "^2.9.0"
   }
 }

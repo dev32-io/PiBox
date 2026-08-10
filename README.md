@@ -1,11 +1,23 @@
 # PiBox
 
-PiBox is a visual, feedback, and provider package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; sound feedback hooks; and `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints.
+PiBox is a visual, feedback, provider, and workflow package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; sound feedback hooks; `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints; and a capability-backed development harness.
 
 Design and behavior contracts:
 
 - [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md)
 - [`docs/specs/feedback-hooks.md`](docs/specs/feedback-hooks.md)
+- [`docs/specs/agent-harness.md`](docs/specs/agent-harness.md)
+
+## Agent harness
+
+The harness extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. Initial capabilities cover work-item creation, spec/design/decision artifact mutation, planning submission, direct user approval, configuration/model policy, and status inspection.
+
+```text
+/harness status
+/harness approve <work-item-id>
+```
+
+Canonical mutations require a trusted, clean Git repository and create traceable commits. The remaining scheduler, supervised subagents, integration units, and recovery controls are being implemented against the harness specification.
 
 ## Sound feedback
 
@@ -22,6 +34,7 @@ Local preview, without loading globally installed extensions:
 
 ```bash
 pi --no-extensions \
+  -e ./extensions/harness/index.ts \
   -e ./extensions/feedback/sound-hooks/index.ts \
   -e ./extensions/providers/ollama-cloud/index.ts \
   -e ./extensions/providers/local-llm/index.ts \
