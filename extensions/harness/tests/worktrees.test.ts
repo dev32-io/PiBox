@@ -99,8 +99,8 @@ test("resource claims fail closed while held and can be reacquired after release
 	const { identity } = await fixture(t);
 	const first = new ResourceLockSet(identity.privateRoot);
 	const second = new ResourceLockSet(identity.privateRoot);
-	await first.acquire(["shared-schema"], "first");
-	await assert.rejects(second.acquire(["shared-schema"], "second"));
+	await first.acquire(["shared-schema", "index.html"], "first");
+	await assert.rejects(second.acquire(["index.html"], "second"));
 	await first.release();
 	await second.acquire(["shared-schema"], "second");
 	await second.release();

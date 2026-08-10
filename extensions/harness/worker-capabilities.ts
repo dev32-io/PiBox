@@ -38,7 +38,7 @@ async function authorized(ctx: ExtensionContext) {
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
 export function isWorkerProcess(): boolean {
-	return Boolean(process.env.PIBOX_HARNESS_RUN_ID);
+	return Boolean(process.env.PIBOX_HARNESS_TASK);
 }
 
 export function registerWorkerCapabilities(pi: ExtensionAPI): void {
@@ -77,7 +77,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 				const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
 				return result(content, { revision: item.planning.revision, contractDigest: item.planning.contractDigest, contentDigest: digest });
 			} catch (error) {
-				return result(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -98,7 +98,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 				await auth.runs.writeCheckpoint(auth.scope.runId, { ...params, at: new Date().toISOString() });
 				return result("Checkpoint persisted.");
 			} catch (error) {
-				return result(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -116,7 +116,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					if (name === "task_blocked") await auth.runs.update(auth.scope.runId, { state: "interrupted", error: params.summary }, "run.blocked");
 					return result("Message persisted for the orchestrator.");
 				} catch (error) {
-					return result(describeHarnessError(error), { error: true });
+					throw new Error(describeHarnessError(error));
 				}
 			},
 		});
@@ -165,7 +165,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 				await auth.runs.writeHandoff(auth.scope.runId, handoff);
 				return result("Terminal task handoff accepted.", handoff);
 			} catch (error) {
-				return result(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});

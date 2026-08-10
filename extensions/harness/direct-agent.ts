@@ -18,6 +18,7 @@ export interface DirectAgentOptions {
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
 	onSpawn?: (pid: number | undefined) => void;
+	onEvent?: (event: unknown) => void;
 	promptPath?: string;
 	env?: Record<string, string>;
 }
@@ -83,6 +84,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				try {
 					const event = JSON.parse(line) as unknown;
 					events.push(event);
+					options.onEvent?.(event);
 					const text = extractText(event);
 					if (text) options.onText?.(text);
 				} catch {

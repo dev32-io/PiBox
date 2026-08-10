@@ -212,7 +212,7 @@ export default function harness(pi: ExtensionAPI): void {
 				launched,
 			);
 		} catch (error) {
-			return textResult(describeHarnessError(error), { error: true });
+			throw new Error(describeHarnessError(error));
 		} finally {
 			await locks?.release();
 		}
@@ -229,7 +229,7 @@ export default function harness(pi: ExtensionAPI): void {
 				const status = await snapshot(await runtimeFor(ctx));
 				return textResult(formatStatus(status), status);
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -256,7 +256,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(scaffold.created ? `Initialized ${scaffold.profile} harness policy at .pi/harness.yaml and committed ${scaffold.commit?.slice(0, 12)}.` : "Harness policy already exists; validated without overwriting it.", scaffold);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -282,7 +282,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Created and committed ${item.kind} ${item.id} at planning revision ${item.planning.revision}.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -300,7 +300,7 @@ export default function harness(pi: ExtensionAPI): void {
 				const evaluations = await Promise.all(item.evaluations.map((evaluation) => runtime.workItems.readEvaluation(item.id, evaluation.id)));
 				return textResult(`${item.id}: ${item.phase}/${item.state}, planning ${item.planning.status} r${item.planning.revision}\n${tasks.map((task) => `- ${task.id}: ${task.status}`).join("\n")}`, { item, tasks, evaluations });
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -330,7 +330,7 @@ export default function harness(pi: ExtensionAPI): void {
 						return textResult(`${operation === "create" ? "Created" : "Updated"} ${params.type} ${params.id}; planning is ${item.planning.status} at r${item.planning.revision}.`, item);
 					});
 				} catch (error) {
-					return textResult(describeHarnessError(error), { error: true });
+					throw new Error(describeHarnessError(error));
 				}
 			},
 		});
@@ -350,7 +350,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Linked ${params.artifactId} to ${params.links.join(", ")}.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -369,7 +369,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Reconciled ${item.id}: planning ${item.planning.status} r${item.planning.revision}.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -450,7 +450,7 @@ export default function harness(pi: ExtensionAPI): void {
 				return textResult(`Defined task ${manifest.id} in integration unit ${manifest.assembly.integrationUnit}; planning r${item.planning.revision}.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -473,7 +473,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Task ${task.id} is now ${task.status}.`, task);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -511,7 +511,7 @@ export default function harness(pi: ExtensionAPI): void {
 				return textResult(`Defined ${manifest.type} evaluation ${manifest.id}.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -564,7 +564,7 @@ export default function harness(pi: ExtensionAPI): void {
 				await runtime.events.append("agent.direct_completed", { role: params.role, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
 				return textResult(direct.text || direct.stderr || `Specialist exited ${direct.exitCode}.`, direct);
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -641,6 +641,7 @@ export default function harness(pi: ExtensionAPI): void {
 						},
 						...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
 						onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
+						onEvent: (event) => void runs.appendTranscript(created.record.id, event),
 						...(signal ? { signal } : {}),
 						...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { runId: created.record.id, state: "running" })) } : {}),
 					});
@@ -665,7 +666,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, evaluation: recorded, handoff });
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -680,7 +681,7 @@ export default function harness(pi: ExtensionAPI): void {
 				const runtime = await runtimeFor(ctx);
 				return runtime.operations.execute(toolCallId, params, () => launchManagedTask(ctx, params.workItemId, params.taskId, signal, onUpdate));
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -701,7 +702,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Integrated ${params.integrationUnit} as ${integrated.commit.slice(0, 12)} with ${integrated.tasks.length} task contribution(s).`, integrated);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -760,7 +761,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Recorded ${evaluation.id} attempt ${evaluation.attempt}: ${params.verdict}.`, evaluation);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -780,7 +781,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Completed ${item.id}.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -800,7 +801,7 @@ export default function harness(pi: ExtensionAPI): void {
 					return textResult(`Planning for ${item.id} r${item.planning.revision} is awaiting user approval.`, item);
 				});
 			} catch (error) {
-				return textResult(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -877,10 +878,11 @@ export default function harness(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		const disallowed = new Set<string>();
-		if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
+		if (isWorkerProcess() || isEvaluatorProcess()) return;
 		try {
 			sessionRuntime = await createRuntime(ctx);
 			const staleLockRecovered = await sessionRuntime.mutex.recoverStale();

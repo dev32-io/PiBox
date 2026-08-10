@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -48,11 +48,12 @@ export class ResourceLockSet {
 
 	async acquire(claims: string[], owner: string): Promise<void> {
 		for (const claim of [...new Set(claims)].sort()) {
-			safeSegment(claim);
-			const path = join(this.lockRoot, claim);
+			if (!claim || claim.length > 512 || /[\u0000-\u001f\u007f]/.test(claim)) throw new HarnessError("INVALID_ARTIFACT", "Resource claims must be non-empty, at most 512 characters, and contain no control bytes");
+			const lockId = createHash("sha256").update(claim).digest("hex");
+			const path = join(this.lockRoot, lockId);
 			try {
 				await mkdir(path, { recursive: false });
-				await import("node:fs/promises").then(({ writeFile }) => writeFile(join(path, "owner"), `${owner}\n`, { mode: 0o600 }));
+				await import("node:fs/promises").then(({ writeFile }) => writeFile(join(path, "owner"), `${JSON.stringify({ owner, claim })}\n`, { mode: 0o600 }));
 				this.#acquired.push(path);
 			} catch (error) {
 				await this.release();

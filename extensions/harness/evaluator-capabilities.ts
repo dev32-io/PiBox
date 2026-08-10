@@ -50,7 +50,7 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 				if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${params.artifactId}`);
 				return response(await readFile(join(auth.workItems.workItemRoot(item.id), artifact.path), "utf8"), { revision: item.planning.revision });
 			} catch (error) {
-				return response(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
@@ -67,7 +67,7 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 					await auth.runs.appendEvent(auth.scope.runId, name.replaceAll("_", "."), params.data);
 					return response("Evaluation run data persisted.");
 				} catch (error) {
-					return response(describeHarnessError(error), { error: true });
+					throw new Error(describeHarnessError(error));
 				}
 			},
 		});
@@ -109,7 +109,7 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 				await auth.runs.writeEvaluationHandoff(auth.scope.runId, handoff);
 				return response("Terminal evaluation handoff accepted.", handoff);
 			} catch (error) {
-				return response(describeHarnessError(error), { error: true });
+				throw new Error(describeHarnessError(error));
 			}
 		},
 	});
