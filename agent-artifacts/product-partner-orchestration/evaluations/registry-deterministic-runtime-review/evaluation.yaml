@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: registry-deterministic-runtime-review
+type: combined-review
+scope:
+  integrationUnit: session-agent-registry
+status: planned
+required: true
+attempt: 0
+methods:
+  - Run deterministic registry unit and replay tests.
+  - Exercise concurrent reservations at and above capacity, depth-two rejection,
+    state transitions, stale-lock recovery, snapshot replacement, event
+    sequencing, and interrupted operations.
+  - Inspect that failed reservations do not spawn processes or leave partial
+    assignments.
+criteria:
+  - product-partner-and-subagent-lifecycle#AC-008
+  - product-partner-and-subagent-lifecycle#AC-009
+  - product-partner-and-subagent-lifecycle#AC-010
+  - product-partner-and-subagent-lifecycle#AC-015

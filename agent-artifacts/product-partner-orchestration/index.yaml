@@ -44,6 +44,8 @@ tasks:
 evaluations:
   - id: prompt-behavior-review
     path: evaluations/prompt-behavior-review/evaluation.yaml
+  - id: registry-deterministic-runtime-review
+    path: evaluations/registry-deterministic-runtime-review/evaluation.yaml
 integrationUnits:
   - id: prompt-contracts
     tasks:
