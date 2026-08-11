@@ -99,6 +99,8 @@ interface RegistrySnapshot {
 export interface AgentMessageRecord {
 	schemaVersion: 1;
 	id: string;
+	operationId: string;
+	payloadDigest: string;
 	agentId: string;
 	type: "decision_report" | "change_request" | "blocked";
 	status: "open" | "answered" | "closed";
@@ -262,14 +264,26 @@ export class SessionAgentRegistry {
 		})).agent;
 	}
 
-	async recordMessage(agentId: string, input: Omit<AgentMessageRecord, "schemaVersion" | "id" | "agentId" | "status" | "createdAt" | "updatedAt">): Promise<AgentMessageRecord> {
+	async recordMessage(agentId: string, input: Omit<AgentMessageRecord, "schemaVersion" | "id" | "payloadDigest" | "agentId" | "status" | "createdAt" | "updatedAt">): Promise<AgentMessageRecord> {
 		return this.mutex.run(`agent-message:${agentId}:${randomUUID()}`, async () => {
 			const snapshot = await this.read();
 			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
 			if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
 			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new HarnessError("CAPABILITY_DENIED", "Terminal agents cannot create messages");
+			if (!input.operationId) throw new HarnessError("INVALID_ARTIFACT", "Agent message operation ID is required");
+			const payloadDigest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+			const messageRoot = join(this.root, "agents", agentId, "messages");
+			for (const entry of await readdir(messageRoot).catch(() => [])) {
+				const content = await readTextIfExists(join(messageRoot, entry));
+				if (!content) continue;
+				const existing = JSON.parse(content) as AgentMessageRecord;
+				if (existing.operationId === input.operationId) {
+					if (existing.payloadDigest !== payloadDigest) throw new HarnessError("CAPABILITY_DENIED", `Agent message operation ${input.operationId} was replayed with a different payload`);
+					return existing;
+				}
+			}
 			const now = new Date().toISOString();
-			const message: AgentMessageRecord = { schemaVersion: 1, id: randomUUID(), agentId, status: "open", createdAt: now, updatedAt: now, ...input };
+			const message: AgentMessageRecord = { schemaVersion: 1, id: randomUUID(), payloadDigest, agentId, status: "open", createdAt: now, updatedAt: now, ...input };
 			if (input.blocking) {
 				const target: AgentState = input.type === "change_request" ? "waiting_decision" : "blocked";
 				if (!TRANSITIONS[agent.state].has(target)) throw this.invalidTransition(agent.state, target);

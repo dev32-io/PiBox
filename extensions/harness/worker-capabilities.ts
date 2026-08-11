@@ -110,7 +110,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 			label: name.split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" "),
 			description: name === "task_report_decision" ? "Persist a non-blocking delegated decision for the orchestrator and final handoff." : "Persist a blocking request for the orchestrator, checkpoint safe work, and end this process attempt.",
 			parameters: Type.Object({ summary: Type.String(), rationale: Type.String(), evidence: Type.Optional(Type.Array(Type.Object({ source: Type.String(), observation: Type.String() }))), options: Type.Optional(Type.Array(Type.String())), recommendation: Type.Optional(Type.String()) }),
-			async execute(_id, params, _signal, _update, ctx) {
+			async execute(toolCallId, params, _signal, _update, ctx) {
 				try {
 					const auth = await authorized(ctx);
 					await auth.runs.appendEvent(auth.scope.runId, name.replaceAll("_", "."), params);
@@ -121,6 +121,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					if (privateRoot && sessionId && agentId) {
 						const registry = new SessionAgentRegistry(privateRoot, sessionId);
 						message = await registry.recordMessage(agentId, {
+							operationId: toolCallId,
 							type: name === "task_report_decision" ? "decision_report" : name === "task_request_change" ? "change_request" : "blocked",
 							blocking: name !== "task_report_decision",
 							summary: params.summary,

@@ -48,7 +48,7 @@ test("resumes a waiting assignment as another process attempt under the same slo
 	const first = await registry.startAttempt(original.id);
 	await registry.markRunning(original.id, first.attempt.id, 111);
 	await registry.recordExit(original.id, first.attempt.id, 0);
-	await registry.recordMessage(original.id, { type: "change_request", blocking: true, summary: "Need a choice", rationale: "Contract ambiguity", evidence: [] });
+	await registry.recordMessage(original.id, { operationId: "message-1", type: "change_request", blocking: true, summary: "Need a choice", rationale: "Contract ambiguity", evidence: [] });
 	const fake = join(root, "fake-resume.mjs");
 	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"resumed"}]}}));\n`);
 	const coordinator = new LaunchCoordinator(registry, "main:session-1", () => ({ command: process.execPath, args: [fake] }));

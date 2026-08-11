@@ -81,10 +81,14 @@ test("persists blocking requests and responses without releasing the logical slo
 	const agent = await registry.reserve(input(1));
 	const { attempt } = await registry.startAttempt(agent.id);
 	await registry.markRunning(agent.id, attempt.id, 1234);
-	const message = await registry.recordMessage(agent.id, { type: "change_request", blocking: true, summary: "Contract must change", rationale: "Schema cannot represent the state", evidence: [{ source: "src/schema.ts", observation: "Field is required" }], options: ["Change schema"], recommendation: "Change schema" });
+	const message = await registry.recordMessage(agent.id, { operationId: "message-1", type: "change_request", blocking: true, summary: "Contract must change", rationale: "Schema cannot represent the state", evidence: [{ source: "src/schema.ts", observation: "Field is required" }], options: ["Change schema"], recommendation: "Change schema" });
 	assert.equal((await registry.get(agent.id)).state, "waiting_decision");
 	assert.equal(await registry.activeCount(), 1);
 	assert.equal((await registry.listMessages(agent.id))[0]?.id, message.id);
+	await assert.rejects(registry.recordMessage(agent.id, { operationId: "message-1", type: "change_request", blocking: true, summary: "Different", rationale: "Different", evidence: [] }), /different payload/);
+	const replay = await registry.recordMessage(agent.id, { operationId: "message-1", type: "change_request", blocking: true, summary: "Contract must change", rationale: "Schema cannot represent the state", evidence: [{ source: "src/schema.ts", observation: "Field is required" }], options: ["Change schema"], recommendation: "Change schema" });
+	assert.equal(replay.id, message.id);
+	assert.equal((await registry.listMessages(agent.id)).length, 1);
 	const answered = await registry.respondMessage(agent.id, message.id, "Use a nullable field");
 	assert.equal(answered.status, "answered");
 	assert.equal(answered.response, "Use a nullable field");
