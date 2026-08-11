@@ -28,7 +28,7 @@ const WORKER_TOOL_NAMES = new Set([
 	"task_complete",
 ]);
 const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
-const ORCHESTRATOR_CONTRACT = `PiBox harness routing:\nKeep ordinary work ad hoc unless durable planning, direct approval, isolated contributions, or evidence-backed completion adds value. For new managed work, call work_item_create first with kind change or story; then create its artifacts, tasks, evaluations, and submit planning. For existing managed work, identify the current boundary and use the matching harness skill: research, plan, execute, evaluate, or recover. The user owns intent, approval, destructive actions, and explicitly reserved decisions. The main session owns synthesis, proportional workflow choices, and canonical artifacts; specialists provide bounded contributions and evidence. Use canonical capabilities instead of editing agent-artifacts directly. Treat task completion as a contribution and verify at the smallest coherent integration boundary. Make completion claims only from fresh recorded evidence and the deterministic completion gate.`;
+const ORCHESTRATOR_CONTRACT = `PiBox harness routing:\nKeep ordinary work ad hoc unless durable planning, direct approval, isolated contributions, or evidence-backed completion adds value. Before creating managed artifacts, clarify intent with the user. Inspect repository and external facts yourself; put material product, scope, and trade-off decisions to the user rather than silently choosing defaults. Work unresolved decisions as a dependency tree: ask one numbered round of currently answerable questions, include a recommendation for each, then wait. Do not mutate canonical planning until the user confirms shared understanding and asks to draft, unless they explicitly delegate the remaining choices. After drafting, summarize the contract and invite correction; call planning_submit only after the user says it is ready for approval. For existing managed work, identify the current boundary and use the matching harness skill: research, plan, execute, evaluate, or recover. The user owns intent, approval, destructive actions, and explicitly reserved decisions. The main session owns synthesis, proportional workflow choices, and canonical artifacts; specialists provide bounded contributions and evidence. Use canonical capabilities instead of editing agent-artifacts directly. Treat task completion as a contribution and verify at the smallest coherent integration boundary. Make completion claims only from fresh recorded evidence and the deterministic completion gate.`;
 
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"harness_status",
@@ -273,8 +273,8 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "work_item_create",
 		label: "Create Work Item",
-		description: "Create and atomically commit a managed change or story. Prefer schema-v2 semantic intent sections; Markdown is rendered deterministically.",
-		promptSnippet: "Create a committed managed change or story after deciding harness ceremony is warranted",
+		description: "Create and atomically commit a managed change or story after the user has confirmed shared intent and requested a draft. Prefer schema-v2 semantic intent sections; Markdown is rendered deterministically.",
+		promptSnippet: "Create a committed managed change or story only after user-confirmed clarification and a request to draft",
 		parameters: Type.Union([
 			Type.Object({
 				id: Type.String({ description: "Stable kebab-case work-item id" }), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]),
@@ -833,7 +833,7 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "planning_submit",
 		label: "Submit Harness Planning",
-		description: "Freeze the current deliverable-contract digest and mark a managed work item as awaiting direct user approval.",
+		description: "After the user reviews the drafted contract and says it is ready, freeze its digest and mark it as awaiting direct user approval.",
 		parameters: Type.Object({ workItemId: Type.String({ description: "Managed work-item id" }) }),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {

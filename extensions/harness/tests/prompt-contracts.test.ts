@@ -27,6 +27,20 @@ test("role prompts use instruction contracts instead of identity preambles", asy
 	}
 });
 
+test("orchestrator and planner require user clarification before canonical planning", async () => {
+	const orchestrator = await readFile(join(root, "extensions/harness/index.ts"), "utf8");
+	const planner = await readFile(join(root, "skills/harness-plan/SKILL.md"), "utf8");
+	const critic = await readFile(join(root, "extensions/harness/roles/plan-critic.md"), "utf8");
+	assert.match(orchestrator, /ask one numbered round[\s\S]+then wait/i);
+	assert.match(orchestrator, /Do not mutate canonical planning until the user confirms shared understanding/i);
+	assert.match(orchestrator, /planning_submit only after the user says it is ready/i);
+	assert.match(planner, /Map unresolved decisions as a dependency tree/i);
+	assert.match(planner, /give a recommended answer/i);
+	assert.match(planner, /Do not call `work_item_create`[\s\S]+before that confirmation/i);
+	assert.match(planner, /Invite corrections and wait/i);
+	assert.match(critic, /silently invented product and technical choices as blocking/i);
+});
+
 test("skill descriptions are trigger-only context pointers", async () => {
 	for (const surface of BUILT_IN_PROMPT_SURFACES.filter((entry) => entry.category === "skill")) {
 		const content = await readFile(join(root, surface.source), "utf8");
