@@ -1,0 +1,42 @@
+schemaVersion: 1
+id: atomic-session-agent-registry
+title: Atomic session-agent registry
+status: ready
+dependsOn: []
+references:
+  specs:
+    - product-partner-and-subagent-lifecycle
+  designs:
+    - orchestration-and-agent-registry-design
+  decisions:
+    - active-agent-slot-accounting
+    - background-agent-liveness
+execution:
+  isolation: worktree
+  parallelism: allowed
+  resourceClaims:
+    - private-session-registry
+    - registry-lock
+    - runtime-state-test-fixtures
+  complexity: critical
+  assignment:
+    role: implementer
+    model: luna
+    effort: xhigh
+    minimumCapabilityRank: 0
+    allowFallback: false
+    rationale: Luna is assigned for cross-process atomicity, deterministic state
+      invariants, and concurrency-sensitive runtime behavior.
+assembly:
+  integrationUnit: session-agent-registry
+  intermediateState: complete
+verification:
+  timing: integration-unit
+  methods:
+    - registry unit tests
+    - concurrent reservation tests
+    - replay and interrupted-transaction tests
+  taskChecks:
+    - npm test -- --runInBand
+  rationale: Registry correctness requires its coherent runtime boundary and
+    cannot be meaningfully split across individual files.
