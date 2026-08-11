@@ -5,7 +5,7 @@ import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import type { EvaluationManifest, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
+import type { EvaluationManifest, MutationAuthority, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions" } as const;
@@ -17,6 +17,30 @@ function collectQualifiedCriteria(value: unknown, found = new Set<string>()): st
 	} else if (Array.isArray(value)) value.forEach((entry) => collectQualifiedCriteria(entry, found));
 	else if (value && typeof value === "object") Object.values(value).forEach((entry) => collectQualifiedCriteria(entry, found));
 	return [...found];
+}
+
+export function approvalCoversCurrentRevision(index: WorkItemIndex): boolean {
+	if (index.planning.status !== "approved" || index.planning.approvedRevision === undefined) return false;
+	if (index.planning.approvedRevision === index.planning.revision) return true;
+	return index.planning.approvalAmendments?.some((amendment) => amendment.revision === index.planning.revision) ?? false;
+}
+
+function assertContractMutable(index: WorkItemIndex): void {
+	if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${index.id} is finalized; reopen it before mutation`);
+}
+
+function advanceContractRevision(index: WorkItemIndex, authority?: MutationAuthority): void {
+	index.planning.revision += 1;
+	if (index.planning.status === "approved" && authority?.disposition === "retain-approval" && index.planning.approvedRevision !== undefined) {
+		index.planning.approvalAmendments = [
+			...(index.planning.approvalAmendments ?? []),
+			{ revision: index.planning.revision, at: new Date().toISOString(), decidedBy: "orchestrator", disposition: "retain-approval", rationale: authority.rationale, sources: authority.sources ?? [] },
+		];
+		return;
+	}
+	const hasPriorApproval = index.planning.approvedRevision !== undefined;
+	index.planning.status = index.planning.status === "approved" || (hasPriorApproval && authority?.disposition === "request-user") ? "stale" : "draft";
+	if (hasPriorApproval && authority?.disposition === "request-user") index.state = "waiting_user";
 }
 
 function validateId(id: string, label: string): void {
@@ -54,7 +78,7 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	if (!index.phase || !["planning", "execution", "evaluation", "complete"].includes(index.phase)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid phase`);
 	}
-	if (!index.state || !["active", "waiting_user", "paused", "blocked", "failed", "complete"].includes(index.state)) {
+	if (!index.state || !["active", "waiting_user", "paused", "postponed", "blocked", "failed", "complete", "archived"].includes(index.state)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid state`);
 	}
 	if (
@@ -66,7 +90,14 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid planning metadata`);
 	}
-	if (index.planning.status === "approved" && index.planning.approvedRevision !== index.planning.revision) {
+	if (index.planning.approvalAmendments !== undefined) {
+		if (!Array.isArray(index.planning.approvalAmendments) || index.planning.approvalAmendments.some((amendment) => !Number.isInteger(amendment.revision) || amendment.revision <= 0 || amendment.revision > index.planning!.revision! || !amendment.rationale?.trim() || !Array.isArray(amendment.sources))) {
+			throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid approval amendments`);
+		}
+		const revisions = index.planning.approvalAmendments.map((amendment) => amendment.revision);
+		if (new Set(revisions).size !== revisions.length || revisions.some((revision, position) => position > 0 && revision <= revisions[position - 1]!)) throw new HarnessError("INVALID_ARTIFACT", `${source} has unordered or duplicate approval amendments`);
+	}
+	if (index.planning.status === "approved" && !approvalCoversCurrentRevision(index as WorkItemIndex)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has inconsistent approval metadata`);
 	}
 	if (!Array.isArray(index.artifacts) || !Array.isArray(index.tasks) || !Array.isArray(index.evaluations)) {
@@ -149,15 +180,35 @@ export async function computeContractDigest(workItemRoot: string): Promise<strin
 	for (const directory of ["specs", "design", "decisions"]) {
 		candidates.push(...(await listFilesRecursively(join(workItemRoot, directory))));
 	}
+	const taskManifests: string[] = [];
 	for (const path of await listFilesRecursively(join(workItemRoot, "tasks"))) {
-		if (basename(path) === "acceptance.md") candidates.push(path);
+		if (basename(path) === "acceptance.md" || basename(path) === "brief.md") candidates.push(path);
+		if (basename(path) === "task.yaml") taskManifests.push(path);
 	}
+	const evaluationManifests = (await listFilesRecursively(join(workItemRoot, "evaluations"))).filter((path) => basename(path) === "evaluation.yaml");
 	const hash = createHash("sha256");
 	for (const path of candidates.sort()) {
 		if (!(await pathExists(path))) continue;
 		hash.update(relative(workItemRoot, path));
 		hash.update("\0");
 		hash.update(await readFile(path));
+		hash.update("\0");
+	}
+	for (const path of taskManifests.sort()) {
+		const task = parse(await readFile(path, "utf8")) as Record<string, unknown>;
+		delete task.status;
+		delete task.runtime;
+		hash.update(relative(workItemRoot, path));
+		hash.update("\0");
+		hash.update(stringify(task));
+		hash.update("\0");
+	}
+	for (const path of evaluationManifests.sort()) {
+		const evaluation = parse(await readFile(path, "utf8")) as Record<string, unknown>;
+		for (const key of ["status", "attempt", "findings", "result"]) delete evaluation[key];
+		hash.update(relative(workItemRoot, path));
+		hash.update("\0");
+		hash.update(stringify(evaluation));
 		hash.update("\0");
 	}
 	return `sha256:${hash.digest("hex")}`;
@@ -195,6 +246,14 @@ export class WorkItemStore {
 		const path = join(this.workItemRoot(id), "index.yaml");
 		if (!(await pathExists(path))) throw new HarnessError("WORK_ITEM_NOT_FOUND", `Work item does not exist: ${id}`);
 		return parseWorkItemIndex(await readFile(path, "utf8"), path);
+	}
+
+	async assertCurrentApproval(id: string): Promise<WorkItemIndex> {
+		const item = await this.read(id);
+		if (!approvalCoversCurrentRevision(item)) throw new HarnessError("STALE_PLANNING_REVISION", `Work item ${id} does not have current approval`);
+		const digest = await computeContractDigest(this.workItemRoot(id));
+		if (digest !== item.planning.contractDigest) throw new HarnessError("STALE_PLANNING_REVISION", `Work item ${id} changed outside canonical resource capabilities`);
+		return item;
 	}
 
 	async create(input: { id: string; title: string; kind: WorkItemKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
@@ -246,30 +305,68 @@ export class WorkItemStore {
 		}
 	}
 
+	async reviseWorkItem(input: { workItemId: string; expectedRevision?: number; title?: string; kind?: WorkItemKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(input.workItemId);
+		const index = await this.read(input.workItemId);
+		assertContractMutable(index);
+		if (input.expectedRevision !== undefined && input.expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${input.expectedRevision}, found ${index.planning.revision}`);
+		const indexPath = join(root, "index.yaml");
+		const intentPath = join(root, "intent.md");
+		const previousIndex = await readFile(indexPath, "utf8");
+		const previousIntent = await readFile(intentPath, "utf8");
+		if (input.title !== undefined) {
+			if (!input.title.trim()) throw new HarnessError("INVALID_ARTIFACT", "Work-item title must not be empty");
+			index.title = input.title.trim();
+		}
+		if (input.kind !== undefined) index.kind = input.kind;
+		if (input.intent !== undefined || input.intentSections !== undefined) {
+			const version = input.narrativeSchemaVersion ?? index.artifacts.find((artifact) => artifact.id === "intent")?.narrativeSchemaVersion ?? 1;
+			const content = version === 2 ? renderArtifact("intent", `Intent: ${index.title}`, input.intentSections ?? {}) : input.intent;
+			if (!content?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Intent must not be empty");
+			await atomicWriteFile(intentPath, `${content.trim()}\n`);
+			const intent = index.artifacts.find((artifact) => artifact.id === "intent");
+			if (intent) intent.narrativeSchemaVersion = version;
+		}
+		advanceContractRevision(index, input.authority);
+		try {
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([intentPath, indexPath], `harness(${input.workItemId}): revise work item`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path: intentPath, content: previousIntent }, { path: indexPath, content: previousIndex }]);
+			throw error;
+		}
+	}
+
 	async putArtifact(input: {
 		workItemId: string;
 		id: string;
 		type: MutableArtifactType;
 		content?: string;
+		renderedContent?: string;
 		sections?: SemanticSections;
 		title?: string;
 		narrativeSchemaVersion?: 1 | 2;
 		operation?: "create" | "update" | "upsert";
+		authority?: MutationAuthority;
 	}): Promise<WorkItemIndex> {
 		validateId(input.id, "Artifact id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
-		const content = narrativeSchemaVersion === 2
+		const content = input.renderedContent ?? (narrativeSchemaVersion === 2
 			? (() => {
 				if (!input.sections) throw new HarnessError("INVALID_ARTIFACT", `${input.type} schema-v2 mutation requires semantic sections`);
 				if (input.content !== undefined) throw new HarnessError("INVALID_ARTIFACT", `${input.type} schema-v2 mutation does not accept raw Markdown content`);
 				if (input.type === "spec") acceptanceCriterionIds(input.sections);
 				return renderArtifact(input.type, input.title ?? input.id, input.sections);
 			})()
-			: input.content;
+			: input.content);
 		if (!content?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Artifact content must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		assertContractMutable(index);
 		const directory = ARTIFACT_DIRECTORIES[input.type];
 		const artifactPath = join(root, directory, `${input.id}.md`);
 		ensureInside(root, artifactPath);
@@ -285,10 +382,7 @@ export class WorkItemStore {
 		} else if (existing.narrativeSchemaVersion !== narrativeSchemaVersion) {
 			existing.narrativeSchemaVersion = narrativeSchemaVersion;
 		}
-		index.planning.revision += 1;
-		index.planning.status = index.planning.status === "approved" ? "stale" : "draft";
-		delete index.planning.approvedAt;
-		delete index.planning.approvedRevision;
+		advanceContractRevision(index, input.authority);
 
 		await mkdir(dirname(artifactPath), { recursive: true });
 		const priorArtifact = await readFile(artifactPath, "utf8").catch(() => undefined);
@@ -309,16 +403,51 @@ export class WorkItemStore {
 		}
 	}
 
-	async linkArtifact(workItemId: string, artifactId: string, links: string[]): Promise<WorkItemIndex> {
+	async removeArtifact(workItemId: string, artifactId: string, expectedRevision: number | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		assertContractMutable(index);
+		if (expectedRevision !== undefined && expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${expectedRevision}, found ${index.planning.revision}`);
+		if (artifactId === "intent" || artifactId === "outcome") throw new HarnessError("CAPABILITY_DENIED", `Artifact ${artifactId} cannot be deleted`);
+		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
+		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
+		for (const task of index.tasks) {
+			const manifest = await this.readTask(workItemId, task.id);
+			if ([...manifest.references.specs, ...manifest.references.designs, ...manifest.references.decisions].includes(artifactId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} still references ${artifactId}`);
+		}
+		for (const candidate of index.artifacts) if (candidate.links?.includes(artifactId)) throw new HarnessError("INVALID_ARTIFACT", `Artifact ${candidate.id} still links to ${artifactId}`);
+		const path = join(root, artifact.path);
+		const indexPath = join(root, "index.yaml");
+		const previousIndex = await readFile(indexPath, "utf8");
+		const previousArtifact = await readFile(path, "utf8");
+		index.artifacts = index.artifacts.filter((candidate) => candidate.id !== artifactId);
+		advanceContractRevision(index, authority);
+		try {
+			await rm(path);
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await runGit(this.repositoryRoot, ["add", "-A", "--", relative(this.repositoryRoot, path), relative(this.repositoryRoot, indexPath)]);
+			await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): remove artifact ${artifactId}`, "--", relative(this.repositoryRoot, path), relative(this.repositoryRoot, indexPath)]);
+			return index;
+		} catch (error) {
+			await this.restore([{ path, content: previousArtifact }, { path: indexPath, content: previousIndex }]);
+			throw error;
+		}
+	}
+
+	async linkArtifact(workItemId: string, artifactId: string, links: string[], authority?: MutationAuthority, replace = false): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		assertContractMutable(index);
 		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
 		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
 		for (const link of links) {
 			if (!index.artifacts.some((candidate) => candidate.id === link)) throw new HarnessError("INVALID_ARTIFACT", `Unknown linked artifact: ${link}`);
 		}
-		artifact.links = [...new Set([...(artifact.links ?? []), ...links])].sort();
+		artifact.links = [...new Set(replace ? links : [...(artifact.links ?? []), ...links])].sort();
+		advanceContractRevision(index, authority);
 		const indexPath = join(root, "index.yaml");
 		const previous = await readFile(indexPath, "utf8");
 		try {
@@ -344,8 +473,6 @@ export class WorkItemStore {
 		index.planning.revision += 1;
 		index.planning.contractDigest = digest;
 		index.planning.status = "stale";
-		delete index.planning.approvedAt;
-		delete index.planning.approvedRevision;
 		try {
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([indexPath], `harness(${workItemId}): reconcile contract digest`);
@@ -356,13 +483,13 @@ export class WorkItemStore {
 		}
 	}
 
-	async defineTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
+	async defineTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority?: MutationAuthority }): Promise<WorkItemIndex> {
 		validateId(input.manifest.id, "Task id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		if (narrativeSchemaVersion === 2 && input.manifest.assembly.intermediateState === "partial" && !input.acceptanceSections?.expectedIntermediateState) {
 			throw new HarnessError("INVALID_ARTIFACT", "Partial task acceptance requires expectedIntermediateState");
 		}
-		if (narrativeSchemaVersion === 2 && (input.manifest.dependsOn.length > 0 || input.manifest.execution.resourceClaims.length > 0) && !input.briefSections?.interfacesAndDependencies) {
+		if (narrativeSchemaVersion === 2 && input.manifest.dependsOn.length > 0 && !input.briefSections?.interfacesAndDependencies) {
 			throw new HarnessError("INVALID_ARTIFACT", "Task dependencies or resource claims require interfacesAndDependencies");
 		}
 		const brief = narrativeSchemaVersion === 2
@@ -375,6 +502,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		assertContractMutable(index);
 		if (index.tasks.some((task) => task.id === input.manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Task already exists: ${input.manifest.id}`);
 		if (input.manifest.id !== input.manifest.id.toLowerCase()) throw new HarnessError("INVALID_ARTIFACT", "Task id must be lowercase");
 		for (const dependency of input.manifest.dependsOn) {
@@ -404,10 +532,7 @@ export class WorkItemStore {
 				intermediatePolicy: input.manifest.assembly.intermediateState === "partial" ? "partial-allowed" : "coherent",
 			});
 		}
-		index.planning.revision += 1;
-		index.planning.status = index.planning.status === "approved" ? "stale" : "draft";
-		delete index.planning.approvedAt;
-		delete index.planning.approvedRevision;
+		advanceContractRevision(index, input.authority);
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
 		try {
@@ -423,6 +548,102 @@ export class WorkItemStore {
 			await this.restore([{ path: indexPath, content: priorIndex }]);
 			throw error;
 		}
+	}
+
+	async reviseTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; expectedRevision?: number; authority: MutationAuthority }): Promise<WorkItemIndex> {
+		validateId(input.manifest.id, "Task id");
+		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
+		const brief = narrativeSchemaVersion === 2 ? renderArtifact("taskBrief", `Task Brief: ${input.manifest.title}`, input.briefSections ?? {}) : input.brief;
+		const acceptance = narrativeSchemaVersion === 2 ? renderArtifact("taskAcceptance", `Task Acceptance: ${input.manifest.title}`, input.acceptanceSections ?? {}) : input.acceptance;
+		if (!brief?.trim() || !acceptance?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Task brief and acceptance must not be empty");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(input.workItemId);
+		const index = await this.read(input.workItemId);
+		assertContractMutable(index);
+		if (input.expectedRevision !== undefined && input.expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${input.expectedRevision}, found ${index.planning.revision}`);
+		const catalog = index.tasks.find((task) => task.id === input.manifest.id);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Task does not exist: ${input.manifest.id}`);
+		for (const dependency of input.manifest.dependsOn) if (!index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
+		for (const [kind, ids] of Object.entries(input.manifest.references)) {
+			const expectedType = kind === "specs" ? "spec" : kind === "designs" ? "design" : "decision";
+			for (const id of ids) if (!index.artifacts.some((artifact) => artifact.id === id && artifact.type === expectedType)) throw new HarnessError("INVALID_ARTIFACT", `Unknown ${expectedType} reference: ${id}`);
+		}
+		if (narrativeSchemaVersion === 2) await this.validateCriterionReferences(index, collectQualifiedCriteria(input.acceptanceSections));
+		const taskRoot = dirname(join(root, catalog.path));
+		const manifestPath = join(taskRoot, "task.yaml");
+		const briefPath = join(taskRoot, "brief.md");
+		const acceptancePath = join(taskRoot, "acceptance.md");
+		const indexPath = join(root, "index.yaml");
+		const previous = await Promise.all([manifestPath, briefPath, acceptancePath, indexPath].map((path) => readFile(path, "utf8")));
+		const current = parseTaskManifest(previous[0]!, manifestPath);
+		const revised: TaskManifest = { ...input.manifest, status: current.status, ...(current.runtime ? { runtime: current.runtime } : {}) };
+		for (const unit of index.integrationUnits) unit.tasks = unit.tasks.filter((id) => id !== revised.id);
+		index.integrationUnits = index.integrationUnits.filter((unit) => unit.tasks.length > 0);
+		let unit = index.integrationUnits.find((candidate) => candidate.id === revised.assembly.integrationUnit);
+		if (!unit) {
+			unit = { id: revised.assembly.integrationUnit, tasks: [], intermediatePolicy: revised.assembly.intermediateState === "partial" ? "partial-allowed" : "coherent" };
+			index.integrationUnits.push(unit);
+		}
+		unit.tasks.push(revised.id);
+		advanceContractRevision(index, input.authority);
+		try {
+			await atomicWriteFile(manifestPath, stringify(revised));
+			await atomicWriteFile(briefPath, `${brief.trim()}\n`);
+			await atomicWriteFile(acceptancePath, `${acceptance.trim()}\n`);
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([taskRoot, indexPath], `harness(${input.workItemId}): revise task ${revised.id}`);
+			return index;
+		} catch (error) {
+			await this.restore([manifestPath, briefPath, acceptancePath, indexPath].map((path, i) => ({ path, content: previous[i] })));
+			throw error;
+		}
+	}
+
+	async removeTask(workItemId: string, taskId: string, expectedRevision: number | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		assertContractMutable(index);
+		if (expectedRevision !== undefined && expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${expectedRevision}, found ${index.planning.revision}`);
+		const catalog = index.tasks.find((task) => task.id === taskId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
+		const manifest = await this.readTask(workItemId, taskId);
+		if (manifest.runtime || ["running", "contribution_complete", "reviewing", "staged", "integrating", "integrated"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Task ${taskId} has delivery history and must be superseded rather than deleted`);
+		for (const task of index.tasks.filter((candidate) => candidate.id !== taskId)) {
+			if ((await this.readTask(workItemId, task.id)).dependsOn.includes(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} still depends on ${taskId}`);
+		}
+		const taskRoot = dirname(join(root, catalog.path));
+		const indexPath = join(root, "index.yaml");
+		const previousIndex = await readFile(indexPath, "utf8");
+		const backup = join(this.artifactRoot, `.${workItemId}-${taskId}.delete-${randomUUID()}`);
+		index.tasks = index.tasks.filter((task) => task.id !== taskId);
+		for (const unit of index.integrationUnits) unit.tasks = unit.tasks.filter((id) => id !== taskId);
+		index.integrationUnits = index.integrationUnits.filter((unit) => unit.tasks.length > 0);
+		advanceContractRevision(index, authority);
+		try {
+			await rename(taskRoot, backup);
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await runGit(this.repositoryRoot, ["add", "-A", "--", relative(this.repositoryRoot, taskRoot), relative(this.repositoryRoot, indexPath)]);
+			await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): remove task ${taskId}`, "--", relative(this.repositoryRoot, taskRoot), relative(this.repositoryRoot, indexPath)]);
+			await rm(backup, { recursive: true, force: true });
+			return index;
+		} catch (error) {
+			if (await pathExists(backup)) await rename(backup, taskRoot);
+			await this.restore([{ path: indexPath, content: previousIndex }]);
+			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, taskRoot)]).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	async readTaskContract(workItemId: string, taskId: string): Promise<{ manifest: TaskManifest; brief: string; acceptance: string; workItemRevision: number }> {
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const catalog = index.tasks.find((task) => task.id === taskId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
+		const taskRoot = dirname(join(root, catalog.path));
+		return { manifest: await this.readTask(workItemId, taskId), brief: await readFile(join(taskRoot, "brief.md"), "utf8"), acceptance: await readFile(join(taskRoot, "acceptance.md"), "utf8"), workItemRevision: index.planning.revision };
 	}
 
 	async readTask(workItemId: string, taskId: string): Promise<TaskManifest> {
@@ -476,22 +697,28 @@ export class WorkItemStore {
 		return changed;
 	}
 
-	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n"): Promise<WorkItemIndex> {
+	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n", authority?: MutationAuthority): Promise<WorkItemIndex> {
 		validateId(manifest.id, "Evaluation id");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		assertContractMutable(index);
 		await this.validateCriterionReferences(index, manifest.criteria ?? []);
+		if (manifest.scope.task && !index.tasks.some((task) => task.id === manifest.scope.task)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation task scope: ${manifest.scope.task}`);
+		if (manifest.scope.integrationUnit && !index.integrationUnits.some((unit) => unit.id === manifest.scope.integrationUnit)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation integration-unit scope: ${manifest.scope.integrationUnit}`);
+		if (manifest.scope.workItem && manifest.scope.workItem !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Evaluation work-item scope must be ${workItemId}`);
 		if (index.evaluations.some((item) => item.id === manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Evaluation already exists: ${manifest.id}`);
 		const evaluationRoot = join(root, "evaluations", manifest.id);
 		const manifestPath = join(evaluationRoot, "evaluation.yaml");
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
 		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
+		advanceContractRevision(index, authority);
 		try {
 			await mkdir(evaluationRoot, { recursive: true });
 			await atomicWriteFile(manifestPath, stringify(manifest));
 			await atomicWriteFile(join(evaluationRoot, "report.md"), report);
+			index.planning.contractDigest = await computeContractDigest(root);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): define evaluation ${manifest.id}`);
 			return index;
@@ -500,6 +727,104 @@ export class WorkItemStore {
 			await this.restore([{ path: indexPath, content: priorIndex }]);
 			throw error;
 		}
+	}
+
+	async reviseEvaluation(workItemId: string, manifest: EvaluationManifest, expectedRevision: number | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		assertContractMutable(index);
+		if (expectedRevision !== undefined && expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${expectedRevision}, found ${index.planning.revision}`);
+		await this.validateCriterionReferences(index, manifest.criteria ?? []);
+		if (manifest.scope.task && !index.tasks.some((task) => task.id === manifest.scope.task)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation task scope: ${manifest.scope.task}`);
+		if (manifest.scope.integrationUnit && !index.integrationUnits.some((unit) => unit.id === manifest.scope.integrationUnit)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation integration-unit scope: ${manifest.scope.integrationUnit}`);
+		if (manifest.scope.workItem && manifest.scope.workItem !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Evaluation work-item scope must be ${workItemId}`);
+		const catalog = index.evaluations.find((evaluation) => evaluation.id === manifest.id);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Evaluation does not exist: ${manifest.id}`);
+		const path = join(root, catalog.path);
+		const previousManifest = await readFile(path, "utf8");
+		const previousIndex = await readFile(join(root, "index.yaml"), "utf8");
+		const current = parse(previousManifest) as EvaluationManifest;
+		if (current.attempt > 0 || current.result) throw new HarnessError("CAPABILITY_DENIED", `Evaluation ${manifest.id} has recorded evidence and must be superseded rather than rewritten`);
+		const revised: EvaluationManifest = { ...manifest, status: current.status, attempt: current.attempt };
+		advanceContractRevision(index, authority);
+		const indexPath = join(root, "index.yaml");
+		try {
+			await atomicWriteFile(path, stringify(revised));
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([path, indexPath], `harness(${workItemId}): revise evaluation ${manifest.id}`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path, content: previousManifest }, { path: indexPath, content: previousIndex }]);
+			throw error;
+		}
+	}
+
+	async removeEvaluation(workItemId: string, evaluationId: string, expectedRevision: number | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		assertContractMutable(index);
+		if (expectedRevision !== undefined && expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${expectedRevision}, found ${index.planning.revision}`);
+		const catalog = index.evaluations.find((evaluation) => evaluation.id === evaluationId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
+		const current = await this.readEvaluation(workItemId, evaluationId);
+		if (current.attempt > 0 || current.result) throw new HarnessError("CAPABILITY_DENIED", `Evaluation ${evaluationId} has recorded evidence and cannot be deleted`);
+		const evaluationRoot = dirname(join(root, catalog.path));
+		const indexPath = join(root, "index.yaml");
+		const previousIndex = await readFile(indexPath, "utf8");
+		const backup = join(this.artifactRoot, `.${workItemId}-${evaluationId}.delete-${randomUUID()}`);
+		index.evaluations = index.evaluations.filter((evaluation) => evaluation.id !== evaluationId);
+		advanceContractRevision(index, authority);
+		try {
+			await rename(evaluationRoot, backup);
+			index.planning.contractDigest = await computeContractDigest(root);
+			await atomicWriteFile(indexPath, stringify(index));
+			await runGit(this.repositoryRoot, ["add", "-A", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, indexPath)]);
+			await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): remove evaluation ${evaluationId}`, "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, indexPath)]);
+			await rm(backup, { recursive: true, force: true });
+			return index;
+		} catch (error) {
+			if (await pathExists(backup)) await rename(backup, evaluationRoot);
+			await this.restore([{ path: indexPath, content: previousIndex }]);
+			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot)]).catch(() => undefined);
+			throw error;
+		}
+	}
+
+	async putIntegrationUnit(workItemId: string, unit: WorkItemIndex["integrationUnits"][number], expectedRevision: number | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
+		validateId(unit.id, "Integration-unit id");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		assertContractMutable(index);
+		if (expectedRevision !== undefined && expectedRevision !== index.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${expectedRevision}, found ${index.planning.revision}`);
+		if (unit.tasks.length === 0) throw new HarnessError("INVALID_ARTIFACT", `Integration unit ${unit.id} must contain at least one task`);
+		if (new Set(unit.tasks).size !== unit.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Integration unit ${unit.id} contains duplicate task ids`);
+		for (const taskId of unit.tasks) if (!index.tasks.some((task) => task.id === taskId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task in integration unit ${unit.id}: ${taskId}`);
+		for (const existing of index.integrationUnits) if (existing.id !== unit.id) existing.tasks = existing.tasks.filter((taskId) => !unit.tasks.includes(taskId));
+		index.integrationUnits = index.integrationUnits.filter((existing) => existing.tasks.length > 0 && existing.id !== unit.id);
+		index.integrationUnits.push({ ...unit, tasks: [...unit.tasks] });
+		advanceContractRevision(index, authority);
+		const indexPath = join(root, "index.yaml");
+		const previous = await readFile(indexPath, "utf8");
+		try {
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([indexPath], `harness(${workItemId}): update integration unit ${unit.id}`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path: indexPath, content: previous }]);
+			throw error;
+		}
+	}
+
+	async readArtifact(workItemId: string, artifactId: string): Promise<{ metadata: WorkItemIndex["artifacts"][number]; content: string; workItemRevision: number }> {
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const metadata = index.artifacts.find((artifact) => artifact.id === artifactId);
+		if (!metadata) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
+		return { metadata, content: await readFile(join(root, metadata.path), "utf8"), workItemRevision: index.planning.revision };
 	}
 
 	async readEvaluation(workItemId: string, evaluationId: string): Promise<EvaluationManifest> {
@@ -599,10 +924,7 @@ export class WorkItemStore {
 		if (!outcome?.trim() && !outcomeSections) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
-		const index = await this.read(workItemId);
-		if (index.planning.status !== "approved" || index.planning.approvedRevision !== index.planning.revision) {
-			throw new HarnessError("STALE_PLANNING_REVISION", "Completion requires the current approved contract");
-		}
+		const index = await this.assertCurrentApproval(workItemId);
 		for (const task of index.tasks) {
 			if ((await this.readTask(workItemId, task.id)).status !== "integrated") {
 				throw new HarnessError("INVALID_HANDOFF", `Task is not integrated: ${task.id}`);
@@ -660,6 +982,37 @@ export class WorkItemStore {
 		}
 	}
 
+	async transitionWorkItem(id: string, action: "postpone" | "resume" | "archive" | "reopen" | "request-user", reason: string): Promise<WorkItemIndex> {
+		if (!reason.trim()) throw new HarnessError("INVALID_ARTIFACT", "Transition reason is required");
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(id);
+		const indexPath = join(root, "index.yaml");
+		const previous = await readFile(indexPath, "utf8");
+		const index = parseWorkItemIndex(previous, indexPath);
+		if (index.finalization?.locked && action !== "reopen") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before transition`);
+		if (action === "postpone") index.state = "postponed";
+		if (action === "resume") index.state = "active";
+		if (action === "request-user") index.state = "waiting_user";
+		if (action === "archive") {
+			index.state = "archived";
+			index.finalization = { locked: true, reason, lockedAt: new Date().toISOString() };
+		}
+		if (action === "reopen") {
+			delete index.finalization;
+			index.state = "active";
+			if (index.phase === "complete") index.phase = "planning";
+			if (index.planning.status === "approved") index.planning.status = "stale";
+		}
+		try {
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([indexPath], `harness(${id}): ${action} work item`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path: indexPath, content: previous }]);
+			throw error;
+		}
+	}
+
 	async submitPlanning(id: string): Promise<WorkItemIndex> {
 		return this.updatePlanning(id, "submit");
 	}
@@ -694,6 +1047,7 @@ export class WorkItemStore {
 			index.phase = "execution";
 			index.planning.approvedRevision = index.planning.revision;
 			index.planning.approvedAt = new Date().toISOString();
+			index.planning.approvalAmendments = [];
 			index.state = "active";
 			for (const artifact of index.artifacts) artifact.status = artifact.status === "draft" ? "approved" : artifact.status;
 		}

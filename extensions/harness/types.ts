@@ -2,8 +2,25 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export type WorkItemKind = "change" | "story";
 export type WorkItemPhase = "planning" | "execution" | "evaluation" | "complete";
-export type WorkItemState = "active" | "waiting_user" | "paused" | "blocked" | "failed" | "complete";
+export type WorkItemState = "active" | "waiting_user" | "paused" | "postponed" | "blocked" | "failed" | "complete" | "archived";
 export type PlanningStatus = "draft" | "awaiting_approval" | "approved" | "stale";
+export type ApprovalDisposition = "retain-approval" | "request-user";
+export type ExecutionDisposition = "continue" | "resume-requesting-agent" | "restart-affected" | "pause-affected";
+
+export interface ApprovalAmendment {
+	revision: number;
+	at: string;
+	decidedBy: "orchestrator";
+	disposition: "retain-approval";
+	rationale: string;
+	sources: string[];
+}
+
+export interface MutationAuthority {
+	disposition: ApprovalDisposition;
+	rationale: string;
+	sources?: string[];
+}
 export type Complexity = "low" | "medium" | "high" | "critical";
 export type HarnessEffort = ModelThinkingLevel;
 
@@ -167,11 +184,13 @@ export interface WorkItemIndex {
 		approvedRevision?: number;
 		approvedAt?: string;
 		contractDigest: string;
+		approvalAmendments?: ApprovalAmendment[];
 	};
 	artifacts: ArtifactIndexEntry[];
 	tasks: Array<{ id: string; path: string }>;
 	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
 	evaluations: Array<{ id: string; path: string }>;
+	finalization?: { locked: boolean; reason: string; lockedAt: string };
 }
 
 export interface HarnessStatusSnapshot {

@@ -92,6 +92,7 @@ test("persists blocking requests and responses without releasing the logical slo
 	const answered = await registry.respondMessage(agent.id, message.id, "Use a nullable field");
 	assert.equal(answered.status, "answered");
 	assert.equal(answered.response, "Use a nullable field");
+	assert.equal((await registry.respondMessage(agent.id, message.id, "Use a nullable field")).id, message.id);
 	await assert.rejects(registry.respondMessage(agent.id, message.id, "Again"), /already answered/);
 });
 

@@ -306,6 +306,7 @@ export class SessionAgentRegistry {
 			const content = await readTextIfExists(path);
 			if (!content) throw new HarnessError("CAPABILITY_DENIED", `Unknown agent message: ${messageId}`);
 			const message = JSON.parse(content) as AgentMessageRecord;
+			if (message.status === "answered" && message.response === response) return message;
 			if (message.status !== "open") throw new HarnessError("CAPABILITY_DENIED", `Agent message ${messageId} is already ${message.status}`);
 			message.status = "answered";
 			message.response = response;

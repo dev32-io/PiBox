@@ -77,7 +77,7 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 		brief: "Implement server-minted identity.",
 		acceptance: "Session ids originate on the server.",
 	});
-	assert.equal(planned.planning.revision, 3);
+	assert.equal(planned.planning.revision, 4);
 	assert.deepEqual(planned.integrationUnits, [{ id: "session-runtime", tasks: ["implement-identity"], intermediatePolicy: "coherent" }]);
 	assert.equal((await store.readTask("session-model", "implement-identity")).execution.assignment.model, "sol");
 
@@ -86,7 +86,7 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	assert.equal(submitted.state, "waiting_user");
 	const approved = await store.approve("session-model");
 	assert.equal(approved.planning.status, "approved");
-	assert.equal(approved.planning.approvedRevision, 3);
+	assert.equal(approved.planning.approvedRevision, 4);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

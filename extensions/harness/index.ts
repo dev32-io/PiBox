@@ -16,8 +16,9 @@ import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
 import { LaunchCoordinator } from "./launch-coordinator.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
+import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType } from "./orchestrator-resources.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
-import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
+import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, MutationAuthority, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
@@ -44,10 +45,21 @@ Discovery — For bugs, distinguish symptom, expected behavior, reproduction, pr
 
 Proportionality — Keep clear, local, reversible work ad hoc; words such as plan, design, story, or change do not justify ceremony. Delegate fact-finding when isolation preserves main context. Delegate implementation only when specialist capability, fresh context, independent evidence, or contribution size repays overhead. Parallelism is optional, not a metric.
 
-Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use capabilities rather than editing agent-artifacts. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.`;
+Resource protocol — Use harness_list before creating and harness_get before patching. Canonical references are work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. Create child resources with the complete file-backed representation returned by get/list: artifacts use semantic sections or content; tasks use {manifest, brief/acceptance or semantic sections}; evaluations use {manifest}. Use harness_apply_change for coherent multi-resource revisions and request resolution. Never create a second work item to repair an existing draft.
+
+Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use resource capabilities rather than editing agent-artifacts. The main orchestrator is the trusted canonical coordinator: inspect and revise existing resources instead of creating replacement work items, and normally resolve subagent change requests within delegated intent using an audited retain-approval amendment. Ask the user only when a change materially alters their outcome, explicit constraints, consequential policy, privacy/security posture, irreversible effects, or a decision they retained. Approval is continuity, not a blanket mutation freeze. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.`;
+
+const LEGACY_PLANNING_TOOL_NAMES = new Set(["work_item_create", "work_item_status", "artifact_create", "artifact_update", "artifact_link", "artifact_reconcile", "task_define", "task_update", "evaluation_define", "planning_submit"]);
 
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"harness_status",
+	"harness_list",
+	"harness_get",
+	"harness_create",
+	"harness_patch",
+	"harness_delete",
+	"harness_apply_change",
+	"harness_transition",
 	"harness_init",
 	"work_item_create",
 	"work_item_status",
@@ -89,6 +101,97 @@ const textResult = (text: string, details: unknown = null) => ({
 	content: [{ type: "text" as const, text }],
 	details,
 });
+const resourceResult = (summary: string, value: unknown) => textResult(`${summary}\n${JSON.stringify(value, null, 2)}`, value);
+
+const CANONICAL_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("evaluation")]);
+const LISTABLE_RESOURCE_TYPE = Type.Union([CANONICAL_RESOURCE_TYPE, Type.Literal("agent"), Type.Literal("message"), Type.Literal("run")]);
+const MUTATION_AUTHORITY = Type.Object({
+	disposition: Type.Union([Type.Literal("retain-approval"), Type.Literal("request-user")]),
+	rationale: Type.String(),
+	sources: Type.Optional(Type.Array(Type.String())),
+}, { additionalProperties: false });
+const EFFORT = Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]);
+const TASK_MANIFEST_RESOURCE = Type.Object({
+	schemaVersion: Type.Literal(1), id: Type.String({ description: "Bare kebab-case task id" }), title: Type.String(),
+	status: Type.Union([Type.Literal("draft"), Type.Literal("blocked"), Type.Literal("ready")]),
+	dependsOn: Type.Array(Type.String()),
+	references: Type.Object({ specs: Type.Array(Type.String()), designs: Type.Array(Type.String()), decisions: Type.Array(Type.String()) }, { additionalProperties: false }),
+	execution: Type.Object({
+		isolation: Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for the normal implementer role" }), parallelism: Type.Union([Type.Literal("allowed"), Type.Literal("serial")]), resourceClaims: Type.Array(Type.String()), complexity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
+		assignment: Type.Object({ role: Type.String({ description: "Configured role name, normally implementer" }), model: Type.String({ description: "Configured model alias such as luna, never a raw model id" }), effort: EFFORT, minimumCapabilityRank: Type.Integer({ minimum: 0 }), allowFallback: Type.Boolean(), rationale: Type.String() }, { additionalProperties: false }),
+	}, { additionalProperties: false }),
+	assembly: Type.Object({ integrationUnit: Type.String(), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
+	verification: Type.Object({ timing: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]), methods: Type.Array(Type.String()), taskChecks: Type.Array(Type.String()), rationale: Type.String() }, { additionalProperties: false }),
+}, { additionalProperties: false });
+const EVALUATION_MANIFEST_RESOURCE = Type.Object({
+	schemaVersion: Type.Literal(1), id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
+	scope: Type.Union([Type.Object({ task: Type.String() }, { additionalProperties: false }), Type.Object({ integrationUnit: Type.String() }, { additionalProperties: false }), Type.Object({ workItem: Type.String() }, { additionalProperties: false })]),
+	status: Type.Literal("planned"), required: Type.Boolean(), attempt: Type.Literal(0), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String({ description: "Qualified artifact-id#AC-NNN reference; omit when no specification criterion applies" }))),
+}, { additionalProperties: false });
+const INTENT_SECTIONS = Type.Object({ problem: Type.String(), desiredOutcome: Type.String(), scopeIncluded: Type.Array(Type.String()), successSignals: Type.Array(Type.String()), scopeExcluded: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
+const SPEC_SECTIONS = Type.Object({ context: Type.String(), actors: Type.Optional(Type.Array(Type.String())), requiredBehaviors: Type.Array(Type.String()), acceptanceCriteria: Type.Array(Type.Object({ id: Type.String({ description: "AC-NNN" }), statement: Type.String() }, { additionalProperties: false })), constraints: Type.Optional(Type.Array(Type.String())), edgeCases: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), outOfScope: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
+const DESIGN_SECTIONS = Type.Object({ designGoal: Type.String(), chosenApproach: Type.Array(Type.String()), verificationBoundaries: Type.Array(Type.String()), componentsAndInterfaces: Type.Optional(Type.Array(Type.String())), dataAndControlFlow: Type.Optional(Type.Array(Type.String())), failureAndRecovery: Type.Optional(Type.Array(Type.String())), securityAndPrivacy: Type.Optional(Type.Array(Type.String())), compatibilityAndMigration: Type.Optional(Type.Array(Type.String())), alternativesConsidered: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
+const DECISION_SECTIONS = Type.Object({ decision: Type.String(), context: Type.String(), rationale: Type.String(), consequences: Type.Array(Type.String()), alternativesConsidered: Type.Optional(Type.Array(Type.String())), revisitWhen: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const TASK_BRIEF_SECTIONS = Type.Object({ contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()), requiredWork: Type.Array(Type.String()), integrationExpectation: Type.String(), boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const TASK_ACCEPTANCE_SECTIONS = Type.Object({ deliverables: Type.Array(Type.String()), criterionContributions: Type.Array(Type.Union([Type.String(), Type.Object({ criteria: Type.Array(Type.String({ description: "Qualified artifact#AC-NNN references" })), contribution: Type.String() }, { additionalProperties: false })])), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const WORK_ITEM_RESOURCE_BODY = Type.Union([
+	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), narrativeSchemaVersion: Type.Literal(2), intentSections: INTENT_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), intent: Type.String() }, { additionalProperties: false }),
+]);
+const ARTIFACT_RESOURCE_BODY = Type.Union([
+	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("spec"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: SPEC_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("design"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: DESIGN_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("decision"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: DECISION_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String(), type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]), content: Type.String() }, { additionalProperties: false }),
+]);
+const TASK_RESOURCE_BODY = Type.Union([
+	Type.Object({ manifest: TASK_MANIFEST_RESOURCE, brief: Type.String(), acceptance: Type.String() }, { additionalProperties: false }),
+	Type.Object({ manifest: TASK_MANIFEST_RESOURCE, narrativeSchemaVersion: Type.Literal(2), briefSections: TASK_BRIEF_SECTIONS, acceptanceSections: TASK_ACCEPTANCE_SECTIONS }, { additionalProperties: false }),
+]);
+const INTEGRATION_UNIT_RESOURCE_BODY = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String({ description: "Bare task id in this work item, not a resource reference" })), intermediatePolicy: Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")]) }, { additionalProperties: false });
+const EVALUATION_RESOURCE_BODY = Type.Object({ manifest: EVALUATION_MANIFEST_RESOURCE }, { additionalProperties: false });
+const CREATE_OPERATION_VARIANTS = [
+	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("artifact"), parent: Type.String(), body: ARTIFACT_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("task"), parent: Type.String(), body: TASK_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("integration-unit"), parent: Type.String(), body: INTEGRATION_UNIT_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("evaluation"), parent: Type.String(), body: EVALUATION_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
+] as const;
+const TASK_MANIFEST_PATCH = Type.Object({ title: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())), references: Type.Optional(Type.Record(Type.String(), Type.Unknown())), execution: Type.Optional(Type.Record(Type.String(), Type.Unknown())), assembly: Type.Optional(Type.Record(Type.String(), Type.Unknown())), verification: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }, { additionalProperties: false });
+const TASK_PATCH_BODY = Type.Object({
+	manifest: Type.Optional(TASK_MANIFEST_PATCH), title: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())), references: Type.Optional(Type.Partial(Type.Object({ specs: Type.Array(Type.String()), designs: Type.Array(Type.String()), decisions: Type.Array(Type.String()) }))), execution: Type.Optional(Type.Record(Type.String(), Type.Unknown())), assembly: Type.Optional(Type.Record(Type.String(), Type.Unknown())), verification: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+	brief: Type.Optional(Type.String()), acceptance: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), briefSections: Type.Optional(TASK_BRIEF_SECTIONS), acceptanceSections: Type.Optional(TASK_ACCEPTANCE_SECTIONS),
+}, { additionalProperties: false });
+const PATCH_RESOURCE_PARAMETERS = Type.Union([
+	Type.Object({ resource: Type.Literal("work-item"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("artifact"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ type: Type.Optional(Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")])), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), title: Type.Optional(Type.String()), content: Type.Optional(Type.String()), sections: Type.Optional(Type.Record(Type.String(), Type.Unknown())), links: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("task"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: TASK_PATCH_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("integration-unit"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("evaluation"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+]);
+const PATCH_OPERATION_VARIANTS = [
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("work-item"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("artifact"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Record(Type.String(), Type.Unknown()) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("task"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: TASK_PATCH_BODY }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("integration-unit"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("evaluation"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }) }, { additionalProperties: false }),
+] as const;
+const CREATE_RESOURCE_PARAMETERS = Type.Union([
+	Type.Object({ resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("artifact"), parent: Type.String(), body: ARTIFACT_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("task"), parent: Type.String(), body: TASK_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("integration-unit"), parent: Type.String(), body: INTEGRATION_UNIT_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("evaluation"), parent: Type.String(), body: EVALUATION_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+]);
+
+function structuredCapabilityError(error: unknown, ref?: string): Error {
+	const harness = error instanceof HarnessError ? error : undefined;
+	const code = harness?.code ?? "INTERNAL_ERROR";
+	const allowedActions = code === "WORK_ITEM_EXISTS" ? ["get", "patch", "transition"] : code === "STALE_PLANNING_REVISION" ? ["get", "retry-with-current-revision"] : code === "CAPABILITY_DENIED" ? ["get", "reopen", "supersede"] : ["get", "patch"];
+	const message = error instanceof Error ? error.message : String(error);
+	const currentRevision = message.match(/found (\d+)/i)?.[1];
+	return new Error(JSON.stringify({ ok: false, code, message, ...(ref ? { resourceRef: ref } : {}), ...(currentRevision ? { currentRevision: Number(currentRevision) } : {}), allowedActions, conflicts: [], retryable: code === "STALE_PLANNING_REVISION" }));
+}
 
 async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime> {
 	const identity = await discoverRepository(ctx.cwd);
@@ -248,10 +351,7 @@ export default function harness(pi: ExtensionAPI): void {
 		try {
 			requireTrusted(ctx);
 			const runtime = await runtimeFor(ctx);
-			const item = await runtime.workItems.read(workItemId);
-			if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) {
-				throw new HarnessError("STALE_PLANNING_REVISION", "Task launch requires current direct user approval");
-			}
+			const item = await runtime.workItems.assertCurrentApproval(workItemId);
 			const task = await runtime.workItems.readTask(workItemId, taskId);
 			if (task.status !== "ready" && task.status !== "failed" && task.status !== "protocol_failed" && task.status !== "running" && task.status !== "paused") {
 				throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not launchable from status ${task.status}`);
@@ -321,6 +421,182 @@ export default function harness(pi: ExtensionAPI): void {
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_list",
+		label: "List Harness Resources",
+		description: "List canonical file-backed resources or session runtime resources. Prefer this over inferring catalogs from status text.",
+		parameters: Type.Object({ resource: LISTABLE_RESOURCE_TYPE, workItemId: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		async execute(_id, params, _signal, _update, ctx) {
+			try {
+				const runtime = await runtimeFor(ctx);
+				if (params.resource === "agent") return resourceResult("Session agents.", await runtime.agents.list());
+				if (params.resource === "message") return resourceResult("Session agent messages.", await runtime.agents.listMessages());
+				if (params.resource === "run") {
+					const items = params.workItemId ? [await runtime.workItems.read(params.workItemId)] : await runtime.workItems.list();
+					const runs = (await Promise.all(items.map((item) => new HarnessRunStore(runtime.identity.privateRoot, item.id).list()))).flat();
+					return resourceResult("Harness runs.", runs);
+				}
+				const resources = await new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config).list(params.resource as CanonicalResourceType, params.workItemId);
+				return resourceResult(`${resources.length} ${params.resource} resource(s).`, resources);
+			} catch (error) { throw structuredCapabilityError(error); }
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_get",
+		label: "Get Harness Resource",
+		description: "Get one complete file-backed resource, its current revision, approval lineage, relationships, and allowed actions.",
+		parameters: Type.Object({ ref: Type.String({ description: "For example work-item:checkout/task:implement-checkout or agent:<id>" }) }, { additionalProperties: false }),
+		async execute(_id, params, _signal, _update, ctx) {
+			try {
+				const runtime = await runtimeFor(ctx);
+				if (params.ref.startsWith("agent:")) return resourceResult(params.ref, await runtime.agents.get(params.ref.slice(6)));
+				return resourceResult(params.ref, await new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config).get(params.ref));
+			} catch (error) { throw structuredCapabilityError(error, params.ref); }
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_create",
+		label: "Create Harness Resource",
+		description: "Create a typed canonical resource. Existing resources must be inspected and patched rather than replaced by duplicate work items.",
+		parameters: CREATE_RESOURCE_PARAMETERS,
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const parent = "parent" in params ? params.parent : undefined;
+					const result = await service.transaction(`harness: create ${params.resource}`, () => service.create(params.resource as CanonicalResourceType, parent, params.body, params.authority as MutationAuthority));
+					await runtime.events.append("resource.created", { resource: params.resource, parent, authority: params.authority, commit: result.commit });
+					return resourceResult(`Created ${params.resource}${result.commit ? ` at ${result.commit.slice(0, 12)}` : ""}.`, result);
+				});
+			} catch (error) { throw structuredCapabilityError(error, "parent" in params ? params.parent : undefined); }
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_patch",
+		label: "Patch Harness Resource",
+		description: "Apply a validated merge patch to any mutable canonical resource. Approved planning may retain approval through an audited orchestrator amendment.",
+		parameters: PATCH_RESOURCE_PARAMETERS,
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const parsed = parseResourceRef(params.ref);
+					const baseline = await runtime.workItems.read(parsed.workItemId);
+					const result = await service.transaction(`harness: patch ${params.ref}`, async () => {
+						const value = await service.patch(params.ref, params.patch, { ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}), authority: params.authority as MutationAuthority });
+						const resource = await service.coalesceRevision(parsed.workItemId, baseline, params.authority as MutationAuthority);
+						return { value, resource };
+					});
+					await runtime.events.append("resource.patched", { ref: params.ref, authority: params.authority, commit: result.commit });
+					return resourceResult(`Patched ${params.ref}${params.authority.disposition === "retain-approval" ? " with approval continuity" : " and requested user review"}.`, result);
+				});
+			} catch (error) { throw structuredCapabilityError(error, params.ref); }
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_delete",
+		label: "Delete Harness Resource",
+		description: "Delete an undelivered canonical child resource and repair its catalog relationships atomically. Delivery history remains immutable.",
+		parameters: Type.Object({ ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}), authority: params.authority as MutationAuthority }));
+					await runtime.events.append("resource.deleted", { ref: params.ref, authority: params.authority, commit: result.commit });
+					return resourceResult(`Deleted ${params.ref}.`, result);
+				});
+			} catch (error) { throw structuredCapabilityError(error, params.ref); }
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_apply_change",
+		label: "Apply Orchestrator Change",
+		description: "Apply a coherent batch of create, patch, and delete operations as one canonical commit, with explicit authority, execution disposition, provenance, and optional subagent response.",
+		parameters: Type.Object({
+			authority: MUTATION_AUTHORITY,
+			executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("restart-affected"), Type.Literal("pause-affected")]),
+			operations: Type.Array(Type.Union([
+				...CREATE_OPERATION_VARIANTS,
+				...PATCH_OPERATION_VARIANTS,
+				Type.Object({ method: Type.Literal("delete"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })) }, { additionalProperties: false }),
+			])),
+			response: Type.Optional(Type.Object({ agentId: Type.String(), messageId: Type.String(), text: Type.String() }, { additionalProperties: false })),
+		}, { additionalProperties: false }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const baselines = new Map<string, Awaited<ReturnType<WorkItemStore["read"]>> | undefined>();
+					for (const operation of params.operations) {
+						let workItemId: string | undefined;
+						if (operation.method === "create") workItemId = operation.resource === "work-item" ? operation.body.id as string : operation.parent ? parseResourceRef(operation.parent).workItemId : undefined;
+						else workItemId = parseResourceRef(operation.ref).workItemId;
+						if (workItemId && !baselines.has(workItemId)) baselines.set(workItemId, await runtime.workItems.read(workItemId).catch((error) => error instanceof HarnessError && error.code === "WORK_ITEM_NOT_FOUND" ? undefined : Promise.reject(error)));
+					}
+					for (const operation of params.operations) {
+						if (operation.method === "create" || operation.expectedRevision === undefined) continue;
+						const ref = parseResourceRef(operation.ref);
+						const current = await runtime.workItems.read(ref.workItemId);
+						if (current.planning.revision !== operation.expectedRevision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${operation.expectedRevision}, found ${current.planning.revision}`);
+					}
+					const respondingAgent = params.response ? await runtime.agents.get(params.response.agentId) : undefined;
+					const result = await service.transaction("harness: apply orchestrator change", async () => {
+						const values: unknown[] = [];
+						for (const operation of params.operations) {
+							if (operation.method === "create") values.push(await service.create(operation.resource as CanonicalResourceType, "parent" in operation ? operation.parent : undefined, operation.body, params.authority as MutationAuthority));
+							else if (operation.method === "patch") values.push(await service.patch(operation.ref, operation.patch, { authority: params.authority as MutationAuthority }));
+							else values.push(await service.delete(operation.ref, { authority: params.authority as MutationAuthority }));
+						}
+						if (params.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId && respondingAgent.taskId) {
+							const task = await runtime.workItems.readTask(respondingAgent.workItemId, respondingAgent.taskId);
+							if (task.status === "blocked") await runtime.workItems.updateTask(respondingAgent.workItemId, respondingAgent.taskId, { status: "ready" });
+						}
+						const resources = [];
+						for (const [workItemId, baseline] of baselines) resources.push(await service.coalesceRevision(workItemId, baseline, params.authority as MutationAuthority));
+						return { values, resources };
+					});
+					const message = params.response ? await runtime.agents.respondMessage(params.response.agentId, params.response.messageId, params.response.text) : undefined;
+					await runtime.events.append("orchestrator.change_applied", { authority: params.authority, executionDisposition: params.executionDisposition, operations: params.operations.length, commit: result.commit, messageId: params.response?.messageId });
+					return resourceResult(`Applied ${params.operations.length} canonical operation(s)${result.commit ? ` as ${result.commit.slice(0, 12)}` : ""}.`, { ...result, message });
+				});
+			} catch (error) { throw structuredCapabilityError(error); }
+		},
+	});
+
+	pi.registerTool({
+		name: "harness_transition",
+		label: "Transition Harness Resource",
+		description: "Apply an explicit resource lifecycle action. Postponed work remains resumable; archive creates the explicit finalization lock.",
+		parameters: Type.Object({ ref: Type.String(), action: Type.Union([Type.Literal("submit"), Type.Literal("postpone"), Type.Literal("resume"), Type.Literal("archive"), Type.Literal("reopen"), Type.Literal("request-user"), Type.Literal("blocked"), Type.Literal("ready"), Type.Literal("reviewing"), Type.Literal("changes_requested"), Type.Literal("paused"), Type.Literal("cancelled")]), reason: Type.String() }, { additionalProperties: false }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const ref = parseResourceRef(params.ref);
+					if (ref.type === "work-item" && params.action === "submit") return textResult(`Submitted ${ref.id}.`, await runtime.workItems.submitPlanning(ref.id));
+					if (ref.type === "work-item" && ["postpone", "resume", "archive", "reopen", "request-user"].includes(params.action)) return textResult(`${params.action} ${ref.id}.`, await runtime.workItems.transitionWorkItem(ref.id, params.action as "postpone" | "resume" | "archive" | "reopen" | "request-user", params.reason));
+					if (ref.type === "task") return textResult(`Task ${ref.id} is now ${params.action}.`, await runtime.workItems.updateTask(ref.workItemId, ref.id, { status: params.action as TaskManifest["status"] }));
+					throw new HarnessError("CAPABILITY_DENIED", `Unsupported transition ${params.action} for ${ref.type}`);
+				});
+			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},
 	});
 
@@ -760,8 +1036,7 @@ export default function harness(pi: ExtensionAPI): void {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return runtime.operations.execute(toolCallId, params, async () => {
-					const item = await runtime.workItems.read(params.workItemId);
-					if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) throw new HarnessError("STALE_PLANNING_REVISION", "Evaluation requires current approved planning");
+					const item = await runtime.workItems.assertCurrentApproval(params.workItemId);
 					const evaluation = await runtime.workItems.readEvaluation(item.id, params.evaluationId);
 					if (evaluation.attempt >= runtime.config.limits.repairRounds + 1) throw new HarnessError("INVALID_HANDOFF", `Evaluation repair budget exhausted for ${evaluation.id}`);
 					const roleName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
@@ -1125,7 +1400,7 @@ export default function harness(pi: ExtensionAPI): void {
 		else if (isSubagentProcess()) {
 			[...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
 			if (process.env.PIBOX_HARNESS_AGENT_ROLE !== "explorer") EXPLORATION_TOOL_NAMES.forEach((name) => disallowed.add(name));
-		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES, ...LEGACY_PLANNING_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
 		if (isSubagentProcess()) {
 			const agentRoot = process.env.PIBOX_HARNESS_AGENT_ROOT;

@@ -85,10 +85,7 @@ export class WorktreeManager {
 
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
 		await assertCleanRepository(this.identity.root);
-		const item = await this.workItems.read(workItemId);
-		if (item.planning.status !== "approved" || item.planning.approvedRevision !== item.planning.revision) {
-			throw new HarnessError("STALE_PLANNING_REVISION", `Work item ${workItemId} does not have current user approval`);
-		}
+		const item = await this.workItems.assertCurrentApproval(workItemId);
 		for (const dependency of task.dependsOn) {
 			const dependencyTask = await this.workItems.readTask(workItemId, dependency);
 			if (dependencyTask.status !== "integrated") throw new HarnessError("INVALID_ARTIFACT", `Dependency is not integrated: ${dependency}`);
