@@ -1,0 +1,21 @@
+schemaVersion: 1
+id: prompt-behavior-review
+type: combined-review
+scope:
+  task: product-partner-prompt-contracts
+status: planned
+required: true
+attempt: 0
+methods:
+  - Run repeated fresh-context behavioral scenarios for solution fixation and
+    upstream premise challenge.
+  - Run low-risk proportionality, bug/diagnostic distinction, and
+    delegation-restraint scenarios.
+  - Review observable decisions, evidence gathering, user decision ownership,
+    and canonical-artifact timing.
+criteria:
+  - product-partner-and-subagent-lifecycle#AC-001
+  - product-partner-and-subagent-lifecycle#AC-002
+  - product-partner-and-subagent-lifecycle#AC-003
+  - product-partner-and-subagent-lifecycle#AC-004
+  - product-partner-and-subagent-lifecycle#AC-005

@@ -41,7 +41,9 @@ tasks:
     path: tasks/typed-explorer-protocol/task.yaml
   - id: managed-lifecycle-migration-recovery
     path: tasks/managed-lifecycle-migration-recovery/task.yaml
-evaluations: []
+evaluations:
+  - id: prompt-behavior-review
+    path: evaluations/prompt-behavior-review/evaluation.yaml
 integrationUnits:
   - id: prompt-contracts
     tasks:
