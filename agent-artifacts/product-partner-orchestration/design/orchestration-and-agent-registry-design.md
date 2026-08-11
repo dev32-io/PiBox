@@ -2,32 +2,30 @@
 
 ## Design goal
 
-Add product-partner planning behavior and durable direct-child supervision without turning discovery into universal ceremony, weakening canonical authority, or coupling child survival to the lifetime of the main Pi process. One shared private registry and launch coordinator must support all specialist roles and provide a stable future TUI source.
+Add product-partner planning behavior and durable direct-child supervision without turning discovery into universal ceremony, weakening canonical authority, or coupling child survival to the lifetime of the main Pi process.
 
 ## Chosen approach
 
 Use two cooperating layers:
 
-1. A semantic orchestration layer that guides outcome discovery, upstream challenge, proportional planning, explorer assignment, and user decisions.
-2. A deterministic session-agent runtime that owns identity, slot reservation, process attempts, file-backed output, structured messages and handoffs, state transitions, recovery, and listing.
+1. A semantic orchestration layer for outcome discovery, upstream challenge, proportional planning, explorer assignment, and user decisions.
+2. A deterministic session-agent runtime for identity, sixteen-slot accounting, depth enforcement, process attempts, file-backed output, structured messages and handoffs, recovery, and listing.
 
-Semantic public capabilities remain specific to their purpose. They construct a typed assignment and delegate actual process creation to one internal coordinator. Child capabilities write only to immutable scoped storage and assigned workspaces. Canonical reconciliation remains a main-session responsibility.
+Semantic public capabilities remain purpose-specific. They construct typed assignments and delegate process creation to one internal launch coordinator. Child capabilities write only to immutable scoped storage and assigned workspaces. Canonical reconciliation remains a main-session responsibility.
 
-## Components and interfaces
+Binding lifecycle details are defined by `active-agent-slot-accounting` and `background-agent-liveness`.
 
-### Product-partner prompt contracts
+## Product-partner prompt contracts
 
-The always-loaded orchestrator contract defines stance and routing: seek the outcome behind a proposed solution, inspect facts independently, step back on material framing risk, challenge inherited product and technical premises constructively, stop discovery at the materiality boundary, and preserve user decision ownership.
+The always-loaded orchestrator contract seeks the outcome behind a proposed solution, inspects facts independently, steps back on material framing risk, challenges inherited product and technical premises constructively, stops discovery at the materiality boundary, and preserves user decision ownership.
 
-The planning skill expands this into an adaptive discovery and delivery process for stories, changes, bugs, diagnostics, and incidents. It explicitly distinguishes mitigation, diagnosis, repair, and prevention. It plans delegation only when context isolation, specialist capability, independent evidence, or contribution size repays coordination overhead.
+The planning skill applies this to stories, changes, bugs, diagnostics, and incidents. It distinguishes mitigation, diagnosis, repair, and prevention. Delegation is used only when context isolation, specialist capability, independent evidence, or contribution size repays coordination overhead.
 
-The plan critic checks goal-to-solution alignment, provenance of decisions, upstream product assumptions, material hidden cases, task coverage, delegation economics, dependency edges, integration boundaries, and verification credibility.
+The plan critic checks goal-to-solution alignment, provenance of decisions, upstream product assumptions, material hidden cases, contribution coverage, delegation economics, dependency edges, integration boundaries, and verification credibility. Behavioral scenarios evaluate observable decisions and tool use rather than wording.
 
-Behavioral scenarios evaluate observable decisions and tool use rather than prompt wording.
+## Explorer protocol
 
-### Explorer assignment protocol
-
-Add a typed exploration assignment:
+A typed exploration assignment contains:
 
 ```ts
 interface ExplorationAssignment {
@@ -43,9 +41,9 @@ interface ExplorationAssignment {
 }
 ```
 
-A semantic `exploration_launch` capability validates this input, resolves the configured explorer model, creates the agent assignment, and invokes the shared coordinator. Direct code-understanding requests may use the same capability without creating a managed work item.
+`exploration_launch` validates the assignment, resolves the explorer model, reserves the logical agent, and invokes the shared coordinator. Direct code-understanding requests use the same capability without a managed work item.
 
-Explorer child capabilities:
+Explorer child capabilities are:
 
 ```text
 exploration_context
@@ -54,24 +52,14 @@ exploration_blocked
 exploration_complete
 ```
 
-`exploration_context` returns the immutable assignment and scoped output locations. `exploration_complete` accepts mode-sensitive structured output. Deterministic validation enforces common evidence requirements plus mode-specific fields. One configured protocol nudge may start another process attempt under the same logical agent identity; persistent invalid output ends as protocol failure.
+Mode-sensitive completion records a direct answer, observed system, precise evidence, relevant behavior or data flow, working comparisons, hypotheses with supporting and conflicting evidence, change implications, material hidden cases, and remaining unknowns or next probe as applicable. One bounded protocol nudge may create another process attempt under the same logical agent; persistent invalid output becomes protocol failure.
 
-### Session identity
+## Session identity and private layout
 
-Read the stable UUID from Pi's session header and bind it to the repository identity. Session-private state lives under:
+Read the stable UUID from Pi's session header and combine it with repository identity. `/reload` and continuation reuse the registry; new and forked sessions create distinct registries.
 
 ```text
 ~/.pi/agent/harness/repositories/<repo-id>/sessions/<session-id>/
-```
-
-Ephemeral or unavailable session identity fails closed for child launching unless Pi exposes another stable session identifier. `/reload` and continuation of the same session reuse the registry. New and forked sessions create distinct registries.
-
-### SessionAgentRegistry
-
-The registry is the authoritative snapshot for logical child identities and current lifecycle state. An ordered event file records transitions for observability and future TUI updates.
-
-```text
-sessions/<session-id>/
 ├── session.yaml
 ├── agents.yaml
 ├── agent-events.jsonl
@@ -89,88 +77,29 @@ sessions/<session-id>/
     └── handoff.json
 ```
 
-A logical agent record contains:
+No separate agent `kind` is stored. Role is authoritative for behavior and display. Optional work-item, task, evaluation, run, and workspace references support navigation.
 
-```ts
-interface SessionAgentRecord {
-  schemaVersion: 1;
-  id: string;
-  sessionId: string;
-  parentAgentId: string;
-  depth: 1;
-  role: string;
-  state: AgentState;
-  provider: string;
-  model: string;
-  effort: string;
-  workItemId?: string;
-  taskId?: string;
-  evaluationId?: string;
-  runId?: string;
-  workspace?: string;
-  currentAttemptId?: string;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  summary?: string;
-  error?: string;
-}
-```
+## SessionAgentRegistry
 
-No separate `kind` field is stored; role is authoritative for behavioral and display classification. Scope references support navigation without duplicating role semantics.
+The registry snapshot is authoritative for logical agents and current state. The event file records ordered transitions for observability and a future TUI.
 
-### Atomic registry transactions
+The main agent has depth zero and direct children depth one. A depth-two request fails before reservation. A logical agent atomically reserves one of sixteen slots before its first process attempt and retains it through every nonterminal state, including waits, pauses, interruption, recovery, and reported handoff. Later attempts reuse the existing reservation. Only completed, failed, protocol-failed, or cancelled transitions release the slot.
 
-A session-scoped cross-process mutex serializes registry operations. Each transaction:
+A session-scoped cross-process mutex serializes each registry transaction:
 
-1. Acquires the lock with owner identity and stale-owner recovery metadata.
-2. Reads and validates the snapshot and current revision.
-3. Validates the requested state transition, credential, depth, and slot count.
-4. Applies the update and increments snapshot revision and event sequence.
-5. Atomically replaces the snapshot.
-6. Appends the corresponding sequenced lifecycle event.
-7. Releases the lock.
+1. Acquire a lock with owner metadata and safe stale-owner recovery.
+2. Read and validate snapshot revision.
+3. Validate credential, depth, slot count, idempotency key, and state transition.
+4. Apply the update and increment snapshot revision and event sequence.
+5. Atomically replace the snapshot.
+6. Append the sequenced lifecycle event.
+7. Release the lock.
 
-The snapshot is authoritative. A missing event after a crash is repaired by reconciliation with a synthetic recovery event. Idempotency keys prevent replay from reserving another slot or finalizing twice.
+A snapshot written without its event because of a crash remains authoritative; reconciliation appends a synthetic recovery event. Replay cannot reserve twice or finalize twice.
 
-### Agent states and slot accounting
+## LaunchCoordinator
 
-Proposed logical states:
-
-```text
-reserved
-launching
-running
-waiting_model
-waiting_capacity
-waiting_decision
-blocked
-paused
-interrupted
-recovery_required
-reported
-completed
-failed
-protocol_failed
-cancelled
-```
-
-States through `reported`, excluding terminal failure and completion, occupy one of the 16 active slots because they remain unresolved work owned by the main session. `reported` retains a slot until the main session validates and reconciles the handoff; this prevents unlimited unprocessed completions from accumulating invisibly.
-
-Terminal states releasing a slot:
-
-```text
-completed
-failed
-protocol_failed
-cancelled
-```
-
-The exact allowed transition table is defined centrally and tested exhaustively. State changes cannot be made by arbitrary file edits without failing registry validation on the next read.
-
-### LaunchCoordinator
-
-All model-backed launch paths call one internal coordinator:
+All model-backed launches call one internal coordinator:
 
 ```ts
 launch(input: {
@@ -184,155 +113,81 @@ launch(input: {
 }): Promise<SessionAgentRecord>
 ```
 
-The coordinator atomically reserves an active slot and creates the assignment before invoking a child. It rejects depth greater than one and active count greater than sixteen before process creation. Spawn failure transitions the durable record to failed rather than deleting it.
+Semantic wrappers remain for `agent_run`, `exploration_launch`, `task_launch`, `evaluation_launch`, and repair launch. The coordinator reserves and registers before spawning. Spawn failure becomes a durable terminal failure rather than deleting the record.
 
-Semantic wrappers include `agent_run`, `exploration_launch`, `task_launch`, `evaluation_launch`, and repair launch. Existing behavior remains available while direct-agent and supervised-task process mechanics converge behind the coordinator.
+Each process attempt has a random immutable attempt ID and scoped credential. Children receive root session, logical agent, parent, depth, attempt, and run scope through protected environment variables. A protocol nudge or recovery attempt remains under the same logical agent.
 
-### File-backed process attempts
+## File-backed background execution
 
-Each process attempt has a random immutable attempt ID and scoped credential. The child receives root session, logical agent, parent, depth, attempt, and run scope through protected environment variables.
+Children run in independent process groups with stdout and stderr directed to attempt files. Transcript and lifecycle events, five-second heartbeat, checkpoints, messages, and handoffs are written directly to private files. The main process tails those files when present; children do not depend on a writable parent pipe or synchronous RPC.
 
-Children are spawned in an independent process group with output directed to attempt files. They never require a writable parent pipe. While the main process is active, it tails files or consumes registry events for progress callbacks. The same files support later TUI rendering.
+Main-process exit does not terminate children. Child credentials authorize only one assignment's private records, structured messages and handoff, and assigned workspace. Canonical artifact and child-launch capabilities remain unavailable.
 
-A child heartbeat contains attempt ID, PID, start metadata, and timestamp. PID is never accepted alone as process identity. Child capability calls validate assignment, attempt, credential, and allowed state before writing.
+A fresh heartbeat matching logical agent and process-attempt identity proves recent liveness. PID existence without a fresh matching heartbeat is ambiguous and becomes `recovery_required`; V1 performs no platform-specific process-start fingerprinting, automatic kill, or duplicate launch.
 
-Protocol nudge or crash recovery creates another attempt under the same logical agent. A different assignment creates a new logical agent.
+## Asynchronous messages
 
-### Asynchronous messages
+Immutable messages have stable IDs, agent and assignment references, type, status, blocking semantics, summary, rationale, evidence, options, recommendation, checkpoint linkage, and timestamps.
 
-Messages are immutable records with later status transitions:
+- `decision_report` is non-blocking and remains attached to final handoff.
+- `change_request` checkpoints safe work, transitions to `waiting_decision`, and exits.
+- `blocked` checkpoints work, records evidence, enters blocked state, and exits.
 
-```ts
-interface AgentMessage {
-  schemaVersion: 1;
-  id: string;
-  agentId: string;
-  assignmentId: string;
-  type: "decision_report" | "change_request" | "blocked";
-  status: "open" | "acknowledged" | "answered" | "closed";
-  blocking: boolean;
-  summary: string;
-  rationale: string;
-  evidence: Array<{ source: string; observation: string }>;
-  options?: string[];
-  recommendation?: string;
-  checkpointPath?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-```
+Main-session absence does not affect persistence. An orchestrator response is linked by message ID. A later attempt receives the original assignment, current authoritative context, retained workspace, checkpoint, request, and response. Messages never mutate canonical planning automatically.
 
-Decision reports are non-blocking and remain linked to the terminal handoff. Change requests checkpoint safe work, transition to waiting_decision, and exit. Blockers checkpoint and exit. Main-session absence does not alter persistence behavior.
+## Handoffs and reconciliation
 
-An orchestrator capability responds by stable message ID, records the answer, and permits a later attempt to receive original assignment, current authoritative context, checkpoint, message, and response. A response cannot directly alter canonical artifacts or revive stale approved planning.
+Every role writes a typed terminal or recoverable handoff. A child that finishes writes it atomically and enters `reported`; it does not finalize canonical state.
 
-### Handoffs and reconciliation
+At session startup and before dependent lifecycle mutations, idempotent reconciliation:
 
-Every child role gains a typed terminal or recoverable handoff. A child that finishes writes the handoff atomically and transitions to `reported`; it does not perform canonical finalization.
+1. Checks pending messages and handoffs before process liveness.
+2. Validates and finalizes a valid handoff, then marks completed.
+3. Preserves a positively identified live child and resumes file observation.
+4. Marks a confirmed-dead child without handoff interrupted while retaining workspace and records.
+5. Marks ambiguous identity recovery-required and prevents duplicate writing.
+6. Surfaces open blocking messages before dependent execution continues.
 
-At session startup and before dependent lifecycle mutations, reconciliation handles each unresolved agent idempotently:
+Task reconciliation retains Git, clean-worktree, planning-revision, commit, and canonical-artifact checks. Evaluators retain evidence and finding checks. Explorers use mode-sensitive completion validation.
 
-1. Validate pending messages and terminal handoff first.
-2. If a valid handoff exists, perform role-specific validation and canonical finalization, then mark completed.
-3. If the positively identified process remains alive, preserve running state and resume file observation.
-4. If the process is confirmed dead without handoff, mark interrupted and retain workspace, checkpoint, messages, and transcript.
-5. If process identity is ambiguous, mark recovery_required and prevent a duplicate writer.
-6. Surface open blocking messages before launching dependent work.
+Capacity or model unavailability ends the current process attempt, retains the logical slot in `waiting_capacity` or `waiting_model`, and requires explicit resume. V1 has no automatic delayed retry.
 
-Task handoff validation preserves existing Git, clean-worktree, planning-revision, commit, and canonical-artifact checks. Evaluator validation preserves evidence and finding requirements. Explorer validation enforces its mode contract.
+## Explicit control
 
-### Explicit control
-
-`agent_control` operates on logical agent IDs and supports status-appropriate pause, resume, stop, and response actions. Stop targets only a positively identified process group, records stopping intent atomically, preserves files, and transitions deterministically. Session shutdown itself does not stop children.
-
-A future dashboard reads the registry and event stream but is not part of this change.
-
-## Data and control flow
-
-```text
-User and main orchestrator
-        │
-        ├─ collaborative discovery and repository questions
-        │                 │
-        │                 └─ exploration_launch
-        │
-        └─ semantic launch capability
-                          │
-                          ▼
-                 LaunchCoordinator
-                          │
-              atomic reserve/register
-                          │
-                          ▼
-                 child Pi process
-                          │
-             files + registry transactions
-                 ┌────────┼──────────┐
-                 ▼        ▼          ▼
-             progress   message    handoff
-                 │        │          │
-                 └────────┴──────────┘
-                          │
-                  main live or resumed
-                          │
-                    reconciliation
-                          │
-                  canonical transition
-```
+`agent_control` addresses logical agent IDs for pause, resume, stop, and message response. Stop targets only a positively identified process group, atomically records intent, preserves files, and transitions deterministically. Session shutdown itself does not stop children.
 
 ## Failure and recovery
 
-- Registry lock owner dies: recover only after process-owner validation and timeout; never remove a live owner's lock.
-- Crash between reservation and spawn: stale `reserved` or `launching` record becomes failed or interrupted during reconciliation and releases its slot.
-- Crash between snapshot and event append: snapshot remains authoritative; reconciliation appends a synthetic event.
-- Main process exits: child continues file-backed execution; no canonical authority is transferred.
-- Child exits after handoff: resume validates and finalizes it.
-- Child exits before handoff: preserve partial state as interrupted.
-- PID reuse or stale heartbeat: mark recovery_required rather than killing or duplicating.
-- Planning revision changes: child may checkpoint and message, but terminal contribution validation fails stale context and requires orchestrator reconciliation.
-- Message write succeeds while main is absent: the request remains open and is surfaced on resume.
-- Output disk write fails: child reports the storage failure in stderr where possible and cannot claim valid completion without the structured handoff.
+- Stale registry lock: recover only after validating the owner is no longer active.
+- Crash before spawn: reconcile stale reservation to terminal failure or interruption.
+- Crash between snapshot and event append: synthesize the missing event.
+- Main exit: child continues file-backed work without gaining canonical authority.
+- Child exits after handoff: resumed main validates and finalizes.
+- Child exits before handoff: preserve interrupted state.
+- Stale heartbeat with an existing PID: require explicit recovery.
+- Planning revision changes: reject stale terminal completion while preserving checkpoint and messages.
+- Output storage failure: no valid completion claim without the structured handoff.
 
 ## Security and privacy
 
-Registry, transcripts, process output, credentials, messages, and checkpoints remain under the repository-private harness root with restrictive permissions. Credentials are stored only as hashes in durable records. Child environment credentials are scoped to one attempt and assignment. Children cannot call launch coordination or canonical artifact tools. No transcript or private registry file is committed.
+Registry, transcripts, outputs, credentials, messages, and checkpoints remain outside Git with restrictive permissions. Durable credentials are hashed. Child credentials are scoped to one attempt and assignment. Children cannot launch agents or mutate canonical artifacts.
 
 ## Compatibility and migration
 
-Existing work-item run records remain readable and recoverable. New launches create session-agent records and may retain links to legacy run IDs. Migration is additive: old runs are not moved, renamed, or deleted automatically. Existing public tool names remain available while their process implementation is routed through the coordinator. Configuration adds defaults for `maxActiveSubagentsPerSession: 16` and `maxSubagentDepth: 1`; existing repositories receive defaults without requiring immediate policy edits.
+Existing work-item run records remain readable. New registry records may link to legacy run IDs; old records are not moved or deleted. Existing public tool names remain while process mechanics converge behind the coordinator. Configuration gains defaults of sixteen active logical agents and depth one without requiring immediate repository-policy edits.
 
 ## Verification boundaries
 
-- Prompt behavioral evaluation covers feature framing, product-foot-gun challenge, low-risk proportionality, bug diagnosis, and delegation restraint.
-- Unit tests cover assignment schemas, mode-specific explorer completion, registry transitions, depth and slot limits, credentials, message transitions, lock recovery, and idempotent replay.
-- Process integration tests cover concurrent slot reservation, file-backed child completion after parent exit, explicit stop, process-attempt retry, stale PID ambiguity, and session resume reconciliation.
-- Managed lifecycle regression tests cover tasks, evaluations, repair, direct specialists, approval, integration, and completion.
-- A final E2E starts explorer and task children, exits the main process, allows handoff and a blocking request, resumes the same Pi session, responds, reconciles, evaluates, and completes.
+- Prompt scenarios: feature framing, product-foot-gun challenge, low-risk proportionality, bug diagnosis, and delegation restraint.
+- Unit tests: explorer schemas, mode completion, registry transactions, state transitions, slot/depth enforcement, credentials, messages, locking, and replay.
+- Process integration: concurrent reservation, background completion after parent exit, explicit stop, later attempt, stale heartbeat ambiguity, and resume reconciliation.
+- Lifecycle regression: task, evaluation, repair, direct specialist, approval, integration, and completion behavior.
+- Final E2E: launch explorer and task children, exit main, allow a handoff and blocking request, resume the same session, respond, reconcile, evaluate, and complete.
 
 ## Alternatives considered
 
-### Separate registries for tasks, evaluations, and direct agents
-
-Rejected because lifecycle accounting, depth enforcement, active limits, recovery, and future TUI aggregation would remain inconsistent.
-
-### One generic model-facing launch tool
-
-Rejected as the only public surface because it would erase useful typed semantic contracts. A generic internal coordinator with semantic wrappers provides consistency without weakening model guidance.
-
-### Separate diagnostic agent role
-
-Deferred. Explorer modes are evaluated first. A dedicated diagnostic role is justified only if tool needs or behavioral evaluation show that one explorer contract cannot maintain both fast reconnaissance and scientific diagnosis.
-
-### Stop children whenever the main session exits
-
-Rejected because assignments and handoffs are intentionally isolated and file-backed; automatic termination would discard useful work and weaken recovery.
-
-### Preserve live pipe attachment across resume
-
-Rejected because OS pipe and in-memory callback reattachment is unreliable. Durable files and reconciliation are authoritative instead.
-
-## Open design questions
-
-- Whether `reported` should consume an active slot until canonical reconciliation or release it immediately while remaining prominently pending.
-- Exact heartbeat cadence and cross-platform process-start fingerprint implementation.
-- Whether waiting-capacity agents should remain active indefinitely or transition to an explicit dormant state after a configurable interval.
+- Separate role registries: rejected because accounting and recovery would diverge.
+- Only one generic public launch tool: rejected because semantic wrappers provide better typed guidance.
+- Separate diagnostic role: deferred until explorer-mode evaluation demonstrates a need.
+- Stop children on main exit: rejected because work is isolated and file-backed.
+- Reattach old streams: rejected because durable files provide reliable recovery.

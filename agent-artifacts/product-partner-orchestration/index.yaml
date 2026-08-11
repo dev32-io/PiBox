@@ -5,9 +5,9 @@ title: Product-partner orchestration and durable subagents
 phase: planning
 state: active
 planning:
-  revision: 5
+  revision: 6
   status: draft
-  contractDigest: sha256:dc04e03822c6bce94e18e20b1b1ebf71ced904a513d66c1303a5409224a98e95
+  contractDigest: sha256:d26bdc920e05d957068c8291d1c7a35269ed526a82c8170c2bd42fae71266f39
 artifacts:
   - id: intent
     type: intent
