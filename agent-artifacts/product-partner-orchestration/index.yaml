@@ -5,9 +5,9 @@ title: Product-partner orchestration and durable subagents
 phase: planning
 state: active
 planning:
-  revision: 2
+  revision: 3
   status: draft
-  contractDigest: sha256:f59f8ee4c95cf4143d78175b1089720213508445d37e96889549480b397dfbf7
+  contractDigest: sha256:6fe01d0770d02bac789a3d19c2338d287feb332e743f980e3bc5ffc223376199
 artifacts:
   - id: intent
     type: intent
@@ -16,6 +16,10 @@ artifacts:
   - id: product-partner-and-subagent-lifecycle
     type: spec
     path: specs/product-partner-and-subagent-lifecycle.md
+    status: draft
+  - id: orchestration-and-agent-registry-design
+    type: design
+    path: design/orchestration-and-agent-registry-design.md
     status: draft
 tasks: []
 evaluations: []
