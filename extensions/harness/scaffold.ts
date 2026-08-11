@@ -24,7 +24,7 @@ function economyConfig() {
 				},
 			]),
 		),
-		limits: { maxConcurrency: 2, protocolNudges: 1, repairRounds: 1 },
+		limits: { maxConcurrency: 2, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 1 },
 	};
 }
 
@@ -32,7 +32,7 @@ function standardConfig() {
 	return {
 		schemaVersion: 1,
 		orchestrator: { modelSwitching: "auto-visible" },
-		limits: { maxConcurrency: 4, protocolNudges: 1, repairRounds: 2 },
+		limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
 	};
 }
 

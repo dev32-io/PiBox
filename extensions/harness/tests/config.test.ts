@@ -24,6 +24,8 @@ test("loads user then repository configuration and records a stable digest", () 
 		readFile: (path) => files[path] ?? "",
 	});
 	assert.equal(loaded.config.limits.maxConcurrency, 6);
+	assert.equal(loaded.config.limits.maxActiveSubagentsPerSession, 16);
+	assert.equal(loaded.config.limits.maxSubagentDepth, 1);
 	assert.deepEqual(loaded.config.roles.implementer?.models, [{ model: "terra", effort: "medium" }]);
 	assert.equal(loaded.sources.length, 3);
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);

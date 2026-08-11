@@ -19,7 +19,7 @@ const TOP_LEVEL_KEYS = new Set(["schemaVersion", "models", "roles", "orchestrato
 const MODEL_KEYS = new Set(["provider", "model", "capabilityRank"]);
 const ROLE_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "models"]);
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
-const LIMIT_KEYS = new Set(["maxConcurrency", "protocolNudges", "repairRounds"]);
+const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	schemaVersion: 1,
@@ -48,7 +48,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 		"repair-implementer": { workspace: "worktree", canDelegate: false, models: [{ model: "sol", effort: "high" }] },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
-	limits: { maxConcurrency: 4, protocolNudges: 1, repairRounds: 2 },
+	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -175,6 +175,8 @@ export function validateHarnessConfig(value: unknown): HarnessConfig {
 		orchestrator: { modelSwitching: switching },
 		limits: {
 			maxConcurrency: expectInteger(value.limits.maxConcurrency, "limits.maxConcurrency", 1),
+			maxActiveSubagentsPerSession: expectInteger(value.limits.maxActiveSubagentsPerSession, "limits.maxActiveSubagentsPerSession", 1),
+			maxSubagentDepth: expectInteger(value.limits.maxSubagentDepth, "limits.maxSubagentDepth"),
 			protocolNudges: expectInteger(value.limits.protocolNudges, "limits.protocolNudges"),
 			repairRounds: expectInteger(value.limits.repairRounds, "limits.repairRounds"),
 		},

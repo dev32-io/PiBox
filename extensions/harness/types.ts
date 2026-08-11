@@ -37,7 +37,10 @@ export interface HarnessConfig {
 		modelSwitching: "off" | "suggest" | "auto-visible";
 	};
 	limits: {
+		/** Legacy process-concurrency preference retained for schema-v1 policy compatibility. */
 		maxConcurrency: number;
+		maxActiveSubagentsPerSession: number;
+		maxSubagentDepth: number;
 		protocolNudges: number;
 		repairRounds: number;
 	};
