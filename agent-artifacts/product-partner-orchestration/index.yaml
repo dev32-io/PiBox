@@ -46,6 +46,8 @@ evaluations:
     path: evaluations/prompt-behavior-review/evaluation.yaml
   - id: registry-deterministic-runtime-review
     path: evaluations/registry-deterministic-runtime-review/evaluation.yaml
+  - id: background-resume-lifecycle-e2e
+    path: evaluations/background-resume-lifecycle-e2e/evaluation.yaml
 integrationUnits:
   - id: prompt-contracts
     tasks:

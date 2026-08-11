@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: background-resume-lifecycle-e2e
+type: e2e
+scope:
+  workItem: product-partner-orchestration
+status: planned
+required: true
+attempt: 0
+methods:
+  - Launch explorer and managed task children through semantic wrappers.
+  - Exit the main process while children continue file-backed work; capture a
+    terminal handoff and a blocking change request.
+  - Resume the same session, reconcile live/reported/interrupted/ambiguous
+    states, surface the blocking request, write a durable response, and start a
+    later attempt.
+  - Run final managed lifecycle, approval, worktree recovery, schema-v1
+    compatibility, and canonical artifact protection regressions.
+criteria:
+  - product-partner-and-subagent-lifecycle#AC-006
+  - product-partner-and-subagent-lifecycle#AC-007
+  - product-partner-and-subagent-lifecycle#AC-008
+  - product-partner-and-subagent-lifecycle#AC-011
+  - product-partner-and-subagent-lifecycle#AC-012
+  - product-partner-and-subagent-lifecycle#AC-013
+  - product-partner-and-subagent-lifecycle#AC-014
+  - product-partner-and-subagent-lifecycle#AC-016
