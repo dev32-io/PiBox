@@ -36,7 +36,7 @@ const TRANSITIONS: Record<AgentState, ReadonlySet<AgentState>> = {
 	paused: new Set(["launching", "cancelled", "failed"]),
 	interrupted: new Set(["launching", "recovery_required", "cancelled", "failed"]),
 	recovery_required: new Set(["launching", "cancelled", "failed"]),
-	reported: new Set(["completed", "protocol_failed", "failed", "cancelled"]),
+	reported: new Set(["launching", "blocked", "completed", "protocol_failed", "failed", "cancelled"]),
 	completed: new Set(),
 	failed: new Set(),
 	protocol_failed: new Set(),

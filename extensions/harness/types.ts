@@ -181,4 +181,5 @@ export interface HarnessStatusSnapshot {
 	workItems: WorkItemIndex[];
 	taskCounts: Record<string, Record<string, number>>;
 	runs: Array<{ id: string; workItemId: string; taskId?: string; role: string; state: string; model?: string }>;
+	agents: Array<{ id: string; role: string; state: string; model: string; taskId?: string; evaluationId?: string }>;
 }

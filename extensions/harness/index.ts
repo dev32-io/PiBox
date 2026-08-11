@@ -3,16 +3,20 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
+import { SessionAgentRegistry } from "./agent-registry.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
+import { registerExplorationCapabilities } from "./exploration-capabilities.js";
+import { validateExplorationAssignment, validateExplorationHandoff, type ExplorationAssignment, type ExplorationHandoff } from "./exploration-contracts.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { runDirectAgent } from "./direct-agent.js";
 import { HarnessRunStore } from "./run-store.js";
 import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
+import { LaunchCoordinator } from "./launch-coordinator.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
-import { assertCleanRepository, discoverRepository, runGit, type RepositoryIdentity } from "./repository.js";
+import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, TaskManifest, WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
@@ -28,6 +32,8 @@ const WORKER_TOOL_NAMES = new Set([
 	"task_complete",
 ]);
 const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
+const EXPLORATION_TOOL_NAMES = new Set(["exploration_context", "exploration_checkpoint", "exploration_blocked", "exploration_complete"]);
+const isSubagentProcess = () => Boolean(process.env.PIBOX_HARNESS_AGENT_ID);
 const ORCHESTRATOR_CONTRACT = `PiBox harness routing:
 
 Partnership — Act as a constructive product and technical partner, not an order taker or adversarial reviewer. Seek the outcome behind a requested solution: actor, trigger, current behavior, material friction, success signal, and guardrails. Inspect available facts yourself. Distinguish stated, observed, inferred, recommended, delegated, and unresolved information. The user owns consequential decisions; the main session owns synthesis and canonical artifacts.
@@ -53,6 +59,7 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"task_update",
 	"evaluation_define",
 	"agent_run",
+	"exploration_launch",
 	"evaluation_launch",
 	"task_launch",
 	"task_integrate",
@@ -71,6 +78,10 @@ interface HarnessRuntime {
 	config: ReturnType<typeof loadHarnessConfig>["config"];
 	operations: IdempotencyStore;
 	mutex: RepositoryMutex;
+	agents: SessionAgentRegistry;
+	coordinator: LaunchCoordinator;
+	sessionId: string;
+	mainAgentId: string;
 }
 
 const textResult = (text: string, details: unknown = null) => ({
@@ -78,11 +89,15 @@ const textResult = (text: string, details: unknown = null) => ({
 	details,
 });
 
-async function createRuntime(ctx: Pick<ExtensionContext, "cwd">): Promise<HarnessRuntime> {
+async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime> {
 	const identity = await discoverRepository(ctx.cwd);
 	const loaded = loadHarnessConfig(identity.root);
 	const events = new RepositoryEventStore(identity);
 	await events.initialize();
+	const sessionId = ctx.sessionManager.getSessionId();
+	const mainAgentId = `main:${sessionId}`;
+	const agents = new SessionAgentRegistry(identity.privateRoot, sessionId, loaded.config.limits.maxActiveSubagentsPerSession, loaded.config.limits.maxSubagentDepth);
+	await agents.initialize(mainAgentId);
 	return {
 		identity,
 		events,
@@ -91,6 +106,10 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd">): Promise<Harnes
 		config: loaded.config,
 		operations: new IdempotencyStore(identity.privateRoot),
 		mutex: new RepositoryMutex(identity.privateRoot),
+		agents,
+		coordinator: new LaunchCoordinator(agents, mainAgentId),
+		sessionId,
+		mainAgentId,
 	};
 }
 
@@ -132,7 +151,15 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 			});
 		}
 	}
-	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, configDigest: runtime.configDigest, workItems, taskCounts, runs };
+	const agents = (await runtime.agents.list()).map((agent) => ({
+		id: agent.id,
+		role: agent.role,
+		state: agent.state,
+		model: `${agent.provider}/${agent.model}:${agent.effort}`,
+		...(agent.taskId ? { taskId: agent.taskId } : {}),
+		...(agent.evaluationId ? { evaluationId: agent.evaluationId } : {}),
+	}));
+	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, configDigest: runtime.configDigest, workItems, taskCounts, runs, agents };
 }
 
 function formatStatus(status: HarnessStatusSnapshot): string {
@@ -143,15 +170,18 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 		return `${item.id} · ${item.kind} · ${item.phase}/${item.state} · planning ${item.planning.status} r${item.planning.revision}${tasks ? ` · ${tasks}` : ""}`;
 	});
 	const active = status.runs.filter((run) => run.state === "running" || run.state.startsWith("waiting_"));
-	return [`Harness: ${status.workItems.length} managed work item${status.workItems.length === 1 ? "" : "s"}`, ...lines, ...(active.length ? [`Runs: ${active.map((run) => `${run.taskId ?? run.id}=${run.state}`).join(" · ")}`] : [])].join("\n");
+	const activeAgents = status.agents.filter((agent) => !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state));
+	return [`Harness: ${status.workItems.length} managed work item${status.workItems.length === 1 ? "" : "s"}`, ...lines, ...(activeAgents.length ? [`Subagents: ${activeAgents.length} active · ${activeAgents.map((agent) => `${agent.role}=${agent.state}`).join(" · ")}`] : []), ...(active.length ? [`Legacy runs: ${active.map((run) => `${run.taskId ?? run.id}=${run.state}`).join(" · ")}`] : [])].join("\n");
 }
 
 export default function harness(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
 	let whitespaceToolDeltaBytes = 0;
+	let heartbeatTimer: NodeJS.Timeout | undefined;
 	const supervisor = new SubagentSupervisor();
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
+	registerExplorationCapabilities(pi);
 
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
 		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
@@ -555,6 +585,62 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "exploration_launch",
+		label: "Launch Repository Exploration",
+		description: "Launch a read-only explorer with a typed question, decision boundary, depth, stop conditions, and structured evidence handoff.",
+		parameters: Type.Object({
+			mode: Type.Union([Type.Literal("lookup"), Type.Literal("map"), Type.Literal("trace"), Type.Literal("impact"), Type.Literal("diagnose"), Type.Literal("explain")]),
+			question: Type.String(), decisionSupported: Type.String(),
+			knownEvidence: Type.Array(Type.Object({ source: Type.String(), observation: Type.String() })),
+			scope: Type.Object({ start: Type.Array(Type.String()), exclude: Type.Optional(Type.Array(Type.String())) }),
+			depth: Type.Union([Type.Literal("quick"), Type.Literal("standard"), Type.Literal("thorough")]),
+			stopConditions: Type.Array(Type.String()), requiredOutput: Type.Array(Type.String()),
+			model: Type.Optional(Type.String()), effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
+		}, { additionalProperties: false }),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const assignment: ExplorationAssignment = { schemaVersion: 1, mode: params.mode, question: params.question, decisionSupported: params.decisionSupported, knownEvidence: params.knownEvidence, scope: params.scope, depth: params.depth, stopConditions: params.stopConditions, requiredOutput: params.requiredOutput };
+				validateExplorationAssignment(assignment);
+				const role = runtime.config.roles.explorer;
+				if (!role) throw new HarnessError("CONFIG_INVALID", "Missing explorer role");
+				const roleCandidates = role.models ?? [];
+				const requested = params.model ? [{ model: params.model, effort: (params.effort ?? "low") as HarnessEffort }] : roleCandidates;
+				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+				const resolution = resolveHarnessModel(runtime.config, available, { candidates: requested, strict: false });
+				if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No explorer candidate is available.", resolution);
+				const launch = (nudge: boolean) => runtime.coordinator.launch({
+					operationId: toolCallId, role: "explorer", task: ["Call exploration_context before investigating.", `Complete the ${assignment.mode} assignment at ${assignment.depth} depth.`, "Use exploration_checkpoint for material recoverable progress.", nudge ? "No valid exploration_complete handoff was found. Complete the required structured handoff now." : "Finish by calling exploration_complete with mode-required cited evidence."].join("\n"),
+					assignment, cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+					tools: [...(role.tools ?? ["read", "grep", "find", "bash"]), ...EXPLORATION_TOOL_NAMES], deferCompletion: true,
+					...(signal ? { signal } : {}), ...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: "explorer", state: "running" })) } : {}),
+				});
+				let launched = await launch(false);
+				const agentRoot = join(runtime.agents.root, "agents", launched.agent.id);
+				let handoffText = await readTextIfExists(join(agentRoot, "handoff.json"));
+				const blocked = await readTextIfExists(join(agentRoot, "blocked.json"));
+				if (!handoffText && blocked) {
+					const agent = await runtime.agents.transition(launched.agent.id, "blocked", { summary: JSON.parse(blocked).summary });
+					return textResult(`Explorer ${agent.id} is blocked.`, { agent, blocked: JSON.parse(blocked) });
+				}
+				if (!handoffText && runtime.config.limits.protocolNudges > 0) {
+					launched = await launch(true);
+					handoffText = await readTextIfExists(join(agentRoot, "handoff.json"));
+				}
+				if (!handoffText) {
+					const agent = await runtime.agents.transition(launched.agent.id, "protocol_failed", { error: "Missing exploration_complete handoff" });
+					return textResult(`Explorer ${agent.id} failed its completion protocol.`, agent);
+				}
+				const handoff = JSON.parse(handoffText) as ExplorationHandoff;
+				validateExplorationHandoff(handoff, assignment);
+				const agent = await runtime.agents.transition(launched.agent.id, "completed", { summary: handoff.answer });
+				return textResult(handoff.answer, { agent, handoff });
+			} catch (error) { throw new Error(describeHarnessError(error)); }
+		},
+	});
+
+	pi.registerTool({
 		name: "agent_run",
 		label: "Run Harness Specialist",
 		description: "Directly invoke a configurable specialist role without requiring a managed work item.",
@@ -565,7 +651,7 @@ export default function harness(pi: ExtensionAPI): void {
 			effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
 			strict: Type.Optional(Type.Boolean()),
 		}),
-		async execute(_id, params, signal, onUpdate, ctx) {
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
@@ -586,9 +672,11 @@ export default function harness(pi: ExtensionAPI): void {
 					"quality-reviewer": ["read", "grep", "find", "bash"],
 					"e2e-tester": ["read", "grep", "find", "bash"],
 				};
-				const direct = await runDirectAgent({
+				const launched = await runtime.coordinator.launch({
+					operationId: toolCallId,
 					role: params.role,
 					task: params.task,
+					assignment: { schemaVersion: 1, role: params.role, task: params.task },
 					cwd: runtime.identity.root,
 					provider: resolution.model.provider,
 					model: resolution.model.id,
@@ -598,9 +686,10 @@ export default function harness(pi: ExtensionAPI): void {
 					...(signal ? { signal } : {}),
 					...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: params.role, state: "running" })) } : {}),
 				});
+				const direct = launched.result;
 				await assertCleanRepository(runtime.identity.root);
-				await runtime.events.append("agent.direct_completed", { role: params.role, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
-				return textResult(direct.text || direct.stderr || `Specialist exited ${direct.exitCode}.`, direct);
+				await runtime.events.append("agent.direct_completed", { agentId: launched.agent.id, role: params.role, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
+				return textResult(direct.text || direct.stderr || `Specialist exited ${direct.exitCode}.`, { agent: launched.agent, result: direct });
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}
@@ -931,16 +1020,30 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event) => {
-		if (isWorkerProcess() || isEvaluatorProcess()) return;
+		if (isWorkerProcess() || isEvaluatorProcess() || isSubagentProcess()) return;
 		return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_CONTRACT}` };
 	});
 
 	pi.on("session_start", async (event, ctx) => {
 		const disallowed = new Set<string>();
-		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isSubagentProcess()) {
+			[...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+			if (process.env.PIBOX_HARNESS_AGENT_ROLE !== "explorer") EXPLORATION_TOOL_NAMES.forEach((name) => disallowed.add(name));
+		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
+		if (isSubagentProcess()) {
+			const agentRoot = process.env.PIBOX_HARNESS_AGENT_ROOT;
+			const attemptId = process.env.PIBOX_HARNESS_ATTEMPT_ID;
+			if (agentRoot && attemptId) {
+				const writeHeartbeat = () => atomicWriteFile(join(agentRoot, "attempts", attemptId, "heartbeat.json"), `${JSON.stringify({ agentId: process.env.PIBOX_HARNESS_AGENT_ID, attemptId, pid: process.pid, at: new Date().toISOString() })}\n`, 0o600).catch(() => undefined);
+				await writeHeartbeat();
+				heartbeatTimer = setInterval(writeHeartbeat, 5_000);
+				heartbeatTimer.unref();
+			}
+			return;
+		}
 		if (isWorkerProcess() || isEvaluatorProcess()) return;
 		try {
 			sessionRuntime = await createRuntime(ctx);
@@ -988,6 +1091,8 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event) => {
+		if (heartbeatTimer) clearInterval(heartbeatTimer);
+		heartbeatTimer = undefined;
 		if (!sessionRuntime) return;
 		await sessionRuntime.events.append("session.shutdown", { reason: event.reason });
 		await sessionRuntime.events.flush();
