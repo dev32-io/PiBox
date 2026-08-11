@@ -132,6 +132,23 @@ scenarios:
       provider: openai-codex
       id: gpt-5.6-luna
       effort: low
+  - id: resource-api-planning-and-approved-amendment
+    surface: assembled-harness
+    repetitions: 1
+    result: pass
+    passed: 1
+    requiredProperties:
+      - list before create and get before patch
+      - one work item rather than replacement duplicates
+      - coherent multi-resource creation in one commit and revision
+      - typed resource representations visible in tool text
+      - approved task revision with audited retain-approval continuity
+      - no automatic user escalation for routine implementation clarification
+      - blocking request response and same-slot resume through harness_apply_change
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
   - id: typed-explorer-background-lifecycle
     surface: assembled-harness
     repetitions: 1

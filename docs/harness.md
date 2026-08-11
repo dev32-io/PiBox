@@ -1,6 +1,6 @@
 # PiBox Agent Harness
 
-The PiBox harness turns the normal Pi session into a persistent, user-facing orchestrator. Models make semantic decisions; extension capabilities enforce approval, artifacts, identity, Git isolation, structured completion, evidence, and recovery.
+The PiBox harness turns the normal Pi session into a persistent, user-facing orchestrator. Models make semantic and materiality decisions; extension capabilities enforce resource format, identity, referential integrity, atomic Git mutation, isolation, structured completion, evidence, and recovery.
 
 The design contract is [`specs/agent-harness.md`](specs/agent-harness.md).
 
@@ -44,22 +44,21 @@ Managed planning begins as a product and technical conversation, not an artifact
 
 The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator drafts and submits the coherent contract, then offers two natural next steps: refine it conversationally, or approve the frozen revision with `/harness approve <work-item-id>`. No magic readiness phrase is required.
 
-- `work_item_create`
-- `artifact_create`
-- `artifact_update`
-- `task_define`
-- `evaluation_define`
-- `planning_submit`
+- `harness_list` and `harness_get` inspect complete canonical resources and revisions.
+- `harness_create`, `harness_patch`, and `harness_delete` provide resource-oriented CRUD over work items, artifacts, tasks, integration units, and evaluations.
+- `harness_apply_change` applies a coherent multi-resource amendment as one canonical commit and can resolve a subagent request in the same orchestration decision.
+- `harness_transition` submits, postpones, resumes, archives, reopens, or otherwise advances a resource lifecycle.
 
+Legacy resource-specific planning tools remain registered for compatibility but are hidden from the normal main-session tool surface.
 Schema-v2 narrative capabilities accept typed semantic sections and render stable Markdown for intent, specifications, designs, decisions, task briefs, and task acceptance. Required values fail when empty or placeholder-only; optional sections may be omitted. Evaluation reports and outcomes are rendered from structured evidence, findings, verification, and residual risk. Schema-v1 artifacts remain readable for compatibility.
 
-Planning submission freezes the deliverable-contract digest. Only the user can approve it:
+Initial planning submission freezes the deliverable-contract digest. Only the user can grant initial approval:
 
 ```text
 /harness approve <work-item-id>
 ```
 
-Task boundaries, integration grouping, and evaluator timing remain under orchestrator authority unless the user explicitly makes them binding.
+Approval is continuity rather than a blanket mutation freeze. The main orchestrator may revise approved specs, designs, tasks, integration units, and evaluations with an audited `retain-approval` amendment when the change remains within delegated intent. It uses `request-user` only for a material user-owned decision. Each amendment records revision, rationale, provenance, and impact; immutable run, evidence, handoff, and integration history is never rewritten. Task boundaries, integration grouping, and evaluator timing remain under orchestrator authority unless the user explicitly makes them binding.
 
 ### Exploration and execution
 
@@ -102,7 +101,7 @@ Every model-backed direct child is registered under the stable main Pi session i
 
 Child stdout, stderr, transcript, heartbeat, checkpoint, messages, and handoff are file-backed under private session state. Exiting the main Pi process does not stop children. On resume, the registry checks durable handoffs before liveness, preserves positively identified live work, marks dead children without handoff interrupted, and treats stale-heartbeat PID ambiguity as recovery-required rather than launching a duplicate writer.
 
-Decision reports are asynchronous and non-blocking. Change requests and blockers checkpoint safe work, retain their logical slot, and wait for a durable `agent_respond`; no live main-process RPC is required. Capacity failures remain explicit and require manual resume. Recovery never resets branches, deletes worktrees, or discards uncommitted worker changes.
+Decision reports are asynchronous and non-blocking. Change requests and blockers checkpoint safe work and retain their logical slot while the main orchestrator judges materiality. Routine requests can be accepted or rejected, applied through an atomic `harness_apply_change`, answered durably, and resumed without asking the user or discarding approval continuity. No live main-process RPC is required. Capacity failures remain explicit and require manual resume. Recovery never resets branches, deletes worktrees, or discards uncommitted worker changes.
 
 ## Configuration
 

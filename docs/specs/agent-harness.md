@@ -1089,29 +1089,30 @@ A managed work item completes only when:
 
 ## 16. Capability API
 
-### 16.1 Orchestrator artifact capabilities
+### 16.1 Orchestrator resource capabilities
 
 ```text
 harness_init
-work_item_create
-work_item_status
-artifact_create
-artifact_update
-artifact_link
-artifact_reconcile
-planning_submit
-task_define
-task_update
-evaluation_define
+harness_list
+harness_get
+harness_create
+harness_patch
+harness_delete
+harness_apply_change
+harness_transition
 ```
+
+The resource API is authoritative for normal main-session planning. Earlier resource-specific create/define/update/submission tools remain registered as compatibility adapters but are hidden from the default orchestrator tool surface.
 
 ### 16.2 Execution capabilities
 
 ```text
 agent_run
+exploration_launch
 task_launch
 agent_control
 agent_status
+agent_respond
 task_integrate
 evaluation_launch
 evaluation_record
@@ -1593,3 +1594,13 @@ PiBox's harness is a hybrid between a flexible skill-driven agent and a determin
 - Normal Pi freedom remains available whenever the full workflow would be excessive.
 
 This architecture provides strong execution guarantees without making the harness the primary source of engineering judgment.
+
+## 25. Resource-oriented orchestrator authority
+
+The main-session capability surface is a stateless resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, complete representations, optimistic work-item revisions, typed validation, and explicit relationships. The preferred planning surface is `harness_list`, `harness_get`, `harness_create`, `harness_patch`, `harness_delete`, `harness_apply_change`, and `harness_transition`; legacy resource-specific tools are compatibility adapters rather than the normal model surface.
+
+The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend approved planning in response to repository evidence, evaluator findings, or subagent requests. A `retain-approval` amendment records the new revision, rationale, sources, and orchestrator decision while preserving the user's approval lineage. A `request-user` disposition is a semantic judgment reserved for materially consequential or explicitly user-owned decisions, not an automatic consequence of changing a digest.
+
+`harness_apply_change` validates all expected revisions before mutation and applies its canonical operations as one Git commit. Resource errors identify the code, resource reference, retryability, and valid recovery actions so a model does not need to inspect extension source or create a duplicate work item to escape a correctable plan.
+
+Capabilities continue to enforce mechanical truth: schema, identity, relation integrity, idempotency, serialization, clean canonical state, immutable delivery/evidence history, scoped child authority, and explicit finalization locks. They do not determine product materiality or prohibit sound orchestrator judgment. Postponement is resumable; archival creates the explicit finalization lock, and reopening is an auditable transition.

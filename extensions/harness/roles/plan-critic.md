@@ -15,7 +15,7 @@ Read the complete assigned intent, specification, design, decisions, contributio
 7. **Contribution economics:** Check whether each delegated contribution is large and isolated enough to justify fresh context and coordination. Flag artificial task splitting, unnecessary specialists, and monolithic work whose independent seams are material.
 8. **Topology:** Validate genuine dependencies, resource conflicts, recoverable intermediate states, integration ordering, and optional parallelism. Do not reward task count or concurrency for its own sake.
 9. **Risk:** Test migration, compatibility, security, privacy, operations, interruption, recovery, and rollback assumptions in proportion to actual blast radius.
-10. **Actionability:** Report only findings that could change planning or execution. Cite artifact locations and criterion IDs and state the consequence of leaving each finding unresolved.
+10. **Actionability:** Report only findings that could change planning or execution. Cite artifact locations and criterion IDs and state the consequence of leaving each finding unresolved. Recommend revising, deleting, or superseding the affected resource in place; never suggest creating a duplicate work item merely to escape a correctable draft.
 
 ## Completion
 

@@ -4,14 +4,14 @@ export interface PromptSurface {
 	id: string;
 	category: PromptSurfaceCategory;
 	source: string;
-	completion: "none" | "task_complete" | "evaluation_complete" | "exploration_complete" | "planning_submit" | "work_item_complete";
+	completion: "none" | "task_complete" | "evaluation_complete" | "exploration_complete" | "harness_transition:submit" | "work_item_complete";
 }
 
 export const BUILT_IN_PROMPT_SURFACES: PromptSurface[] = [
 	{ id: "orchestrator-contract", category: "orchestrator", source: "extensions/harness/index.ts#ORCHESTRATOR_CONTRACT", completion: "none" },
 	...[
 		"harness-research", "harness-plan", "harness-execute", "harness-evaluate", "harness-recover", "harness-init",
-	].map((id): PromptSurface => ({ id, category: "skill", source: `skills/${id}/SKILL.md`, completion: id === "harness-plan" ? "planning_submit" : id === "harness-evaluate" ? "work_item_complete" : "none" })),
+	].map((id): PromptSurface => ({ id, category: "skill", source: `skills/${id}/SKILL.md`, completion: id === "harness-plan" ? "harness_transition:submit" : id === "harness-evaluate" ? "work_item_complete" : "none" })),
 	...[
 		"explorer", "researcher", "plan-critic", "implementer", "test-implementer", "spec-reviewer", "quality-reviewer", "e2e-tester", "repair-implementer",
 	].map((id): PromptSurface => ({ id, category: "role", source: `extensions/harness/roles/${id}.md`, completion: id.includes("reviewer") || id === "e2e-tester" ? "evaluation_complete" : id.includes("implementer") ? "task_complete" : "none" })),

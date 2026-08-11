@@ -13,7 +13,7 @@ Canonical capabilities are the only writers of `agent-artifacts/`.
 
 ## Proportional Entry
 
-A request to plan, design, change, or fix something does not by itself require a managed work item. If the work is clear, local, reversible, low-risk, and does not benefit materially from durable approval, isolated contributions, or independent evidence, return a concise conversational plan and keep it ad hoc. Do not call `harness_init`, `work_item_create`, or other canonical mutation capabilities. Enter managed planning only when its durable contract and boundaries repay the ceremony or the user explicitly requests it.
+A request to plan, design, change, or fix something does not by itself require a managed work item. If the work is clear, local, reversible, low-risk, and does not benefit materially from durable approval, isolated contributions, or independent evidence, return a concise conversational plan and keep it ad hoc. Do not call `harness_init`, `harness_create`, or other canonical mutation capabilities. Enter managed planning only when its durable contract and boundaries repay the ceremony or the user explicitly requests it.
 
 ## Orient
 
@@ -123,11 +123,11 @@ Stop discovery when another answer would not materially change the contract or d
 
 When both sides share the same understanding, state it plainly and ask whether to draft the canonical plan. The user may delegate specified remaining choices.
 
-Do not call work-item, artifact, task, evaluation, or submission mutation capabilities before that point.
+Do not call `harness_create`, `harness_patch`, `harness_delete`, `harness_apply_change`, or submission transitions before that point.
 
 ## Draft the Contract
 
-1. Create or select the managed work item from confirmed understanding.
+1. Call `harness_list` before creation. Select and update an existing matching work item when one exists; never create a replacement work item to escape a correctable draft. Use `harness_create` only for genuinely new intent.
 2. Specify user-visible and system behavior with stable acceptance criteria before implementation design.
 3. Record confirmed and delegated decisions without laundering recommendations into user requirements.
 4. Keep unresolved material choices out of claims of planning readiness.
@@ -165,11 +165,11 @@ Use a fresh plan critic when ambiguity, risk, blast radius, or decomposition war
 
 ## Completion
 
-Once the shared understanding is rendered as a coherent contract, call `planning_submit`. Present the outcome, confirmed scope, important choices, delegated recommendations, contribution topology, verification boundaries, and frozen revision.
+Once the shared understanding is rendered as a coherent contract, call `harness_transition` with action `submit`. Present the outcome, confirmed scope, important choices, delegated recommendations, contribution topology, verification boundaries, and frozen revision.
 
 Offer two natural next steps without requiring a special phrase:
 
 - describe refinements conversationally, or
 - approve with `/harness approve <work-item-id>`.
 
-Apply requested refinements through canonical capabilities and resubmit. The main session cannot approve its own plan.
+Apply requested refinements through `harness_patch` or an atomic `harness_apply_change`, then resubmit. For already approved work, use an audited `retain-approval` disposition when the change remains within delegated intent; use `request-user` only for a materially consequential decision. The main session cannot grant initial user approval.

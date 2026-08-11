@@ -37,11 +37,15 @@ test("orchestrator and planner act as constructive product partners before canon
 	assert.match(orchestrator, /Stop when further answers would not change the contract/i);
 	assert.match(orchestrator, /Do not mutate canonical planning until shared understanding/i);
 	assert.match(orchestrator, /conversational refinement or \/harness approve/i);
+	assert.match(orchestrator, /trusted canonical coordinator/i);
+	assert.match(orchestrator, /Never create a second work item to repair an existing draft/i);
+	assert.match(orchestrator, /Approval is continuity, not a blanket mutation freeze/i);
 	assert.match(planner, /requested solution as one hypothesis, not the goal itself/i);
 	assert.match(planner, /Proximate technical cause/i);
 	assert.match(planner, /Do not manufacture scope/i);
 	assert.match(planner, /Parallel execution is an option[\s\S]+never create tasks merely to increase concurrency/i);
 	assert.match(planner, /without requiring a special phrase/i);
+	assert.match(planner, /audited `retain-approval` disposition/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /Do not reward task count or concurrency/i);
 });

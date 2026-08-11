@@ -11,9 +11,21 @@ A focused lifecycle exercise verified the unified subagent runtime:
 2. The main Pi process was forcibly terminated after another explorer entered `running`; the detached child continued with file-backed output and wrote its handoff after the parent was gone.
 3. A managed implementation child likewise finished after its launching print-mode parent exited. Reconciliation found the durable task handoff, validated its retained clean worktree and commits, and advanced it to `contribution_complete` without rerunning it.
 4. A new main session integrated that contribution, launched a registry-backed evaluator, recorded a passing verdict, and completed the work item.
-5. A worker in one persistent RPC session emitted a blocking color-selection change request and exited. The main session answered through `agent_respond`; relaunch reused the same logical agent and reserved slot, created process attempt two with the durable response, committed the selected value, and completed successfully.
+5. A worker in one persistent RPC session emitted a blocking color-selection change request and exited. Both the compatibility `agent_respond` path and the preferred `harness_apply_change` response transaction were exercised. Relaunch reused the same logical agent and reserved slot, created process attempt two with the durable response, committed the selected value, and completed successfully.
 
 This verifies that parent-owned pipes are not authoritative, logical-agent identity survives process attempts, and handoff-first reconciliation avoids duplicate writers.
+
+## Resource-oriented planning and amendment regression
+
+A fresh Luna planning session exercised the preferred stateless resource surface against an empty repository:
+
+1. `harness_list` established that no matching work item existed.
+2. One `harness_apply_change` created the work item, specification, implementation task, integration unit, and deterministic evaluation as one canonical Git commit and one planning revision.
+3. `harness_transition` submitted that revision for direct user approval.
+4. After approval, a separate session used `harness_list` and `harness_get` to retrieve the exact task reference, complete representation, and current revision.
+5. It patched the existing task in place with `retain-approval` and an `agent-message` source. The work item remained approved, gained an audited approval amendment, and no duplicate work item, task, or evaluation was created.
+
+The regression also exposed and fixed an important model-facing signal issue: resource bodies previously existed only in tool `details`, while the model saw a terse text summary. List/get/mutation tools now render the full JSON resource envelope in model-visible content, including references and revisions.
 
 ## Final result
 
