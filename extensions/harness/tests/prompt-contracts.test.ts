@@ -32,12 +32,14 @@ test("orchestrator and planner require user clarification before canonical plann
 	const planner = await readFile(join(root, "skills/harness-plan/SKILL.md"), "utf8");
 	const critic = await readFile(join(root, "extensions/harness/roles/plan-critic.md"), "utf8");
 	assert.match(orchestrator, /ask one numbered round[\s\S]+then wait/i);
-	assert.match(orchestrator, /Do not mutate canonical planning until the user confirms shared understanding/i);
-	assert.match(orchestrator, /planning_submit only after the user says it is ready/i);
+	assert.match(orchestrator, /Do not mutate canonical planning until the user and agent reach shared understanding/i);
+	assert.match(orchestrator, /refine the plan conversationally, or approve the frozen revision/i);
+	assert.match(orchestrator, /Never require a magic confirmation phrase/i);
 	assert.match(planner, /Map unresolved decisions as a dependency tree/i);
 	assert.match(planner, /give a recommended answer/i);
 	assert.match(planner, /Do not call `work_item_create`[\s\S]+before that confirmation/i);
-	assert.match(planner, /Invite corrections and wait/i);
+	assert.match(planner, /without requiring a special phrase/i);
+	assert.match(planner, /describe refinements conversationally, or approve/i);
 	assert.match(critic, /silently invented product and technical choices as blocking/i);
 });
 

@@ -40,7 +40,7 @@ The main session selects ad-hoc work when ceremony is unnecessary. Managed work 
 
 ### Planning
 
-Managed planning begins as a conversation, not an artifact write. The orchestrator inspects discoverable facts, maps unresolved decisions by dependency, and asks the current decision frontier in numbered rounds with recommendations. The user settles or explicitly delegates those choices and confirms shared understanding before canonical drafting starts. After drafting, the orchestrator presents the contract for correction and waits for the user to say it is ready before submission.
+Managed planning begins as a conversation, not an artifact write. The orchestrator inspects discoverable facts, maps unresolved decisions by dependency, and asks the current decision frontier in numbered rounds with recommendations. The user settles or explicitly delegates those choices; once both sides share an understanding, the orchestrator asks whether to draft. It then submits the coherent draft and offers two natural next steps: refine it conversationally, or approve the frozen revision with `/harness approve <work-item-id>`. No magic readiness phrase is required.
 
 - `work_item_create`
 - `artifact_create`

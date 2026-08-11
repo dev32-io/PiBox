@@ -71,6 +71,19 @@ scenarios:
       id: gpt-5.6-luna
       effort: low
     fixture: empty repository receiving a request to plan a basic React todo list
+  - id: planner-post-draft-next-steps
+    surface: harness-plan
+    repetitions: 5
+    result: pass
+    passed: 5
+    requiredProperties:
+      - submits the coherent draft without requiring a magic phrase
+      - offers conversational refinement
+      - provides the direct /harness approve command
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
   - id: managed-schema-v2-lifecycle
     surface: assembled-harness
     repetitions: 1

@@ -15,7 +15,7 @@ Start from the user's words and current repository evidence. Canonical capabilit
 2. Map unresolved decisions as a dependency tree. The current frontier contains only decisions whose prerequisites are settled.
 3. Ask the whole frontier in one concise numbered round. Explain the consequence of each choice and give a recommended answer. Do not ask downstream questions yet.
 4. Wait for the user's answers, update the tree, and repeat. Do not turn silence, a generic request, or your preferred stack into user requirements.
-5. When the frontier is empty, state the shared understanding and ask the user to confirm that canonical drafting should begin. A user may explicitly delegate specified choices.
+5. When the frontier is empty and both sides share the same understanding, ask whether to draft the canonical plan. A user may explicitly delegate specified choices.
 
 Do not call `work_item_create`, artifact mutation, task, evaluation, or submission capabilities before that confirmation.
 
@@ -30,10 +30,6 @@ Do not call `work_item_create`, artifact mutation, task, evaluation, or submissi
 7. Declare only evaluations the plan requires.
 8. Use a fresh plan critic when risk or ambiguity warrants independent judgment; resolve every blocking finding.
 
-## Review With the User
-
-Present the drafted contract in decision-oriented language: confirmed scope, important choices, recommendations adopted by delegation, verification boundaries, and any remaining questions. Invite corrections and wait. Revise through canonical capabilities until the user explicitly says the contract is ready for approval.
-
 ## Completion
 
-Only then call `planning_submit`. State the frozen revision and approval command. The main session cannot approve its own plan.
+Once the confirmed understanding is rendered as a coherent contract, call `planning_submit`. Present the confirmed scope, important choices, verification boundaries, and frozen revision. Offer two ordinary next steps without requiring a special phrase: the user can describe refinements conversationally, or approve with `/harness approve <work-item-id>`. Apply requested refinements through canonical capabilities and resubmit the revised contract. The main session cannot approve its own plan.
