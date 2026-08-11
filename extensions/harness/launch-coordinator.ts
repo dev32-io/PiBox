@@ -15,6 +15,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	tools: string[];
 	promptPath?: string;
 	rolePrompt?: string;
+	persistentContext?: string;
 	skillPaths?: string[];
 	env?: Record<string, string>;
 	signal?: AbortSignal;
@@ -83,6 +84,7 @@ export class LaunchCoordinator {
 				},
 				...(input.promptPath ? { promptPath: input.promptPath } : {}),
 				...(input.rolePrompt ? { rolePrompt: input.rolePrompt } : {}),
+				...(input.persistentContext ? { persistentContext: input.persistentContext } : {}),
 				...(input.skillPaths ? { skillPaths: input.skillPaths } : {}),
 				...(input.signal ? { signal: input.signal } : {}),
 				...(input.onText ? { onText: input.onText } : {}),

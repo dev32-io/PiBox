@@ -602,23 +602,19 @@ Direct invocation does not require creating a work item. If the work later becom
 
 ### 10.4 Prompt composition
 
-A child prompt is assembled from bounded layers:
+A child launch has three bounded inputs:
 
 ```text
-1. Harness invariants
-2. Role contract
-3. Repository instructions
-4. Task identity and objective
-5. Canonical artifact references
-6. Runtime and workspace constraints
-7. Completion protocol
+1. Role instructions — persistent system prompt
+2. Selected authoritative context — persistent system prompt
+3. Assignment request — short user prompt
 ```
 
-The harness does not inline the entire work-item history. Children retrieve exact durable context through capabilities.
+For implementation tasks, the persistent packet contains the task brief, acceptance contract, explicitly referenced specifications/designs/decisions, expected contribution state, and required checks. It excludes runtime identifiers, model rationale, unreferenced artifacts, hashes, and revision tokens. Pi retains the system prompt across compaction. The packet is rebuilt from canonical files for each process attempt.
 
 ### 10.5 Role performance records
 
-Private run records capture role and prompt versions, skills, requested and resolved model/effort, artifact digests, event traces, completion validation, evaluator outcomes, and repair lineage. This permits later empirical comparison without committing raw transcripts.
+Private run records capture role and prompt versions, skills, requested and resolved model/effort, event traces, completion validation, evaluator outcomes, and repair lineage. This permits later empirical comparison without committing raw transcripts.
 
 ## 11. Context and communication
 
@@ -626,17 +622,9 @@ Private run records capture role and prompt versions, skills, requested and reso
 
 Canonical Markdown and YAML files are the durable communication layer. Tool output and conversational memory are not the sole source of required context.
 
-Children use:
+Implementers receive the context required for normal work without calling a tool. When a concrete uncertainty remains, `task_clarify` can list or read additional current resources from the surrounding story/change. Its normal use is one targeted read; it is not a startup step or a browsing loop.
 
-```text
-task_context(list)
-task_context(read, artifact-id)
-task_context(refresh)
-```
-
-The capability reads from the orchestrator feature branch, not the child's potentially stale worktree copy.
-
-Responses identify the canonical artifact and current informational planning revision.
+The capability reads from the orchestrator feature branch, not the child's worktree copy. It can expose additional artifacts, sibling task contracts, integration units, and evaluation contracts.
 
 ### 11.2 Child communication capabilities
 
@@ -656,25 +644,7 @@ They do not choose private operational paths and cannot mutate canonical plannin
 
 The orchestrator judges the impact of canonical changes.
 
-For a context-only clarification:
-
-```text
-commit artifact update
-  → steer affected child
-  → require task_context refresh
-  → refresh canonical context
-  → continue
-```
-
-For a code/base dependency change:
-
-```text
-pause affected child
-  → integrate prerequisite
-  → refresh or restart worktree
-  → require context refresh
-  → continue
-```
+For a small context-only clarification, the orchestrator sends a focused durable response. For a material contract or dependency change, it restarts the affected process attempt so the persistent packet is rebuilt from current canonical files. No context-version acknowledgement protocol is required.
 
 A child cannot complete while a required context update is unacknowledged.
 
@@ -1122,7 +1092,7 @@ harness_status
 ### 16.3 Worker capabilities
 
 ```text
-task_context
+task_clarify
 task_checkpoint
 task_request_change
 task_report_decision

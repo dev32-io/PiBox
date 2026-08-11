@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { buildTaskPersistentContext } from "../implementation-context.js";
 import { OrchestratorResourceService } from "../orchestrator-resources.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
@@ -22,6 +23,22 @@ function task(id = "build-app"): TaskManifest {
 	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { isolation: "worktree", parallelism: "serial", resourceClaims: [], complexity: "low", assignment: { role: "implementer", model: "luna", effort: "low", minimumCapabilityRank: 0, allowFallback: true, rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
 }
 const retain = { disposition: "retain-approval" as const, rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
+
+test("builds a focused persistent implementation packet", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "context-packet", title: "Context packet", kind: "change", intent: "Broad intent that referenced context makes unnecessary." });
+	await store.putArtifact({ workItemId: "context-packet", id: "behavior", type: "spec", content: "# Behavior\n\nThe app writes hello.", operation: "create" });
+	const manifest = task(); manifest.references.specs = ["behavior"];
+	await store.defineTask({ workItemId: "context-packet", manifest, brief: "# Brief\n\nCreate the app.", acceptance: "# Acceptance\n\nThe app is complete." });
+	const packet = await buildTaskPersistentContext(store, "context-packet", manifest);
+	assert.match(packet, /Persistent Implementation Context/);
+	assert.match(packet, /Create the app/);
+	assert.match(packet, /The app is complete/);
+	assert.match(packet, /Referenced spec: behavior/);
+	assert.match(packet, /The app writes hello/);
+	assert.match(packet, /test -f app\.txt/);
+	assert.doesNotMatch(packet, /Broad intent|planning revision|sha256|assignment rationale/i);
+});
 
 test("revises an approved task in place while retaining approval continuity", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);

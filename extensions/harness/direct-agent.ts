@@ -21,6 +21,8 @@ export interface DirectAgentOptions {
 	onEvent?: (event: unknown) => void;
 	promptPath?: string;
 	rolePrompt?: string;
+	/** Stable assignment context appended to the system prompt and preserved across Pi compaction. */
+	persistentContext?: string;
 	skillPaths?: string[];
 	env?: Record<string, string>;
 	/** Persist process streams so a child can survive loss of the launching Pi process. */
@@ -61,7 +63,8 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	} catch {
 		rolePrompt = `Execute the assigned ${options.role} boundary. Inspect authoritative inputs, return concise evidence and uncertainty, and leave user intent and workflow decisions to the main session.`;
 	}
-	await writeFile(promptFile, rolePrompt, { encoding: "utf8", mode: 0o600 });
+	const systemPrompt = [rolePrompt.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
+	await writeFile(promptFile, `${systemPrompt}\n`, { encoding: "utf8", mode: 0o600 });
 	const args = [
 		"-e", HARNESS_EXTENSION_PATH,
 		"--mode", "json", "-p", "--no-session",

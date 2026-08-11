@@ -9,10 +9,12 @@ test("registers the resource API and hides legacy planning tools from the main s
 	const events: string[] = [];
 	const handlers = new Map<string, (...args: any[]) => unknown>();
 	const schemas = new Map<string, unknown>();
+	const descriptions = new Map<string, string>();
 	let activeTools: string[] = [];
 	const pi = {
-		registerTool(definition: { name: string; parameters?: unknown }) {
+		registerTool(definition: { name: string; description?: string; parameters?: unknown }) {
 			tools.push(definition.name);
+			descriptions.set(definition.name, definition.description ?? "");
 			schemas.set(definition.name, definition.parameters);
 		},
 		registerCommand(name: string) {
@@ -28,7 +30,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 
 	harness(pi);
 	assert.deepEqual(tools, [
-		"task_context",
+		"task_clarify",
 		"task_checkpoint",
 		"task_request_change",
 		"task_report_decision",
@@ -77,6 +79,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.equal(tools.includes("planning_approve"), false);
 	assert.doesNotMatch(JSON.stringify(schemas.get("harness_patch")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("harness_apply_change")), /expectedRevision|contractDigest/);
+	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);
 	assert.deepEqual(events, ["before_agent_start", "session_start", "agent_start", "message_end", "message_update", "agent_settled", "session_shutdown"]);
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });

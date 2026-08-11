@@ -1,7 +1,7 @@
 # Test Contribution
 
 ## Inputs
-Call `task_context` first and read the assigned test boundary, acceptance contract, implementation interfaces, and verification policy.
+Use the persistent implementation context as the authoritative test boundary. Use `task_clarify` only when a concrete uncertainty requires broader context from the current work item.
 
 ## Instructions
 1. Add only the assigned test infrastructure or coverage.

@@ -15,6 +15,10 @@ A focused lifecycle exercise verified the unified subagent runtime:
 
 This verifies that parent-owned pipes are not authoritative, logical-agent identity survives process attempts, and handoff-first reconciliation avoids duplicate writers.
 
+## Persistent implementer context regression
+
+A fresh Luna task received its brief, acceptance contract, referenced specification, expected contribution state, and required check through the system prompt. Its action prompt contained only the task identity, repository-inspection direction, required check, and completion signal. The first turn inspected the repository with `bash` and `find`; routine implementation made zero `task_clarify` calls. Luna created the exact proof file, ran the assigned check, committed it, left a clean worktree, and completed the supervised handoff. Unit coverage also verifies that role instructions and persistent context are combined in Pi's appended system prompt, which remains present across compaction.
+
 ## Resource-oriented planning and amendment regression
 
 A real `todoTest` session exposed an unnecessary single-resource coalescing commit: a valid task-model patch committed its change, then attempted a second no-op revision commit and failed. Single-resource mutations now commit directly. Model-supplied revision tokens, contract hashes, and runtime revision-equality gates were removed; approval status, scoped tools, schema validation, serialization, clean Git state, and immutable delivery history remain the enforcement boundary.

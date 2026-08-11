@@ -1,7 +1,7 @@
 # Finding Repair
 
 ## Inputs
-Call `task_context` first. Read the accepted findings, repair boundary, approved contract, and prior evidence.
+Use the persistent implementation context as the authoritative repair boundary. Use `task_clarify` only when a concrete uncertainty requires broader context from the current work item.
 
 ## Instructions
 1. Repair only accepted findings in the brief.

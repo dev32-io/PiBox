@@ -21,8 +21,7 @@ test("role prompts use instruction contracts instead of identity preambles", asy
 	for (const surface of BUILT_IN_PROMPT_SURFACES.filter((entry) => entry.category === "role")) {
 		const content = await readFile(join(root, surface.source), "utf8");
 		assert.doesNotMatch(content, /\byou are\b/i, surface.id);
-		assert.match(content, /## Inputs/);
-		assert.match(content, /## Instructions/);
+		assert.match(content, /^# .+/);
 		assert.match(content, /## Completion/);
 	}
 });

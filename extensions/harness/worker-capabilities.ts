@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { stringify } from "yaml";
 import { SessionAgentRegistry } from "./agent-registry.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository, runGit } from "./repository.js";
@@ -43,38 +44,49 @@ export function isWorkerProcess(): boolean {
 
 export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({
-		name: "task_context",
-		label: "Task Context",
-		description: "Read current canonical task artifacts from the orchestrator branch, with revision and digest metadata.",
+		name: "task_clarify",
+		label: "Task Clarification",
+		description: "Resolve a specific uncertainty about the assigned task by consulting additional canonical context from the current story or change. Use only when the persistent task context and repository are insufficient—for example, to understand broader product intent, inspect a related requirement or design decision, evaluate an alternative, or support a change request. Do not call at startup, during routine implementation, or to re-read context already provided. Identify the missing question first, then read only the relevant resource. List resources only when you do not know which one can answer it.",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("read"), Type.Literal("refresh")]),
-			artifactId: Type.Optional(Type.String()),
-		}),
+			action: Type.Union([
+				Type.Literal("list", { description: "List additional resources only when a concrete uncertainty exists and the relevant resource is unknown." }),
+				Type.Literal("read", { description: "Read one known resource needed to resolve the concrete uncertainty." }),
+			]),
+			ref: Type.Optional(Type.String({ description: "Specific canonical resource to read, such as artifact:checkout-design, task:api:acceptance, integration-unit:checkout, or evaluation:checkout-review." })),
+		}, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const auth = await authorized(ctx);
 				const item = await auth.workItems.read(auth.scope.workItemId);
-				const task = await auth.workItems.readTask(auth.scope.workItemId, auth.scope.taskId);
-				if (params.action === "list" || params.action === "refresh") {
-					await auth.runs.appendEvent(auth.scope.runId, "context.refreshed", { revision: item.planning.revision });
-					return result(
-						[`Planning revision: ${item.planning.revision}`, "Artifacts:", ...item.artifacts.map((artifact) => `- ${artifact.id} (${artifact.type})`), `- task:${task.id} (task contract)`].join("\n"),
-						{ revision: item.planning.revision, artifacts: item.artifacts, task, taskContextIds: [`task:${task.id}:manifest`, `task:${task.id}:brief`, `task:${task.id}:acceptance`] },
-					);
+				if (params.action === "list") {
+					const refs = [
+						...item.artifacts.map((artifact) => `artifact:${artifact.id} (${artifact.type})`),
+						...item.tasks.flatMap((task) => [`task:${task.id}:manifest`, `task:${task.id}:brief`, `task:${task.id}:acceptance`]),
+						...item.integrationUnits.map((unit) => `integration-unit:${unit.id}`),
+						...item.evaluations.map((evaluation) => `evaluation:${evaluation.id}`),
+					];
+					return result(["Additional canonical context:", ...refs.map((ref) => `- ${ref}`)].join("\n"));
 				}
-				if (!params.artifactId) throw new HarnessError("INVALID_ARTIFACT", "artifactId is required for read");
+				if (!params.ref) throw new HarnessError("INVALID_ARTIFACT", "ref is required for task_clarify read");
 				const root = auth.workItems.workItemRoot(auth.scope.workItemId);
-				let path: string;
-				if (params.artifactId === `task:${task.id}` || params.artifactId === `task:${task.id}:brief`) path = join(root, "tasks", task.id, "brief.md");
-				else if (params.artifactId === `task:${task.id}:acceptance`) path = join(root, "tasks", task.id, "acceptance.md");
-				else if (params.artifactId === `task:${task.id}:manifest`) path = join(root, "tasks", task.id, "task.yaml");
-				else {
-					const artifact = item.artifacts.find((candidate) => candidate.id === params.artifactId);
-					if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${params.artifactId}`);
-					path = join(root, artifact.path);
-				}
-				const content = await readFile(path, "utf8");
-				return result(content, { revision: item.planning.revision });
+				let content: string;
+				if (params.ref.startsWith("artifact:")) {
+					const id = params.ref.slice("artifact:".length);
+					content = (await auth.workItems.readArtifact(item.id, id)).content;
+				} else if (params.ref.startsWith("task:")) {
+					const match = /^task:([a-z0-9]+(?:-[a-z0-9]+)*):(manifest|brief|acceptance)$/.exec(params.ref);
+					if (!match || !item.tasks.some((task) => task.id === match[1])) throw new HarnessError("INVALID_ARTIFACT", `Unknown task context: ${params.ref}`);
+					content = await readFile(join(root, "tasks", match[1]!, match[2] === "manifest" ? "task.yaml" : `${match[2]}.md`), "utf8");
+				} else if (params.ref.startsWith("integration-unit:")) {
+					const id = params.ref.slice("integration-unit:".length);
+					const unit = item.integrationUnits.find((candidate) => candidate.id === id);
+					if (!unit) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${id}`);
+					content = stringify(unit);
+				} else if (params.ref.startsWith("evaluation:")) {
+					const id = params.ref.slice("evaluation:".length);
+					content = stringify(await auth.workItems.readEvaluation(item.id, id));
+				} else throw new HarnessError("INVALID_ARTIFACT", `Unknown task clarification reference: ${params.ref}`);
+				return result(content);
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}

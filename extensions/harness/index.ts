@@ -16,6 +16,7 @@ import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
 import { LaunchCoordinator } from "./launch-coordinator.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
+import { buildTaskPersistentContext } from "./implementation-context.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType } from "./orchestrator-resources.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
 import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, MutationAuthority, TaskManifest, WorkItemKind } from "./types.js";
@@ -25,7 +26,7 @@ import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
 
 const WORKER_TOOL_NAMES = new Set([
-	"task_context",
+	"task_clarify",
 	"task_checkpoint",
 	"task_request_change",
 	"task_report_decision",
@@ -372,10 +373,12 @@ export default function harness(pi: ExtensionAPI): void {
 			locks = new ResourceLockSet(runtime.identity.privateRoot);
 			await locks.acquire(task.execution.resourceClaims, `${item.id}/${task.id}`);
 			const allocation = await runtime.mutex.run(`allocate:${item.id}:${task.id}`, () => manager.allocate(item.id, task));
+			const persistentContext = await buildTaskPersistentContext(runtime.workItems, item.id, task);
 			const launched = await supervisor.launchTask({
 				identity: runtime.identity,
 				workItemId: item.id,
 				task,
+				persistentContext,
 				workspace: allocation.path,
 				branch: allocation.branch,
 				baseCommit: allocation.baseCommit,

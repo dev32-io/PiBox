@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ test("launches a direct child through the registry with file-backed process outp
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const registry = new SessionAgentRegistry(root, "session-1", 16, 1);
 	await registry.initialize("main:session-1");
+	let effectiveSystemPrompt = "";
 	const coordinator = new LaunchCoordinator(registry, "main:session-1");
 	const fake = join(root, "fake-child.mjs");
 	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"mapped repository"}]}}));\n`);
@@ -25,10 +27,17 @@ test("launches a direct child through the registry with file-backed process outp
 		model: "fake",
 		effort: "low",
 		tools: [],
-		invocationResolver: () => ({ command: process.execPath, args: [fake] }),
+		rolePrompt: "Role instructions.",
+		persistentContext: "Persistent canonical context.",
+		invocationResolver: (args) => {
+			const promptIndex = args.indexOf("--append-system-prompt");
+			effectiveSystemPrompt = readFileSync(args[promptIndex + 1]!, "utf8");
+			return { command: process.execPath, args: [fake] };
+		},
 	});
 
 	assert.equal(launched.result.text, "mapped repository");
+	assert.match(effectiveSystemPrompt, /Role instructions\.[\s\S]+Persistent canonical context\./);
 	assert.equal(launched.agent.state, "completed");
 	assert.equal(await registry.activeCount(), 0);
 	const record = await registry.get(launched.agent.id);

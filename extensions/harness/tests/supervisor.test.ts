@@ -75,6 +75,7 @@ test("supervises a child contribution through a validated terminal handoff", asy
 		branch: allocation.branch,
 		baseCommit: allocation.baseCommit,
 		planningRevision: 2,
+		persistentContext: "# Persistent Implementation Context\n\nBuild the supervised fixture.\n",
 		model: { provider: "fake", model: "fake", effort: "medium", requested: "luna:medium" },
 		coordinator,
 	});

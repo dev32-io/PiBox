@@ -65,7 +65,7 @@ Approval is continuity rather than a blanket mutation freeze. The main orchestra
 - `exploration_launch` invokes the read-only explorer with a typed `lookup | map | trace | impact | diagnose | explain` assignment, `quick | standard | thorough` depth, stop conditions, and a mode-sensitive structured evidence handoff.
 - `agent_run` directly invokes another configured specialist role without requiring a managed work item.
 - `task_launch` resolves the assigned model, acquires resource claims, allocates a deterministic worktree, and supervises the implementer.
-- Workers read canonical context through `task_context` and finish through `task_complete`.
+- Workers receive a focused task packet in their persistent system context. `task_clarify` provides optional, targeted access to broader story/change context when a concrete uncertainty remains; `task_complete` records completion.
 - `task_integrate` assembles every contribution in an integration unit, runs the supplied unit checks, creates one traceable commit, and fast-forwards the canonical branch.
 
 New task worktrees live inside the canonical repository under an ignored root:

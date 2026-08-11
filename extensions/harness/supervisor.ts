@@ -31,6 +31,7 @@ export interface LaunchTaskOptions {
 	planningRevision: number;
 	model: LaunchModel;
 	rolePrompt?: string;
+	persistentContext: string;
 	tools?: string[];
 	skillPaths?: string[];
 	canonicalMutation?: <T>(owner: string, operation: () => Promise<T>) => Promise<T>;
@@ -63,26 +64,19 @@ function finalAssistantText(events: unknown[]): string {
 	return "";
 }
 
-function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean, builtInRolePrompt: string): string {
+function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean): string {
 	const checks = options.task.verification.taskChecks.length ? options.task.verification.taskChecks.map((check) => `- ${check}`).join("\n") : "- None assigned at this boundary.";
 	return [
-		options.rolePrompt ?? builtInRolePrompt,
+		`Implement: ${options.task.id} — ${options.task.title}`,
 		"",
-		"Execute the supervised contribution below. The approved artifacts and main-session decisions are authoritative.",
-		`Work item: ${options.workItemId}`,
-		`Task: ${options.task.id} — ${options.task.title}`,
-		`Planning revision: ${options.planningRevision}`,
-		`Workspace: ${options.workspace}`,
+		"Inspect the current repository, then deliver the contribution described in your persistent implementation context.",
 		"",
-		"Call task_context list, then read the task brief, acceptance contract, and referenced canonical artifacts before editing.",
-		"Keep changes inside the contribution boundary, commit intended changes, and leave canonical artifacts to the main session.",
-		"Preserve declared partial state and run only proof assigned to this boundary.",
-		"Assigned task checks:",
+		"Required checks:",
 		checks,
 		"",
-		"Completion: leave the worktree clean and call task_complete with actual commits, checks, expected failures, and residual risks.",
+		"Finish with committed changes, a clean worktree, and task_complete.",
 		...(protocolNudge
-			? ["", "Completion protocol: no valid task_complete handoff was recorded. Inspect the retained branch, finish missing commit or check work, and call task_complete."]
+			? ["", "No valid task_complete handoff was recorded. Inspect the retained work, finish what is missing, and call task_complete."]
 			: []),
 	].join("\n");
 }
@@ -131,12 +125,12 @@ export class SubagentSupervisor {
 		for (let protocolAttempt = 0; protocolAttempt < 2; protocolAttempt++) {
 			let execution: { exitCode: number; stderr: string; finalText: string };
 			if (options.coordinator) {
-				const taskCapabilities = ["task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
+				const taskCapabilities = ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 				const coordinated = await options.coordinator.launch({
 					operationId: created.record.id,
 					...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}),
 					role: options.task.execution.assignment.role,
-					task: `${taskPrompt(options, protocolAttempt === 1, "")}${responseContext}`,
+					task: `${taskPrompt(options, protocolAttempt === 1)}${responseContext}`,
 					assignment: { schemaVersion: 1, workItemId: options.workItemId, taskId: options.task.id, planningRevision: options.planningRevision },
 					cwd: options.workspace,
 					provider: options.model.provider,
@@ -144,6 +138,7 @@ export class SubagentSupervisor {
 					effort: options.model.effort,
 					tools: [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])],
 					...(options.rolePrompt ? { rolePrompt: options.rolePrompt } : {}),
+					persistentContext: options.persistentContext,
 					...(options.skillPaths ? { skillPaths: options.skillPaths } : {}),
 					deferCompletion: true,
 					workItemId: options.workItemId,
@@ -256,8 +251,9 @@ export class SubagentSupervisor {
 		const promptDirectory = await mkdtemp(join(tmpdir(), "pibox-harness-prompt-"));
 		const promptPath = join(promptDirectory, "implementer.md");
 		const builtInRolePrompt = await readFile(join(ROLE_ROOT, `${options.task.execution.assignment.role}.md`), "utf8").catch(() => "");
-		await writeFile(promptPath, taskPrompt(options, protocolNudge, builtInRolePrompt), { encoding: "utf8", mode: 0o600 });
-		const taskCapabilities = ["task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
+		const systemPrompt = [options.rolePrompt ?? builtInRolePrompt, options.persistentContext].filter(Boolean).join("\n\n");
+		await writeFile(promptPath, `${systemPrompt.trim()}\n`, { encoding: "utf8", mode: 0o600 });
+		const taskCapabilities = ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 		const tools = [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])];
 		const args = [
 			"-e", HARNESS_EXTENSION_PATH,
@@ -268,7 +264,7 @@ export class SubagentSupervisor {
 			"--append-system-prompt", promptPath,
 		];
 		for (const skillPath of options.skillPaths ?? []) args.push("--skill", skillPath);
-		args.push(protocolNudge ? "Complete the required terminal protocol for the existing task contribution." : `Implement harness task ${options.task.id}.`);
+		args.push(taskPrompt(options, protocolNudge));
 		const invocation = this.invocationResolver(args);
 		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
 		const events: unknown[] = [];
