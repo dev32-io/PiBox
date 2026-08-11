@@ -5,9 +5,9 @@ title: Product-partner orchestration and durable subagents
 phase: planning
 state: active
 planning:
-  revision: 9
+  revision: 10
   status: draft
-  contractDigest: sha256:2bf6e893cc164b7f2fa94ab424bf99a61c48945ab1082c12762c2b5561b15588
+  contractDigest: sha256:d2b17df1134ba79dfc356ef0abf0e3af8a549e0b97051543a46c04e6d21420b0
 artifacts:
   - id: intent
     type: intent
@@ -35,6 +35,8 @@ tasks:
     path: tasks/product-partner-prompt-contracts/task.yaml
   - id: atomic-session-agent-registry
     path: tasks/atomic-session-agent-registry/task.yaml
+  - id: file-backed-launch-coordinator
+    path: tasks/file-backed-launch-coordinator/task.yaml
 evaluations: []
 integrationUnits:
   - id: prompt-contracts
@@ -44,4 +46,8 @@ integrationUnits:
   - id: session-agent-registry
     tasks:
       - atomic-session-agent-registry
+    intermediatePolicy: coherent
+  - id: launch-coordinator
+    tasks:
+      - file-backed-launch-coordinator
     intermediatePolicy: coherent

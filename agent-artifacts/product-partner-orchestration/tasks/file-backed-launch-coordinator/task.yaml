@@ -1,0 +1,44 @@
+schemaVersion: 1
+id: file-backed-launch-coordinator
+title: File-backed launch coordinator
+status: blocked
+dependsOn:
+  - atomic-session-agent-registry
+references:
+  specs:
+    - product-partner-and-subagent-lifecycle
+  designs:
+    - orchestration-and-agent-registry-design
+  decisions:
+    - active-agent-slot-accounting
+    - background-agent-liveness
+execution:
+  isolation: worktree
+  parallelism: serial
+  resourceClaims:
+    - launch-coordinator
+    - child-process-groups
+    - private-agent-files
+    - heartbeat-writer
+  complexity: critical
+  assignment:
+    role: implementer
+    model: luna
+    effort: xhigh
+    minimumCapabilityRank: 0
+    allowFallback: false
+    rationale: Luna is assigned for process isolation, scoped authorization, and
+      failure-safe file-backed lifecycle mechanics.
+assembly:
+  integrationUnit: launch-coordinator
+  intermediateState: complete
+verification:
+  timing: integration-unit
+  methods:
+    - process integration tests
+    - background continuation tests
+    - message and handoff tests
+  taskChecks:
+    - npm test -- --runInBand
+  rationale: Coordinator behavior is proven only after registry and
+    process-attempt mechanics are assembled together.
