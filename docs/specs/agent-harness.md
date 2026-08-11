@@ -273,7 +273,7 @@ This avoids encoding combinations such as `execution-paused-for-user` into one u
 
 ### 7.3 Approval gate
 
-Research can flow naturally into planning. Execution cannot begin until the user explicitly approves the planning revision.
+Research can flow naturally into planning. Execution cannot begin until the user explicitly approves the plan.
 
 Approval is recorded through a deterministic command, not a model-callable tool:
 
@@ -281,13 +281,11 @@ Approval is recorded through a deterministic command, not a model-callable tool:
 /harness approve <work-item-id>
 ```
 
-Approval binds to the planning revision and a digest of the deliverable contract. The orchestrator cannot approve its own plan.
+Approval is represented by the work item's planning status. The orchestrator cannot grant initial approval to its own plan.
 
 The deliverable contract covers intent, requirements, acceptance criteria, and binding user/architecture decisions. Execution mechanics—task boundaries, integration grouping, evaluator placement, and check timing—remain under orchestrator authority unless the user explicitly made one of them binding.
 
-Material changes to the deliverable contract increment the planning revision and mark approval stale. The orchestrator may skip, defer, batch, combine, or strengthen workflow steps without renewed approval when it preserves the contract and required final confidence. Minor formatting or typo corrections may also be classified as non-material.
-
-Out-of-band human edits that change the contract digest fail closed until reconciled.
+The orchestrator decides whether an amendment retains approval or requires the user. Revisions remain an informational audit counter, not an optimistic-concurrency or execution gate. The harness relies on scoped tools, schema validation, serialization, clean Git state, and immutable delivery history rather than contract hashes.
 
 ## 8. Canonical artifact model
 
@@ -350,7 +348,6 @@ planning:
   status: approved
   approvedRevision: 3
   approvedAt: 2026-08-10T10:30:00Z
-  contractDigest: sha256:...
 
 artifacts:
   - id: intent
@@ -456,7 +453,7 @@ Only the main orchestrator can mutate canonical artifacts through dedicated capa
 3. Validate IDs, types, references, and operation scope.
 4. Write through temporary paths.
 5. Validate the complete resulting schema.
-6. Recompute indexes, revisions, and digests.
+6. Update indexes and informational revision metadata.
 7. Commit the transaction.
 8. Return a compact receipt.
 
@@ -577,7 +574,7 @@ Each role defines:
 - Delegation permission.
 - Context policy.
 - Structured completion schema.
-- Version and content digest.
+- Canonical artifact identity.
 
 ### 10.2 Initial roles
 
@@ -639,7 +636,7 @@ task_context(refresh)
 
 The capability reads from the orchestrator feature branch, not the child's potentially stale worktree copy.
 
-Responses identify the planning revision and content digests so a child can prove which contract it read.
+Responses identify the canonical artifact and current informational planning revision.
 
 ### 11.2 Child communication capabilities
 
@@ -665,7 +662,7 @@ For a context-only clarification:
 commit artifact update
   → steer affected child
   → require task_context refresh
-  → require digest acknowledgement
+  → refresh canonical context
   → continue
 ```
 
@@ -1169,7 +1166,6 @@ Representative error codes include:
 
 ```text
 DIRTY_CANONICAL_BRANCH
-STALE_PLANNING_REVISION
 DEPENDENCY_NOT_INTEGRATED
 MODEL_UNAVAILABLE
 CAPABILITY_DENIED
@@ -1305,7 +1301,7 @@ Ambiguous limits conservatively wait rather than repeatedly consume requests.
 /harness resume --provider openai-codex
 ```
 
-Resume rechecks model availability, resolves fallback policy, validates canonical and worker Git state, verifies planning revision and context digest, and starts a fresh attempt from the existing branch/checkpoint.
+Resume rechecks model availability, resolves fallback policy, validates canonical and worker Git state, refreshes canonical context, and starts a fresh attempt from the existing branch/checkpoint.
 
 Natural-language resume also works when the main provider is available.
 
@@ -1405,7 +1401,7 @@ The first version can deterministically enforce:
 - Git/worktree allocation and validation.
 - Branch/path diff checks.
 - Model rank and effort policy.
-- Approval and context revision gates.
+- Approval status and canonical context refresh.
 - Locks, idempotency, and recovery records.
 
 ### 20.2 V1 limitation
@@ -1429,7 +1425,7 @@ The harness itself requires deterministic and model-assisted testing.
 - Model and effort resolution.
 - Capability authorization.
 - State-machine transitions.
-- Planning digest and approval invalidation.
+- Planning status and explicit approval disposition.
 - Idempotent mutation handling.
 - Failure classification.
 - Lock ownership and stale-lock diagnosis.
@@ -1597,10 +1593,10 @@ This architecture provides strong execution guarantees without making the harnes
 
 ## 25. Resource-oriented orchestrator authority
 
-The main-session capability surface is a stateless resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, complete representations, optimistic work-item revisions, typed validation, and explicit relationships. The preferred planning surface is `harness_list`, `harness_get`, `harness_create`, `harness_patch`, `harness_delete`, `harness_apply_change`, and `harness_transition`; legacy resource-specific tools are compatibility adapters rather than the normal model surface.
+The main-session capability surface is a stateless resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, complete representations, typed validation, and explicit relationships. The preferred planning surface is `harness_list`, `harness_get`, `harness_create`, `harness_patch`, `harness_delete`, `harness_apply_change`, and `harness_transition`; legacy resource-specific tools are compatibility adapters rather than the normal model surface.
 
-The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend approved planning in response to repository evidence, evaluator findings, or subagent requests. A `retain-approval` amendment records the new revision, rationale, sources, and orchestrator decision while preserving the user's approval lineage. A `request-user` disposition is a semantic judgment reserved for materially consequential or explicitly user-owned decisions, not an automatic consequence of changing a digest.
+The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend approved planning in response to repository evidence, evaluator findings, or subagent requests. A `retain-approval` amendment records rationale, sources, and orchestrator decision while preserving the user's approval lineage. A `request-user` disposition is a semantic judgment reserved for materially consequential or explicitly user-owned decisions, not an automatic consequence of changing a digest.
 
-`harness_apply_change` validates all expected revisions before mutation and applies its canonical operations as one Git commit. Resource errors identify the code, resource reference, retryability, and valid recovery actions so a model does not need to inspect extension source or create a duplicate work item to escape a correctable plan.
+`harness_apply_change` serializes and applies its canonical operations as one Git commit. It does not ask the model to supply revision tokens or contract hashes. Resource errors identify the code, resource reference, retryability, and valid recovery actions so a model does not need to inspect extension source or create a duplicate work item to escape a correctable plan.
 
 Capabilities continue to enforce mechanical truth: schema, identity, relation integrity, idempotency, serialization, clean canonical state, immutable delivery/evidence history, scoped child authority, and explicit finalization locks. They do not determine product materiality or prohibit sound orchestrator judgment. Postponement is resumable; archival creates the explicit finalization lock, and reopening is an auditable transition.

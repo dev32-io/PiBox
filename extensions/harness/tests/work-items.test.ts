@@ -152,19 +152,12 @@ test("fails loudly instead of hiding a dirty canonical branch", async (t) => {
 	assert.equal(await readFile(join(root, "dirty.txt"), "utf8"), "dirty\n");
 });
 
-test("detects out-of-band contract edits before approval", async (t) => {
+test("approval uses explicit planning status without contract hash gates", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);
-	await store.create({ id: "digest-check", title: "Digest Check", kind: "change", intent: "Original intent" });
-	await store.submitPlanning("digest-check");
-	await writeFile(join(root, "agent-artifacts", "digest-check", "intent.md"), "Changed outside capabilities\n");
-	await git(root, "add", "agent-artifacts/digest-check/intent.md");
-	await git(root, "commit", "--quiet", "-m", "out-of-band contract edit");
-	await assert.rejects(
-		store.approve("digest-check"),
-		(error: unknown) => error instanceof HarnessError && error.code === "STALE_PLANNING_REVISION",
-	);
-	const reconciled = await store.reconcile("digest-check");
-	assert.equal(reconciled.planning.status, "stale");
-	assert.equal(reconciled.planning.revision, 2);
+	await store.create({ id: "approval-status", title: "Approval Status", kind: "change", intent: "Original intent" });
+	await store.submitPlanning("approval-status");
+	const approved = await store.approve("approval-status");
+	assert.equal(approved.planning.status, "approved");
+	assert.equal((await store.reconcile("approval-status")).planning.status, "approved");
 });

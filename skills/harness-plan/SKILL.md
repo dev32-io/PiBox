@@ -165,7 +165,7 @@ Use a fresh plan critic when ambiguity, risk, blast radius, or decomposition war
 
 ## Completion
 
-Once the shared understanding is rendered as a coherent contract, call `harness_transition` with action `submit`. Present the outcome, confirmed scope, important choices, delegated recommendations, contribution topology, verification boundaries, and frozen revision.
+Once the shared understanding is rendered as a coherent contract, call `harness_transition` with action `submit`. Present the outcome, confirmed scope, important choices, delegated recommendations, contribution topology, verification boundaries, and submitted plan.
 
 Offer two natural next steps without requiring a special phrase:
 

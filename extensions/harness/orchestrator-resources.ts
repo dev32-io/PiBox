@@ -15,7 +15,6 @@ export interface ParsedResourceRef {
 }
 
 export interface ResourceMutationContext {
-	expectedRevision?: number;
 	authority: MutationAuthority;
 }
 
@@ -105,10 +104,12 @@ export class OrchestratorResourceService {
 	async coalesceRevision(workItemId: string, baseline: WorkItemIndex | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
 		const current = await this.store.read(workItemId);
 		const revision = (baseline?.planning.revision ?? 0) + 1;
+		if (current.planning.revision === revision) return current;
 		current.planning.revision = revision;
-		if (baseline?.planning.status === "approved" && authority.disposition === "retain-approval" && baseline.planning.approvedRevision !== undefined) {
+		if (baseline?.planning.status === "approved" && authority.disposition === "retain-approval") {
 			current.planning.status = "approved";
-			current.planning.approvedRevision = baseline.planning.approvedRevision;
+			if (baseline.planning.approvedRevision !== undefined) current.planning.approvedRevision = baseline.planning.approvedRevision;
+			else delete current.planning.approvedRevision;
 			if (baseline.planning.approvedAt) current.planning.approvedAt = baseline.planning.approvedAt;
 			else delete current.planning.approvedAt;
 			current.planning.approvalAmendments = [
@@ -167,7 +168,7 @@ export class OrchestratorResourceService {
 			return this.store.defineTask({ workItemId: parentRef.id, manifest, authority, ...(body.brief ? { brief: body.brief as string } : {}), ...(body.acceptance ? { acceptance: body.acceptance as string } : {}), ...(body.briefSections ? { briefSections: object(body.briefSections, "briefSections") } : {}), ...(body.acceptanceSections ? { acceptanceSections: object(body.acceptanceSections, "acceptanceSections") } : {}), ...(body.narrativeSchemaVersion ? { narrativeSchemaVersion: body.narrativeSchemaVersion as 1 | 2 } : {}) });
 		}
 		if (type === "evaluation") return this.store.defineEvaluation(parentRef.id, object(body.manifest, "manifest") as unknown as EvaluationManifest, "# Evaluation\n\nPending.\n", authority);
-		if (type === "integration-unit") return this.store.putIntegrationUnit(parentRef.id, body as unknown as WorkItemIndex["integrationUnits"][number], undefined, authority);
+		if (type === "integration-unit") return this.store.putIntegrationUnit(parentRef.id, body as unknown as WorkItemIndex["integrationUnits"][number], authority);
 		throw new HarnessError("INVALID_ARTIFACT", `Unsupported resource type: ${type}`);
 	}
 
@@ -176,7 +177,7 @@ export class OrchestratorResourceService {
 		const patch = object(patchValue, "Patch");
 		const item = await this.store.read(parsedRef.workItemId);
 		if (Boolean(item.finalization?.locked || item.phase === "complete")) throw new HarnessError("CAPABILITY_DENIED", `Work item ${item.id} is finalized; reopen it before mutation`);
-		if (parsedRef.type === "work-item") return this.store.reviseWorkItem({ workItemId: item.id, ...(context.expectedRevision !== undefined ? { expectedRevision: context.expectedRevision } : {}), authority: context.authority, ...(patch.title !== undefined ? { title: patch.title as string } : {}), ...(patch.kind !== undefined ? { kind: patch.kind as WorkItemKind } : {}), ...(patch.intent !== undefined ? { intent: patch.intent as string } : {}), ...(patch.intentSections !== undefined ? { intentSections: object(patch.intentSections, "intentSections") } : {}), ...(patch.narrativeSchemaVersion !== undefined ? { narrativeSchemaVersion: patch.narrativeSchemaVersion as 1 | 2 } : {}) });
+		if (parsedRef.type === "work-item") return this.store.reviseWorkItem({ workItemId: item.id, authority: context.authority, ...(patch.title !== undefined ? { title: patch.title as string } : {}), ...(patch.kind !== undefined ? { kind: patch.kind as WorkItemKind } : {}), ...(patch.intent !== undefined ? { intent: patch.intent as string } : {}), ...(patch.intentSections !== undefined ? { intentSections: object(patch.intentSections, "intentSections") } : {}), ...(patch.narrativeSchemaVersion !== undefined ? { narrativeSchemaVersion: patch.narrativeSchemaVersion as 1 | 2 } : {}) });
 		if (parsedRef.type === "artifact") {
 			const current = await this.store.readArtifact(item.id, parsedRef.id);
 			let result: unknown = item;
@@ -193,23 +194,23 @@ export class OrchestratorResourceService {
 			const directManifestPatch = Object.fromEntries(Object.entries(patch).filter(([key]) => ["title", "dependsOn", "references", "execution", "assembly", "verification"].includes(key)));
 			const manifest = merge(current.manifest, patch.manifest ?? directManifestPatch);
 			this.validateTaskAssignment(manifest);
-			return this.store.reviseTask({ workItemId: item.id, manifest, ...(context.expectedRevision !== undefined ? { expectedRevision: context.expectedRevision } : {}), authority: context.authority, brief: (patch.brief as string | undefined) ?? current.brief, acceptance: (patch.acceptance as string | undefined) ?? current.acceptance, ...(patch.briefSections ? { briefSections: object(patch.briefSections, "briefSections") } : {}), ...(patch.acceptanceSections ? { acceptanceSections: object(patch.acceptanceSections, "acceptanceSections") } : {}), narrativeSchemaVersion: patch.briefSections || patch.acceptanceSections ? 2 : 1 });
+			return this.store.reviseTask({ workItemId: item.id, manifest, authority: context.authority, brief: (patch.brief as string | undefined) ?? current.brief, acceptance: (patch.acceptance as string | undefined) ?? current.acceptance, ...(patch.briefSections ? { briefSections: object(patch.briefSections, "briefSections") } : {}), ...(patch.acceptanceSections ? { acceptanceSections: object(patch.acceptanceSections, "acceptanceSections") } : {}), narrativeSchemaVersion: patch.briefSections || patch.acceptanceSections ? 2 : 1 });
 		}
 		if (parsedRef.type === "integration-unit") {
 			const current = item.integrationUnits.find((unit) => unit.id === parsedRef.id);
 			if (!current) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${parsedRef.id}`);
-			return this.store.putIntegrationUnit(item.id, merge(current, patch), context.expectedRevision, context.authority);
+			return this.store.putIntegrationUnit(item.id, merge(current, patch), context.authority);
 		}
 		const current = await this.store.readEvaluation(item.id, parsedRef.id);
-		return this.store.reviseEvaluation(item.id, merge(current, patch.manifest ?? patch), context.expectedRevision, context.authority);
+		return this.store.reviseEvaluation(item.id, merge(current, patch.manifest ?? patch), context.authority);
 	}
 
 	async delete(ref: string, context: ResourceMutationContext): Promise<unknown> {
 		const parsedRef = parseResourceRef(ref);
 		if (parsedRef.type === "work-item") throw new HarnessError("CAPABILITY_DENIED", "Work items are retained for audit; transition them to archived instead");
-		if (parsedRef.type === "artifact") return this.store.removeArtifact(parsedRef.workItemId, parsedRef.id, context.expectedRevision, context.authority);
-		if (parsedRef.type === "task") return this.store.removeTask(parsedRef.workItemId, parsedRef.id, context.expectedRevision, context.authority);
-		if (parsedRef.type === "evaluation") return this.store.removeEvaluation(parsedRef.workItemId, parsedRef.id, context.expectedRevision, context.authority);
+		if (parsedRef.type === "artifact") return this.store.removeArtifact(parsedRef.workItemId, parsedRef.id, context.authority);
+		if (parsedRef.type === "task") return this.store.removeTask(parsedRef.workItemId, parsedRef.id, context.authority);
+		if (parsedRef.type === "evaluation") return this.store.removeEvaluation(parsedRef.workItemId, parsedRef.id, context.authority);
 		throw new HarnessError("CAPABILITY_DENIED", "Delete tasks from an integration unit by patching its task membership");
 	}
 }

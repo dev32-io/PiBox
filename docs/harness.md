@@ -42,7 +42,7 @@ The main session selects ad-hoc work when ceremony is unnecessary. Managed work 
 
 Managed planning begins as a product and technical conversation, not an artifact write. The orchestrator recovers the outcome behind a proposed solution, inspects discoverable facts, and treats inherited product rules, UX/UI flows, schemas, APIs, and architecture as revisitable decisions when they manufacture contradictory guarantees or disproportionate complexity. It distinguishes symptoms, technical causes, and upstream enabling conditions for bug work; probes only materially consequential hidden cases; and stops discovery when another answer would not change the contract. Clear local reversible work remains ad hoc even when the user asks for a plan.
 
-The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator drafts and submits the coherent contract, then offers two natural next steps: refine it conversationally, or approve the frozen revision with `/harness approve <work-item-id>`. No magic readiness phrase is required.
+The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator drafts and submits the coherent contract, then offers two natural next steps: refine it conversationally, or approve it with `/harness approve <work-item-id>`. No magic readiness phrase is required.
 
 - `harness_list` and `harness_get` inspect complete canonical resources and revisions.
 - `harness_create`, `harness_patch`, and `harness_delete` provide resource-oriented CRUD over work items, artifacts, tasks, integration units, and evaluations.
@@ -52,13 +52,13 @@ The user settles or delegates consequential choices. Once both sides share an un
 Legacy resource-specific planning tools remain registered for compatibility but are hidden from the normal main-session tool surface.
 Schema-v2 narrative capabilities accept typed semantic sections and render stable Markdown for intent, specifications, designs, decisions, task briefs, and task acceptance. Required values fail when empty or placeholder-only; optional sections may be omitted. Evaluation reports and outcomes are rendered from structured evidence, findings, verification, and residual risk. Schema-v1 artifacts remain readable for compatibility.
 
-Initial planning submission freezes the deliverable-contract digest. Only the user can grant initial approval:
+Initial planning submission records the plan as awaiting approval. Only the user can grant initial approval:
 
 ```text
 /harness approve <work-item-id>
 ```
 
-Approval is continuity rather than a blanket mutation freeze. The main orchestrator may revise approved specs, designs, tasks, integration units, and evaluations with an audited `retain-approval` amendment when the change remains within delegated intent. It uses `request-user` only for a material user-owned decision. Each amendment records revision, rationale, provenance, and impact; immutable run, evidence, handoff, and integration history is never rewritten. Task boundaries, integration grouping, and evaluator timing remain under orchestrator authority unless the user explicitly makes them binding.
+Approval is continuity rather than a blanket mutation freeze. The main orchestrator may revise approved specs, designs, tasks, integration units, and evaluations with an audited `retain-approval` amendment when the change remains within delegated intent. It uses `request-user` only for a material user-owned decision. Each amendment records rationale, provenance, and impact; immutable run, evidence, handoff, and integration history is never rewritten. Task boundaries, integration grouping, and evaluator timing remain under orchestrator authority unless the user explicitly makes them binding.
 
 ### Exploration and execution
 

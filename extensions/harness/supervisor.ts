@@ -172,8 +172,8 @@ export class SubagentSupervisor {
 			const handoff = await runs.readHandoff(created.record.id);
 			if (handoff) {
 				const currentItem = await workItems.read(options.workItemId);
-				if (currentItem.planning.status !== "approved" || currentItem.planning.revision !== options.planningRevision) {
-					const run = await runs.update(created.record.id, { state: "interrupted", error: `Planning changed to ${currentItem.planning.status} r${currentItem.planning.revision}` }, "run.context_stale");
+				if (currentItem.planning.status !== "approved") {
+					const run = await runs.update(created.record.id, { state: "interrupted", error: `Planning is ${currentItem.planning.status}` }, "run.context_stale");
 					await updateTask(`context-stale:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "paused" }));
 					if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "interrupted", { error: "Canonical planning changed" }).catch(() => undefined);
 					return { run, stderr, finalText };

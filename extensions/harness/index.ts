@@ -87,7 +87,6 @@ interface HarnessRuntime {
 	identity: RepositoryIdentity;
 	events: RepositoryEventStore;
 	workItems: WorkItemStore;
-	configDigest: string;
 	config: ReturnType<typeof loadHarnessConfig>["config"];
 	operations: IdempotencyStore;
 	mutex: RepositoryMutex;
@@ -163,18 +162,18 @@ const TASK_PATCH_BODY = Type.Object({
 	brief: Type.Optional(Type.String()), acceptance: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), briefSections: Type.Optional(TASK_BRIEF_SECTIONS), acceptanceSections: Type.Optional(TASK_ACCEPTANCE_SECTIONS),
 }, { additionalProperties: false });
 const PATCH_RESOURCE_PARAMETERS = Type.Union([
-	Type.Object({ resource: Type.Literal("work-item"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("artifact"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ type: Type.Optional(Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")])), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), title: Type.Optional(Type.String()), content: Type.Optional(Type.String()), sections: Type.Optional(Type.Record(Type.String(), Type.Unknown())), links: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("task"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: TASK_PATCH_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("integration-unit"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("evaluation"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("artifact"), ref: Type.String(), patch: Type.Object({ type: Type.Optional(Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")])), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), title: Type.Optional(Type.String()), content: Type.Optional(Type.String()), sections: Type.Optional(Type.Record(Type.String(), Type.Unknown())), links: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("task"), ref: Type.String(), patch: TASK_PATCH_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("integration-unit"), ref: Type.String(), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("evaluation"), ref: Type.String(), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 ]);
 const PATCH_OPERATION_VARIANTS = [
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("work-item"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }) }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("artifact"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Record(Type.String(), Type.Unknown()) }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("task"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: TASK_PATCH_BODY }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("integration-unit"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY) }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("evaluation"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("artifact"), ref: Type.String(), patch: Type.Record(Type.String(), Type.Unknown()) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("task"), ref: Type.String(), patch: TASK_PATCH_BODY }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("integration-unit"), ref: Type.String(), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("evaluation"), ref: Type.String(), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }) }, { additionalProperties: false }),
 ] as const;
 const CREATE_RESOURCE_PARAMETERS = Type.Union([
 	Type.Object({ resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
@@ -187,10 +186,9 @@ const CREATE_RESOURCE_PARAMETERS = Type.Union([
 function structuredCapabilityError(error: unknown, ref?: string): Error {
 	const harness = error instanceof HarnessError ? error : undefined;
 	const code = harness?.code ?? "INTERNAL_ERROR";
-	const allowedActions = code === "WORK_ITEM_EXISTS" ? ["get", "patch", "transition"] : code === "STALE_PLANNING_REVISION" ? ["get", "retry-with-current-revision"] : code === "CAPABILITY_DENIED" ? ["get", "reopen", "supersede"] : ["get", "patch"];
+	const allowedActions = code === "WORK_ITEM_EXISTS" ? ["get", "patch", "transition"] : code === "CAPABILITY_DENIED" ? ["get", "reopen", "supersede"] : ["get", "patch"];
 	const message = error instanceof Error ? error.message : String(error);
-	const currentRevision = message.match(/found (\d+)/i)?.[1];
-	return new Error(JSON.stringify({ ok: false, code, message, ...(ref ? { resourceRef: ref } : {}), ...(currentRevision ? { currentRevision: Number(currentRevision) } : {}), allowedActions, conflicts: [], retryable: code === "STALE_PLANNING_REVISION" }));
+	return new Error(JSON.stringify({ ok: false, code, message, ...(ref ? { resourceRef: ref } : {}), allowedActions, conflicts: [], retryable: false }));
 }
 
 async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime> {
@@ -206,7 +204,6 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager
 		identity,
 		events,
 		workItems: new WorkItemStore(identity.root),
-		configDigest: loaded.digest,
 		config: loaded.config,
 		operations: new IdempotencyStore(identity.privateRoot),
 		mutex: new RepositoryMutex(identity.privateRoot),
@@ -263,7 +260,7 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 		...(agent.taskId ? { taskId: agent.taskId } : {}),
 		...(agent.evaluationId ? { evaluationId: agent.evaluationId } : {}),
 	}));
-	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, configDigest: runtime.configDigest, workItems, taskCounts, runs, agents };
+	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, workItems, taskCounts, runs, agents };
 }
 
 async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ reported: number; interrupted: number; ambiguous: number }> {
@@ -490,13 +487,7 @@ export default function harness(pi: ExtensionAPI): void {
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
-					const parsed = parseResourceRef(params.ref);
-					const baseline = await runtime.workItems.read(parsed.workItemId);
-					const result = await service.transaction(`harness: patch ${params.ref}`, async () => {
-						const value = await service.patch(params.ref, params.patch, { ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}), authority: params.authority as MutationAuthority });
-						const resource = await service.coalesceRevision(parsed.workItemId, baseline, params.authority as MutationAuthority);
-						return { value, resource };
-					});
+					const result = await service.transaction(`harness: patch ${params.ref}`, () => service.patch(params.ref, params.patch, { authority: params.authority as MutationAuthority }));
 					await runtime.events.append("resource.patched", { ref: params.ref, authority: params.authority, commit: result.commit });
 					return resourceResult(`Patched ${params.ref}${params.authority.disposition === "retain-approval" ? " with approval continuity" : " and requested user review"}.`, result);
 				});
@@ -508,14 +499,14 @@ export default function harness(pi: ExtensionAPI): void {
 		name: "harness_delete",
 		label: "Delete Harness Resource",
 		description: "Delete an undelivered canonical child resource and repair its catalog relationships atomically. Delivery history remains immutable.",
-		parameters: Type.Object({ ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+		parameters: Type.Object({ ref: Type.String(), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
-					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { ...(params.expectedRevision !== undefined ? { expectedRevision: params.expectedRevision } : {}), authority: params.authority as MutationAuthority }));
+					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { authority: params.authority as MutationAuthority }));
 					await runtime.events.append("resource.deleted", { ref: params.ref, authority: params.authority, commit: result.commit });
 					return resourceResult(`Deleted ${params.ref}.`, result);
 				});
@@ -533,7 +524,7 @@ export default function harness(pi: ExtensionAPI): void {
 			operations: Type.Array(Type.Union([
 				...CREATE_OPERATION_VARIANTS,
 				...PATCH_OPERATION_VARIANTS,
-				Type.Object({ method: Type.Literal("delete"), ref: Type.String(), expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })) }, { additionalProperties: false }),
+				Type.Object({ method: Type.Literal("delete"), ref: Type.String() }, { additionalProperties: false }),
 			])),
 			response: Type.Optional(Type.Object({ agentId: Type.String(), messageId: Type.String(), text: Type.String() }, { additionalProperties: false })),
 		}, { additionalProperties: false }),
@@ -549,12 +540,6 @@ export default function harness(pi: ExtensionAPI): void {
 						if (operation.method === "create") workItemId = operation.resource === "work-item" ? operation.body.id as string : operation.parent ? parseResourceRef(operation.parent).workItemId : undefined;
 						else workItemId = parseResourceRef(operation.ref).workItemId;
 						if (workItemId && !baselines.has(workItemId)) baselines.set(workItemId, await runtime.workItems.read(workItemId).catch((error) => error instanceof HarnessError && error.code === "WORK_ITEM_NOT_FOUND" ? undefined : Promise.reject(error)));
-					}
-					for (const operation of params.operations) {
-						if (operation.method === "create" || operation.expectedRevision === undefined) continue;
-						const ref = parseResourceRef(operation.ref);
-						const current = await runtime.workItems.read(ref.workItemId);
-						if (current.planning.revision !== operation.expectedRevision) throw new HarnessError("STALE_PLANNING_REVISION", `Expected work-item revision ${operation.expectedRevision}, found ${current.planning.revision}`);
 					}
 					const respondingAgent = params.response ? await runtime.agents.get(params.response.agentId) : undefined;
 					const result = await service.transaction("harness: apply orchestrator change", async () => {
@@ -617,7 +602,6 @@ export default function harness(pi: ExtensionAPI): void {
 					const scaffold = await scaffoldHarness(runtime.identity.root, params.profile ?? "standard", params.overwrite ?? false);
 					const loaded = loadHarnessConfig(runtime.identity.root);
 					runtime.config = loaded.config;
-					runtime.configDigest = loaded.digest;
 					await runtime.events.append("repository.scaffolded", scaffold);
 					return textResult(
 						scaffold.created
@@ -737,7 +721,7 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "artifact_reconcile",
 		label: "Reconcile Harness Artifacts",
-		description: "Recompute the deliverable-contract digest after clean out-of-band committed edits and mark changed approval stale.",
+		description: "Read canonical planning after clean out-of-band edits. Legacy compatibility tool; no contract-hash gate is applied.",
 		parameters: Type.Object({ workItemId: Type.String() }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -1334,7 +1318,6 @@ export default function harness(pi: ExtensionAPI): void {
 					const scaffold = await runtime.mutex.run(`init:${profile}`, () => scaffoldHarness(runtime.identity.root, profile));
 					const loaded = loadHarnessConfig(runtime.identity.root);
 					runtime.config = loaded.config;
-					runtime.configDigest = loaded.digest;
 					await runtime.events.append("repository.scaffolded", scaffold);
 					ctx.ui.notify(scaffold.created ? `Initialized ${profile} harness policy and committed it.` : "Harness policy already exists and is valid.", "info");
 					return;

@@ -29,7 +29,7 @@ export async function reconcileReportedAgents(input: {
 				const handoff = await runs.readHandoff(agent.runId);
 				if (!handoff) { result.pending.push(agent.id); continue; }
 				const item = await input.workItems.read(agent.workItemId);
-				if (item.planning.status !== "approved" || item.planning.revision !== run.planningRevision) throw new Error(`Planning changed to ${item.planning.status} r${item.planning.revision}`);
+				if (item.planning.status !== "approved") throw new Error(`Planning is ${item.planning.status}`);
 				const workspace = agent.workspace ?? run.workspace;
 				const status = await runGit(workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);
 				const head = await runGit(workspace, ["rev-parse", "HEAD"]);

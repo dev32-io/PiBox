@@ -183,7 +183,8 @@ export interface WorkItemIndex {
 		status: PlanningStatus;
 		approvedRevision?: number;
 		approvedAt?: string;
-		contractDigest: string;
+		/** Legacy schema-v1 field; retained for reading older repositories but no longer used as a gate. */
+		contractDigest?: string;
 		approvalAmendments?: ApprovalAmendment[];
 	};
 	artifacts: ArtifactIndexEntry[];
@@ -196,7 +197,6 @@ export interface WorkItemIndex {
 export interface HarnessStatusSnapshot {
 	repositoryRoot: string;
 	repositoryId: string;
-	configDigest: string;
 	workItems: WorkItemIndex[];
 	taskCounts: Record<string, Record<string, number>>;
 	runs: Array<{ id: string; workItemId: string; taskId?: string; role: string; state: string; model?: string }>;

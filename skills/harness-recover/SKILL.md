@@ -8,7 +8,7 @@ description: Use when managed work is interrupted, paused, stopped, capacity-lim
 ## Instructions
 
 1. Inspect `/harness recover` and current harness status.
-2. Trust recorded branch, worktree, checkpoint, revision, and run state over conversational memory.
+2. Trust recorded branch, worktree, checkpoint, and run state over conversational memory; planning revisions are informational.
 3. Resume retained task state when safe; keep capacity failures outside semantic repair budgets.
 4. Preserve dirty or conflicting state for diagnosis. Require user authority before destructive Git operations.
 5. Resolve integration conflicts in a candidate or bounded repair contribution while preserving the last clean canonical state.

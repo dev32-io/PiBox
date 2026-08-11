@@ -17,6 +17,8 @@ This verifies that parent-owned pipes are not authoritative, logical-agent ident
 
 ## Resource-oriented planning and amendment regression
 
+A real `todoTest` session exposed an unnecessary single-resource coalescing commit: a valid task-model patch committed its change, then attempted a second no-op revision commit and failed. Single-resource mutations now commit directly. Model-supplied revision tokens, contract hashes, and runtime revision-equality gates were removed; approval status, scoped tools, schema validation, serialization, clean Git state, and immutable delivery history remain the enforcement boundary.
+
 A fresh Luna planning session exercised the preferred stateless resource surface against an empty repository:
 
 1. `harness_list` established that no matching work item existed.

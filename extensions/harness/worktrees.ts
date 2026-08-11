@@ -120,7 +120,7 @@ export class WorktreeManager {
 	async integrateUnit(workItemId: string, unitId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId);
-		if (item.planning.status !== "approved") throw new HarnessError("STALE_PLANNING_REVISION", "Planning is not approved");
+		if (item.planning.status !== "approved") throw new HarnessError("CAPABILITY_DENIED", "Planning is not approved");
 		const unit = item.integrationUnits.find((candidate) => candidate.id === unitId);
 		if (!unit) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${unitId}`);
 		const tasks = await Promise.all(unit.tasks.map((taskId) => this.workItems.readTask(workItemId, taskId)));

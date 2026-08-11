@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { OrchestratorResourceService } from "../orchestrator-resources.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
-import { approvalCoversCurrentRevision, WorkItemStore } from "../work-items.js";
+import { WorkItemStore } from "../work-items.js";
 
 const exec = promisify(execFile);
 async function git(root: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: root, encoding: "utf8" })).stdout.trim(); }
@@ -28,17 +28,28 @@ test("revises an approved task in place while retaining approval continuity", as
 	await store.create({ id: "resource-flow", title: "Resource flow", kind: "change", intent: "Deliver one app." });
 	await store.defineTask({ workItemId: "resource-flow", manifest: task(), brief: "Build it.", acceptance: "It works." });
 	await store.submitPlanning("resource-flow"); await store.approve("resource-flow");
-	const before = await store.read("resource-flow");
-	await service.transaction("harness: revise task", () => service.patch("work-item:resource-flow/task:build-app", { manifest: { title: "Build the revised app", assembly: { integrationUnit: "delivery" } } }, { expectedRevision: before.planning.revision, authority: retain }));
+	await service.transaction("harness: revise task", () => service.patch("work-item:resource-flow/task:build-app", { manifest: { title: "Build the revised app", assembly: { integrationUnit: "delivery" } } }, { authority: retain }));
 	const after = await store.read("resource-flow");
 	assert.equal(after.tasks.length, 1);
 	assert.deepEqual(after.integrationUnits, [{ id: "delivery", tasks: ["build-app"], intermediatePolicy: "coherent" }]);
 	assert.equal((await store.readTask("resource-flow", "build-app")).title, "Build the revised app");
-	await service.transaction("harness: patch task verification", () => service.patch("work-item:resource-flow/task:build-app", { verification: { taskChecks: ["printf hello"] } }, { expectedRevision: after.planning.revision, authority: retain }));
+	await service.transaction("harness: patch task verification", () => service.patch("work-item:resource-flow/task:build-app", { verification: { taskChecks: ["printf hello"] } }, { authority: retain }));
 	assert.deepEqual((await store.readTask("resource-flow", "build-app")).verification.taskChecks, ["printf hello"]);
 	assert.equal(after.planning.status, "approved");
 	assert.equal(after.planning.approvalAmendments?.at(-1)?.revision, after.planning.revision);
-	assert.equal(approvalCoversCurrentRevision(after), true);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("single-resource patches do not require a redundant coalescing commit", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "single-patch", title: "Single patch", kind: "change", intent: "Patch one task." });
+	await store.defineTask({ workItemId: "single-patch", manifest: task(), brief: "Build it.", acceptance: "It works." });
+	await store.submitPlanning("single-patch");
+	const before = await store.read("single-patch");
+	await service.transaction("harness: patch one task", () => service.patch("work-item:single-patch/task:build-app", { execution: { assignment: { model: "terra" } } }, { authority: retain }));
+	const after = await store.read("single-patch");
+	assert.equal(after.planning.revision, before.planning.revision + 1);
+	assert.equal((await store.readTask("single-patch", "build-app")).execution.assignment.model, "terra");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
@@ -46,8 +57,7 @@ test("patches schema-v2 artifact metadata without downgrading its representation
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "artifact-change", title: "Artifact", kind: "change", intent: "Exercise artifact patching." });
 	await store.putArtifact({ workItemId: "artifact-change", id: "contract", type: "spec", narrativeSchemaVersion: 2, title: "Original", sections: { context: "One contract.", requiredBehaviors: ["Remain editable."], acceptanceCriteria: [{ id: "AC-001", statement: "Title changes preserve schema metadata." }] }, operation: "create" });
-	const revision = (await store.read("artifact-change")).planning.revision;
-	await service.transaction("harness: patch artifact", () => service.patch("work-item:artifact-change/artifact:contract", { title: "Revised" }, { expectedRevision: revision, authority: retain }));
+	await service.transaction("harness: patch artifact", () => service.patch("work-item:artifact-change/artifact:contract", { title: "Revised" }, { authority: retain }));
 	const artifact = await store.readArtifact("artifact-change", "contract");
 	assert.equal(artifact.metadata.narrativeSchemaVersion, 2);
 	assert.match(artifact.content, /^# Revised/m);
@@ -57,8 +67,7 @@ test("deletes an undelivered task and repairs integration membership", async (t)
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "remove-task", title: "Remove task", kind: "change", intent: "Exercise deletion." });
 	await store.defineTask({ workItemId: "remove-task", manifest: task(), brief: "Build it.", acceptance: "It works." });
-	const revision = (await store.read("remove-task")).planning.revision;
-	await service.transaction("harness: delete task", () => service.delete("work-item:remove-task/task:build-app", { expectedRevision: revision, authority: retain }));
+	await service.transaction("harness: delete task", () => service.delete("work-item:remove-task/task:build-app", { authority: retain }));
 	const item = await store.read("remove-task");
 	assert.deepEqual(item.tasks, []); assert.deepEqual(item.integrationUnits, []);
 	assert.equal((await store.reconcile("remove-task")).planning.revision, item.planning.revision);
@@ -88,11 +97,9 @@ test("revises and removes planned evaluations without supplemental duplicates", 
 	await store.create({ id: "evaluation-change", title: "Evaluation", kind: "change", intent: "Exercise evaluation CRUD." });
 	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "browser-proof", type: "e2e", scope: { workItem: "evaluation-change" }, status: "planned", required: true, attempt: 0, methods: ["basic browser check"], criteria: [] };
 	await store.defineEvaluation("evaluation-change", evaluation);
-	let revision = (await store.read("evaluation-change")).planning.revision;
-	await service.transaction("harness: revise evaluation", () => service.patch("work-item:evaluation-change/evaluation:browser-proof", { methods: ["keyboard", "reduced motion"] }, { expectedRevision: revision, authority: retain }));
+	await service.transaction("harness: revise evaluation", () => service.patch("work-item:evaluation-change/evaluation:browser-proof", { methods: ["keyboard", "reduced motion"] }, { authority: retain }));
 	assert.deepEqual((await store.readEvaluation("evaluation-change", "browser-proof")).methods, ["keyboard", "reduced motion"]);
-	revision = (await store.read("evaluation-change")).planning.revision;
-	await service.transaction("harness: remove evaluation", () => service.delete("work-item:evaluation-change/evaluation:browser-proof", { expectedRevision: revision, authority: retain }));
+	await service.transaction("harness: remove evaluation", () => service.delete("work-item:evaluation-change/evaluation:browser-proof", { authority: retain }));
 	const item = await store.read("evaluation-change");
 	assert.deepEqual(item.evaluations, []);
 	assert.equal((await store.reconcile("evaluation-change")).planning.revision, item.planning.revision);

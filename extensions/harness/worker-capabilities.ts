@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -57,10 +56,10 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 				const item = await auth.workItems.read(auth.scope.workItemId);
 				const task = await auth.workItems.readTask(auth.scope.workItemId, auth.scope.taskId);
 				if (params.action === "list" || params.action === "refresh") {
-					await auth.runs.appendEvent(auth.scope.runId, "context.refreshed", { revision: item.planning.revision, digest: item.planning.contractDigest });
+					await auth.runs.appendEvent(auth.scope.runId, "context.refreshed", { revision: item.planning.revision });
 					return result(
-						[`Planning revision: ${item.planning.revision}`, `Contract digest: ${item.planning.contractDigest}`, "Artifacts:", ...item.artifacts.map((artifact) => `- ${artifact.id} (${artifact.type})`), `- task:${task.id} (task contract)`].join("\n"),
-						{ revision: item.planning.revision, digest: item.planning.contractDigest, artifacts: item.artifacts, task, taskContextIds: [`task:${task.id}:manifest`, `task:${task.id}:brief`, `task:${task.id}:acceptance`] },
+						[`Planning revision: ${item.planning.revision}`, "Artifacts:", ...item.artifacts.map((artifact) => `- ${artifact.id} (${artifact.type})`), `- task:${task.id} (task contract)`].join("\n"),
+						{ revision: item.planning.revision, artifacts: item.artifacts, task, taskContextIds: [`task:${task.id}:manifest`, `task:${task.id}:brief`, `task:${task.id}:acceptance`] },
 					);
 				}
 				if (!params.artifactId) throw new HarnessError("INVALID_ARTIFACT", "artifactId is required for read");
@@ -75,8 +74,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					path = join(root, artifact.path);
 				}
 				const content = await readFile(path, "utf8");
-				const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
-				return result(content, { revision: item.planning.revision, contractDigest: item.planning.contractDigest, contentDigest: digest });
+				return result(content, { revision: item.planning.revision });
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}
@@ -162,9 +160,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					if (agent.state !== "running") throw new HarnessError("INVALID_HANDOFF", `Task cannot complete while its logical agent is ${agent.state}`);
 				}
 				const item = await auth.workItems.read(auth.scope.workItemId);
-				if (item.planning.status !== "approved" || item.planning.revision !== auth.run.planningRevision) {
-					throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Task run is bound to planning r${auth.run.planningRevision}; canonical planning is ${item.planning.status} r${item.planning.revision}`);
-				}
+				if (item.planning.status !== "approved") throw new HarnessError("CONTEXT_REFRESH_REQUIRED", "Task planning is no longer approved");
 				const status = await runGit(ctx.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
 				if (status) throw new HarnessError("INVALID_HANDOFF", "Task worktree must be clean before completion", { status });
 				const head = await runGit(ctx.cwd, ["rev-parse", "HEAD"]);

@@ -41,11 +41,9 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 			try {
 				const auth = await authorized(ctx);
 				const item = await auth.workItems.read(auth.scope.workItemId);
-				if (item.planning.status !== "approved" || item.planning.revision !== auth.run.planningRevision) {
-					throw new HarnessError("CONTEXT_REFRESH_REQUIRED", "Evaluation planning revision is no longer current");
-				}
+				if (item.planning.status !== "approved") throw new HarnessError("CONTEXT_REFRESH_REQUIRED", "Evaluation planning is no longer approved");
 				const evaluation = await auth.workItems.readEvaluation(item.id, auth.scope.evaluationId);
-				if (!params.artifactId) return response(`Evaluation ${evaluation.id} (${evaluation.type})\nScope: ${JSON.stringify(evaluation.scope)}\nPlanning r${item.planning.revision} ${item.planning.contractDigest}\n${item.artifacts.map((artifact) => `- ${artifact.id} (${artifact.type})`).join("\n")}`, { item, evaluation });
+				if (!params.artifactId) return response(`Evaluation ${evaluation.id} (${evaluation.type})\nScope: ${JSON.stringify(evaluation.scope)}\nPlanning r${item.planning.revision}\n${item.artifacts.map((artifact) => `- ${artifact.id} (${artifact.type})`).join("\n")}`, { item, evaluation });
 				const artifact = item.artifacts.find((candidate) => candidate.id === params.artifactId);
 				if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${params.artifactId}`);
 				return response(await readFile(join(auth.workItems.workItemRoot(item.id), artifact.path), "utf8"), { revision: item.planning.revision });
