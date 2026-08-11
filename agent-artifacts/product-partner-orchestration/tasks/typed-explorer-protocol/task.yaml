@@ -1,0 +1,43 @@
+schemaVersion: 1
+id: typed-explorer-protocol
+title: Typed explorer protocol
+status: blocked
+dependsOn:
+  - product-partner-prompt-contracts
+  - file-backed-launch-coordinator
+references:
+  specs:
+    - product-partner-and-subagent-lifecycle
+  designs:
+    - orchestration-and-agent-registry-design
+  decisions:
+    - background-agent-liveness
+execution:
+  isolation: worktree
+  parallelism: serial
+  resourceClaims:
+    - explorer-role-contract
+    - explorer-schema-validator
+    - protocol-nudge-attempt
+  complexity: high
+  assignment:
+    role: implementer
+    model: luna
+    effort: high
+    minimumCapabilityRank: 0
+    allowFallback: false
+    rationale: Luna is assigned for mode-sensitive protocol design, structured
+      evidence validation, and bounded retry semantics.
+assembly:
+  integrationUnit: typed-explorer-protocol
+  intermediateState: complete
+verification:
+  timing: task
+  methods:
+    - explorer schema tests
+    - mode completion matrix
+    - protocol nudge tests
+  taskChecks:
+    - npm test -- --runInBand
+  rationale: Explorer contracts and protocol validation have a focused task
+    boundary once coordinator interfaces are available.
