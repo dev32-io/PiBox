@@ -1,0 +1,17 @@
+schemaVersion: 1
+id: product-partner-orchestration
+kind: change
+title: Product-partner orchestration and durable subagents
+phase: planning
+state: active
+planning:
+  revision: 1
+  status: draft
+  contractDigest: sha256:e057c080d09a5f8501f2607e1a5b81162ce77c55493f64bbcbf7d0ca3a77765a
+artifacts:
+  - id: intent
+    type: intent
+    path: intent.md
+    status: draft
+tasks: []
+evaluations: []
