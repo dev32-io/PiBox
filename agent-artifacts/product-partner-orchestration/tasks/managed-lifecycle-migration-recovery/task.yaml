@@ -1,0 +1,47 @@
+schemaVersion: 1
+id: managed-lifecycle-migration-recovery
+title: Managed lifecycle migration and recovery
+status: blocked
+dependsOn:
+  - atomic-session-agent-registry
+  - file-backed-launch-coordinator
+  - typed-explorer-protocol
+references:
+  specs:
+    - product-partner-and-subagent-lifecycle
+  designs:
+    - orchestration-and-agent-registry-design
+  decisions:
+    - active-agent-slot-accounting
+    - background-agent-liveness
+execution:
+  isolation: worktree
+  parallelism: serial
+  resourceClaims:
+    - managed-launch-wrappers
+    - session-reconciliation
+    - legacy-run-fixtures
+    - background-resume-e2e
+  complexity: critical
+  assignment:
+    role: implementer
+    model: luna
+    effort: xhigh
+    minimumCapabilityRank: 0
+    allowFallback: false
+    rationale: Luna is assigned for cross-cutting lifecycle migration, recovery
+      invariants, and final integration evidence.
+assembly:
+  integrationUnit: managed-lifecycle-migration
+  intermediateState: complete
+verification:
+  timing: work-item
+  methods:
+    - background-resume lifecycle E2E
+    - managed lifecycle regression
+    - schema-v1 compatibility tests
+    - canonical protection checks
+  taskChecks:
+    - npm test -- --runInBand
+  rationale: Migration and recovery correctness require the complete assembled
+    lifecycle and final work-item boundary.

@@ -5,9 +5,9 @@ title: Product-partner orchestration and durable subagents
 phase: planning
 state: active
 planning:
-  revision: 11
+  revision: 12
   status: draft
-  contractDigest: sha256:82bd042fed159bc5ffb6d748b8630c8f50894cf28c420d05162f3deab6e9451f
+  contractDigest: sha256:5d749c8a15a532786e72b5d5922ebd558b891290106954f57a7dfbe53652a19b
 artifacts:
   - id: intent
     type: intent
@@ -39,6 +39,8 @@ tasks:
     path: tasks/file-backed-launch-coordinator/task.yaml
   - id: typed-explorer-protocol
     path: tasks/typed-explorer-protocol/task.yaml
+  - id: managed-lifecycle-migration-recovery
+    path: tasks/managed-lifecycle-migration-recovery/task.yaml
 evaluations: []
 integrationUnits:
   - id: prompt-contracts
@@ -56,4 +58,8 @@ integrationUnits:
   - id: typed-explorer-protocol
     tasks:
       - typed-explorer-protocol
+    intermediatePolicy: coherent
+  - id: managed-lifecycle-migration
+    tasks:
+      - managed-lifecycle-migration-recovery
     intermediatePolicy: coherent
