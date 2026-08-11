@@ -15,6 +15,10 @@ A focused lifecycle exercise verified the unified subagent runtime:
 
 This verifies that parent-owned pipes are not authoritative, logical-agent identity survives process attempts, and handoff-first reconciliation avoids duplicate writers.
 
+## Background workflow regression
+
+A fresh Luna workflow started through `workflow_start` and returned control to the main session in 13.83 seconds while its implementation child was still running. The independent workflow extension then refreshed harness adapter state, accepted the task handoff, integrated the declared unit and checks, launched the planned deterministic evaluator, and recorded a passing verdict after 65.00 seconds total. The canonical repository and task worktree were clean. This demonstrates that the main session is no longer held inside a multi-minute task tool call while deterministic workflow progression continues in the background.
+
 ## Persistent implementer context regression
 
 A fresh Luna task received its brief, acceptance contract, referenced specification, expected contribution state, and required check through the system prompt. Its action prompt contained only the task identity, repository-inspection direction, required check, and completion signal. The first turn inspected the repository with `bash` and `find`; routine implementation made zero `task_clarify` calls. Luna created the exact proof file, ran the assigned check, committed it, left a clean worktree, and completed the supervised handoff. Unit coverage also verifies that role instructions and persistent context are combined in Pi's appended system prompt, which remains present across compaction.

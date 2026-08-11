@@ -1073,21 +1073,20 @@ The resource API is authoritative for normal main-session planning. Earlier reso
 
 ### 16.2 Execution capabilities
 
+The separate workflow extension provides:
+
 ```text
-agent_run
-exploration_launch
-task_launch
-agent_control
-agent_status
-agent_respond
-task_integrate
-evaluation_launch
-evaluation_record
-work_item_complete
-harness_status
+workflow_start
+workflow_control
+subagent_spawn
+subagent_status
+subagent_control
+subagent_respond
 ```
 
-`agent_run` directly invokes a role without requiring a work item. `task_launch` additionally enforces approval, dependencies, worktree allocation, and task contracts.
+The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates approved tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
+
+`subagent_spawn` accepts an opaque adapter-owned reference and defaults to background execution. `agent_run` and `exploration_launch` remain explicit non-workflow specialist capabilities. `evaluation_record`, `work_item_complete`, and `harness_status` remain harness capabilities.
 
 ### 16.3 Worker capabilities
 
@@ -1288,17 +1287,16 @@ On startup or session resume, the harness:
 
 It never resets branches, deletes worktrees, or discards uncommitted worker changes automatically. A dirty canonical feature branch always requires user resolution.
 
-### 18.7 Agent controls
+### 18.7 Workflow and subagent controls
 
 ```text
-agent_status
-agent_control(pause | stop)
-/harness pause <task>
-/harness resume <task>
-/harness stop <task>
+workflow_control(pause | resume | stop)
+subagent_status
+subagent_control(pause | stop)
+subagent_respond
 ```
 
-Pause or stop terminates the active supervised process while preserving filesystem and private run state. Resume launches a fresh model session against the retained branch and checkpoint. Rich live steering, restart policies, and inbox controls remain deferred.
+Workflow pause stops new scheduling while allowing current children to settle. Workflow stop terminates active children while preserving filesystem and private run state. Subagent pause or stop targets a positively identified logical child. Resume launches a fresh model session against the retained branch and durable response context when the adapter marks that step ready.
 
 ## 19. User experience
 

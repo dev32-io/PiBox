@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { stringify } from "yaml";
-import { SessionAgentRegistry } from "./agent-registry.js";
+import { SessionAgentRegistry } from "../workflows/agent-registry.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository, runGit } from "./repository.js";
 import { HarnessRunStore, type TaskHandoff } from "./run-store.js";
@@ -124,9 +124,9 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 				try {
 					const auth = await authorized(ctx);
 					await auth.runs.appendEvent(auth.scope.runId, name.replaceAll("_", "."), params);
-					const privateRoot = process.env.PIBOX_HARNESS_REPOSITORY_PRIVATE_ROOT;
-					const sessionId = process.env.PIBOX_HARNESS_ROOT_SESSION_ID;
-					const agentId = process.env.PIBOX_HARNESS_AGENT_ID;
+					const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
+					const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
+					const agentId = process.env.PIBOX_SUBAGENT_ID;
 					let message: unknown;
 					if (privateRoot && sessionId && agentId) {
 						const registry = new SessionAgentRegistry(privateRoot, sessionId);
@@ -164,9 +164,9 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const auth = await authorized(ctx);
-				const privateRoot = process.env.PIBOX_HARNESS_REPOSITORY_PRIVATE_ROOT;
-				const sessionId = process.env.PIBOX_HARNESS_ROOT_SESSION_ID;
-				const agentId = process.env.PIBOX_HARNESS_AGENT_ID;
+				const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
+				const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
+				const agentId = process.env.PIBOX_SUBAGENT_ID;
 				if (privateRoot && sessionId && agentId) {
 					const agent = await new SessionAgentRegistry(privateRoot, sessionId).get(agentId);
 					if (agent.state !== "running") throw new HarnessError("INVALID_HANDOFF", `Task cannot complete while its logical agent is ${agent.state}`);

@@ -9,11 +9,11 @@ import { atomicWriteFile } from "./repository.js";
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
 function scope() {
-	const root = process.env.PIBOX_HARNESS_AGENT_ROOT;
-	const assignmentPath = process.env.PIBOX_HARNESS_ASSIGNMENT_PATH;
-	const agentId = process.env.PIBOX_HARNESS_AGENT_ID;
-	const attemptId = process.env.PIBOX_HARNESS_ATTEMPT_ID;
-	if (process.env.PIBOX_HARNESS_AGENT_ROLE !== "explorer" || !root || !assignmentPath || !agentId || !attemptId) throw new HarnessError("CAPABILITY_DENIED", "Exploration capability requires an authorized explorer attempt");
+	const root = process.env.PIBOX_SUBAGENT_ROOT;
+	const assignmentPath = process.env.PIBOX_SUBAGENT_ASSIGNMENT_PATH;
+	const agentId = process.env.PIBOX_SUBAGENT_ID;
+	const attemptId = process.env.PIBOX_SUBAGENT_ATTEMPT_ID;
+	if (process.env.PIBOX_SUBAGENT_ROLE !== "explorer" || !root || !assignmentPath || !agentId || !attemptId) throw new HarnessError("CAPABILITY_DENIED", "Exploration capability requires an authorized explorer attempt");
 	return { root, assignmentPath, agentId, attemptId };
 }
 
@@ -24,7 +24,7 @@ async function context(_ctx: ExtensionContext): Promise<{ scope: ReturnType<type
 	return { scope: authorized, assignment };
 }
 
-export const isExplorationProcess = () => process.env.PIBOX_HARNESS_AGENT_ROLE === "explorer" && Boolean(process.env.PIBOX_HARNESS_AGENT_ID);
+export const isExplorationProcess = () => process.env.PIBOX_SUBAGENT_ROLE === "explorer" && Boolean(process.env.PIBOX_SUBAGENT_ID);
 
 export function registerExplorationCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({

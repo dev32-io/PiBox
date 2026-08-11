@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { reconcileReportedAgents } from "../agent-reconciliation.js";
-import { SessionAgentRegistry } from "../agent-registry.js";
+import { SessionAgentRegistry } from "../../workflows/agent-registry.js";
 import { RepositoryMutex } from "../idempotency.js";
 import { atomicWriteFile } from "../repository.js";
 import { WorkItemStore } from "../work-items.js";

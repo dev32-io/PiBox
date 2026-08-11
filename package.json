@@ -29,6 +29,7 @@
   },
   "pi": {
     "extensions": [
+      "./extensions/workflows/index.ts",
       "./extensions/harness/index.ts",
       "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",

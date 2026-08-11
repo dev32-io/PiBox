@@ -149,6 +149,21 @@ scenarios:
       provider: openai-codex
       id: gpt-5.6-luna
       effort: low
+  - id: background-managed-workflow
+    surface: assembled-harness
+    repetitions: 1
+    result: pass
+    passed: 1
+    requiredProperties:
+      - workflow_start returns while its task subagent remains active
+      - canonical task and integration steps advance from refreshed adapter state
+      - planned evaluation launches after integration and records a passing verdict
+      - the main session remains available for user steering during background work
+      - canonical and task worktrees remain clean
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
   - id: persistent-implementer-context
     surface: assembled-harness
     repetitions: 1

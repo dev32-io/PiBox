@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { SessionAgentRegistry } from "./agent-registry.js";
+import { SessionAgentRegistry } from "../workflows/agent-registry.js";
 import { validateExplorationHandoff, type ExplorationAssignment, type ExplorationHandoff } from "./exploration-contracts.js";
 import { RepositoryMutex } from "./idempotency.js";
 import type { RepositoryIdentity } from "./repository.js";

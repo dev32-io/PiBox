@@ -2,9 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
-import { HarnessError } from "./errors.js";
-import { RepositoryMutex } from "./idempotency.js";
-import { atomicWriteFile, readTextIfExists } from "./repository.js";
+import { atomicWriteFile, readTextIfExists, WorkflowMutex, WorkflowRuntimeError } from "./storage.js";
 
 export type AgentState =
 	| "reserved"
@@ -130,7 +128,7 @@ export class SessionAgentRegistry {
 	readonly root: string;
 	readonly snapshotPath: string;
 	readonly eventsPath: string;
-	readonly mutex: RepositoryMutex;
+	readonly mutex: WorkflowMutex;
 
 	constructor(
 		repositoryPrivateRoot: string,
@@ -138,11 +136,11 @@ export class SessionAgentRegistry {
 		readonly maxActiveAgents = 16,
 		readonly maxSubagentDepth = 1,
 	) {
-		if (!sessionId || /[\\/\0]/.test(sessionId)) throw new HarnessError("CAPABILITY_DENIED", "Invalid main session identity");
+		if (!sessionId || /[\\/\0]/.test(sessionId)) throw new WorkflowRuntimeError("CAPABILITY_DENIED", "Invalid main session identity");
 		this.root = join(repositoryPrivateRoot, "sessions", sessionId);
 		this.snapshotPath = join(this.root, "agents.yaml");
 		this.eventsPath = join(this.root, "agent-events.jsonl");
-		this.mutex = new RepositoryMutex(this.root);
+		this.mutex = new WorkflowMutex(this.root);
 	}
 
 	async initialize(mainAgentId = `main:${this.sessionId}`): Promise<void> {
@@ -165,17 +163,17 @@ export class SessionAgentRegistry {
 	async reserve(input: ReserveAgentInput): Promise<SessionAgentRecord> {
 		return this.mutex.run(`agent-registry:reserve:${input.operationId}`, async () => {
 			const snapshot = await this.read();
-			if (!input.operationId || input.operationId.length > 512 || /[\u0000-\u001f\u007f]/.test(input.operationId)) throw new HarnessError("INVALID_ARTIFACT", "Agent operation ID is invalid");
+			if (!input.operationId || input.operationId.length > 512 || /[\u0000-\u001f\u007f]/.test(input.operationId)) throw new WorkflowRuntimeError("INVALID_ARTIFACT", "Agent operation ID is invalid");
 			const assignmentDigest = createHash("sha256").update(JSON.stringify(input.assignment)).digest("hex");
 			const replay = snapshot.agents.find((agent) => agent.operationId === input.operationId);
 			if (replay) {
-				if (replay.assignmentDigest !== assignmentDigest) throw new HarnessError("CAPABILITY_DENIED", `Agent operation ${input.operationId} was replayed with a different assignment`);
+				if (replay.assignmentDigest !== assignmentDigest) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Agent operation ${input.operationId} was replayed with a different assignment`);
 				return replay;
 			}
 			const depth = input.parentDepth + 1;
-			if (depth > snapshot.maxSubagentDepth) throw new HarnessError("CAPABILITY_DENIED", `SUBAGENT_DEPTH_EXCEEDED: depth ${depth} exceeds ${snapshot.maxSubagentDepth}`);
+			if (depth > snapshot.maxSubagentDepth) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `SUBAGENT_DEPTH_EXCEEDED: depth ${depth} exceeds ${snapshot.maxSubagentDepth}`);
 			const active = snapshot.agents.filter((agent) => !TERMINAL_AGENT_STATES.has(agent.state)).length;
-			if (active >= snapshot.maxActiveAgents) throw new HarnessError("RESOURCE_LOCKED", `SUBAGENT_LIMIT_REACHED: ${active} of ${snapshot.maxActiveAgents} logical agents are active`);
+			if (active >= snapshot.maxActiveAgents) throw new WorkflowRuntimeError("RESOURCE_LOCKED", `SUBAGENT_LIMIT_REACHED: ${active} of ${snapshot.maxActiveAgents} logical agents are active`);
 			const id = randomUUID();
 			const now = new Date().toISOString();
 			const assignmentKey = createHash("sha256").update(input.operationId).digest("hex");
@@ -212,7 +210,7 @@ export class SessionAgentRegistry {
 
 	async bindScope(agentId: string, scope: AgentScope): Promise<SessionAgentRecord> {
 		return (await this.mutate(agentId, "agent.scope_bound", (agent) => {
-			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new HarnessError("CAPABILITY_DENIED", "Cannot bind a terminal agent to another run");
+			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new WorkflowRuntimeError("CAPABILITY_DENIED", "Cannot bind a terminal agent to another run");
 			if (scope.workItemId !== undefined) agent.workItemId = scope.workItemId;
 			if (scope.taskId !== undefined) agent.taskId = scope.taskId;
 			if (scope.evaluationId !== undefined) agent.evaluationId = scope.evaluationId;
@@ -268,9 +266,9 @@ export class SessionAgentRegistry {
 		return this.mutex.run(`agent-message:${agentId}:${randomUUID()}`, async () => {
 			const snapshot = await this.read();
 			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
-			if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
-			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new HarnessError("CAPABILITY_DENIED", "Terminal agents cannot create messages");
-			if (!input.operationId) throw new HarnessError("INVALID_ARTIFACT", "Agent message operation ID is required");
+			if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new WorkflowRuntimeError("CAPABILITY_DENIED", "Terminal agents cannot create messages");
+			if (!input.operationId) throw new WorkflowRuntimeError("INVALID_ARTIFACT", "Agent message operation ID is required");
 			const payloadDigest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
 			const messageRoot = join(this.root, "agents", agentId, "messages");
 			for (const entry of await readdir(messageRoot).catch(() => [])) {
@@ -278,7 +276,7 @@ export class SessionAgentRegistry {
 				if (!content) continue;
 				const existing = JSON.parse(content) as AgentMessageRecord;
 				if (existing.operationId === input.operationId) {
-					if (existing.payloadDigest !== payloadDigest) throw new HarnessError("CAPABILITY_DENIED", `Agent message operation ${input.operationId} was replayed with a different payload`);
+					if (existing.payloadDigest !== payloadDigest) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Agent message operation ${input.operationId} was replayed with a different payload`);
 					return existing;
 				}
 			}
@@ -301,13 +299,13 @@ export class SessionAgentRegistry {
 		return this.mutex.run(`agent-message-response:${messageId}`, async () => {
 			const snapshot = await this.read();
 			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
-			if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+			if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
 			const path = join(this.root, "agents", agentId, "messages", `${messageId}.json`);
 			const content = await readTextIfExists(path);
-			if (!content) throw new HarnessError("CAPABILITY_DENIED", `Unknown agent message: ${messageId}`);
+			if (!content) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown agent message: ${messageId}`);
 			const message = JSON.parse(content) as AgentMessageRecord;
 			if (message.status === "answered" && message.response === response) return message;
-			if (message.status !== "open") throw new HarnessError("CAPABILITY_DENIED", `Agent message ${messageId} is already ${message.status}`);
+			if (message.status !== "open") throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Agent message ${messageId} is already ${message.status}`);
 			message.status = "answered";
 			message.response = response;
 			message.updatedAt = new Date().toISOString();
@@ -337,7 +335,7 @@ export class SessionAgentRegistry {
 
 	async get(agentId: string): Promise<SessionAgentRecord> {
 		const agent = (await this.read()).agents.find((candidate) => candidate.id === agentId);
-		if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+		if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
 		return structuredClone(agent);
 	}
 
@@ -349,7 +347,7 @@ export class SessionAgentRegistry {
 		return this.mutex.run(`${event}:${agentId}`, async () => {
 			const snapshot = await this.read();
 			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
-			if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+			if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
 			const value = mutation(agent);
 			agent.updatedAt = new Date().toISOString();
 			await this.commit(snapshot, event, { agentId, state: agent.state });
@@ -359,19 +357,19 @@ export class SessionAgentRegistry {
 
 	private attempt(agent: SessionAgentRecord, attemptId: string): ProcessAttempt {
 		const attempt = agent.attempts.find((candidate) => candidate.id === attemptId);
-		if (!attempt || agent.currentAttemptId !== attemptId) throw new HarnessError("CAPABILITY_DENIED", `Unknown current process attempt: ${attemptId}`);
+		if (!attempt || agent.currentAttemptId !== attemptId) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown current process attempt: ${attemptId}`);
 		return attempt;
 	}
 
-	private invalidTransition(from: AgentState, to: AgentState): HarnessError {
-		return new HarnessError("CAPABILITY_DENIED", `Invalid agent transition: ${from} -> ${to}`);
+	private invalidTransition(from: AgentState, to: AgentState): WorkflowRuntimeError {
+		return new WorkflowRuntimeError("CAPABILITY_DENIED", `Invalid agent transition: ${from} -> ${to}`);
 	}
 
 	private async read(): Promise<RegistrySnapshot> {
 		const content = await readTextIfExists(this.snapshotPath);
-		if (!content) throw new HarnessError("CAPABILITY_DENIED", `Session agent registry is not initialized: ${this.sessionId}`);
+		if (!content) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Session agent registry is not initialized: ${this.sessionId}`);
 		const snapshot = parse(content) as RegistrySnapshot;
-		if (snapshot.schemaVersion !== 1 || snapshot.sessionId !== this.sessionId || !Array.isArray(snapshot.agents)) throw new HarnessError("CAPABILITY_DENIED", "Session agent registry is invalid");
+		if (snapshot.schemaVersion !== 1 || snapshot.sessionId !== this.sessionId || !Array.isArray(snapshot.agents)) throw new WorkflowRuntimeError("CAPABILITY_DENIED", "Session agent registry is invalid");
 		return snapshot;
 	}
 

@@ -12,6 +12,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	const descriptions = new Map<string, string>();
 	let activeTools: string[] = [];
 	const pi = {
+		events: { on() {}, emit() {} },
 		registerTool(definition: { name: string; description?: string; parameters?: unknown }) {
 			tools.push(definition.name);
 			descriptions.set(definition.name, definition.description ?? "");
@@ -65,12 +66,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"evaluation_define",
 		"exploration_launch",
 		"agent_run",
-		"evaluation_launch",
-		"task_launch",
 		"task_integrate",
-		"agent_status",
-		"agent_control",
-		"agent_respond",
 		"evaluation_record",
 		"work_item_complete",
 		"planning_submit",

@@ -1,10 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { reconcileReportedAgents } from "./agent-reconciliation.js";
-import { SessionAgentRegistry } from "./agent-registry.js";
+import { SessionAgentRegistry } from "../workflows/agent-registry.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { registerExplorationCapabilities } from "./exploration-capabilities.js";
@@ -13,7 +14,7 @@ import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { HarnessRunStore } from "./run-store.js";
 import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
-import { LaunchCoordinator } from "./launch-coordinator.js";
+import { LaunchCoordinator } from "../workflows/launch-coordinator.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildTaskPersistentContext } from "./implementation-context.js";
@@ -24,6 +25,10 @@ import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type WorkflowAdapterDiscovery } from "../workflows/api.js";
+import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
+
+const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 
 const WORKER_TOOL_NAMES = new Set([
 	"task_clarify",
@@ -35,7 +40,7 @@ const WORKER_TOOL_NAMES = new Set([
 ]);
 const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
 const EXPLORATION_TOOL_NAMES = new Set(["exploration_context", "exploration_checkpoint", "exploration_blocked", "exploration_complete"]);
-const isSubagentProcess = () => Boolean(process.env.PIBOX_HARNESS_AGENT_ID);
+const isSubagentProcess = () => Boolean(process.env.PIBOX_SUBAGENT_ID);
 const ORCHESTRATOR_CONTRACT = `PiBox harness routing:
 
 Partnership — Act as a constructive product and technical partner, not an order taker or adversarial reviewer. Seek the outcome behind a requested solution: actor, trigger, current behavior, material friction, success signal, and guardrails. Inspect available facts yourself. Distinguish stated, observed, inferred, recommended, delegated, and unresolved information. The user owns consequential decisions; the main session owns synthesis and canonical artifacts.
@@ -48,7 +53,9 @@ Proportionality — Keep clear, local, reversible work ad hoc; words such as pla
 
 Resource protocol — Use harness_list before creating and harness_get before patching. Canonical references are work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. Create child resources with the complete file-backed representation returned by get/list: artifacts use semantic sections or content; tasks use {manifest, brief/acceptance or semantic sections}; evaluations use {manifest}. Use harness_apply_change for coherent multi-resource revisions and request resolution. Never create a second work item to repair an existing draft.
 
-Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use resource capabilities rather than editing agent-artifacts. The main orchestrator is the trusted canonical coordinator: inspect and revise existing resources instead of creating replacement work items, and normally resolve subagent change requests within delegated intent using an audited retain-approval amendment. Ask the user only when a change materially alters their outcome, explicit constraints, consequential policy, privacy/security posture, irreversible effects, or a decision they retained. Approval is continuity, not a blanket mutation freeze. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.`;
+Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use resource capabilities rather than editing agent-artifacts. The main orchestrator is the trusted canonical coordinator: inspect and revise existing resources instead of creating replacement work items, and normally resolve subagent change requests within delegated intent using an audited retain-approval amendment. Ask the user only when a change materially alters their outcome, explicit constraints, consequential policy, privacy/security posture, irreversible effects, or a decision they retained. Approval is continuity, not a blanket mutation freeze. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.
+
+Workflow execution — Start approved delivery with workflow_start. The harness workflow adapter derives executable steps from current canonical tasks, integration units, and evaluations. Routine workflow events are informational; intervene when judgment, amendment, recovery, or user authority is required.`;
 
 const LEGACY_PLANNING_TOOL_NAMES = new Set(["work_item_create", "work_item_status", "artifact_create", "artifact_update", "artifact_link", "artifact_reconcile", "task_define", "task_update", "evaluation_define", "planning_submit"]);
 
@@ -73,12 +80,7 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"evaluation_define",
 	"agent_run",
 	"exploration_launch",
-	"evaluation_launch",
-	"task_launch",
 	"task_integrate",
-	"agent_status",
-	"agent_control",
-	"agent_respond",
 	"evaluation_record",
 	"work_item_complete",
 	"planning_submit",
@@ -209,7 +211,7 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager
 		operations: new IdempotencyStore(identity.privateRoot),
 		mutex: new RepositoryMutex(identity.privateRoot),
 		agents,
-		coordinator: new LaunchCoordinator(agents, mainAgentId),
+		coordinator: new LaunchCoordinator(agents, mainAgentId, undefined, [HARNESS_EXTENSION_PATH]),
 		sessionId,
 		mainAgentId,
 	};
@@ -408,6 +410,78 @@ export default function harness(pi: ExtensionAPI): void {
 		}
 	};
 
+	const launchManagedEvaluation = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
+		requireTrusted(ctx);
+		const runtime = await runtimeFor(ctx);
+		const item = await runtime.workItems.assertCurrentApproval(workItemId);
+		const evaluation = await runtime.workItems.readEvaluation(item.id, evaluationId);
+		if (evaluation.attempt >= runtime.config.limits.repairRounds + 1) throw new HarnessError("INVALID_HANDOFF", `Evaluation repair budget exhausted for ${evaluation.id}`);
+		const roleName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
+		const role = runtime.config.roles[roleName];
+		if (!role) throw new HarnessError("CONFIG_INVALID", `Missing evaluator role: ${roleName}`);
+		const candidates = role.models ?? [];
+		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+		const resolution = resolveHarnessModel(runtime.config, available, { candidates, strict: false });
+		if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
+		await assertCleanRepository(runtime.identity.root);
+		const runs = new HarnessRunStore(runtime.identity.privateRoot, item.id);
+		const created = await runs.create({
+			repositoryId: runtime.identity.id, workItemId: item.id, evaluationId: evaluation.id, role: roleName,
+			attempt: evaluation.attempt + 1, state: "running", workspace: runtime.identity.root,
+			baseCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), planningRevision: item.planning.revision,
+			...(candidates[0]?.model ? { requestedModel: candidates[0].model } : {}), resolvedProvider: resolution.model.provider,
+			resolvedModel: resolution.model.id, resolvedEffort: resolution.effort,
+		});
+		const prompt = [
+			`Evaluate boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
+			"Call evaluation_context before judging, read the assigned criteria, and collect fresh evidence without changing the evaluated work.",
+			"Place generated runtime evidence outside the repository and reference its absolute path.",
+			"Completion: call evaluation_complete with criterion results, evidence, findings, verdict, and residual risk.",
+		].join("\n");
+		let logicalAgentId: string | undefined;
+		const runEvaluator = async (taskPrompt: string) => {
+			const coordinated = await runtime.coordinator.launch({
+				operationId: created.record.id, role: roleName, task: taskPrompt,
+				assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
+				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+				tools: [...new Set([...(role.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]), "evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"])],
+				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root,
+				env: { PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
+				...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
+				onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
+				...(signal ? { signal } : {}),
+			});
+			logicalAgentId = coordinated.agent.id;
+			for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
+			return coordinated.result;
+		};
+		let direct = await runEvaluator(prompt);
+		await runs.flushTranscript(created.record.id);
+		await assertCleanRepository(runtime.identity.root);
+		let handoff = await runs.readEvaluationHandoff(created.record.id);
+		if (!handoff && direct.exitCode === 0) {
+			await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
+			direct = await runEvaluator(`Completion protocol: no evaluation_complete handoff was recorded. Reinspect the assigned boundary as needed and call evaluation_complete.\n\n${prompt}`);
+			await runs.flushTranscript(created.record.id); await assertCleanRepository(runtime.identity.root);
+			handoff = await runs.readEvaluationHandoff(created.record.id);
+		}
+		if (!handoff || handoff.runId !== created.record.id || handoff.evaluationId !== evaluation.id) {
+			await runs.update(created.record.id, { state: "protocol_failed", exitCode: direct.exitCode, error: "Missing or invalid evaluation_complete handoff" }, "run.protocol_failed");
+			if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "protocol_failed", { error: "Missing or invalid evaluation_complete handoff" }).catch(() => undefined);
+			return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, agentId: logicalAgentId, direct });
+		}
+		const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, () => runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) }));
+		await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
+		if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "completed", { summary: `Evaluation ${evaluation.id}: ${handoff.verdict}` });
+		await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, agentId: logicalAgentId, verdict: handoff.verdict });
+		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
+	};
+
+	pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: unknown) => {
+		const discovery = event as WorkflowAdapterDiscovery;
+		discovery.register(createHarnessWorkflowAdapter({ runtimeFor, launchTask: launchManagedTask, launchEvaluation: launchManagedEvaluation }));
+	});
+
 	pi.registerTool({
 		name: "harness_status",
 		label: "Harness Status",
@@ -562,6 +636,8 @@ export default function harness(pi: ExtensionAPI): void {
 					});
 					const message = params.response ? await runtime.agents.respondMessage(params.response.agentId, params.response.messageId, params.response.text) : undefined;
 					await runtime.events.append("orchestrator.change_applied", { authority: params.authority, executionDisposition: params.executionDisposition, operations: params.operations.length, commit: result.commit, messageId: params.response?.messageId });
+					if (params.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${respondingAgent.workItemId}`, action: "resume" });
+					if (params.executionDisposition === "pause-affected") for (const workItemId of baselines.keys()) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${workItemId}`, action: "pause" });
 					return resourceResult(`Applied ${params.operations.length} canonical operation(s)${result.commit ? ` as ${result.commit.slice(0, 12)}` : ""}.`, { ...result, message });
 				});
 			} catch (error) { throw structuredCapabilityError(error); }
@@ -1008,130 +1084,6 @@ export default function harness(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "evaluation_launch",
-		label: "Launch Harness Evaluation",
-		description: "Run a planned evaluation in a fresh specialist session and atomically record its structured verdict and evidence.",
-		parameters: Type.Object({
-			workItemId: Type.String(),
-			evaluationId: Type.String(),
-			model: Type.Optional(Type.String()),
-			effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
-			strict: Type.Optional(Type.Boolean()),
-		}),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return runtime.operations.execute(toolCallId, params, async () => {
-					const item = await runtime.workItems.assertCurrentApproval(params.workItemId);
-					const evaluation = await runtime.workItems.readEvaluation(item.id, params.evaluationId);
-					if (evaluation.attempt >= runtime.config.limits.repairRounds + 1) throw new HarnessError("INVALID_HANDOFF", `Evaluation repair budget exhausted for ${evaluation.id}`);
-					const roleName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
-					const role = runtime.config.roles[roleName];
-					if (!role) throw new HarnessError("CONFIG_INVALID", `Missing evaluator role: ${roleName}`);
-					const roleCandidates = role.models ?? [];
-					const requested = params.model ? [{ model: params.model, effort: (params.effort ?? "high") as HarnessEffort }] : roleCandidates;
-					const candidates = [...requested, ...roleCandidates.filter((candidate) => !requested.some((itemCandidate) => itemCandidate.model === candidate.model && itemCandidate.effort === candidate.effort))];
-					const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-					const resolution = resolveHarnessModel(runtime.config, available, { candidates, strict: params.strict ?? false });
-					if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
-					await assertCleanRepository(runtime.identity.root);
-					const runs = new HarnessRunStore(runtime.identity.privateRoot, item.id);
-					const requestedModel = params.model ?? roleCandidates[0]?.model;
-					const created = await runs.create({
-						repositoryId: runtime.identity.id,
-						workItemId: item.id,
-						evaluationId: evaluation.id,
-						role: roleName,
-						attempt: evaluation.attempt + 1,
-						state: "running",
-						workspace: runtime.identity.root,
-						baseCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]),
-						planningRevision: item.planning.revision,
-						...(requestedModel ? { requestedModel } : {}),
-						resolvedProvider: resolution.model.provider,
-						resolvedModel: resolution.model.id,
-						resolvedEffort: resolution.effort,
-					});
-					const prompt = [
-						`Evaluate boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
-						"Call evaluation_context before judging, read the assigned criteria, and collect fresh evidence without changing the evaluated work.",
-						"Place generated runtime evidence outside the repository and reference its absolute path.",
-						"Completion: call evaluation_complete with criterion results, evidence, findings, verdict, and residual risk.",
-					].join("\n");
-					let logicalAgentId: string | undefined;
-					const runEvaluator = async (taskPrompt: string) => {
-						const coordinated = await runtime.coordinator.launch({
-							operationId: created.record.id,
-							role: roleName,
-							task: taskPrompt,
-							assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
-							cwd: runtime.identity.root,
-							provider: resolution.model.provider,
-							model: resolution.model.id,
-							effort: resolution.effort,
-							tools: [...new Set([...(role.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]), "evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"])],
-							deferCompletion: true,
-							workItemId: item.id,
-							evaluationId: evaluation.id,
-							runId: created.record.id,
-							workspace: runtime.identity.root,
-							env: { PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
-							...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
-							onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
-							...(signal ? { signal } : {}),
-							...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { runId: created.record.id, state: "running" })) } : {}),
-						});
-						logicalAgentId = coordinated.agent.id;
-						for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
-						return coordinated.result;
-					};
-					let direct = await runEvaluator(prompt);
-					await runs.flushTranscript(created.record.id);
-					await assertCleanRepository(runtime.identity.root);
-					let handoff = await runs.readEvaluationHandoff(created.record.id);
-					if (!handoff && direct.exitCode === 0) {
-						await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
-						direct = await runEvaluator(`Completion protocol: no evaluation_complete handoff was recorded. Reinspect the assigned boundary as needed and call evaluation_complete.\n\n${prompt}`);
-						await runs.flushTranscript(created.record.id);
-						await assertCleanRepository(runtime.identity.root);
-						handoff = await runs.readEvaluationHandoff(created.record.id);
-					}
-					if (!handoff || handoff.runId !== created.record.id || handoff.evaluationId !== evaluation.id) {
-						await runs.update(created.record.id, { state: "protocol_failed", exitCode: direct.exitCode, error: "Missing or invalid evaluation_complete handoff" }, "run.protocol_failed");
-						if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "protocol_failed", { error: "Missing or invalid evaluation_complete handoff" }).catch(() => undefined);
-						return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, agentId: logicalAgentId, direct });
-					}
-					const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, () =>
-						runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) }),
-					);
-					await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
-					if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "completed", { summary: `Evaluation ${evaluation.id}: ${handoff.verdict}` });
-					await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, agentId: logicalAgentId, verdict: handoff.verdict });
-					return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, evaluation: recorded, handoff });
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "task_launch",
-		label: "Launch Harness Task",
-		description: "Resolve the planned model, allocate an isolated worktree, and supervise an approved implementation task through its structured handoff.",
-		parameters: Type.Object({ workItemId: Type.String(), taskId: Type.String() }),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			try {
-				const runtime = await runtimeFor(ctx);
-				return runtime.operations.execute(toolCallId, params, () => launchManagedTask(ctx, params.workItemId, params.taskId, signal, onUpdate));
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
 		name: "task_integrate",
 		label: "Integrate Harness Unit",
 		description: "Assemble all contribution-complete tasks in an integration unit, run its declared checks, and atomically fast-forward the canonical branch.",
@@ -1149,68 +1101,6 @@ export default function harness(pi: ExtensionAPI): void {
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}
-		},
-	});
-
-	pi.registerTool({
-		name: "agent_status",
-		label: "Harness Agent Status",
-		description: "List logical subagents and pending asynchronous messages for this main Pi session.",
-		parameters: Type.Object({}),
-		async execute(_id, _params, _signal, _update, ctx) {
-			const runtime = await runtimeFor(ctx);
-			const agents = await runtime.agents.list();
-			const messages = await runtime.agents.listMessages();
-			const open = messages.filter((message) => message.status === "open");
-			return textResult(agents.length ? agents.map((agent) => `${agent.id} · ${agent.role} · ${agent.state} · ${agent.provider}/${agent.model}:${agent.effort}`).join("\n") : "No session subagents recorded.", { agents, openMessages: open, active: agents.filter((agent) => !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state)).length, limit: runtime.config.limits.maxActiveSubagentsPerSession });
-		},
-	});
-
-	pi.registerTool({
-		name: "agent_control",
-		label: "Control Harness Agent",
-		description: "Pause or stop a positively identified logical session agent; legacy run IDs remain accepted during migration.",
-		parameters: Type.Union([
-			Type.Object({ agentId: Type.String(), action: Type.Union([Type.Literal("pause"), Type.Literal("stop")]) }, { additionalProperties: false }),
-			Type.Object({ runId: Type.String(), action: Type.Union([Type.Literal("pause"), Type.Literal("stop")]) }, { additionalProperties: false }),
-		]),
-		async execute(_id, params, _signal, _update, ctx) {
-			if ("runId" in params) {
-				const stopped = params.action === "pause" ? supervisor.pause(params.runId) : supervisor.stop(params.runId);
-				return textResult(stopped ? `${params.action === "pause" ? "Pause" : "Stop"} requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
-			}
-			const runtime = await runtimeFor(ctx);
-			const agent = await runtime.agents.get(params.agentId);
-			const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
-			if (!attempt) return textResult(`Agent ${agent.id} has no current process attempt.`, { stopped: false, agent });
-			const heartbeatText = await readTextIfExists(join(runtime.agents.root, "agents", agent.id, "attempts", attempt.id, "heartbeat.json"));
-			const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
-			const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at !== undefined && Date.now() - Date.parse(heartbeat.at) < 15_000;
-			if (!fresh || !heartbeat?.pid) throw new Error("RECOVERY_REQUIRED: Refusing to signal a process without a fresh matching agent heartbeat.");
-			try { process.kill(-heartbeat.pid, "SIGTERM"); } catch { process.kill(heartbeat.pid, "SIGTERM"); }
-			const state = params.action === "pause" ? "paused" : "cancelled";
-			const updated = await runtime.agents.transition(agent.id, state, { summary: `${params.action} requested by orchestrator` });
-			return textResult(`${params.action === "pause" ? "Pause" : "Stop"} requested for ${agent.id}.`, { stopped: true, agent: updated });
-		},
-	});
-
-	pi.registerTool({
-		name: "agent_respond",
-		label: "Respond to Subagent",
-		description: "Persist the orchestrator response to an open asynchronous subagent request.",
-		parameters: Type.Object({ agentId: Type.String(), messageId: Type.String(), response: Type.String() }),
-		async execute(_id, params, _signal, _update, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				const message = await runtime.agents.respondMessage(params.agentId, params.messageId, params.response);
-				const agent = await runtime.agents.get(params.agentId);
-				if (agent.workItemId && agent.taskId) {
-					const task = await runtime.workItems.readTask(agent.workItemId, agent.taskId);
-					if (task.status === "blocked") await runtime.mutex.run(`agent-response:${params.messageId}`, () => runtime.workItems.updateTask(agent.workItemId!, agent.taskId!, { status: "ready" }));
-				}
-				return textResult(`Response recorded for ${params.messageId}. ${agent.taskId ? `Task ${agent.taskId} is ready to resume under the same logical agent slot.` : `Resume ${params.agentId} when its authoritative context is ready.`}`, message);
-			} catch (error) { throw new Error(describeHarnessError(error)); }
 		},
 	});
 
@@ -1385,14 +1275,14 @@ export default function harness(pi: ExtensionAPI): void {
 		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		else if (isSubagentProcess()) {
 			[...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-			if (process.env.PIBOX_HARNESS_AGENT_ROLE !== "explorer") EXPLORATION_TOOL_NAMES.forEach((name) => disallowed.add(name));
+			if (process.env.PIBOX_SUBAGENT_ROLE !== "explorer") EXPLORATION_TOOL_NAMES.forEach((name) => disallowed.add(name));
 		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES, ...LEGACY_PLANNING_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
 		if (isSubagentProcess()) {
-			const agentRoot = process.env.PIBOX_HARNESS_AGENT_ROOT;
-			const attemptId = process.env.PIBOX_HARNESS_ATTEMPT_ID;
+			const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;
+			const attemptId = process.env.PIBOX_SUBAGENT_ATTEMPT_ID;
 			if (agentRoot && attemptId) {
-				const writeHeartbeat = () => atomicWriteFile(join(agentRoot, "attempts", attemptId, "heartbeat.json"), `${JSON.stringify({ agentId: process.env.PIBOX_HARNESS_AGENT_ID, attemptId, pid: process.pid, at: new Date().toISOString() })}\n`, 0o600).catch(() => undefined);
+				const writeHeartbeat = () => atomicWriteFile(join(agentRoot, "attempts", attemptId, "heartbeat.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId, pid: process.pid, at: new Date().toISOString() })}\n`, 0o600).catch(() => undefined);
 				await writeHeartbeat();
 				heartbeatTimer = setInterval(writeHeartbeat, 5_000);
 				heartbeatTimer.unref();
@@ -1431,11 +1321,11 @@ export default function harness(pi: ExtensionAPI): void {
 
 	pi.on("message_end", async (event) => {
 		if (!isSubagentProcess() || event.message.role !== "assistant") return;
-		const agentRoot = process.env.PIBOX_HARNESS_AGENT_ROOT;
-		const attemptId = process.env.PIBOX_HARNESS_ATTEMPT_ID;
+		const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;
+		const attemptId = process.env.PIBOX_SUBAGENT_ATTEMPT_ID;
 		if (!agentRoot || !attemptId) return;
 		const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
-		await atomicWriteFile(join(agentRoot, "attempts", attemptId, "result.json"), `${JSON.stringify({ agentId: process.env.PIBOX_HARNESS_AGENT_ID, attemptId, text, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
+		await atomicWriteFile(join(agentRoot, "attempts", attemptId, "result.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId, text, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
 	});
 
 	pi.on("message_update", (event, ctx) => {
@@ -1459,8 +1349,8 @@ export default function harness(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (event) => {
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
-		if (isSubagentProcess() && process.env.PIBOX_HARNESS_AGENT_ROOT && process.env.PIBOX_HARNESS_ATTEMPT_ID) {
-			await atomicWriteFile(join(process.env.PIBOX_HARNESS_AGENT_ROOT, "attempts", process.env.PIBOX_HARNESS_ATTEMPT_ID, "process-exit.json"), `${JSON.stringify({ agentId: process.env.PIBOX_HARNESS_AGENT_ID, attemptId: process.env.PIBOX_HARNESS_ATTEMPT_ID, reason: event.reason, at: new Date().toISOString() }, null, 2)}\n`, 0o600).catch(() => undefined);
+		if (isSubagentProcess() && process.env.PIBOX_SUBAGENT_ROOT && process.env.PIBOX_SUBAGENT_ATTEMPT_ID) {
+			await atomicWriteFile(join(process.env.PIBOX_SUBAGENT_ROOT, "attempts", process.env.PIBOX_SUBAGENT_ATTEMPT_ID, "process-exit.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId: process.env.PIBOX_SUBAGENT_ATTEMPT_ID, reason: event.reason, at: new Date().toISOString() }, null, 2)}\n`, 0o600).catch(() => undefined);
 		}
 		heartbeatTimer = undefined;
 		if (!sessionRuntime) return;

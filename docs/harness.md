@@ -62,11 +62,16 @@ Approval is continuity rather than a blanket mutation freeze. The main orchestra
 
 ### Exploration and execution
 
-- `exploration_launch` invokes the read-only explorer with a typed `lookup | map | trace | impact | diagnose | explain` assignment, `quick | standard | thorough` depth, stop conditions, and a mode-sensitive structured evidence handoff.
-- `agent_run` directly invokes another configured specialist role without requiring a managed work item.
-- `task_launch` resolves the assigned model, acquires resource claims, allocates a deterministic worktree, and supervises the implementer.
+The independent workflow extension owns the generic background execution surface. `workflow_start` asks the registered harness adapter to derive current task, integration, and evaluation steps directly from the approved work item. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses when attention is required. Its widget above the editor shows current step progress.
+
+- `subagent_spawn` starts an adapter-owned task or evaluation reference in background mode by default; foreground mode remains available for explicit waiting.
+- `subagent_status`, `subagent_control`, and `subagent_respond` monitor and steer logical children.
+- `workflow_control` pauses scheduling, resumes it, or stops active children.
+- `exploration_launch` retains its typed read-only evidence assignment outside managed workflow execution.
+- `agent_run` retains direct specialist invocation outside a managed work item.
 - Workers receive a focused task packet in their persistent system context. `task_clarify` provides optional, targeted access to broader story/change context when a concrete uncertainty remains; `task_complete` records completion.
-- `task_integrate` assembles every contribution in an integration unit, runs the supplied unit checks, creates one traceable commit, and fast-forwards the canonical branch.
+
+The harness adapter continues to own worktree allocation, integration checks, evaluator contracts, and canonical state transitions. The workflow extension contains no harness artifact or approval logic.
 
 New task worktrees live inside the canonical repository under an ignored root:
 
@@ -80,7 +85,7 @@ A task can intentionally be partial. Review and tests may be deferred until its 
 
 ### Evaluation
 
-- `evaluation_launch` runs a planned evaluation in a fresh specialist process with run-scoped evaluator capabilities.
+- Planned evaluations become workflow subagent steps after their declared task, integration-unit, or work-item boundary is ready.
 - `evaluation_record` records an orchestrator-curated/manual evaluation.
 - Evidence files are copied into the work item and checksummed.
 - Findings retain stable IDs and blocking status.

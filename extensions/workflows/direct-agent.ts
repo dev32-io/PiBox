@@ -1,11 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
-const ROLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "roles");
+import { basename, join } from "node:path";
 
 export interface DirectAgentOptions {
 	role: string;
@@ -21,6 +17,7 @@ export interface DirectAgentOptions {
 	onEvent?: (event: unknown) => void;
 	promptPath?: string;
 	rolePrompt?: string;
+	extensionPaths?: string[];
 	/** Stable assignment context appended to the system prompt and preserved across Pi compaction. */
 	persistentContext?: string;
 	skillPaths?: string[];
@@ -59,14 +56,15 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	const promptFile = join(directory, `${options.role}.md`);
 	let rolePrompt: string;
 	try {
-		rolePrompt = options.rolePrompt ?? await readFile(options.promptPath ?? join(ROLE_ROOT, `${options.role}.md`), "utf8");
+		if (!options.rolePrompt && !options.promptPath) throw new Error("No role prompt supplied");
+		rolePrompt = options.rolePrompt ?? await readFile(options.promptPath!, "utf8");
 	} catch {
 		rolePrompt = `Execute the assigned ${options.role} boundary. Inspect authoritative inputs, return concise evidence and uncertainty, and leave user intent and workflow decisions to the main session.`;
 	}
 	const systemPrompt = [rolePrompt.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
 	await writeFile(promptFile, `${systemPrompt}\n`, { encoding: "utf8", mode: 0o600 });
 	const args = [
-		"-e", HARNESS_EXTENSION_PATH,
+		...(options.extensionPaths ?? []).flatMap((path) => ["-e", path]),
 		"--mode", "json", "-p", "--no-session",
 		"--model", `${options.provider}/${options.model}`,
 		"--thinking", options.effort,

@@ -15,6 +15,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	tools: string[];
 	promptPath?: string;
 	rolePrompt?: string;
+	extensionPaths?: string[];
 	persistentContext?: string;
 	skillPaths?: string[];
 	env?: Record<string, string>;
@@ -36,6 +37,7 @@ export class LaunchCoordinator {
 		readonly registry: SessionAgentRegistry,
 		readonly mainAgentId: string,
 		readonly invocationResolver?: (args: string[]) => { command: string; args: string[] },
+		readonly extensionPaths: string[] = [],
 	) {}
 
 	async launch(input: CoordinatedLaunchInput): Promise<CoordinatedLaunchResult> {
@@ -72,16 +74,17 @@ export class LaunchCoordinator {
 				outputDirectory: attemptRoot,
 				env: {
 					...input.env,
-					PIBOX_HARNESS_ROOT_SESSION_ID: this.registry.sessionId,
-					PIBOX_HARNESS_AGENT_ID: reserved.id,
-					PIBOX_HARNESS_PARENT_AGENT_ID: this.mainAgentId,
-					PIBOX_HARNESS_AGENT_DEPTH: String(reserved.depth),
-					PIBOX_HARNESS_ATTEMPT_ID: attempt.id,
-					PIBOX_HARNESS_AGENT_ROOT: join(this.registry.root, "agents", reserved.id),
-					PIBOX_HARNESS_REPOSITORY_PRIVATE_ROOT: dirname(dirname(this.registry.root)),
-					PIBOX_HARNESS_ASSIGNMENT_PATH: join(this.registry.root, reserved.assignmentPath),
-					PIBOX_HARNESS_AGENT_ROLE: reserved.role,
+					PIBOX_WORKFLOW_SESSION_ID: this.registry.sessionId,
+					PIBOX_SUBAGENT_ID: reserved.id,
+					PIBOX_SUBAGENT_PARENT_ID: this.mainAgentId,
+					PIBOX_SUBAGENT_DEPTH: String(reserved.depth),
+					PIBOX_SUBAGENT_ATTEMPT_ID: attempt.id,
+					PIBOX_SUBAGENT_ROOT: join(this.registry.root, "agents", reserved.id),
+					PIBOX_SUBAGENT_STORE_ROOT: dirname(dirname(this.registry.root)),
+					PIBOX_SUBAGENT_ASSIGNMENT_PATH: join(this.registry.root, reserved.assignmentPath),
+					PIBOX_SUBAGENT_ROLE: reserved.role,
 				},
+				extensionPaths: input.extensionPaths ?? this.extensionPaths,
 				...(input.promptPath ? { promptPath: input.promptPath } : {}),
 				...(input.rolePrompt ? { rolePrompt: input.rolePrompt } : {}),
 				...(input.persistentContext ? { persistentContext: input.persistentContext } : {}),

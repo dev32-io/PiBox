@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError } from "./errors.js";
-import type { LaunchCoordinator } from "./launch-coordinator.js";
+import type { LaunchCoordinator } from "../workflows/launch-coordinator.js";
 import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.js";
@@ -194,6 +194,13 @@ export class SubagentSupervisor {
 				if (logical && (logical.state === "waiting_decision" || logical.state === "blocked")) {
 					const run = await runs.update(created.record.id, { state: "interrupted", error: logical.summary ?? `Agent is ${logical.state}` }, `run.${logical.state}`);
 					await updateTask(`run-${logical.state}:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "blocked" }));
+					return { run, stderr, finalText };
+				}
+				if (logical && (logical.state === "paused" || logical.state === "cancelled")) {
+					const taskStatus = logical.state;
+					const runState = taskStatus === "paused" ? "interrupted" : "cancelled";
+					const run = await runs.update(created.record.id, { state: runState, exitCode: execution.exitCode, error: logical.summary ?? `Agent is ${taskStatus}` }, `run.${runState}`);
+					await updateTask(`run-${taskStatus}:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: taskStatus }));
 					return { run, stderr, finalText };
 				}
 			}
