@@ -153,6 +153,13 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const auth = await authorized(ctx);
+				const privateRoot = process.env.PIBOX_HARNESS_REPOSITORY_PRIVATE_ROOT;
+				const sessionId = process.env.PIBOX_HARNESS_ROOT_SESSION_ID;
+				const agentId = process.env.PIBOX_HARNESS_AGENT_ID;
+				if (privateRoot && sessionId && agentId) {
+					const agent = await new SessionAgentRegistry(privateRoot, sessionId).get(agentId);
+					if (agent.state !== "running") throw new HarnessError("INVALID_HANDOFF", `Task cannot complete while its logical agent is ${agent.state}`);
+				}
 				const item = await auth.workItems.read(auth.scope.workItemId);
 				if (item.planning.status !== "approved" || item.planning.revision !== auth.run.planningRevision) {
 					throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Task run is bound to planning r${auth.run.planningRevision}; canonical planning is ${item.planning.status} r${item.planning.revision}`);
