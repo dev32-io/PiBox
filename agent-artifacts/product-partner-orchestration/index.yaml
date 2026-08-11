@@ -3,10 +3,10 @@ id: product-partner-orchestration
 kind: change
 title: Product-partner orchestration and durable subagents
 phase: planning
-state: active
+state: waiting_user
 planning:
   revision: 12
-  status: draft
+  status: awaiting_approval
   contractDigest: sha256:5d749c8a15a532786e72b5d5922ebd558b891290106954f57a7dfbe53652a19b
 artifacts:
   - id: intent
