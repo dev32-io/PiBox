@@ -91,7 +91,7 @@ const TASK_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 	draft: ["blocked", "ready", "cancelled"],
 	blocked: ["ready", "cancelled"],
 	ready: ["blocked", "running", "cancelled"],
-	running: ["paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
+	running: ["blocked", "paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
 	paused: ["running", "cancelled"],
 	contribution_complete: ["reviewing", "staged", "integrating", "integrated", "changes_requested"],
 	reviewing: ["changes_requested", "staged", "integrating", "integrated"],

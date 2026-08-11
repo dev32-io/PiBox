@@ -11,6 +11,7 @@ A focused lifecycle exercise verified the unified subagent runtime:
 2. The main Pi process was forcibly terminated after another explorer entered `running`; the detached child continued with file-backed output and wrote its handoff after the parent was gone.
 3. A managed implementation child likewise finished after its launching print-mode parent exited. Reconciliation found the durable task handoff, validated its retained clean worktree and commits, and advanced it to `contribution_complete` without rerunning it.
 4. A new main session integrated that contribution, launched a registry-backed evaluator, recorded a passing verdict, and completed the work item.
+5. A worker in one persistent RPC session emitted a blocking color-selection change request and exited. The main session answered through `agent_respond`; relaunch reused the same logical agent and reserved slot, created process attempt two with the durable response, committed the selected value, and completed successfully.
 
 This verifies that parent-owned pipes are not authoritative, logical-agent identity survives process attempts, and handoff-first reconciliation avoids duplicate writers.
 
