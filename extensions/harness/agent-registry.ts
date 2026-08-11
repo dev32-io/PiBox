@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
@@ -34,9 +34,9 @@ const TRANSITIONS: Record<AgentState, ReadonlySet<AgentState>> = {
 	waiting_decision: new Set(["launching", "cancelled", "failed"]),
 	blocked: new Set(["launching", "cancelled", "failed"]),
 	paused: new Set(["launching", "cancelled", "failed"]),
-	interrupted: new Set(["launching", "recovery_required", "cancelled", "failed"]),
-	recovery_required: new Set(["launching", "cancelled", "failed"]),
-	reported: new Set(["launching", "blocked", "completed", "protocol_failed", "failed", "cancelled"]),
+	interrupted: new Set(["launching", "recovery_required", "reported", "cancelled", "failed"]),
+	recovery_required: new Set(["launching", "reported", "cancelled", "failed"]),
+	reported: new Set(["launching", "blocked", "interrupted", "completed", "protocol_failed", "failed", "cancelled"]),
 	completed: new Set(),
 	failed: new Set(),
 	protocol_failed: new Set(),
@@ -74,6 +74,7 @@ export interface SessionAgentRecord extends AgentScope {
 	model: string;
 	effort: string;
 	operationId: string;
+	assignmentDigest: string;
 	assignmentPath: string;
 	currentAttemptId?: string;
 	attempts: ProcessAttempt[];
@@ -93,6 +94,23 @@ interface RegistrySnapshot {
 	maxActiveAgents: number;
 	maxSubagentDepth: number;
 	agents: SessionAgentRecord[];
+}
+
+export interface AgentMessageRecord {
+	schemaVersion: 1;
+	id: string;
+	agentId: string;
+	type: "decision_report" | "change_request" | "blocked";
+	status: "open" | "answered" | "closed";
+	blocking: boolean;
+	summary: string;
+	rationale: string;
+	evidence: Array<{ source: string; observation: string }>;
+	options?: string[];
+	recommendation?: string;
+	response?: string;
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface ReserveAgentInput extends AgentScope {
@@ -146,8 +164,12 @@ export class SessionAgentRegistry {
 		return this.mutex.run(`agent-registry:reserve:${input.operationId}`, async () => {
 			const snapshot = await this.read();
 			if (!input.operationId || input.operationId.length > 512 || /[\u0000-\u001f\u007f]/.test(input.operationId)) throw new HarnessError("INVALID_ARTIFACT", "Agent operation ID is invalid");
+			const assignmentDigest = createHash("sha256").update(JSON.stringify(input.assignment)).digest("hex");
 			const replay = snapshot.agents.find((agent) => agent.operationId === input.operationId);
-			if (replay) return replay;
+			if (replay) {
+				if (replay.assignmentDigest !== assignmentDigest) throw new HarnessError("CAPABILITY_DENIED", `Agent operation ${input.operationId} was replayed with a different assignment`);
+				return replay;
+			}
 			const depth = input.parentDepth + 1;
 			if (depth > snapshot.maxSubagentDepth) throw new HarnessError("CAPABILITY_DENIED", `SUBAGENT_DEPTH_EXCEEDED: depth ${depth} exceeds ${snapshot.maxSubagentDepth}`);
 			const active = snapshot.agents.filter((agent) => !TERMINAL_AGENT_STATES.has(agent.state)).length;
@@ -165,6 +187,7 @@ export class SessionAgentRegistry {
 				role: input.role,
 				state: "reserved",
 				operationId: input.operationId,
+				assignmentDigest,
 				provider: input.provider,
 				model: input.model,
 				effort: input.effort,
@@ -226,6 +249,60 @@ export class SessionAgentRegistry {
 			attempt.exitedAt = new Date().toISOString();
 			attempt.updatedAt = attempt.exitedAt;
 		})).agent;
+	}
+
+	async recordMessage(agentId: string, input: Omit<AgentMessageRecord, "schemaVersion" | "id" | "agentId" | "status" | "createdAt" | "updatedAt">): Promise<AgentMessageRecord> {
+		return this.mutex.run(`agent-message:${agentId}:${randomUUID()}`, async () => {
+			const snapshot = await this.read();
+			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
+			if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new HarnessError("CAPABILITY_DENIED", "Terminal agents cannot create messages");
+			const now = new Date().toISOString();
+			const message: AgentMessageRecord = { schemaVersion: 1, id: randomUUID(), agentId, status: "open", createdAt: now, updatedAt: now, ...input };
+			if (input.blocking) {
+				const target: AgentState = input.type === "change_request" ? "waiting_decision" : "blocked";
+				if (!TRANSITIONS[agent.state].has(target)) throw this.invalidTransition(agent.state, target);
+				agent.state = target;
+				agent.summary = input.summary;
+				agent.updatedAt = now;
+			}
+			await atomicWriteFile(join(this.root, "agents", agentId, "messages", `${message.id}.json`), `${JSON.stringify(message, null, 2)}\n`, 0o600);
+			await this.commit(snapshot, `agent.message_${input.type}`, { agentId, messageId: message.id, blocking: input.blocking });
+			return message;
+		});
+	}
+
+	async respondMessage(agentId: string, messageId: string, response: string): Promise<AgentMessageRecord> {
+		return this.mutex.run(`agent-message-response:${messageId}`, async () => {
+			const snapshot = await this.read();
+			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
+			if (!agent) throw new HarnessError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+			const path = join(this.root, "agents", agentId, "messages", `${messageId}.json`);
+			const content = await readTextIfExists(path);
+			if (!content) throw new HarnessError("CAPABILITY_DENIED", `Unknown agent message: ${messageId}`);
+			const message = JSON.parse(content) as AgentMessageRecord;
+			if (message.status !== "open") throw new HarnessError("CAPABILITY_DENIED", `Agent message ${messageId} is already ${message.status}`);
+			message.status = "answered";
+			message.response = response;
+			message.updatedAt = new Date().toISOString();
+			await atomicWriteFile(path, `${JSON.stringify(message, null, 2)}\n`, 0o600);
+			await this.commit(snapshot, "agent.message_answered", { agentId, messageId });
+			return message;
+		});
+	}
+
+	async listMessages(agentId?: string): Promise<AgentMessageRecord[]> {
+		const agents = agentId ? [await this.get(agentId)] : await this.list();
+		const messages: AgentMessageRecord[] = [];
+		for (const agent of agents) {
+			const root = join(this.root, "agents", agent.id, "messages");
+			for (const entry of await readdir(root).catch(() => [])) {
+				if (!entry.endsWith(".json")) continue;
+				const content = await readTextIfExists(join(root, entry));
+				if (content) messages.push(JSON.parse(content) as AgentMessageRecord);
+			}
+		}
+		return messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 	}
 
 	async list(): Promise<SessionAgentRecord[]> {

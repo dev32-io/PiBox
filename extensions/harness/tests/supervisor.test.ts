@@ -6,6 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { discoverRepository } from "../repository.js";
+import { SessionAgentRegistry } from "../agent-registry.js";
+import { LaunchCoordinator } from "../launch-coordinator.js";
 import { SubagentSupervisor } from "../supervisor.js";
 import type { TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
@@ -62,6 +64,9 @@ test("supervises a child contribution through a validated terminal handoff", asy
 		`import { execFileSync } from "node:child_process";\nimport { mkdirSync, writeFileSync } from "node:fs";\nimport { join } from "node:path";\nwriteFileSync("child.txt", "from child\\n");\nexecFileSync("git", ["add", "child.txt"]);\nexecFileSync("git", ["commit", "-m", "child contribution"]);\nconst head=execFileSync("git", ["rev-parse", "HEAD"], {encoding:"utf8"}).trim();\nconst runRoot=join(process.env.PIBOX_HARNESS_PRIVATE_ROOT,"work-items",process.env.PIBOX_HARNESS_WORK_ITEM,"runs",process.env.PIBOX_HARNESS_RUN_ID);\nmkdirSync(runRoot,{recursive:true});\nwriteFileSync(join(runRoot,"handoff.json"),JSON.stringify({schemaVersion:1,type:"task_complete",runId:process.env.PIBOX_HARNESS_RUN_ID,taskId:process.env.PIBOX_HARNESS_TASK,summary:"fake complete",commits:[head],checks:[],expectedFailures:[],risks:[],completedAt:new Date().toISOString()}));\nconsole.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"done"}]}}));\n`,
 	);
 	const supervisor = new SubagentSupervisor(() => ({ command: process.execPath, args: [fake] }));
+	const registry = new SessionAgentRegistry(identity.privateRoot, "session-test");
+	await registry.initialize("main:session-test");
+	const coordinator = new LaunchCoordinator(registry, "main:session-test", () => ({ command: process.execPath, args: [fake] }));
 	const result = await supervisor.launchTask({
 		identity,
 		workItemId: "supervised",
@@ -71,6 +76,7 @@ test("supervises a child contribution through a validated terminal handoff", asy
 		baseCommit: allocation.baseCommit,
 		planningRevision: 2,
 		model: { provider: "fake", model: "fake", effort: "medium", requested: "luna:medium" },
+		coordinator,
 	});
 	assert.equal(result.run.state, "completed");
 	assert.equal(result.handoff?.summary, "fake complete");

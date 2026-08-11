@@ -40,7 +40,9 @@ The main session selects ad-hoc work when ceremony is unnecessary. Managed work 
 
 ### Planning
 
-Managed planning begins as a conversation, not an artifact write. The orchestrator inspects discoverable facts, maps unresolved decisions by dependency, and asks the current decision frontier in numbered rounds with recommendations. The user settles or explicitly delegates those choices; once both sides share an understanding, the orchestrator asks whether to draft. It then submits the coherent draft and offers two natural next steps: refine it conversationally, or approve the frozen revision with `/harness approve <work-item-id>`. No magic readiness phrase is required.
+Managed planning begins as a product and technical conversation, not an artifact write. The orchestrator recovers the outcome behind a proposed solution, inspects discoverable facts, and treats inherited product rules, UX/UI flows, schemas, APIs, and architecture as revisitable decisions when they manufacture contradictory guarantees or disproportionate complexity. It distinguishes symptoms, technical causes, and upstream enabling conditions for bug work; probes only materially consequential hidden cases; and stops discovery when another answer would not change the contract. Clear local reversible work remains ad hoc even when the user asks for a plan.
+
+The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator drafts and submits the coherent contract, then offers two natural next steps: refine it conversationally, or approve the frozen revision with `/harness approve <work-item-id>`. No magic readiness phrase is required.
 
 - `work_item_create`
 - `artifact_create`
@@ -59,9 +61,10 @@ Planning submission freezes the deliverable-contract digest. Only the user can a
 
 Task boundaries, integration grouping, and evaluator timing remain under orchestrator authority unless the user explicitly makes them binding.
 
-### Execution
+### Exploration and execution
 
-- `agent_run` directly invokes a researcher, explorer, critic, reviewer, tester, or other configured role.
+- `exploration_launch` invokes the read-only explorer with a typed `lookup | map | trace | impact | diagnose | explain` assignment, `quick | standard | thorough` depth, stop conditions, and a mode-sensitive structured evidence handoff.
+- `agent_run` directly invokes another configured specialist role without requiring a managed work item.
 - `task_launch` resolves the assigned model, acquires resource claims, allocates a deterministic worktree, and supervises the implementer.
 - Workers read canonical context through `task_context` and finish through `task_complete`.
 - `task_integrate` assembles every contribution in an integration unit, runs the supplied unit checks, creates one traceable commit, and fast-forwards the canonical branch.
@@ -95,7 +98,11 @@ A task can intentionally be partial. Review and tests may be deferred until its 
 /harness recover
 ```
 
-Capacity failures become recoverable waiting runs. A resumed task keeps its branch, worktree, checkpoint, and repair/protocol budgets. Recovery never resets branches, deletes worktrees, or discards uncommitted worker changes.
+Every model-backed direct child is registered under the stable main Pi session identity before process creation. The main session is depth zero; children are depth one and cannot delegate. A logical child retains one of sixteen default slots through running, waiting, blocking, pausing, interruption, handoff reporting, and later process attempts. Only a terminal completion, failure, protocol failure, or cancellation releases the slot.
+
+Child stdout, stderr, transcript, heartbeat, checkpoint, messages, and handoff are file-backed under private session state. Exiting the main Pi process does not stop children. On resume, the registry checks durable handoffs before liveness, preserves positively identified live work, marks dead children without handoff interrupted, and treats stale-heartbeat PID ambiguity as recovery-required rather than launching a duplicate writer.
+
+Decision reports are asynchronous and non-blocking. Change requests and blockers checkpoint safe work, retain their logical slot, and wait for a durable `agent_respond`; no live main-process RPC is required. Capacity failures remain explicit and require manual resume. Recovery never resets branches, deletes worktrees, or discards uncommitted worker changes.
 
 ## Configuration
 
@@ -152,7 +159,9 @@ orchestrator:
   modelSwitching: auto-visible
 
 limits:
-  maxConcurrency: 4
+  maxConcurrency: 4 # legacy schema-v1 process preference
+  maxActiveSubagentsPerSession: 16
+  maxSubagentDepth: 1
   protocolNudges: 1
   repairRounds: 2
 ```

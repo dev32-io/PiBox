@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { SessionAgentRegistry } from "./agent-registry.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository, runGit } from "./repository.js";
 import { HarnessRunStore, type TaskHandoff } from "./run-store.js";
@@ -107,14 +108,30 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name,
 			label: name.split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" "),
-			description: `Submit a structured ${name.replaceAll("_", " ")} message to the main orchestrator.`,
-			parameters: Type.Object({ summary: Type.String(), rationale: Type.String(), options: Type.Optional(Type.Array(Type.String())) }),
+			description: name === "task_report_decision" ? "Persist a non-blocking delegated decision for the orchestrator and final handoff." : "Persist a blocking request for the orchestrator, checkpoint safe work, and end this process attempt.",
+			parameters: Type.Object({ summary: Type.String(), rationale: Type.String(), evidence: Type.Optional(Type.Array(Type.Object({ source: Type.String(), observation: Type.String() }))), options: Type.Optional(Type.Array(Type.String())), recommendation: Type.Optional(Type.String()) }),
 			async execute(_id, params, _signal, _update, ctx) {
 				try {
 					const auth = await authorized(ctx);
 					await auth.runs.appendEvent(auth.scope.runId, name.replaceAll("_", "."), params);
+					const privateRoot = process.env.PIBOX_HARNESS_REPOSITORY_PRIVATE_ROOT;
+					const sessionId = process.env.PIBOX_HARNESS_ROOT_SESSION_ID;
+					const agentId = process.env.PIBOX_HARNESS_AGENT_ID;
+					let message: unknown;
+					if (privateRoot && sessionId && agentId) {
+						const registry = new SessionAgentRegistry(privateRoot, sessionId);
+						message = await registry.recordMessage(agentId, {
+							type: name === "task_report_decision" ? "decision_report" : name === "task_request_change" ? "change_request" : "blocked",
+							blocking: name !== "task_report_decision",
+							summary: params.summary,
+							rationale: params.rationale,
+							evidence: params.evidence ?? [],
+							...(params.options ? { options: params.options } : {}),
+							...(params.recommendation ? { recommendation: params.recommendation } : {}),
+						});
+					}
 					if (name === "task_blocked") await auth.runs.update(auth.scope.runId, { state: "interrupted", error: params.summary }, "run.blocked");
-					return result("Message persisted for the orchestrator.");
+					return result(name === "task_report_decision" ? "Decision report persisted; continue within delegated scope." : "Blocking message persisted; checkpoint safe work and end this attempt.", message);
 				} catch (error) {
 					throw new Error(describeHarnessError(error));
 				}

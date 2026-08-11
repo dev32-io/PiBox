@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
 
@@ -18,6 +18,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	env?: Record<string, string>;
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
+	onSpawn?: (pid: number | undefined) => void;
 	invocationResolver?: (args: string[]) => { command: string; args: string[] };
 	deferCompletion?: boolean;
 }
@@ -32,6 +33,7 @@ export class LaunchCoordinator {
 	constructor(
 		readonly registry: SessionAgentRegistry,
 		readonly mainAgentId: string,
+		readonly invocationResolver?: (args: string[]) => { command: string; args: string[] },
 	) {}
 
 	async launch(input: CoordinatedLaunchInput): Promise<CoordinatedLaunchResult> {
@@ -53,6 +55,7 @@ export class LaunchCoordinator {
 		const { attempt } = await this.registry.startAttempt(reserved.id);
 		const attemptRoot = join(this.registry.root, "agents", reserved.id, "attempts", attempt.id);
 		let running: Promise<unknown> | undefined;
+		const invocationResolver = input.invocationResolver ?? this.invocationResolver;
 		try {
 			const result = await runDirectAgent({
 				role: input.role,
@@ -71,6 +74,7 @@ export class LaunchCoordinator {
 					PIBOX_HARNESS_AGENT_DEPTH: String(reserved.depth),
 					PIBOX_HARNESS_ATTEMPT_ID: attempt.id,
 					PIBOX_HARNESS_AGENT_ROOT: join(this.registry.root, "agents", reserved.id),
+					PIBOX_HARNESS_REPOSITORY_PRIVATE_ROOT: dirname(dirname(this.registry.root)),
 					PIBOX_HARNESS_ASSIGNMENT_PATH: join(this.registry.root, reserved.assignmentPath),
 					PIBOX_HARNESS_AGENT_ROLE: reserved.role,
 				},
@@ -79,13 +83,16 @@ export class LaunchCoordinator {
 				...(input.skillPaths ? { skillPaths: input.skillPaths } : {}),
 				...(input.signal ? { signal: input.signal } : {}),
 				...(input.onText ? { onText: input.onText } : {}),
-				...(input.invocationResolver ? { invocationResolver: input.invocationResolver } : {}),
+				...(invocationResolver ? { invocationResolver } : {}),
 				onSpawn: (pid) => {
 					if (pid) running = this.registry.markRunning(reserved.id, attempt.id, pid);
+					input.onSpawn?.(pid);
 				},
 			});
 			await running;
 			await this.registry.recordExit(reserved.id, attempt.id, result.exitCode);
+			const afterExit = await this.registry.get(reserved.id);
+			if (["waiting_decision", "blocked", "paused", "interrupted", "recovery_required", "cancelled"].includes(afterExit.state)) return { agent: afterExit, result };
 			if (result.exitCode === 0) {
 				const reported = await this.registry.transition(reserved.id, "reported", { summary: result.text || `${input.role} completed` });
 				return { agent: input.deferCompletion ? reported : await this.registry.transition(reserved.id, "completed"), result };

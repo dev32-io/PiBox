@@ -10,7 +10,6 @@ import { registerExplorationCapabilities } from "./exploration-capabilities.js";
 import { validateExplorationAssignment, validateExplorationHandoff, type ExplorationAssignment, type ExplorationHandoff } from "./exploration-contracts.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
-import { runDirectAgent } from "./direct-agent.js";
 import { HarnessRunStore } from "./run-store.js";
 import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
 import { LaunchCoordinator } from "./launch-coordinator.js";
@@ -65,6 +64,7 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"task_integrate",
 	"agent_status",
 	"agent_control",
+	"agent_respond",
 	"evaluation_record",
 	"work_item_complete",
 	"planning_submit",
@@ -162,6 +162,52 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, configDigest: runtime.configDigest, workItems, taskCounts, runs, agents };
 }
 
+async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ reported: number; interrupted: number; ambiguous: number }> {
+	const result = { reported: 0, interrupted: 0, ambiguous: 0 };
+	for (const agent of await runtime.agents.list()) {
+		if (["completed", "failed", "protocol_failed", "cancelled", "waiting_model", "waiting_capacity", "waiting_decision", "blocked", "paused", "reported"].includes(agent.state)) continue;
+		const agentRoot = join(runtime.agents.root, "agents", agent.id);
+		let hasHandoff = Boolean(await readTextIfExists(join(agentRoot, "handoff.json")));
+		if (!hasHandoff && agent.workItemId && agent.runId) {
+			const runs = new HarnessRunStore(runtime.identity.privateRoot, agent.workItemId);
+			hasHandoff = agent.evaluationId ? Boolean(await runs.readEvaluationHandoff(agent.runId).catch(() => undefined)) : Boolean(await runs.readHandoff(agent.runId).catch(() => undefined));
+		}
+		if (hasHandoff) {
+			await runtime.agents.transition(agent.id, "reported", { summary: agent.summary ?? "Recovered durable handoff" }).catch(() => undefined);
+			result.reported += 1;
+			continue;
+		}
+		const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
+		if (!attempt) continue;
+		const attemptRoot = join(agentRoot, "attempts", attempt.id);
+		const processExit = await readTextIfExists(join(attemptRoot, "process-exit.json"));
+		const finalResult = await readTextIfExists(join(attemptRoot, "result.json"));
+		if (processExit && finalResult && !agent.taskId && !agent.evaluationId && agent.role !== "explorer") {
+			const summary = (JSON.parse(finalResult) as { text?: string }).text ?? "Background specialist completed";
+			await runtime.agents.transition(agent.id, "reported", { summary }).catch(() => undefined);
+			await runtime.agents.transition(agent.id, "completed", { summary }).catch(() => undefined);
+			result.reported += 1;
+			continue;
+		}
+		const heartbeatText = await readTextIfExists(join(attemptRoot, "heartbeat.json"));
+		const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
+		const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at !== undefined && Date.now() - Date.parse(heartbeat.at) < 15_000;
+		let alive = false;
+		if (heartbeat?.pid) {
+			try { process.kill(heartbeat.pid, 0); alive = true; } catch { alive = false; }
+		}
+		if (fresh && alive) continue;
+		if (alive) {
+			await runtime.agents.transition(agent.id, "recovery_required", { error: "Process PID exists but its scoped heartbeat is stale" }).catch(() => undefined);
+			result.ambiguous += 1;
+		} else {
+			await runtime.agents.transition(agent.id, "interrupted", { error: "Child process exited without a valid handoff" }).catch(() => undefined);
+			result.interrupted += 1;
+		}
+	}
+	return result;
+}
+
 function formatStatus(status: HarnessStatusSnapshot): string {
 	if (status.workItems.length === 0) return `Harness: no managed work items\nRepository: ${status.repositoryRoot}`;
 	const lines = status.workItems.map((item) => {
@@ -245,6 +291,7 @@ export default function harness(pi: ExtensionAPI): void {
 					? { skillPaths: rolePolicy.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) }
 					: {}),
 				canonicalMutation: (owner, operation) => runtime.mutex.run(owner, operation),
+				coordinator: runtime.coordinator,
 				...(signal ? { signal } : {}),
 				...(onUpdate ? { onUpdate } : {}),
 			});
@@ -749,29 +796,33 @@ export default function harness(pi: ExtensionAPI): void {
 						"Place generated runtime evidence outside the repository and reference its absolute path.",
 						"Completion: call evaluation_complete with criterion results, evidence, findings, verdict, and residual risk.",
 					].join("\n");
-					const runEvaluator = (taskPrompt: string) => runDirectAgent({
-						role: roleName,
-						task: taskPrompt,
-						cwd: runtime.identity.root,
-						provider: resolution.model.provider,
-						model: resolution.model.id,
-						effort: resolution.effort,
-						tools: [...new Set([
-							...(role.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]),
-							"evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete",
-						])],
-						env: {
-							PIBOX_HARNESS_RUN_ID: created.record.id,
-							PIBOX_HARNESS_WORK_ITEM: item.id,
-							PIBOX_HARNESS_EVALUATION: evaluation.id,
-							PIBOX_HARNESS_CREDENTIAL: created.credential,
-						},
-						...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
-						onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
-						onEvent: (event) => void runs.appendTranscript(created.record.id, event),
-						...(signal ? { signal } : {}),
-						...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { runId: created.record.id, state: "running" })) } : {}),
-					});
+					let logicalAgentId: string | undefined;
+					const runEvaluator = async (taskPrompt: string) => {
+						const coordinated = await runtime.coordinator.launch({
+							operationId: created.record.id,
+							role: roleName,
+							task: taskPrompt,
+							assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
+							cwd: runtime.identity.root,
+							provider: resolution.model.provider,
+							model: resolution.model.id,
+							effort: resolution.effort,
+							tools: [...new Set([...(role.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]), "evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"])],
+							deferCompletion: true,
+							workItemId: item.id,
+							evaluationId: evaluation.id,
+							runId: created.record.id,
+							workspace: runtime.identity.root,
+							env: { PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
+							...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
+							onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
+							...(signal ? { signal } : {}),
+							...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { runId: created.record.id, state: "running" })) } : {}),
+						});
+						logicalAgentId = coordinated.agent.id;
+						for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
+						return coordinated.result;
+					};
 					let direct = await runEvaluator(prompt);
 					await runs.flushTranscript(created.record.id);
 					await assertCleanRepository(runtime.identity.root);
@@ -785,13 +836,15 @@ export default function harness(pi: ExtensionAPI): void {
 					}
 					if (!handoff || handoff.runId !== created.record.id || handoff.evaluationId !== evaluation.id) {
 						await runs.update(created.record.id, { state: "protocol_failed", exitCode: direct.exitCode, error: "Missing or invalid evaluation_complete handoff" }, "run.protocol_failed");
-						return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, direct });
+						if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "protocol_failed", { error: "Missing or invalid evaluation_complete handoff" }).catch(() => undefined);
+						return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, agentId: logicalAgentId, direct });
 					}
 					const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, () =>
 						runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) }),
 					);
 					await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
-					await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, verdict: handoff.verdict });
+					if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "completed", { summary: `Evaluation ${evaluation.id}: ${handoff.verdict}` });
+					await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, agentId: logicalAgentId, verdict: handoff.verdict });
 					return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, evaluation: recorded, handoff });
 				});
 			} catch (error) {
@@ -839,22 +892,57 @@ export default function harness(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_status",
 		label: "Harness Agent Status",
-		description: "List active supervised harness run ids in this Pi process.",
+		description: "List logical subagents and pending asynchronous messages for this main Pi session.",
 		parameters: Type.Object({}),
-		async execute() {
-			const active = supervisor.activeRunIds();
-			return textResult(active.length ? `Active runs:\n${active.map((id) => `- ${id}`).join("\n")}` : "No active supervised runs.", { active });
+		async execute(_id, _params, _signal, _update, ctx) {
+			const runtime = await runtimeFor(ctx);
+			const agents = await runtime.agents.list();
+			const messages = await runtime.agents.listMessages();
+			const open = messages.filter((message) => message.status === "open");
+			return textResult(agents.length ? agents.map((agent) => `${agent.id} · ${agent.role} · ${agent.state} · ${agent.provider}/${agent.model}:${agent.effort}`).join("\n") : "No session subagents recorded.", { agents, openMessages: open, active: agents.filter((agent) => !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state)).length, limit: runtime.config.limits.maxActiveSubagentsPerSession });
 		},
 	});
 
 	pi.registerTool({
 		name: "agent_control",
 		label: "Control Harness Agent",
-		description: "Pause or stop an active supervised harness run. Resume uses the retained task identity through /harness resume <task>.",
-		parameters: Type.Object({ runId: Type.String(), action: Type.Union([Type.Literal("pause"), Type.Literal("stop")]) }),
-		async execute(_id, params) {
-			const stopped = params.action === "pause" ? supervisor.pause(params.runId) : supervisor.stop(params.runId);
-			return textResult(stopped ? `${params.action === "pause" ? "Pause" : "Stop"} requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
+		description: "Pause or stop a positively identified logical session agent; legacy run IDs remain accepted during migration.",
+		parameters: Type.Union([
+			Type.Object({ agentId: Type.String(), action: Type.Union([Type.Literal("pause"), Type.Literal("stop")]) }, { additionalProperties: false }),
+			Type.Object({ runId: Type.String(), action: Type.Union([Type.Literal("pause"), Type.Literal("stop")]) }, { additionalProperties: false }),
+		]),
+		async execute(_id, params, _signal, _update, ctx) {
+			if ("runId" in params) {
+				const stopped = params.action === "pause" ? supervisor.pause(params.runId) : supervisor.stop(params.runId);
+				return textResult(stopped ? `${params.action === "pause" ? "Pause" : "Stop"} requested for ${params.runId}.` : `Run is not active in this process: ${params.runId}`, { stopped });
+			}
+			const runtime = await runtimeFor(ctx);
+			const agent = await runtime.agents.get(params.agentId);
+			const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
+			if (!attempt) return textResult(`Agent ${agent.id} has no current process attempt.`, { stopped: false, agent });
+			const heartbeatText = await readTextIfExists(join(runtime.agents.root, "agents", agent.id, "attempts", attempt.id, "heartbeat.json"));
+			const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
+			const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at !== undefined && Date.now() - Date.parse(heartbeat.at) < 15_000;
+			if (!fresh || !heartbeat?.pid) throw new Error("RECOVERY_REQUIRED: Refusing to signal a process without a fresh matching agent heartbeat.");
+			try { process.kill(-heartbeat.pid, "SIGTERM"); } catch { process.kill(heartbeat.pid, "SIGTERM"); }
+			const state = params.action === "pause" ? "paused" : "cancelled";
+			const updated = await runtime.agents.transition(agent.id, state, { summary: `${params.action} requested by orchestrator` });
+			return textResult(`${params.action === "pause" ? "Pause" : "Stop"} requested for ${agent.id}.`, { stopped: true, agent: updated });
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_respond",
+		label: "Respond to Subagent",
+		description: "Persist the orchestrator response to an open asynchronous subagent request.",
+		parameters: Type.Object({ agentId: Type.String(), messageId: Type.String(), response: Type.String() }),
+		async execute(_id, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				const message = await runtime.agents.respondMessage(params.agentId, params.messageId, params.response);
+				return textResult(`Response recorded for ${params.messageId}. Resume ${params.agentId} when its authoritative context is ready.`, message);
+			} catch (error) { throw new Error(describeHarnessError(error)); }
 		},
 	});
 
@@ -1054,6 +1142,8 @@ export default function harness(pi: ExtensionAPI): void {
 				staleLockRecovered,
 			});
 			if (!isWorkerProcess() && !isEvaluatorProcess()) {
+				const agents = await reconcileSessionAgents(sessionRuntime);
+				if (agents.reported || agents.interrupted || agents.ambiguous) ctx.ui.notify(`Harness reconciled subagents: ${agents.reported} reported, ${agents.interrupted} interrupted, ${agents.ambiguous} require recovery.`, agents.ambiguous ? "warning" : "info");
 				const recovered = [];
 				for (const item of await sessionRuntime.workItems.list()) {
 					recovered.push(...(await new HarnessRunStore(sessionRuntime.identity.privateRoot, item.id).recoverInterrupted()));
@@ -1069,6 +1159,15 @@ export default function harness(pi: ExtensionAPI): void {
 
 	pi.on("agent_start", () => {
 		whitespaceToolDeltaBytes = 0;
+	});
+
+	pi.on("message_end", async (event) => {
+		if (!isSubagentProcess() || event.message.role !== "assistant") return;
+		const agentRoot = process.env.PIBOX_HARNESS_AGENT_ROOT;
+		const attemptId = process.env.PIBOX_HARNESS_ATTEMPT_ID;
+		if (!agentRoot || !attemptId) return;
+		const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+		await atomicWriteFile(join(agentRoot, "attempts", attemptId, "result.json"), `${JSON.stringify({ agentId: process.env.PIBOX_HARNESS_AGENT_ID, attemptId, text, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
 	});
 
 	pi.on("message_update", (event, ctx) => {
@@ -1092,6 +1191,9 @@ export default function harness(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (event) => {
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
+		if (isSubagentProcess() && process.env.PIBOX_HARNESS_AGENT_ROOT && process.env.PIBOX_HARNESS_ATTEMPT_ID) {
+			await atomicWriteFile(join(process.env.PIBOX_HARNESS_AGENT_ROOT, "attempts", process.env.PIBOX_HARNESS_ATTEMPT_ID, "process-exit.json"), `${JSON.stringify({ agentId: process.env.PIBOX_HARNESS_AGENT_ID, attemptId: process.env.PIBOX_HARNESS_ATTEMPT_ID, reason: event.reason, at: new Date().toISOString() }, null, 2)}\n`, 0o600).catch(() => undefined);
+		}
 		heartbeatTimer = undefined;
 		if (!sessionRuntime) return;
 		await sessionRuntime.events.append("session.shutdown", { reason: event.reason });

@@ -32,6 +32,7 @@ test("reserves a logical agent and retains its slot across process attempts and 
 	const reserved = await registry.reserve(input(1));
 	const replay = await registry.reserve(input(1));
 	assert.equal(replay.id, reserved.id);
+	await assert.rejects(registry.reserve(input(1, { assignment: { question: "Different" } })), /different assignment/);
 	assert.equal(await registry.activeCount(), 1);
 
 	const { attempt } = await registry.startAttempt(reserved.id);
@@ -73,6 +74,21 @@ test("serializes concurrent reservations across registry instances", async (t) =
 	assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 16);
 	assert.equal(outcomes.filter((outcome) => outcome.status === "rejected" && /SUBAGENT_LIMIT_REACHED/.test(String(outcome.reason))).length, 1);
 	assert.equal((await registries[0]!.list()).length, 16);
+});
+
+test("persists blocking requests and responses without releasing the logical slot", async (t) => {
+	const { registry } = await fixture(t, 1);
+	const agent = await registry.reserve(input(1));
+	const { attempt } = await registry.startAttempt(agent.id);
+	await registry.markRunning(agent.id, attempt.id, 1234);
+	const message = await registry.recordMessage(agent.id, { type: "change_request", blocking: true, summary: "Contract must change", rationale: "Schema cannot represent the state", evidence: [{ source: "src/schema.ts", observation: "Field is required" }], options: ["Change schema"], recommendation: "Change schema" });
+	assert.equal((await registry.get(agent.id)).state, "waiting_decision");
+	assert.equal(await registry.activeCount(), 1);
+	assert.equal((await registry.listMessages(agent.id))[0]?.id, message.id);
+	const answered = await registry.respondMessage(agent.id, message.id, "Use a nullable field");
+	assert.equal(answered.status, "answered");
+	assert.equal(answered.response, "Use a nullable field");
+	await assert.rejects(registry.respondMessage(agent.id, message.id, "Again"), /already answered/);
 });
 
 test("rejects invalid transitions and preserves ordered lifecycle events", async (t) => {

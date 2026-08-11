@@ -42,7 +42,6 @@ The first version will not provide:
 - OS-level filesystem, network, or process sandboxing.
 - Automatic delayed resumption after subscription limits reset.
 - Seamless migration of an active streaming provider request.
-- Detached execution that survives the parent Pi process.
 - A full-screen subagent sidebar or web dashboard.
 - Nested delegation by ordinary worker roles.
 - Cross-repository stories or distributed workers.
@@ -176,9 +175,9 @@ The initial runtime will use supervised Pi child processes with structured event
 - An immutable run identity.
 - A cancellation signal owned by the supervisor.
 
-The supervisor consumes Pi lifecycle events and process exit status. Child processes remain attached to the main Pi process in v1. If the parent exits, incomplete children are recovered as interrupted runs on the next startup.
+Every model-backed child is reserved in one private registry keyed by the stable main Pi session ID. The main agent is depth zero and direct children depth one; recursive launching fails mechanically. A session may own at most sixteen nonterminal logical children, and each retains its slot across process attempts, waits, pauses, blockers, reporting, and recovery.
 
-The subagent runtime will have an adapter boundary so a future Pi SDK-backed runner can reuse role, lifecycle, capability, and persistence contracts.
+Children run in independent process groups and write stdout, stderr, transcript events, heartbeat, checkpoints, asynchronous messages, and handoffs directly to private files. They may continue after the main Pi process exits. Resuming the same session reconciles handoffs before liveness, preserves positively identified live processes, marks dead attempts without handoff interrupted, and treats stale-heartbeat PID ambiguity as recovery-required. The adapter boundary remains reusable by a future Pi SDK-backed runner.
 
 ## 6. Authority model
 
@@ -859,7 +858,7 @@ The orchestrator chooses which tasks to launch, whether concurrency is appropria
 - The declared base or dependencies are not available.
 - Planning is unapproved or stale.
 - A required resource is locked.
-- The concurrency limit is reached.
+- The main session already owns sixteen nonterminal logical subagents.
 - The feature branch is dirty when a clean canonical operation is required.
 - Worktree allocation fails.
 

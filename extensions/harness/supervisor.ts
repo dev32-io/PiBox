@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessError } from "./errors.js";
+import type { LaunchCoordinator } from "./launch-coordinator.js";
 import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.js";
@@ -35,6 +36,7 @@ export interface LaunchTaskOptions {
 	canonicalMutation?: <T>(owner: string, operation: () => Promise<T>) => Promise<T>;
 	signal?: AbortSignal;
 	onUpdate?: (result: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void;
+	coordinator?: LaunchCoordinator;
 }
 
 export interface LaunchTaskResult {
@@ -121,8 +123,45 @@ export class SubagentSupervisor {
 
 		let stderr = "";
 		let finalText = "";
+		let logicalAgentId: string | undefined;
 		for (let protocolAttempt = 0; protocolAttempt < 2; protocolAttempt++) {
-			const execution = await this.spawnTask(options, created.record.id, created.credential, protocolAttempt === 1);
+			let execution: { exitCode: number; stderr: string; finalText: string };
+			if (options.coordinator) {
+				const taskCapabilities = ["task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
+				const coordinated = await options.coordinator.launch({
+					operationId: created.record.id,
+					role: options.task.execution.assignment.role,
+					task: taskPrompt(options, protocolAttempt === 1, ""),
+					assignment: { schemaVersion: 1, workItemId: options.workItemId, taskId: options.task.id, planningRevision: options.planningRevision },
+					cwd: options.workspace,
+					provider: options.model.provider,
+					model: options.model.model,
+					effort: options.model.effort,
+					tools: [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])],
+					...(options.rolePrompt ? { rolePrompt: options.rolePrompt } : {}),
+					...(options.skillPaths ? { skillPaths: options.skillPaths } : {}),
+					deferCompletion: true,
+					workItemId: options.workItemId,
+					taskId: options.task.id,
+					runId: created.record.id,
+					workspace: options.workspace,
+					env: {
+						PIBOX_HARNESS_RUN_ID: created.record.id,
+						PIBOX_HARNESS_WORK_ITEM: options.workItemId,
+						PIBOX_HARNESS_TASK: options.task.id,
+						PIBOX_HARNESS_CREDENTIAL: created.credential,
+						PIBOX_HARNESS_PRIVATE_ROOT: options.identity.privateRoot,
+						PIBOX_HARNESS_REPOSITORY_ID: options.identity.id,
+					},
+					...(options.signal ? { signal: options.signal } : {}),
+					onSpawn: (pid) => void runs.update(created.record.id, { state: "running", ...(pid === undefined ? {} : { pid }) }, "run.started"),
+					...(options.onUpdate ? { onText: (text: string) => options.onUpdate?.({ content: [{ type: "text", text }], details: { runId: created.record.id, state: "running" } }) } : {}),
+				});
+				logicalAgentId = coordinated.agent.id;
+				for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
+				await runs.flushTranscript(created.record.id);
+				execution = { exitCode: coordinated.result.exitCode, stderr: coordinated.result.stderr, finalText: coordinated.result.text };
+			} else execution = await this.spawnTask(options, created.record.id, created.credential, protocolAttempt === 1);
 			stderr += execution.stderr;
 			finalText = execution.finalText || finalText;
 			const handoff = await runs.readHandoff(created.record.id);
@@ -131,6 +170,7 @@ export class SubagentSupervisor {
 				if (currentItem.planning.status !== "approved" || currentItem.planning.revision !== options.planningRevision) {
 					const run = await runs.update(created.record.id, { state: "interrupted", error: `Planning changed to ${currentItem.planning.status} r${currentItem.planning.revision}` }, "run.context_stale");
 					await updateTask(`context-stale:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "paused" }));
+					if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "interrupted", { error: "Canonical planning changed" }).catch(() => undefined);
 					return { run, stderr, finalText };
 				}
 				const { runGit } = await import("./repository.js");
@@ -141,11 +181,21 @@ export class SubagentSupervisor {
 				if (handoff.runId !== created.record.id || handoff.taskId !== options.task.id || status || artifactChanges || !handoff.commits.includes(head) || handoff.commits.some((commit) => !actualCommits.includes(commit))) {
 					await runs.update(created.record.id, { state: "protocol_failed", error: "Terminal handoff failed supervisor Git/scope validation" }, "run.invalid_handoff");
 					await updateTask(`invalid-handoff:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" }));
+					if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "protocol_failed", { error: "Terminal handoff failed validation" }).catch(() => undefined);
 					return { run: await runs.read(created.record.id), stderr, finalText };
 				}
 				const run = await runs.update(created.record.id, { state: "completed", exitCode: execution.exitCode }, "run.completed");
 				await updateTask(`run-complete:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "contribution_complete", runtime: { completedCommit: head } }));
+				if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "completed", { summary: handoff.summary });
 				return { run, handoff, stderr, finalText };
+			}
+			if (logicalAgentId) {
+				const logical = await options.coordinator?.registry.get(logicalAgentId);
+				if (logical && (logical.state === "waiting_decision" || logical.state === "blocked")) {
+					const run = await runs.update(created.record.id, { state: "interrupted", error: logical.summary ?? `Agent is ${logical.state}` }, `run.${logical.state}`);
+					await updateTask(`run-${logical.state}:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "blocked" }));
+					return { run, stderr, finalText };
+				}
 			}
 			if (execution.exitCode !== 0) {
 				const termination = this.#termination.get(created.record.id);
@@ -165,6 +215,7 @@ export class SubagentSupervisor {
 		}
 		const run = await runs.update(created.record.id, { state: "protocol_failed", error: "Missing task_complete handoff after one protocol nudge" }, "run.protocol_failed");
 		await updateTask(`protocol-failed:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" }));
+		if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "protocol_failed", { error: "Missing task_complete handoff after one protocol nudge" }).catch(() => undefined);
 		return { run, stderr, finalText };
 	}
 
