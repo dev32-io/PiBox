@@ -38,3 +38,23 @@ test("launches a direct child through the registry with file-backed process outp
 	await access(join(attemptRoot, "stdout.jsonl"));
 	assert.match(await readFile(join(attemptRoot, "stdout.jsonl"), "utf8"), /mapped repository/);
 });
+
+test("resumes a waiting assignment as another process attempt under the same slot", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-resume-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-1", 1, 1);
+	await registry.initialize("main:session-1");
+	const original = await registry.reserve({ operationId: "task-original", parentAgentId: "main:session-1", parentDepth: 0, role: "implementer", provider: "test", model: "fake", effort: "low", assignment: { task: "one" }, taskId: "task-1", runId: "run-1" });
+	const first = await registry.startAttempt(original.id);
+	await registry.markRunning(original.id, first.attempt.id, 111);
+	await registry.recordExit(original.id, first.attempt.id, 0);
+	await registry.recordMessage(original.id, { type: "change_request", blocking: true, summary: "Need a choice", rationale: "Contract ambiguity", evidence: [] });
+	const fake = join(root, "fake-resume.mjs");
+	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"resumed"}]}}));\n`);
+	const coordinator = new LaunchCoordinator(registry, "main:session-1", () => ({ command: process.execPath, args: [fake] }));
+	const resumed = await coordinator.launch({ operationId: "run-2", existingAgentId: original.id, role: "implementer", task: "Resume", assignment: { task: "one" }, cwd: root, provider: "test", model: "fake", effort: "low", tools: [], taskId: "task-1", runId: "run-2" });
+	assert.equal(resumed.agent.id, original.id);
+	assert.equal(resumed.agent.attempts.length, 2);
+	assert.equal(resumed.agent.runId, "run-2");
+	assert.equal(await registry.activeCount(), 0);
+});

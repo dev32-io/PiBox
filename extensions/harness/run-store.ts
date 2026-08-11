@@ -138,6 +138,7 @@ export class HarnessRunStore {
 		const recovered: RunRecord[] = [];
 		for (const run of await this.list()) {
 			if (run.state !== "running" && run.state !== "launching") continue;
+			if (await this.readHandoff(run.id) || await this.readEvaluationHandoff(run.id)) continue;
 			let alive = false;
 			if (run.pid) {
 				try {

@@ -123,15 +123,20 @@ export class SubagentSupervisor {
 
 		let stderr = "";
 		let finalText = "";
-		let logicalAgentId: string | undefined;
+		let logicalAgentId = options.coordinator
+			? (await options.coordinator.registry.list()).find((agent) => agent.workItemId === options.workItemId && agent.taskId === options.task.id && !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state))?.id
+			: undefined;
+		const answeredMessages = logicalAgentId && options.coordinator ? (await options.coordinator.registry.listMessages(logicalAgentId)).filter((message) => message.status === "answered") : [];
+		const responseContext = answeredMessages.length ? `\n\nAuthoritative orchestrator responses:\n${answeredMessages.map((message) => `- ${message.summary}: ${message.response}`).join("\n")}` : "";
 		for (let protocolAttempt = 0; protocolAttempt < 2; protocolAttempt++) {
 			let execution: { exitCode: number; stderr: string; finalText: string };
 			if (options.coordinator) {
 				const taskCapabilities = ["task_context", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 				const coordinated = await options.coordinator.launch({
 					operationId: created.record.id,
+					...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}),
 					role: options.task.execution.assignment.role,
-					task: taskPrompt(options, protocolAttempt === 1, ""),
+					task: `${taskPrompt(options, protocolAttempt === 1, "")}${responseContext}`,
 					assignment: { schemaVersion: 1, workItemId: options.workItemId, taskId: options.task.id, planningRevision: options.planningRevision },
 					cwd: options.workspace,
 					provider: options.model.provider,

@@ -94,7 +94,6 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 						env: { ...process.env, ...options.env },
 					});
 					options.onSpawn?.(child.pid);
-					child.unref();
 					child.on("error", () => resolveExit(1));
 					child.on("close", (code) => resolveExit(code ?? 1));
 					if (options.signal) {

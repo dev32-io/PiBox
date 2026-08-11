@@ -208,6 +208,17 @@ export class SessionAgentRegistry {
 		});
 	}
 
+	async bindScope(agentId: string, scope: AgentScope): Promise<SessionAgentRecord> {
+		return (await this.mutate(agentId, "agent.scope_bound", (agent) => {
+			if (TERMINAL_AGENT_STATES.has(agent.state)) throw new HarnessError("CAPABILITY_DENIED", "Cannot bind a terminal agent to another run");
+			if (scope.workItemId !== undefined) agent.workItemId = scope.workItemId;
+			if (scope.taskId !== undefined) agent.taskId = scope.taskId;
+			if (scope.evaluationId !== undefined) agent.evaluationId = scope.evaluationId;
+			if (scope.runId !== undefined) agent.runId = scope.runId;
+			if (scope.workspace !== undefined) agent.workspace = scope.workspace;
+		})).agent;
+	}
+
 	async startAttempt(agentId: string): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");

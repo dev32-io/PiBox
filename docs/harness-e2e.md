@@ -3,6 +3,17 @@
 **Repository:** `~/Development/todoTest`  
 **Scenario:** scaffold an empty Git repository with the economy profile, plan a small pure-local HTML todo list, require direct approval, execute it in a task worktree, assemble it, run a fresh combined evaluation, and complete the work item.
 
+## Session-registry and background-child regression
+
+A focused lifecycle exercise verified the unified subagent runtime:
+
+1. A typed `map` explorer launched through the session registry and returned a validated `exploration_complete` handoff with exact evidence.
+2. The main Pi process was forcibly terminated after another explorer entered `running`; the detached child continued with file-backed output and wrote its handoff after the parent was gone.
+3. A managed implementation child likewise finished after its launching print-mode parent exited. Reconciliation found the durable task handoff, validated its retained clean worktree and commits, and advanced it to `contribution_complete` without rerunning it.
+4. A new main session integrated that contribution, launched a registry-backed evaluator, recorded a passing verdict, and completed the work item.
+
+This verifies that parent-owned pipes are not authoritative, logical-agent identity survives process attempts, and handoff-first reconciliation avoids duplicate writers.
+
 ## Final result
 
 The harness completed `local-todo` with:

@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { Type } from "typebox";
+import { reconcileReportedAgents } from "./agent-reconciliation.js";
 import { SessionAgentRegistry } from "./agent-registry.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
@@ -941,7 +942,12 @@ export default function harness(pi: ExtensionAPI): void {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				const message = await runtime.agents.respondMessage(params.agentId, params.messageId, params.response);
-				return textResult(`Response recorded for ${params.messageId}. Resume ${params.agentId} when its authoritative context is ready.`, message);
+				const agent = await runtime.agents.get(params.agentId);
+				if (agent.workItemId && agent.taskId) {
+					const task = await runtime.workItems.readTask(agent.workItemId, agent.taskId);
+					if (task.status === "blocked") await runtime.mutex.run(`agent-response:${params.messageId}`, () => runtime.workItems.updateTask(agent.workItemId!, agent.taskId!, { status: "ready" }));
+				}
+				return textResult(`Response recorded for ${params.messageId}. ${agent.taskId ? `Task ${agent.taskId} is ready to resume under the same logical agent slot.` : `Resume ${params.agentId} when its authoritative context is ready.`}`, message);
 			} catch (error) { throw new Error(describeHarnessError(error)); }
 		},
 	});
@@ -1143,7 +1149,8 @@ export default function harness(pi: ExtensionAPI): void {
 			});
 			if (!isWorkerProcess() && !isEvaluatorProcess()) {
 				const agents = await reconcileSessionAgents(sessionRuntime);
-				if (agents.reported || agents.interrupted || agents.ambiguous) ctx.ui.notify(`Harness reconciled subagents: ${agents.reported} reported, ${agents.interrupted} interrupted, ${agents.ambiguous} require recovery.`, agents.ambiguous ? "warning" : "info");
+				const finalized = await reconcileReportedAgents({ identity: sessionRuntime.identity, registry: sessionRuntime.agents, workItems: sessionRuntime.workItems, mutex: sessionRuntime.mutex });
+				if (agents.reported || agents.interrupted || agents.ambiguous || finalized.completed.length || finalized.errors.length) ctx.ui.notify(`Harness reconciled subagents: ${finalized.completed.length} completed, ${agents.reported} reported, ${agents.interrupted} interrupted, ${agents.ambiguous + finalized.errors.length} require recovery.`, agents.ambiguous || finalized.errors.length ? "warning" : "info");
 				const recovered = [];
 				for (const item of await sessionRuntime.workItems.list()) {
 					recovered.push(...(await new HarnessRunStore(sessionRuntime.identity.privateRoot, item.id).recoverInterrupted()));

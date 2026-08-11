@@ -4,6 +4,7 @@ import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
 
 export interface CoordinatedLaunchInput extends AgentScope {
 	operationId: string;
+	existingAgentId?: string;
 	role: string;
 	task: string;
 	assignment: unknown;
@@ -37,7 +38,9 @@ export class LaunchCoordinator {
 	) {}
 
 	async launch(input: CoordinatedLaunchInput): Promise<CoordinatedLaunchResult> {
-		const reserved = await this.registry.reserve({
+		const reserved = input.existingAgentId
+			? await this.registry.bindScope(input.existingAgentId, { ...(input.workItemId ? { workItemId: input.workItemId } : {}), ...(input.taskId ? { taskId: input.taskId } : {}), ...(input.evaluationId ? { evaluationId: input.evaluationId } : {}), ...(input.runId ? { runId: input.runId } : {}), ...(input.workspace ? { workspace: input.workspace } : {}) })
+			: await this.registry.reserve({
 			operationId: input.operationId,
 			parentAgentId: this.mainAgentId,
 			parentDepth: 0,
