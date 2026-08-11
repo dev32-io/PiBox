@@ -5,9 +5,9 @@ title: Product-partner orchestration and durable subagents
 phase: planning
 state: active
 planning:
-  revision: 7
+  revision: 8
   status: draft
-  contractDigest: sha256:ad74b0f3840e913f0df23c968ec101b25b7b4fd9548c8167b2852a3c2789b1fa
+  contractDigest: sha256:1dfc2cd2ac280e45dc133efc07ea0627e6a4c7711a410bf0195caf73a1ed833d
 artifacts:
   - id: intent
     type: intent
@@ -30,6 +30,12 @@ artifacts:
     type: decision
     path: decisions/background-agent-liveness.md
     status: draft
-tasks: []
+tasks:
+  - id: product-partner-prompt-contracts
+    path: tasks/product-partner-prompt-contracts/task.yaml
 evaluations: []
-integrationUnits: []
+integrationUnits:
+  - id: prompt-contracts
+    tasks:
+      - product-partner-prompt-contracts
+    intermediatePolicy: coherent

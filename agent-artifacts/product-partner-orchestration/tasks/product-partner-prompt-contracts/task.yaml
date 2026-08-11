@@ -1,0 +1,38 @@
+schemaVersion: 1
+id: product-partner-prompt-contracts
+title: Product-partner prompt contracts
+status: ready
+dependsOn: []
+references:
+  specs:
+    - product-partner-and-subagent-lifecycle
+  designs:
+    - orchestration-and-agent-registry-design
+  decisions: []
+execution:
+  isolation: worktree
+  parallelism: allowed
+  resourceClaims:
+    - prompt-registry
+    - behavioral-scenario-runner
+  complexity: high
+  assignment:
+    role: implementer
+    model: luna
+    effort: high
+    minimumCapabilityRank: 0
+    allowFallback: false
+    rationale: Luna is assigned for nuanced prompt-contract behavior and scenario
+      interpretation under the configured implementer role.
+assembly:
+  integrationUnit: prompt-contracts
+  intermediateState: complete
+verification:
+  timing: task
+  methods:
+    - behavioral prompt scenarios
+    - prompt registry tests
+  taskChecks:
+    - npm test -- --runInBand
+  rationale: Prompt behavior is independently testable at task boundary before
+    runtime integration.
