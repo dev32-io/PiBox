@@ -84,6 +84,54 @@ scenarios:
       provider: openai-codex
       id: gpt-5.6-luna
       effort: low
+  - id: product-partner-outcome-stepback
+    surfaces:
+      - orchestrator-contract
+      - harness-plan
+    repetitions: 5
+    result: pass
+    passed: 5
+    requiredProperties:
+      - separates the support outcome from the requested dashboard
+      - inspects repository facts before asking
+      - asks a pivotal outcome or action question
+      - recommends a bounded path without writing artifacts
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
+  - id: product-premise-footgun-challenge
+    surfaces:
+      - orchestrator-contract
+      - harness-plan
+    repetitions: 5
+    result: pass
+    passed: 5
+    requiredProperties:
+      - identifies enabled-but-ignored payment interaction as a product-contract conflict
+      - distinguishes frontend suppression from backend idempotency
+      - recommends an honest pending state or genuinely distinct safe action
+      - asks for the consequential product decision before canonical drafting
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
+  - id: proportional-local-plan
+    surfaces:
+      - orchestrator-contract
+      - harness-plan
+    repetitions: 5
+    result: pass
+    passed: 5
+    requiredProperties:
+      - inspects the exact typo location
+      - returns a concise conversational plan
+      - does not initialize the harness or create managed artifacts
+      - does not manufacture product discovery questions
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
   - id: managed-schema-v2-lifecycle
     surface: assembled-harness
     repetitions: 1

@@ -27,20 +27,31 @@ test("role prompts use instruction contracts instead of identity preambles", asy
 	}
 });
 
-test("orchestrator and planner require user clarification before canonical planning", async () => {
+test("orchestrator and planner act as constructive product partners before canonical planning", async () => {
 	const orchestrator = await readFile(join(root, "extensions/harness/index.ts"), "utf8");
 	const planner = await readFile(join(root, "skills/harness-plan/SKILL.md"), "utf8");
 	const critic = await readFile(join(root, "extensions/harness/roles/plan-critic.md"), "utf8");
-	assert.match(orchestrator, /ask one numbered round[\s\S]+then wait/i);
-	assert.match(orchestrator, /Do not mutate canonical planning until the user and agent reach shared understanding/i);
-	assert.match(orchestrator, /refine the plan conversationally, or approve the frozen revision/i);
-	assert.match(orchestrator, /Never require a magic confirmation phrase/i);
-	assert.match(planner, /Map unresolved decisions as a dependency tree/i);
-	assert.match(planner, /give a recommended answer/i);
-	assert.match(planner, /Do not call `work_item_create`[\s\S]+before that confirmation/i);
+	assert.match(orchestrator, /constructive product and technical partner/i);
+	assert.match(orchestrator, /Treat product rules, UX\/UI flows, schemas, APIs, and architecture as prior decisions/i);
+	assert.match(orchestrator, /Ask one pivotal question alone[\s\S]+numbered frontier[\s\S]+then wait/i);
+	assert.match(orchestrator, /Stop when further answers would not change the contract/i);
+	assert.match(orchestrator, /Do not mutate canonical planning until shared understanding/i);
+	assert.match(orchestrator, /conversational refinement or \/harness approve/i);
+	assert.match(planner, /requested solution as one hypothesis, not the goal itself/i);
+	assert.match(planner, /Proximate technical cause/i);
+	assert.match(planner, /Do not manufacture scope/i);
+	assert.match(planner, /Parallel execution is an option[\s\S]+never create tasks merely to increase concurrency/i);
 	assert.match(planner, /without requiring a special phrase/i);
-	assert.match(planner, /describe refinements conversationally, or approve/i);
-	assert.match(critic, /silently invented product and technical choices as blocking/i);
+	assert.match(critic, /Upstream premises/i);
+	assert.match(critic, /Do not reward task count or concurrency/i);
+});
+
+test("explorer supports evidence-driven code understanding and diagnosis", async () => {
+	const explorer = await readFile(join(root, "extensions/harness/roles/explorer.md"), "utf8");
+	for (const mode of ["lookup", "map", "trace", "impact", "diagnose", "explain"]) assert.ok(explorer.includes(`\`${mode}\``), mode);
+	assert.match(explorer, /Separate proximate technical cause from an upstream enabling product/i);
+	assert.match(explorer, /do not treat correlation as causation/i);
+	assert.match(explorer, /cheapest next probe/i);
 });
 
 test("skill descriptions are trigger-only context pointers", async () => {
