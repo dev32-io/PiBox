@@ -1,11 +1,14 @@
 schemaVersion: 1
 recordedAt: 2026-08-10
 configuredModel: luna
-resolvedFallback:
+resolvedModel:
+  provider: openai-codex
+  model: gpt-5.6-luna
+  effort: low
+historicalFallback:
   provider: ollama-cloud
   model: gpt-oss:20b
-  effort: low
-fallbackReason: openai-codex authentication expired before candidate runs
+  reason: OpenAI authentication was temporarily expired during the first comparison run; final candidate verification used Luna after authentication recovery.
 scenarios:
   - id: explorer-repository-path-evidence
     surface: explorer
@@ -48,15 +51,24 @@ scenarios:
       - harness-recover
       - harness-init
     repetitionsPerSurface: 5
-    result: needs_rerun
-    adjudication: Most apparent failures were brittle keyword-scoring errors; manual review confirmed compliant outputs for explorer, plan critic, implementer, test implementer, spec reviewer, quality reviewer, repair implementer, and all six skills. Researcher completion under-emphasized primary-source ownership and two E2E outputs omitted the attempted-setup requirement, so both prompts were tightened.
-    rerun:
-      status: waiting_capacity
-      attempts: 5
-      failure: ollama-cloud HTTP 429 session usage limit
-      otherConfiguredFailures:
-        - openai-codex authentication expired
-        - openrouter HTTP 401 user not found
+    result: pass
+    passed: 75
+    adjudication: Luna ran five fresh-context repetitions for every listed surface. Keyword scoring undercounted semantically equivalent wording for explorer, researcher, plan critic, harness-research, and harness-recover; every flagged result was read manually. Researcher and E2E completion contracts were tightened from the initial control, then each passed a dedicated Luna candidate rerun 5/5.
+  - id: managed-schema-v2-lifecycle
+    surface: assembled-harness
+    repetitions: 1
+    requiredProperties:
+      - natural-language schema-v2 planning
+      - direct command approval
+      - Luna supervised task completion
+      - repository-local .worktree/pibox allocation
+      - integration-unit checks
+      - planned Luna evaluation with qualified criterion and evidence
+      - structured outcome completion
+      - clean canonical and task worktrees
+    result: pass
+    repository: /tmp/pibox-structured-e2e
+    finalCommit: 2ac12a3
 protocolCoverage:
   implementer: extensions/harness/tests/supervisor.test.ts
   evaluator: extensions/harness/tests/extension.test.ts and evaluator capability tests
