@@ -173,7 +173,7 @@ limits:
 
 Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`.
 
-Fallback is always visible. Strict unavailable selections enter `waiting_model`; the harness never silently lowers capability rank or effort.
+Fallback is always visible. Strict unavailable selections enter `waiting_model`; the workflow never silently lowers capability rank or effort.
 
 ## Durable state
 
@@ -194,10 +194,10 @@ Private records include append-only events, run projections, transcripts, checkp
 ## Trust and limitations
 
 - Canonical mutations require a clean Git branch and create commits.
-- Dirty canonical state fails loudly; the harness never auto-stashes or auto-commits unrelated work.
+- Dirty canonical state fails loudly; the workflow never auto-stashes or auto-commits unrelated work.
 - Worker and evaluator subprocesses receive only their declared active tools and run-scoped credentials.
 - V1 capability scoping is not an OS sandbox. A role with `bash` still has operating-system access available to that process.
-- Detached execution, automatic delayed capacity resume, and cross-provider checkpoint restart remain deferred as documented in [`../todo-harness.md`](../todo-harness.md).
+- Detached execution, automatic delayed capacity resume, and cross-provider checkpoint restart remain deferred in the internal backlog.
 
 ## Verification
 

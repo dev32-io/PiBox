@@ -55,21 +55,11 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"workflow_apply_change",
 		"workflow_transition",
 		"workflow_init",
-		"work_item_create",
-		"work_item_status",
-		"artifact_create",
-		"artifact_update",
-		"artifact_link",
-		"artifact_reconcile",
-		"task_define",
-		"task_update",
-		"evaluation_define",
 		"exploration_launch",
 		"agent_run",
 		"task_integrate",
 		"evaluation_record",
 		"work_item_complete",
-		"planning_submit",
 	]);
 	assert.deepEqual(commands, ["workflow"]);
 	assert.equal(tools.includes("planning_approve"), false);
@@ -79,7 +69,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.deepEqual(events, ["before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });
-	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(activeTools.includes(legacy), false, legacy);
+	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(tools.includes(legacy), false, legacy);
 	for (const preferred of ["workflow_list", "workflow_get", "workflow_create", "workflow_patch", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
 	assert.equal(activeTools.includes("read"), true);
 });

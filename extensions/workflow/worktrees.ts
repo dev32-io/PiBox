@@ -22,7 +22,7 @@ async function exists(path: string): Promise<boolean> {
 }
 
 function safeSegment(value: string): string {
-	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) throw new HarnessError("INVALID_ARTIFACT", `Unsafe harness identifier: ${value}`);
+	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) throw new HarnessError("INVALID_ARTIFACT", `Unsafe workflow identifier: ${value}`);
 	return value;
 }
 
@@ -148,7 +148,7 @@ export class WorktreeManager {
 		const branch = `harness/${safeSegment(workItemId)}/${safeSegment(task.id)}`;
 		const path = join(this.worktreeRoot, workItemId, task.id);
 		if (!(await isGitPathIgnored(this.identity.root, ".worktree/pibox/.ignore-check"))) {
-			throw new HarnessError("CONFIG_INVALID", "Repository-local harness worktrees require an effective /.worktree/ ignore rule. Run /workflow init or add it to .gitignore before task launch.");
+			throw new HarnessError("CONFIG_INVALID", "Repository-local workflow worktrees require an effective /.worktree/ ignore rule. Run /workflow init or add it to .gitignore before task launch.");
 		}
 		const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 		await mkdir(join(this.worktreeRoot, workItemId), { recursive: true, mode: 0o700 });

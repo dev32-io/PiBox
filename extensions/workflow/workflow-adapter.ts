@@ -132,7 +132,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			return { ref, title: item.title || item.id, status, steps };
 		},
 		async runStep(ref, ctx, _signal): Promise<WorkflowRunResult> {
-			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid harness workflow step: ${ref}`);
+			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid workflow step: ${ref}`);
 			const [, workItemId, kind, id] = match;
 			if (kind === "task") {
 				const runtime = await options.runtimeFor(ctx);
@@ -150,7 +150,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
 		async controlWorkflow(ref, action, ctx) {
-			const workflow = WORK_ITEM.exec(ref); if (!workflow) throw new Error(`Invalid harness workflow: ${ref}`);
+			const workflow = WORK_ITEM.exec(ref); if (!workflow) throw new Error(`Invalid workflow reference: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
 			const workItemId = workflow[1]!;
 			if (action === "resume") {

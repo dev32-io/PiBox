@@ -53,8 +53,6 @@ Initial approval is user-only through /workflow approve <work-item-id>. Routine 
 
 Start approved delivery with workflow_start. Let the runtime advance routine stages, merges, and evaluations. Esc controls only the current chat turn. Preserve dirty or conflicting work, pause once on failure, and never resolve destructive recovery invisibly. Claim completion only from fresh evidence and brief the user from outcome.md plus observed workflow results.`;
 
-const LEGACY_PLANNING_TOOL_NAMES = new Set(["work_item_create", "work_item_status", "artifact_create", "artifact_update", "artifact_link", "artifact_reconcile", "task_define", "task_update", "evaluation_define", "planning_submit"]);
-
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_status",
 	"workflow_list",
@@ -65,21 +63,11 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_apply_change",
 	"workflow_transition",
 	"workflow_init",
-	"work_item_create",
-	"work_item_status",
-	"artifact_create",
-	"artifact_update",
-	"artifact_link",
-	"artifact_reconcile",
-	"task_define",
-	"task_update",
-	"evaluation_define",
 	"agent_run",
 	"exploration_launch",
 	"task_integrate",
 	"evaluation_record",
 	"work_item_complete",
-	"planning_submit",
 ]);
 
 interface HarnessRuntime {
@@ -717,281 +705,6 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "work_item_create",
-		label: "Create Work Item",
-		description: "Create and atomically commit a managed change or story after the user has confirmed shared intent and requested a draft. Prefer schema-v2 semantic intent sections; Markdown is rendered deterministically.",
-		promptSnippet: "Create a committed managed change or story only after user-confirmed clarification and a request to draft",
-		parameters: Type.Union([
-			Type.Object({
-				id: Type.String({ description: "Stable kebab-case work-item id" }), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT,
-				narrativeSchemaVersion: Type.Literal(2),
-				intentSections: Type.Object({
-					problem: Type.String(), desiredOutcome: Type.String(), scopeIncluded: Type.Array(Type.String()), successSignals: Type.Array(Type.String()),
-					scopeExcluded: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())),
-				}, { additionalProperties: false }),
-			}, { additionalProperties: false }),
-			Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, intent: Type.String({ description: "Legacy schema-v1 Markdown intent" }) }, { additionalProperties: false }),
-		]),
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = await runtime.workItems.create({ ...params, kind: params.kind as WorkItemKind });
-					await runtime.events.append("work_item.created", { id: item.id, revision: item.planning.revision });
-					return textResult(`Created and committed ${item.kind} ${item.id} at planning revision ${item.planning.revision}.`, item);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "work_item_status",
-		label: "Work Item Status",
-		description: "Inspect one managed work item with task, integration-unit, and evaluation catalogs.",
-		parameters: Type.Object({ workItemId: Type.String() }),
-		async execute(_id, params, _signal, _update, ctx) {
-			try {
-				const runtime = await runtimeFor(ctx);
-				const item = await runtime.workItems.read(params.workItemId);
-				const tasks = await Promise.all(item.tasks.map((task) => runtime.workItems.readTask(item.id, task.id)));
-				const evaluations = await Promise.all(item.evaluations.map((evaluation) => runtime.workItems.readEvaluation(item.id, evaluation.id)));
-				return textResult(`${item.id}: ${item.phase}/${item.state}, planning ${item.planning.status} r${item.planning.revision}\n${tasks.map((task) => `- ${task.id}: ${task.status}`).join("\n")}`, { item, tasks, evaluations });
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	for (const operation of ["create", "update"] as const) {
-		pi.registerTool({
-			name: `artifact_${operation}`,
-			label: `${operation === "create" ? "Create" : "Update"} Workflow Artifact`,
-			description: `${operation === "create" ? "Create" : "Update"} and atomically commit a canonical spec, design, or decision. Prefer schema-v2 semantic sections; the capability renders stable Markdown.`,
-			parameters: Type.Union([
-				Type.Object({
-					workItemId: Type.String(), id: Type.String(), type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]),
-					narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: Type.Record(Type.String(), Type.Unknown(), { description: "Semantic values named by the selected artifact contract" }),
-				}, { additionalProperties: false }),
-				Type.Object({ workItemId: Type.String(), id: Type.String(), type: Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")]), content: Type.String({ description: "Legacy schema-v1 Markdown" }) }, { additionalProperties: false }),
-			]),
-			async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-				try {
-					requireTrusted(ctx);
-					const runtime = await runtimeFor(ctx);
-					return idempotentMutation(runtime, toolCallId, params, async () => {
-						const item = await runtime.workItems.putArtifact({ ...params, operation });
-						await runtime.events.append(`artifact.${operation}d`, {
-							workItemId: item.id,
-							artifactId: params.id,
-							revision: item.planning.revision,
-						});
-						return textResult(`${operation === "create" ? "Created" : "Updated"} ${params.type} ${params.id}; planning is ${item.planning.status} at r${item.planning.revision}.`, item);
-					});
-				} catch (error) {
-					throw new Error(describeHarnessError(error));
-				}
-			},
-		});
-	}
-
-	pi.registerTool({
-		name: "artifact_link",
-		label: "Link Workflow Artifact",
-		description: "Add validated artifact-id relationships to the canonical work-item index.",
-		parameters: Type.Object({ workItemId: Type.String(), artifactId: Type.String(), links: Type.Array(Type.String()) }),
-		async execute(toolCallId, params, _signal, _update, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = await runtime.workItems.linkArtifact(params.workItemId, params.artifactId, params.links);
-					return textResult(`Linked ${params.artifactId} to ${params.links.join(", ")}.`, item);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "artifact_reconcile",
-		label: "Reconcile Workflow Artifacts",
-		description: "Read canonical planning after clean out-of-band edits. Legacy compatibility tool; no contract-hash gate is applied.",
-		parameters: Type.Object({ workItemId: Type.String() }),
-		async execute(toolCallId, params, _signal, _update, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = await runtime.workItems.reconcile(params.workItemId);
-					return textResult(`Reconciled ${item.id}: planning ${item.planning.status} r${item.planning.revision}.`, item);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "task_define",
-		label: "Define Workflow Task",
-		description: "Define and atomically commit an executable task contribution, its brief, acceptance contract, assembly unit, and proportionate verification policy.",
-		parameters: Type.Object({
-			workItemId: Type.String(),
-			id: Type.String(),
-			title: Type.String(),
-			narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])),
-			briefSections: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-			acceptanceSections: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
-			brief: Type.Optional(Type.String({ description: "Legacy schema-v1 task brief" })),
-			acceptance: Type.Optional(Type.String({ description: "Legacy schema-v1 acceptance contract" })),
-			dependsOn: Type.Optional(Type.Array(Type.String())),
-			specs: Type.Optional(Type.Array(Type.String())),
-			designs: Type.Optional(Type.Array(Type.String())),
-			decisions: Type.Optional(Type.Array(Type.String())),
-			isolation: Type.Optional(Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for implementer, test-implementer, and repair-implementer roles." })),
-			parallelism: Type.Optional(Type.Union([Type.Literal("allowed"), Type.Literal("serial")])),
-			resourceClaims: Type.Optional(Type.Array(Type.String())),
-			complexity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
-			role: Type.Optional(Type.String({ description: "Configured role name, normally implementer." })),
-			model: Type.String({ description: "Configured model alias such as sol, terra, or luna; never a raw model id." }),
-			effort: Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]),
-			minimumCapabilityRank: Type.Optional(Type.Integer({ minimum: 0 })),
-			allowFallback: Type.Optional(Type.Boolean()),
-			assignmentRationale: Type.String(),
-			stageId: Type.Optional(Type.String({ description: "Ordered execution-stage id; tasks sharing a stage form a deliberate concurrency batch and merge in task order." })),
-			integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId." })),
-			intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]),
-			verificationTiming: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]),
-			verificationMethods: Type.Optional(Type.Array(Type.String())),
-			taskChecks: Type.Optional(Type.Array(Type.String({ description: "Executable shell command to run at the declared verification boundary, for example: test -f index.html" }))),
-			verificationRationale: Type.String(),
-		}),
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-				const roleName = params.role ?? "implementer";
-				const rolePolicy = runtime.config.roles[roleName];
-				if (!rolePolicy) throw new HarnessError("CONFIG_INVALID", `Unknown task role: ${roleName}. Configured roles: ${Object.keys(runtime.config.roles).join(", ")}`);
-				if (!runtime.config.models[params.model]) throw new HarnessError("CONFIG_INVALID", `Task model must be a configured alias, not a raw model id. Configured aliases: ${Object.keys(runtime.config.models).join(", ")}`);
-				const isolation = params.isolation ?? "worktree";
-				if (rolePolicy.workspace === "worktree" && isolation !== "worktree") throw new HarnessError("CONFIG_INVALID", `Role ${roleName} requires worktree isolation`);
-				const manifest: TaskManifest = {
-					schemaVersion: 1,
-					id: params.id,
-					title: params.title,
-					status: (params.dependsOn?.length ?? 0) > 0 ? "blocked" : "ready",
-					dependsOn: params.dependsOn ?? [],
-					references: { specs: params.specs ?? [], designs: params.designs ?? [], decisions: params.decisions ?? [] },
-					execution: {
-						isolation,
-						parallelism: params.parallelism ?? "allowed",
-						resourceClaims: params.resourceClaims ?? [],
-						complexity: params.complexity,
-						assignment: {
-							role: roleName,
-							model: params.model,
-							effort: params.effort as HarnessEffort,
-							minimumCapabilityRank: params.minimumCapabilityRank ?? 0,
-							allowFallback: params.allowFallback ?? true,
-							rationale: params.assignmentRationale,
-						},
-					},
-					assembly: { stageId: params.stageId ?? params.integrationUnit ?? params.id, intermediateState: params.intermediateState },
-					verification: {
-						timing: params.verificationTiming,
-						methods: params.verificationMethods ?? [],
-						taskChecks: params.taskChecks ?? [],
-						rationale: params.verificationRationale,
-					},
-				};
-				const item = await runtime.workItems.defineTask({
-					workItemId: params.workItemId,
-					manifest,
-					...(params.narrativeSchemaVersion ? { narrativeSchemaVersion: params.narrativeSchemaVersion } : {}),
-					...(params.briefSections ? { briefSections: params.briefSections } : {}),
-					...(params.acceptanceSections ? { acceptanceSections: params.acceptanceSections } : {}),
-					...(params.brief ? { brief: params.brief } : {}),
-					...(params.acceptance ? { acceptance: params.acceptance } : {}),
-				});
-				await runtime.events.append("task.defined", { workItemId: item.id, taskId: manifest.id, revision: item.planning.revision });
-				return textResult(`Defined task ${manifest.id} in execution stage ${manifest.assembly.stageId}; planning r${item.planning.revision}.`, item);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "task_update",
-		label: "Update Workflow Task",
-		description: "Apply an orchestrator-owned non-delivery task lifecycle transition. Completion and integration states require their dedicated capabilities.",
-		parameters: Type.Object({
-			workItemId: Type.String(),
-			taskId: Type.String(),
-			status: Type.Union([Type.Literal("blocked"), Type.Literal("ready"), Type.Literal("reviewing"), Type.Literal("changes_requested"), Type.Literal("paused"), Type.Literal("cancelled")]),
-		}),
-		async execute(toolCallId, params, _signal, _update, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const task = await runtime.workItems.updateTask(params.workItemId, params.taskId, { status: params.status });
-					return textResult(`Task ${task.id} is now ${task.status}.`, task);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "evaluation_define",
-		label: "Define Workflow Evaluation",
-		description: "Define and atomically commit a proportionate evaluation at a task, integration-unit, or work-item boundary.",
-		parameters: Type.Object({
-			workItemId: Type.String(),
-			id: Type.String(),
-			type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
-			scopeType: Type.Union([Type.Literal("task"), Type.Literal("integrationUnit"), Type.Literal("workItem")]),
-			scopeId: Type.String(),
-			required: Type.Boolean(),
-			methods: Type.Array(Type.String()),
-			criteria: Type.Optional(Type.Array(Type.String({ description: "Qualified references such as specification-id#AC-001" }))),
-		}),
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-				const manifest: EvaluationManifest = {
-					schemaVersion: 1,
-					id: params.id,
-					type: params.type,
-					scope: { [params.scopeType]: params.scopeId },
-					status: "planned",
-					required: params.required,
-					attempt: 0,
-					methods: params.methods,
-					criteria: params.criteria ?? [],
-				};
-				const item = await runtime.workItems.defineEvaluation(params.workItemId, manifest);
-				await runtime.events.append("evaluation.defined", { workItemId: item.id, evaluationId: manifest.id });
-				return textResult(`Defined ${manifest.type} evaluation ${manifest.id}.`, item);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
 		name: "exploration_launch",
 		label: "Launch Repository Exploration",
 		description: "Launch a read-only explorer with a typed question, decision boundary, depth, stop conditions, and structured evidence handoff.",
@@ -1195,26 +908,6 @@ export default function workflow(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerTool({
-		name: "planning_submit",
-		label: "Submit Workflow Planning",
-		description: "Freeze a coherent drafted contract for direct user approval; the user may still request conversational refinements, which return planning to draft state.",
-		parameters: Type.Object({ workItemId: Type.String({ description: "Managed work-item id" }) }),
-		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = await runtime.workItems.submitPlanning(params.workItemId);
-					await runtime.events.append("planning.submitted", { id: item.id, revision: item.planning.revision });
-					return textResult(`Planning for ${item.id} r${item.planning.revision} is awaiting user approval.`, item);
-				});
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
 	pi.registerCommand("workflow", {
 		description: "Control PiBox workflows: init | status | approve | pause | resume | stop | recover",
 		handler: async (args, ctx) => {
@@ -1296,7 +989,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		else if (isSubagentProcess()) {
 			[...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
 			if (process.env.PIBOX_SUBAGENT_ROLE !== "explorer") EXPLORATION_TOOL_NAMES.forEach((name) => disallowed.add(name));
-		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES, ...LEGACY_PLANNING_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
 		if (isSubagentProcess()) {
 			const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;

@@ -125,7 +125,7 @@ function parseRole(value: unknown, path: string): RoleConfig {
 }
 
 export function validateHarnessConfig(value: unknown): HarnessConfig {
-	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", "Harness configuration must be a mapping");
+	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", "Workflow configuration must be a mapping");
 	for (const key of Object.keys(value)) {
 		if (!TOP_LEVEL_KEYS.has(key)) throw new HarnessError("CONFIG_INVALID", `Unknown top-level configuration field: ${key}`);
 	}
