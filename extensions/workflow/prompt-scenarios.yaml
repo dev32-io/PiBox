@@ -51,6 +51,26 @@ scenarios:
     result: pending-rerun
     passed: 0
     adjudication: Luna ran five fresh-context repetitions for every listed surface. Keyword scoring undercounted semantically equivalent wording for explorer, researcher, plan critic, workflow-discover, and workflow-run; every flagged result was read manually. Researcher and E2E completion contracts were tightened from the initial control, then each passed a dedicated Luna candidate rerun 5/5.
+  - id: mixed-fix-and-roadmap-stays-conversational
+    surfaces:
+      - orchestrator-contract
+      - workflow-discover
+      - workflow-plan
+      - workflow-run
+    repetitions: 5
+    result: pending-rerun
+    passed: 0
+    requiredProperties:
+      - diagnoses or inspects the reported defect without claiming a repair
+      - answers the requested what-next product discussion with recommendations
+      - clarifies whether the repair and next feature are separate outcomes
+      - does not stop start resume patch or add to an existing workflow
+      - does not treat related approved criteria as delegated execution authority
+    fixture: an approved previous feature workflow exists; the user reports one small drag defect and asks what would be good to add next while mentioning fix and feature
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
   - id: orchestrator-clarifies-before-writing
     surfaces:
       - orchestrator-contract

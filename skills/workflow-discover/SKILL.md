@@ -18,6 +18,18 @@ Find the right outcome before optimizing the requested solution. Keep ordinary c
 5. For bugs, distinguish symptom, expectation, reproduction, proximate cause, upstream enabling condition, mitigation, repair, and prevention. Diagnose before promising a repair.
 6. Probe hidden cases only when they could change outcome, scope, architecture, product contract, delivery, verification, rollout, or recovery.
 7. Ask one pivotal question when it can reframe the work; otherwise ask a short numbered set of independent decisions with recommendations. Stop when further answers would not materially change delivery.
+8. Treat mixed turns as discovery: if the user combines a defect or requested change with alternatives, roadmap questions, “what else,” or uncertainty about feature versus fix, answer the discussion and settle whether these are one outcome or separate work before planning or execution.
+
+## Mutation Boundary
+
+Repository inspection and reading existing workflow resources are evidence gathering, not consent to modify them. During discovery:
+
+- do not stop, start, resume, patch, or add work to an existing workflow;
+- do not infer “continue this workflow” merely because an existing item covers related code or criteria;
+- do not treat “address,” “fix,” “we need,” or a feature/fix label as execution approval;
+- first give the user a substantive conversational response, including requested recommendations, and make the proposed routing explicit.
+
+Only cross into planning when intent is understood and the user asks for a plan/draft or clearly chooses managed delivery. Only cross into run for an approved workflow when the user clearly asks to execute it.
 
 ## Durable Checkpoints
 

@@ -7,11 +7,11 @@ description: Use when understood intent needs a durable executable contract, con
 
 ## Boundary
 
-Translate shared understanding into an executable contract. Do not repeat broad discovery; return to discussion if a material product decision remains. Canonical capabilities are the only writers of `agent-artifacts/`.
+Translate shared understanding into an executable contract. Do not repeat broad discovery; return to discussion if a material product decision remains. A mixed request for a change plus ideas, alternatives, or “what next” has not reached this boundary until that frontier is discussed. Canonical capabilities are the only writers of `agent-artifacts/`.
 
 ## Build the Contract
 
-1. Call `workflow_list`; revise a matching draft instead of creating a duplicate. For new intent, create the parent once with `workflow_create`, then add children after it exists. Use `workflow_apply_change` only for genuinely coherent multi-resource changes.
+1. Call `workflow_list`; revise a matching draft only when the user clearly intends to continue that same managed outcome. Semantic overlap or related code is evidence, not consent to amend previous work. For new intent, create the parent once with `workflow_create`, then add children after it exists. Use `workflow_apply_change` only for genuinely coherent multi-resource changes.
 2. Preserve provenance. Record confirmed or delegated choices without turning recommendations, silence, or preferred technology into user requirements.
 3. Specify outcome, included/excluded scope, stable observable acceptance criteria, constraints, assumptions, and material edge cases before implementation design.
 4. Add only useful specifications, designs, and decisions. Prefer the smallest set that makes implementation and review unambiguous.

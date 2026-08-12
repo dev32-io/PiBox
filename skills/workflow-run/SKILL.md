@@ -7,7 +7,7 @@ description: Use when an approved workflow should start, resume, recover, verify
 
 ## Run
 
-1. Confirm direct approval and call `workflow_start`; do not manually sequence routine tasks.
+1. Confirm direct approval and a clear user request to execute this workflow, then call `workflow_start`; do not manually sequence routine tasks. A new bug report, “address this,” feature/fix discussion, or related prior approval does not authorize starting, stopping, resuming, or amending an existing workflow.
 2. For new delivery, require a clean `develop`, fast-forward pull, and create the planned feature/fix branch. For continuation, require the clean recorded current branch and never sync `develop` automatically.
 3. Let the runtime enforce stages, dependencies, resource claims, isolation, task merges, and planned evaluations. Monitor routine events without narrating every transition.
 4. Resolve worker questions from canonical context. Apply delegated amendments with `workflow_apply_change`, respond durably, and resume. Ask the user only for material outcome, policy, privacy/security, irreversible, destructive, or explicitly retained decisions.
