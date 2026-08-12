@@ -6,6 +6,11 @@ import { LinePrefixedComponent } from "./tool-shell.js";
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 type PreviewLine = { text: string; omitted?: boolean; diff?: boolean };
 
+// A small number of machine-generated lines (for example, source maps) can wrap
+// into a full screen. Keep collapsed tool output scannable by limiting that case
+// by characters as well as by logical lines.
+const COLLAPSED_PREVIEW_CHARACTER_LIMIT = 1_200;
+
 function shortenPath(value: string, cwd: string): string {
 	if (!value) return ".";
 	const home = process.env.HOME;
@@ -78,9 +83,32 @@ function previewLines(name: ToolName, lines: string[], expanded: boolean): Previ
 	}
 	const limit = previewLimit(name);
 	const selected = name === "bash" ? lines.slice(-limit) : lines.slice(0, limit);
+	const selectedText = selected.join("\n");
+	const hiddenLineCharacters = lines.slice(name === "bash" ? 0 : selected.length, name === "bash" ? -selected.length : undefined).join("\n").length;
+	if (selectedText.length > COLLAPSED_PREVIEW_CHARACTER_LIMIT) {
+		const omitted = selectedText.length - COLLAPSED_PREVIEW_CHARACTER_LIMIT + hiddenLineCharacters;
+		return [
+			{ text: selectedText.slice(0, COLLAPSED_PREVIEW_CHARACTER_LIMIT), diff: name === "write" },
+			{ text: `+${omitted} more characters`, omitted: true },
+		];
+	}
 	const shown: PreviewLine[] = selected.map((text) => ({ text, diff: name === "write" }));
 	if (lines.length > selected.length) shown.push({ text: `+${lines.length - selected.length} more lines`, omitted: true });
 	return shown;
+}
+
+// Keep the change marker in a fixed-width gutter. Without the reserved column,
+// single-digit additions/removals (`+8`) make their source content appear one
+// column left of context and multi-digit diff lines.
+export function normalizeDiffGutters(diff: string): string {
+	const lines = diff.split("\n");
+	const numbered = lines.map((line) => line.match(/^([ +\-])(\d+)(\s.*)$/));
+	const numberWidth = Math.max(2, ...numbered.flatMap((match) => match ? [match[2]?.length ?? 0] : []));
+	return lines.map((line, index) => {
+		const match = numbered[index];
+		if (!match) return line;
+		return `${match[1]}${match[2]?.padStart(numberWidth)}${match[3]}`;
+	}).join("\n");
 }
 
 function appendPreview(container: Container, name: ToolName, lines: PreviewLine[], theme: Theme): void {
@@ -93,7 +121,7 @@ function appendPreview(container: Container, name: ToolName, lines: PreviewLine[
 		} else {
 			content = line.diff ? line.text : theme.fg("dim", line.text);
 		}
-		container.addChild(new LinePrefixedComponent(new Text(content, 0, 0), "   ", "   ", 3, 3));
+		container.addChild(new LinePrefixedComponent(new Text(content, 0, 0), "   ", "   ", 3, 3, "", 0, undefined, undefined, undefined, false));
 	}
 }
 
@@ -118,7 +146,7 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 	let rawLines = nonEmptyLines(raw);
 	const diff = name === "edit" ? result.details?.diff : metadata?.diff;
 	if (diff) rawLines = diff.split("\n");
-	const renderedLines = diff ? renderDiff(diff).split("\n") : rawLines;
+	const renderedLines = diff ? renderDiff(normalizeDiffGutters(diff)).split("\n") : rawLines;
 	const error = !!ctx.isError;
 	const status = error ? theme.fg("error", "Error") : theme.fg("success", "Done");
 	const count = countLabel(name, ctx.args ?? {}, rawLines);

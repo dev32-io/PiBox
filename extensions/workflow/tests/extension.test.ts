@@ -61,7 +61,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"evaluation_record",
 		"work_item_complete",
 	]);
-	assert.deepEqual(commands, ["workflow"]);
+	assert.deepEqual(commands, ["workflow", "harness"]);
 	assert.equal(tools.includes("planning_approve"), false);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_patch")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_apply_change")), /expectedRevision|contractDigest/);

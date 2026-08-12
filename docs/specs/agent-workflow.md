@@ -109,7 +109,7 @@ Committed project artifacts
   Intent, specs, design, decisions, task contracts,
   curated evaluations, evidence, and outcomes.
 
-Private operational state
+Ignored repository-local operational state (`.pibox/`)
   Runs, transcripts, events, locks, heartbeats,
   raw command output, checkpoints, and recovery data.
 ```
@@ -840,7 +840,7 @@ worktree:
     <work-item-id>/<task-id>
 ```
 
-Allocation acquires a lock, verifies the selected base, records its exact commit, proves the repository-local target is ignored, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`. Workflow initialization idempotently ensures an effective root `/.worktree/` ignore rule. Private operational state remains under `~/.pi/agent/harness/`; legacy external worktrees remain recoverable at their recorded runtime paths.
+Allocation acquires a lock, verifies the selected base, records its exact commit, proves the repository-local target is ignored, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`. Workflow initialization idempotently ensures effective `/.worktree/` and `/.pibox/` ignore rules. Repository-local operational state lives under `.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable at their recorded runtime paths.
 
 The harness never auto-stashes or auto-commits a dirty feature branch.
 
@@ -1188,7 +1188,7 @@ Locks protect repository integration, worktree allocation, canonical artifact mu
 
 ### 17.4 Retention
 
-Private operational history is retained permanently by default. The harness does not automatically delete transcripts, command output, branches, or worktrees. Explicit inspection, export, redaction, deletion, and cleanup commands are deferred.
+Operational history is retained by default. The harness does not automatically delete transcripts, command output, branches, or worktrees. `/harness worktrees` inventories PiBox-owned worktrees, and `cleanupAll` removes only clean inactive ones; a dirty worktree requires an explicit named `--force` removal. Export and redaction commands remain deferred.
 
 ## 18. Lifecycle and recovery
 

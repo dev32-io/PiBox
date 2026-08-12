@@ -45,7 +45,9 @@ export interface HarnessScaffoldResult {
 }
 
 const WORKTREE_IGNORE_PATTERN = "/.worktree/";
+const PRIVATE_STATE_IGNORE_PATTERN = "/.pibox/";
 const WORKTREE_IGNORE_PROBE = ".worktree/pibox/.ignore-check";
+const PRIVATE_STATE_IGNORE_PROBE = ".pibox/.ignore-check";
 
 async function readOptional(path: string): Promise<string | undefined> {
 	try {
@@ -56,13 +58,16 @@ async function readOptional(path: string): Promise<string | undefined> {
 	}
 }
 
-async function ensureWorktreeIgnore(repositoryRoot: string, ignorePath: string): Promise<boolean> {
-	if (await isGitPathIgnored(repositoryRoot, WORKTREE_IGNORE_PROBE)) return false;
+async function ensureHarnessIgnores(repositoryRoot: string, ignorePath: string): Promise<boolean> {
+	const required: string[] = [];
+	if (!(await isGitPathIgnored(repositoryRoot, WORKTREE_IGNORE_PROBE))) required.push(WORKTREE_IGNORE_PATTERN);
+	if (!(await isGitPathIgnored(repositoryRoot, PRIVATE_STATE_IGNORE_PROBE))) required.push(PRIVATE_STATE_IGNORE_PATTERN);
+	if (required.length === 0) return false;
 	const previous = await readOptional(ignorePath);
 	const prefix = previous && !previous.endsWith("\n") ? `${previous}\n` : (previous ?? "");
-	await atomicWriteFile(ignorePath, `${prefix}${WORKTREE_IGNORE_PATTERN}\n`);
-	if (!(await isGitPathIgnored(repositoryRoot, WORKTREE_IGNORE_PROBE))) {
-		throw new HarnessError("CONFIG_INVALID", `Failed to establish ${WORKTREE_IGNORE_PATTERN} in .gitignore`);
+	await atomicWriteFile(ignorePath, `${prefix}${required.join("\n")}\n`);
+	for (const probe of [WORKTREE_IGNORE_PROBE, PRIVATE_STATE_IGNORE_PROBE]) {
+		if (!(await isGitPathIgnored(repositoryRoot, probe))) throw new HarnessError("CONFIG_INVALID", "Failed to establish PiBox runtime ignores in .gitignore");
 	}
 	return true;
 }
@@ -75,7 +80,7 @@ export async function scaffoldHarness(repositoryRoot: string, profile: HarnessSc
 	const previousIgnore = await readOptional(ignorePath);
 	let ignoreAdded = false;
 	try {
-		ignoreAdded = await ensureWorktreeIgnore(repositoryRoot, ignorePath);
+		ignoreAdded = await ensureHarnessIgnores(repositoryRoot, ignorePath);
 		if (previousConfig !== undefined && !overwrite) {
 			loadHarnessConfig(repositoryRoot);
 			if (ignoreAdded) {

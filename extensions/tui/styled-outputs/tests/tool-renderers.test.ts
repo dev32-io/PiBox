@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { renderToolCall, renderToolResult } from "../components/tool-renderers.js";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { normalizeDiffGutters, renderToolCall, renderToolResult } from "../components/tool-renderers.js";
 
 const theme = {
 	fg: (_token: string, value: string) => value,
 	bold: (value: string) => value,
 } as unknown as Theme;
+
+test("reserves a sign column in diff line-number gutters", () => {
+	assert.equal(
+		normalizeDiffGutters(" 8     context\n+8     added\n-23    removed\n 24    context"),
+		"  8     context\n+ 8     added\n-23    removed\n 24    context",
+	);
+});
 
 test("caps read previews at ten lines", () => {
 	const call = renderToolCall("read", { path: "/tmp/project/file.ts" }, theme, {
@@ -34,5 +42,24 @@ test("keeps expanded output nested beneath the message-aligned tool row", () => 
 		args: { command: "printf output" },
 		isError: false,
 	});
-	assert.deepEqual(result.render(100).map((line) => line.trimEnd()), ["└─ Done • 2 lines", "   one", "   two"]);
+	assert.deepEqual(result.render(100).map((line) => stripTerminalSequences(line).trimEnd()), ["└─ Done • 2 lines", "   one", "   two"]);
+});
+
+test("preserves leading whitespace in tool output", () => {
+	const result = renderToolResult("read", { content: [{ type: "text", text: "function demo() {\n\treturn true;\n}" }] }, { expanded: true }, theme, {
+		args: { path: "/tmp/project/file.ts" },
+		isError: false,
+		state: {},
+	});
+	assert.deepEqual(result.render(100).map((line) => stripTerminalSequences(line).trimEnd()), ["└─ Done • 3 lines", "   function demo() {", "      return true;", "   }"]);
+});
+
+test("caps collapsed long-line output by characters", () => {
+	const result = renderToolResult("bash", { content: [{ type: "text", text: "x".repeat(1_400) }] }, { expanded: false }, theme, {
+		args: { command: "emit source map" },
+		isError: false,
+	});
+	const rendered = stripTerminalSequences(result.render(2_000).join("\n"));
+	assert.match(rendered, /… \+200 more characters \(ctrl\+o to expand\)/);
+	assert.doesNotMatch(rendered, new RegExp(`x{1201}`));
 });

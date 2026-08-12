@@ -218,6 +218,15 @@ function requireTrusted(ctx: ExtensionContext): void {
 	if (!ctx.isProjectTrusted()) throw new HarnessError("CAPABILITY_DENIED", "Workflow mutations require a trusted repository");
 }
 
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	const units = ["KB", "MB", "GB", "TB"];
+	let value = bytes;
+	let unit = -1;
+	do { value /= 1024; unit += 1; } while (value >= 1024 && unit < units.length - 1);
+	return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
+}
+
 async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot> {
 	const workItems = await runtime.workItems.list();
 	const taskCounts: Record<string, Record<string, number>> = {};
@@ -971,6 +980,44 @@ export default function workflow(pi: ExtensionAPI): void {
 					return;
 				}
 				ctx.ui.notify("Usage: /workflow init [standard|economy] | status | approve <work-item> | pause <task> | resume <task> | stop <task> | recover", "warning");
+			} catch (error) {
+				ctx.ui.notify(describeHarnessError(error), "error");
+			}
+		},
+	});
+
+	pi.registerCommand("harness", {
+		description: "Manage PiBox operational state: worktrees [cleanupAll | remove <work-item/task> [--force]]",
+		handler: async (args, ctx) => {
+			const [command, action = "list", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
+			if (command !== "worktrees") {
+				ctx.ui.notify("Usage: /harness worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
+				return;
+			}
+			try {
+				const runtime = await runtimeFor(ctx);
+				const manager = new WorktreeManager(runtime.identity);
+				if (action === "list" && !target) {
+					const worktrees = await manager.listManaged();
+					const total = worktrees.reduce((sum, worktree) => sum + worktree.bytes, 0);
+					ctx.ui.notify(worktrees.length ? `PiBox worktrees: ${worktrees.length}, ${formatBytes(total)}\n${worktrees.map((worktree) => `${worktree.name} — ${worktree.status}${worktree.active ? ", active" : ""}, ${formatBytes(worktree.bytes)}${worktree.branch ? ` (${worktree.branch})` : ""}`).join("\n")}` : "No PiBox worktrees.", "info");
+					return;
+				}
+				if (action === "cleanupAll" && !target) {
+					requireTrusted(ctx);
+					const removed = await manager.cleanupManaged();
+					await runtime.events.append("worktrees.cleaned", { count: removed.length, worktrees: removed.map((worktree) => worktree.name) });
+					ctx.ui.notify(removed.length ? `Removed ${removed.length} clean inactive PiBox worktree(s): ${removed.map((worktree) => worktree.name).join(", ")}.` : "No clean inactive PiBox worktrees to remove.", "info");
+					return;
+				}
+				if (action === "remove" && target && extra.every((value) => value === "--force")) {
+					requireTrusted(ctx);
+					const removed = await manager.removeManaged(target, extra.includes("--force"));
+					await runtime.events.append("worktree.removed", { name: removed.name, forced: extra.includes("--force") });
+					ctx.ui.notify(`Removed PiBox worktree ${removed.name}. Its branch ${removed.branch ?? "(detached)"} was retained.`, "info");
+					return;
+				}
+				ctx.ui.notify("Usage: /harness worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
 			} catch (error) {
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}

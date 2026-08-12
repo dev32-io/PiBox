@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, readFile, rm, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { lstat, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
@@ -42,6 +42,26 @@ export interface PreparedFeatureBranch {
 	baseBranch: string;
 	featureBranch: string;
 	created: boolean;
+}
+
+export interface ManagedWorktree {
+	name: string;
+	path: string;
+	branch?: string;
+	status: "clean" | "modified";
+	active: boolean;
+	bytes: number;
+}
+
+async function directorySize(path: string): Promise<number> {
+	let total = 0;
+	for (const entry of await readdir(path, { withFileTypes: true })) {
+		const child = join(path, entry.name);
+		const info = await lstat(child);
+		if (info.isDirectory()) total += await directorySize(child);
+		else total += info.size;
+	}
+	return total;
 }
 
 export class ResourceLockSet {
@@ -171,6 +191,44 @@ export class WorktreeManager {
 		if (branchExists) await runGit(this.identity.root, ["worktree", "add", path, branch]);
 		else await runGit(this.identity.root, ["worktree", "add", "-b", branch, path, baseCommit]);
 		return { path, branch, baseCommit };
+	}
+
+	async listManaged(): Promise<ManagedWorktree[]> {
+		const activePaths = new Set<string>();
+		for (const item of await this.workItems.list()) {
+			for (const entry of item.tasks) {
+				const task = await this.workItems.readTask(item.id, entry.id);
+				if (task.runtime?.worktree && !["merged", "integrated", "cancelled"].includes(task.status)) activePaths.add(task.runtime.worktree);
+			}
+		}
+		const output = await runGit(this.identity.root, ["worktree", "list", "--porcelain"]);
+		const records: ManagedWorktree[] = [];
+		for (const block of output.split("\n\n")) {
+			const lines = block.split("\n");
+			const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
+			if (!path || !path.startsWith(`${this.worktreeRoot}/`) || !(await exists(path))) continue;
+			const name = relative(this.worktreeRoot, path);
+			const branchRef = lines.find((line) => line.startsWith("branch "))?.slice("branch ".length);
+			const porcelain = await runGit(path, ["status", "--porcelain=v1"]);
+			records.push({ name, path, ...(branchRef ? { branch: branchRef.replace("refs/heads/", "") } : {}), status: porcelain ? "modified" : "clean", active: activePaths.has(path), bytes: await directorySize(path) });
+		}
+		return records.sort((left, right) => left.name.localeCompare(right.name));
+	}
+
+	async removeManaged(name: string, force = false): Promise<ManagedWorktree> {
+		const worktree = (await this.listManaged()).find((candidate) => candidate.name === name);
+		if (!worktree) throw new HarnessError("INVALID_ARTIFACT", `Unknown PiBox worktree: ${name}`);
+		if (worktree.active) throw new HarnessError("CAPABILITY_DENIED", `Worktree is active and cannot be removed: ${name}`);
+		if (worktree.status === "modified" && !force) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Worktree has uncommitted changes: ${name}. Re-run with --force only after preserving the changes.`);
+		await runGit(this.identity.root, ["worktree", "remove", ...(force ? ["--force"] : []), "--", worktree.path]);
+		await rm(dirname(worktree.path), { recursive: false, force: true }).catch(() => undefined);
+		return worktree;
+	}
+
+	async cleanupManaged(): Promise<ManagedWorktree[]> {
+		const removable = (await this.listManaged()).filter((worktree) => !worktree.active && worktree.status === "clean");
+		for (const worktree of removable) await this.removeManaged(worktree.name);
+		return removable;
 	}
 
 	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {

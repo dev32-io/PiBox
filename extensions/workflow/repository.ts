@@ -47,7 +47,9 @@ export async function discoverRepository(cwd: string, home = homedir()): Promise
 	const commonDir = await realpath(isAbsolute(commonDirValue) ? commonDirValue : resolve(discoveredRoot, commonDirValue));
 	const canonicalRoot = basename(commonDir) === ".git" ? dirname(commonDir) : discoveredRoot;
 	const id = createHash("sha256").update(commonDir).digest("hex").slice(0, 20);
-	return { id, root: canonicalRoot, privateRoot: join(home, ".pi", "agent", "harness", "repositories", id) };
+	// Operational records belong to the repository, but remain intentionally untracked.
+	// Resolving from the common Git directory keeps every linked worktree on one shared state root.
+	return { id, root: canonicalRoot, privateRoot: join(canonicalRoot, ".pibox") };
 }
 
 export async function assertCleanRepository(root: string): Promise<void> {

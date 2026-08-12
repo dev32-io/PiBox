@@ -32,4 +32,5 @@ test("uses one stable repository identity across linked worktrees", async (t) =>
 	assert.equal(mainIdentity.root, await realpath(root));
 	assert.equal(workerIdentity.root, await realpath(root));
 	assert.equal(mainIdentity.privateRoot, workerIdentity.privateRoot);
+	assert.equal(mainIdentity.privateRoot, join(await realpath(root), ".pibox"));
 });

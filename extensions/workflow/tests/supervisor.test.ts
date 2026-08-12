@@ -46,7 +46,7 @@ test("supervises a child contribution through a validated terminal handoff", asy
 	await git(root, "config", "user.name", "Harness Test");
 	await git(root, "config", "user.email", "harness@example.test");
 	await writeFile(join(root, "README.md"), "fixture\n");
-	await writeFile(join(root, ".gitignore"), "/.worktree/\n");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n/.pibox/\n");
 	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
 	await git(root, "branch", "-M", "develop");

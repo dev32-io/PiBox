@@ -13,6 +13,9 @@ export class LinePrefixedComponent implements Component {
 		private readonly maxLines?: number,
 		private readonly firstLineStyle?: (text: string) => string,
 		private readonly overflowLine?: (omitted: number) => string,
+		// Tool previews contain source or command output, where leading whitespace is
+		// meaningful. Shell wrappers can still remove their Box padding by default.
+		private readonly stripFirstLinePadding = true,
 	) {}
 
 	render(width: number): string[] {
@@ -31,7 +34,9 @@ export class LinePrefixedComponent implements Component {
 				const leadingWidth = visibleWidth(trimmed.match(/^\s*/)?.[0] ?? "");
 				compact = this.firstLineStyle
 					? this.firstLineStyle(trimmed.trimStart())
-					: sliceByColumn(compact, leadingWidth, Math.max(0, visibleWidth(trimmed) - leadingWidth), true);
+					: this.stripFirstLinePadding
+						? sliceByColumn(compact, leadingWidth, Math.max(0, visibleWidth(trimmed) - leadingWidth), true)
+						: compact;
 				return `${this.firstPrefix}${compact}${this.firstSuffix}`;
 			}
 			return `${this.continuationPrefix}${compact}`;

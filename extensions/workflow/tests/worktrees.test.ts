@@ -147,6 +147,25 @@ test("resumes a dirty worktree recorded for the same task assignment", async (t)
 	assert.equal(await readFile(join(resumed.path, "partial.txt"), "utf8"), "retained\n");
 });
 
+test("lists and safely cleans only inactive clean PiBox worktrees", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "cleanup", title: "Cleanup", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Test retained worktree cleanup" });
+	const manifest = task();
+	await store.defineTask({ workItemId: "cleanup", manifest, brief: "No-op", acceptance: "No-op" });
+	await store.submitPlanning("cleanup");
+	await store.approve("cleanup");
+	const manager = new WorktreeManager(identity);
+	await manager.prepareFeatureBranch("cleanup");
+	const allocation = await manager.allocate("cleanup", await store.readTask("cleanup", manifest.id));
+	await store.updateTask("cleanup", manifest.id, { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+	assert.deepEqual((await manager.listManaged()).map(({ name, status, active }) => ({ name, status, active })), [{ name: "cleanup/add-feature", status: "clean", active: true }]);
+	assert.equal((await manager.cleanupManaged()).length, 0);
+	await store.updateTask("cleanup", manifest.id, { status: "cancelled" });
+	assert.equal((await manager.cleanupManaged()).length, 1);
+	assert.equal((await manager.listManaged()).length, 0);
+});
+
 test("refuses allocation when the repository-local worktree root is not ignored", async (t) => {
 	const { root, identity } = await fixture(t);
 	await writeFile(join(root, ".gitignore"), "");

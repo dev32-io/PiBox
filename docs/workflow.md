@@ -80,7 +80,7 @@ New task worktrees live inside the canonical repository under an ignored root:
 <repository>/.worktree/pibox/<work-item>/<task>/
 ```
 
-`/workflow init` ensures `/.worktree/` is ignored. Private run records and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
+`/workflow init` ensures `/.worktree/` and `/.pibox/` are ignored. Repository-local runtime records—including transcripts, logs, handoffs, locks, and receipts—live under `/.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
 
 A task can intentionally be partial. Task-level review/repair may happen before merge, while whole-feature E2E and final review run on the assembled delivery branch. Completion leaves the branch checked out. A newly created branch is reported ready to merge into `develop`; completion on a continued branch reports only the delivered increment and does not imply the larger branch is finished.
 
@@ -101,6 +101,9 @@ A task can intentionally be partial. Task-level review/repair may happen before 
 /workflow resume <task-id>
 /workflow stop <task-id>
 /workflow recover
+/harness worktrees
+/harness worktrees cleanupAll
+/harness worktrees remove <work-item/task> [--force]
 ```
 
 Every model-backed direct child is registered under the stable main Pi session identity before process creation. The main session is depth zero; children are depth one and cannot delegate. A logical child retains one of sixteen default slots through running, waiting, blocking, pausing, interruption, handoff reporting, and later process attempts. Only a terminal completion, failure, protocol failure, or cancellation releases the slot.
@@ -183,13 +186,13 @@ Canonical, committed project records:
 agent-artifacts/<work-item-id>/
 ```
 
-Private operational records:
+Ignored repository-local operational records:
 
 ```text
-~/.pi/agent/harness/repositories/<repo-id>/
+.pibox/
 ```
 
-Private records include append-only events, run projections, transcripts, checkpoints, handoffs, operation receipts, locks, and recovery metadata. They are retained by default and never committed.
+These records include append-only events, run projections, transcripts, checkpoints, handoffs, operation receipts, locks, and recovery metadata. They are retained by default and never committed. `/harness worktrees cleanupAll` removes only clean, inactive PiBox task worktrees; dirty or active worktrees require explicit recovery or a named forced removal.
 
 ## Trust and limitations
 
