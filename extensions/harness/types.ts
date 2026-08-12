@@ -96,6 +96,10 @@ export type TaskStatus =
 	| "contribution_complete"
 	| "reviewing"
 	| "changes_requested"
+	| "accepted"
+	| "merge_queued"
+	| "merging"
+	| "merged"
 	| "staged"
 	| "integrating"
 	| "integrated"
@@ -129,7 +133,9 @@ export interface TaskManifest {
 		};
 	};
 	assembly: {
-		integrationUnit: string;
+		stageId?: string;
+		/** Legacy schema-v1 name; interpreted as the execution stage when stageId is absent. */
+		integrationUnit?: string;
 		intermediateState: "complete" | "partial";
 	};
 	verification: {
@@ -143,6 +149,7 @@ export interface TaskManifest {
 		worktree?: string;
 		baseCommit?: string;
 		completedCommit?: string;
+		mergedCommit?: string;
 		lastRunId?: string;
 	};
 }
@@ -189,7 +196,11 @@ export interface WorkItemIndex {
 	};
 	artifacts: ArtifactIndexEntry[];
 	tasks: Array<{ id: string; path: string }>;
+	/** Ordered workflow stages. Tasks within one stage form a deliberate concurrency batch and merge in listed order. */
+	executionStages?: Array<{ id: string; tasks: string[]; checks?: string[] }>;
+	/** Legacy schema-v1 grouping, migrated to executionStages when the latter is absent. */
 	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
+	delivery?: { baseBranch: string; featureBranch: string; startedAt?: string };
 	evaluations: Array<{ id: string; path: string }>;
 	finalization?: { locked: boolean; reason: string; lockedAt: string };
 }

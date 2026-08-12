@@ -149,7 +149,7 @@ Delegate only when at least one benefit repays startup and coordination overhead
 
 Keep work together when it is tiny, tightly coupled, shares most context or files, or cannot be reviewed meaningfully on its own.
 
-Prefer coherent vertical or tracer-bullet contributions. Fold scaffolding and mechanical setup into the deliverable that needs them. Declare only genuine dependency edges and distinguish them from resource conflicts. Use partial intermediate states honestly and assemble them at the smallest coherent integration boundary. Parallel execution is an option when contributions are truly independent; never create tasks merely to increase concurrency.
+Prefer coherent vertical or tracer-bullet contributions. Fold scaffolding and mechanical setup into the deliverable that needs them. Plan tasks as an ordered series of execution stages: each stage contains one coherent task or a deliberate concurrent batch, and the next stage waits until every current-stage task is merged. Declare only genuine dependency edges and distinguish them from resource conflicts. Use `repository` isolation for serial work directly on the feature branch and `worktree` isolation only when independent or concurrent execution repays spawn, context, review, and merge overhead. Avoid concurrent tasks that repeatedly edit the same central interfaces, and list batch tasks in intended merge order. Parallel execution is an option when contributions are truly independent; never create tasks merely to increase concurrency, especially tiny file-oriented tasks.
 
 For each contribution, make clear:
 

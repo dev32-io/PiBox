@@ -78,7 +78,7 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 		acceptance: "Session ids originate on the server.",
 	});
 	assert.equal(planned.planning.revision, 4);
-	assert.deepEqual(planned.integrationUnits, [{ id: "session-runtime", tasks: ["implement-identity"], intermediatePolicy: "coherent" }]);
+	assert.deepEqual(planned.executionStages, [{ id: "session-runtime", tasks: ["implement-identity"] }]);
 	assert.equal((await store.readTask("session-model", "implement-identity")).execution.assignment.model, "sol");
 
 	const submitted = await store.submitPlanning("session-model");

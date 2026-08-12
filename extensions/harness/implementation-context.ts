@@ -23,7 +23,7 @@ export async function buildTaskPersistentContext(store: WorkItemStore, workItemI
 		"",
 		`${task.id} — ${task.title}`,
 		"",
-		`Expected contribution state: ${task.assembly.intermediateState}; integration unit: ${task.assembly.integrationUnit}.`,
+		`Expected contribution state: ${task.assembly.intermediateState}; execution stage: ${task.assembly.stageId ?? task.assembly.integrationUnit}.`,
 		"",
 		"## Task Brief",
 		"",

@@ -114,6 +114,12 @@ export class SubagentSupervisor {
 			status: "running",
 			runtime: { branch: options.branch, worktree: options.workspace, baseCommit: options.baseCommit, lastRunId: created.record.id },
 		}));
+		let contributionBase = options.baseCommit;
+		if (options.task.execution.isolation === "repository") {
+			const { runGit } = await import("./repository.js");
+			contributionBase = await runGit(options.workspace, ["rev-parse", "HEAD"]);
+			await runs.update(created.record.id, { baseCommit: contributionBase }, "run.repository_base_prepared");
+		}
 
 		let stderr = "";
 		let finalText = "";
@@ -176,8 +182,8 @@ export class SubagentSupervisor {
 				const { runGit } = await import("./repository.js");
 				const head = await runGit(options.workspace, ["rev-parse", "HEAD"]);
 				const status = await runGit(options.workspace, ["status", "--porcelain=v1", "--untracked-files=all"]);
-				const actualCommits = (await runGit(options.workspace, ["rev-list", "--reverse", `${options.baseCommit}..HEAD`])).split("\n").filter(Boolean);
-				const artifactChanges = await runGit(options.workspace, ["diff", "--name-only", `${options.baseCommit}..HEAD`, "--", "agent-artifacts"]);
+				const actualCommits = (await runGit(options.workspace, ["rev-list", "--reverse", `${contributionBase}..HEAD`])).split("\n").filter(Boolean);
+				const artifactChanges = await runGit(options.workspace, ["diff", "--name-only", `${contributionBase}..HEAD`, "--", "agent-artifacts"]);
 				if (handoff.runId !== created.record.id || handoff.taskId !== options.task.id || status || artifactChanges || !handoff.commits.includes(head) || handoff.commits.some((commit) => !actualCommits.includes(commit))) {
 					await runs.update(created.record.id, { state: "protocol_failed", error: "Terminal handoff failed supervisor Git/scope validation" }, "run.invalid_handoff");
 					await updateTask(`invalid-handoff:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" }));

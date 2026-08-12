@@ -75,6 +75,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				if (workflowRef) { active.set(workflowRef, "paused"); persist(workflowRef, "paused"); }
 			}
 		} catch (error) {
+			if (workflowRef) { active.set(workflowRef, "paused"); persist(workflowRef, "paused"); }
 			sendEvent(`[Workflow attention]\n${step.title} failed to settle: ${error instanceof Error ? error.message : String(error)}`, true);
 		} finally {
 			inFlight.delete(step.ref);
@@ -146,7 +147,9 @@ export default function workflows(pi: ExtensionAPI): void {
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
-				const snapshot = await adapterFor(params.ref).snapshot(params.ref, ctx);
+				const adapter = adapterFor(params.ref);
+				await adapter.prepareWorkflow?.(params.ref, ctx);
+				const snapshot = await adapter.snapshot(params.ref, ctx);
 				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
 				void tick(ctx);
 				return result(`Started workflow ${params.ref} in background with ${snapshot.steps.length} step(s).`, snapshot);

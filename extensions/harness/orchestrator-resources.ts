@@ -193,6 +193,8 @@ export class OrchestratorResourceService {
 			const current = await this.store.readTaskContract(item.id, parsedRef.id);
 			const directManifestPatch = Object.fromEntries(Object.entries(patch).filter(([key]) => ["title", "dependsOn", "references", "execution", "assembly", "verification"].includes(key)));
 			const manifest = merge(current.manifest, patch.manifest ?? directManifestPatch);
+			const assemblyPatch = object((patch.manifest as Record<string, unknown> | undefined)?.assembly ?? directManifestPatch.assembly ?? {}, "assembly patch");
+			if (assemblyPatch.stageId === undefined && assemblyPatch.integrationUnit !== undefined) manifest.assembly.stageId = assemblyPatch.integrationUnit as string;
 			this.validateTaskAssignment(manifest);
 			return this.store.reviseTask({ workItemId: item.id, manifest, authority: context.authority, brief: (patch.brief as string | undefined) ?? current.brief, acceptance: (patch.acceptance as string | undefined) ?? current.acceptance, ...(patch.briefSections ? { briefSections: object(patch.briefSections, "briefSections") } : {}), ...(patch.acceptanceSections ? { acceptanceSections: object(patch.acceptanceSections, "acceptanceSections") } : {}), narrativeSchemaVersion: patch.briefSections || patch.acceptanceSections ? 2 : 1 });
 		}

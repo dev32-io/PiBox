@@ -53,9 +53,9 @@ Proportionality — Keep clear, local, reversible work ad hoc; words such as pla
 
 Resource protocol — Use harness_list before creating and harness_get before patching. Canonical references are work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. Create child resources with the complete file-backed representation returned by get/list: artifacts use semantic sections or content; tasks use {manifest, brief/acceptance or semantic sections}; evaluations use {manifest}. Use harness_apply_change for coherent multi-resource revisions and request resolution. Never create a second work item to repair an existing draft.
 
-Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use resource capabilities rather than editing agent-artifacts. The main orchestrator is the trusted canonical coordinator: inspect and revise existing resources instead of creating replacement work items, and normally resolve subagent change requests within delegated intent using an audited retain-approval amendment. Ask the user only when a change materially alters their outcome, explicit constraints, consequential policy, privacy/security posture, irreversible effects, or a decision they retained. Approval is continuity, not a blanket mutation freeze. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.
+Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use resource capabilities rather than editing agent-artifacts. The main orchestrator is the trusted canonical coordinator: inspect and revise existing resources instead of creating replacement work items, and normally resolve subagent change requests within delegated intent using an audited retain-approval amendment. Ask the user only when a change materially alters their outcome, explicit constraints, consequential policy, privacy/security posture, irreversible effects, or a decision they retained. Approval is continuity, not a blanket mutation freeze. Plan delivery as an ordered series of execution stages: one coherent task or one deliberate concurrency batch per stage, with later stages waiting for every current-stage task to merge. Use repository isolation for serial feature-branch work and worktree isolation only when independent or concurrent execution repays spawning, context, review, and merge overhead. Choose functional ownership boundaries that reduce merge conflicts; do not create tiny file-oriented tasks merely to increase parallelism. Within a concurrent stage, list tasks in intended merge order. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.
 
-Workflow execution — Start approved delivery with workflow_start. The harness workflow adapter derives executable steps from current canonical tasks, integration units, and evaluations. Routine workflow events are informational; intervene when judgment, amendment, recovery, or user authority is required.`;
+Workflow execution — Start approved delivery with workflow_start. Start requires a clean checkout and creates or switches to feature/<work-item-id>; a dirty-checkout failure is a recoverable prompt to inspect legitimate changes, offer commit/stash/task-state options, and resume from the correct task rather than deleting work. Esc aborts only the current main-session turn and never controls background workflow processes. The harness workflow adapter derives executable steps from ordered stages, task merge states, and evaluations. Routine workflow events are informational; intervene when judgment, amendment, recovery, or user authority is required.`;
 
 const LEGACY_PLANNING_TOOL_NAMES = new Set(["work_item_create", "work_item_status", "artifact_create", "artifact_update", "artifact_link", "artifact_reconcile", "task_define", "task_update", "evaluation_define", "planning_submit"]);
 
@@ -122,7 +122,7 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 		isolation: Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for the normal implementer role" }), parallelism: Type.Union([Type.Literal("allowed"), Type.Literal("serial")]), resourceClaims: Type.Array(Type.String()), complexity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
 		assignment: Type.Object({ role: Type.String({ description: "Configured role name, normally implementer" }), model: Type.String({ description: "Configured model alias such as luna, never a raw model id" }), effort: EFFORT, minimumCapabilityRank: Type.Integer({ minimum: 0 }), allowFallback: Type.Boolean(), rationale: Type.String() }, { additionalProperties: false }),
 	}, { additionalProperties: false }),
-	assembly: Type.Object({ integrationUnit: Type.String(), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
+	assembly: Type.Object({ stageId: Type.Optional(Type.String()), integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId" })), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
 	verification: Type.Object({ timing: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]), methods: Type.Array(Type.String()), taskChecks: Type.Array(Type.String()), rationale: Type.String() }, { additionalProperties: false }),
 }, { additionalProperties: false });
 const EVALUATION_MANIFEST_RESOURCE = Type.Object({
@@ -843,7 +843,8 @@ export default function harness(pi: ExtensionAPI): void {
 			minimumCapabilityRank: Type.Optional(Type.Integer({ minimum: 0 })),
 			allowFallback: Type.Optional(Type.Boolean()),
 			assignmentRationale: Type.String(),
-			integrationUnit: Type.String(),
+			stageId: Type.Optional(Type.String({ description: "Ordered execution-stage id; tasks sharing a stage form a deliberate concurrency batch and merge in task order." })),
+			integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId." })),
 			intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]),
 			verificationTiming: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]),
 			verificationMethods: Type.Optional(Type.Array(Type.String())),
@@ -882,7 +883,7 @@ export default function harness(pi: ExtensionAPI): void {
 							rationale: params.assignmentRationale,
 						},
 					},
-					assembly: { integrationUnit: params.integrationUnit, intermediateState: params.intermediateState },
+					assembly: { stageId: params.stageId ?? params.integrationUnit ?? params.id, intermediateState: params.intermediateState },
 					verification: {
 						timing: params.verificationTiming,
 						methods: params.verificationMethods ?? [],
@@ -900,7 +901,7 @@ export default function harness(pi: ExtensionAPI): void {
 					...(params.acceptance ? { acceptance: params.acceptance } : {}),
 				});
 				await runtime.events.append("task.defined", { workItemId: item.id, taskId: manifest.id, revision: item.planning.revision });
-				return textResult(`Defined task ${manifest.id} in integration unit ${manifest.assembly.integrationUnit}; planning r${item.planning.revision}.`, item);
+				return textResult(`Defined task ${manifest.id} in execution stage ${manifest.assembly.stageId}; planning r${item.planning.revision}.`, item);
 				});
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
@@ -1085,18 +1086,18 @@ export default function harness(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "task_integrate",
-		label: "Integrate Harness Unit",
-		description: "Assemble all contribution-complete tasks in an integration unit, run its declared checks, and atomically fast-forward the canonical branch.",
-		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String(), checks: Type.Optional(Type.Array(Type.String({ description: "Optional shell-command override; omitted uses task manifests' declared taskChecks." }))) }),
+		label: "Merge Harness Task",
+		description: "Compatibility merge capability. Merge one accepted task contribution into the checked-out feature branch and run its declared post-merge checks.",
+		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String({ description: "Legacy parameter containing the task id to merge." }), checks: Type.Optional(Type.Array(Type.String({ description: "Optional shell-command override; omitted uses the task manifest's declared checks." }))) }),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const manager = new WorktreeManager(runtime.identity);
-					const integrated = await manager.integrateUnit(params.workItemId, params.integrationUnit, params.checks);
-					await runtime.events.append("integration.completed", integrated);
-					return textResult(`Integrated ${params.integrationUnit} as ${integrated.commit.slice(0, 12)} with ${integrated.tasks.length} task contribution(s).`, integrated);
+					const integrated = await manager.mergeTask(params.workItemId, params.integrationUnit, params.checks);
+					await runtime.events.append("task.merged", integrated);
+					return textResult(`Merged ${integrated.taskId} into the feature branch as ${integrated.commit.slice(0, 12)}.`, integrated);
 				});
 			} catch (error) {
 				throw new Error(describeHarnessError(error));

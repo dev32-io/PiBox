@@ -58,6 +58,23 @@ test("failed workflow start returns an error and leaves no dashboard", async () 
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("background step failure pauses instead of retrying unchanged state", async () => {
+	const f = fixture();
+	let runs = 0;
+	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep() { runs++; throw new Error("broken"); }, async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(runs, 1);
+	assert.ok(f.entries.some((entry) => (entry.data as any).state === "paused"));
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("background spawning returns immediately and later emits a lifecycle message", async () => {
 	const f = fixture();
 	let release!: () => void;

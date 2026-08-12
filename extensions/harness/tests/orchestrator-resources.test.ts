@@ -48,7 +48,7 @@ test("revises an approved task in place while retaining approval continuity", as
 	await service.transaction("harness: revise task", () => service.patch("work-item:resource-flow/task:build-app", { manifest: { title: "Build the revised app", assembly: { integrationUnit: "delivery" } } }, { authority: retain }));
 	const after = await store.read("resource-flow");
 	assert.equal(after.tasks.length, 1);
-	assert.deepEqual(after.integrationUnits, [{ id: "delivery", tasks: ["build-app"], intermediatePolicy: "coherent" }]);
+	assert.deepEqual(after.executionStages, [{ id: "delivery", tasks: ["build-app"] }]);
 	assert.equal((await store.readTask("resource-flow", "build-app")).title, "Build the revised app");
 	await service.transaction("harness: patch task verification", () => service.patch("work-item:resource-flow/task:build-app", { verification: { taskChecks: ["printf hello"] } }, { authority: retain }));
 	assert.deepEqual((await store.readTask("resource-flow", "build-app")).verification.taskChecks, ["printf hello"]);

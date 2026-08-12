@@ -8,9 +8,10 @@ function task(id: string, status: string, dependsOn: string[] = []) {
 
 test("resume prepares stopped tasks from current dependency state", async () => {
 	const tasks: any[] = [task("first", "integrated"), task("second", "cancelled", ["first"]), task("third", "failed", ["second"])];
-	const item: any = { id: "example", planning: { status: "approved" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
+	const item: any = { id: "example", planning: { status: "approved" }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
 	const updates: Array<[string, string]> = [];
 	const runtime: any = {
+		identity: { root: "/repo" },
 		workItems: {
 			async read() { return item; },
 			async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); },
@@ -19,7 +20,7 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { return operation(); } },
 		agents: { async list() { return []; } },
 	};
-	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), prepareFeatureBranch: async () => {} });
 	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
 	assert.deepEqual(updates, [["second", "ready"], ["third", "blocked"]]);
 });
@@ -27,14 +28,15 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 test("derives and refreshes task, integration, and evaluation steps without copying a workflow graph", async () => {
 	let tasks: any[] = [task("first", "ready"), task("second", "blocked", ["first"])];
 	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };
-	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, tasks: [{ id: "first" }, { id: "second" }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
+	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
 	const runtime: any = {
+		identity: { root: "/repo" },
 		workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } },
 		agents: { async list() { return []; } },
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:example", {} as any);
-	assert.deepEqual(snapshot.steps.map((step) => [step.kind, step.status]), [["task", "ready"], ["task", "pending"], ["integration", "pending"], ["evaluation", "pending"]]);
+	assert.deepEqual(snapshot.steps.map((step) => [step.kind, step.status]), [["task", "ready"], ["task", "pending"], ["evaluation", "pending"]]);
 
 	tasks = [task("first", "integrated"), task("second", "ready", ["first"])];
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
@@ -42,9 +44,9 @@ test("derives and refreshes task, integration, and evaluation steps without copy
 
 	tasks = [task("first", "contribution_complete"), task("second", "contribution_complete", ["first"])];
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
-	assert.equal(snapshot.steps.find((step) => step.kind === "integration")?.status, "ready");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:first"))?.status, "ready");
 
-	tasks = [task("first", "integrated"), task("second", "integrated", ["first"])];
+	tasks = [task("first", "merged"), task("second", "merged", ["first"])];
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "ready");
 	evaluation = { ...evaluation, status: "passed" };

@@ -91,6 +91,13 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	}
 	if (index.integrationUnits === undefined) index.integrationUnits = [];
 	if (!Array.isArray(index.integrationUnits)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid integration units`);
+	if (index.executionStages === undefined) index.executionStages = index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
+	if (!Array.isArray(index.executionStages)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid execution stages`);
+	const scheduled = new Set<string>();
+	for (const stage of index.executionStages) {
+		if (!stage || typeof stage.id !== "string" || !ID_PATTERN.test(stage.id) || !Array.isArray(stage.tasks) || stage.tasks.length === 0 || stage.tasks.some((id) => typeof id !== "string" || scheduled.has(id))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid or duplicate execution-stage tasks`);
+		stage.tasks.forEach((id) => scheduled.add(id));
+	}
 	const artifactIds = new Set<string>();
 	for (const artifact of index.artifacts) {
 		if (!artifact || typeof artifact.id !== "string" || !ID_PATTERN.test(artifact.id) || artifactIds.has(artifact.id)) {
@@ -110,9 +117,13 @@ const TASK_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 	ready: ["blocked", "running", "cancelled"],
 	running: ["blocked", "paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
 	paused: ["blocked", "ready", "running", "cancelled"],
-	contribution_complete: ["reviewing", "staged", "integrating", "integrated", "changes_requested"],
-	reviewing: ["changes_requested", "staged", "integrating", "integrated"],
+	contribution_complete: ["reviewing", "accepted", "merge_queued", "merged", "staged", "integrating", "integrated", "changes_requested"],
+	reviewing: ["changes_requested", "accepted", "merge_queued", "merged", "staged", "integrating", "integrated"],
 	changes_requested: ["running", "cancelled"],
+	accepted: ["merge_queued", "merged", "changes_requested"],
+	merge_queued: ["merging", "changes_requested"],
+	merging: ["merged", "changes_requested", "failed"],
+	merged: [],
 	staged: ["integrating", "integrated", "changes_requested"],
 	integrating: ["integrated", "changes_requested", "failed"],
 	integrated: [],
@@ -133,7 +144,7 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid identity`);
 	}
 	const statuses: TaskStatus[] = [
-		"draft", "blocked", "ready", "running", "paused", "contribution_complete", "reviewing", "changes_requested", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
+		"draft", "blocked", "ready", "running", "paused", "contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
 	];
 	if (!task.status || !statuses.includes(task.status) || !Array.isArray(task.dependsOn)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid lifecycle fields`);
 	if (!task.references || !Array.isArray(task.references.specs) || !Array.isArray(task.references.designs) || !Array.isArray(task.references.decisions)) {
@@ -142,7 +153,10 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 	if (!task.execution || !task.execution.assignment || !task.assembly || !task.verification) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} is missing execution, assembly, or verification policy`);
 	}
-	validateId(task.assembly.integrationUnit, "Integration-unit id");
+	const stageId = task.assembly.stageId ?? task.assembly.integrationUnit;
+	if (!stageId) throw new HarnessError("INVALID_ARTIFACT", `${source} is missing an execution stage`);
+	validateId(stageId, "Execution-stage id");
+	task.assembly.stageId = stageId;
 	if (!Array.isArray(task.execution.resourceClaims) || !Array.isArray(task.verification.methods) || !Array.isArray(task.verification.taskChecks)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid policy arrays`);
 	}
@@ -431,15 +445,10 @@ export class WorkItemStore {
 		const acceptancePath = join(taskRoot, "acceptance.md");
 		await mkdir(taskRoot, { recursive: true });
 		index.tasks.push({ id: input.manifest.id, path: relative(root, manifestPath) });
-		const unit = index.integrationUnits.find((item) => item.id === input.manifest.assembly.integrationUnit);
-		if (unit) unit.tasks.push(input.manifest.id);
-		else {
-			index.integrationUnits.push({
-				id: input.manifest.assembly.integrationUnit,
-				tasks: [input.manifest.id],
-				intermediatePolicy: input.manifest.assembly.intermediateState === "partial" ? "partial-allowed" : "coherent",
-			});
-		}
+		const stageId = input.manifest.assembly.stageId ?? input.manifest.assembly.integrationUnit!;
+		const stage = index.executionStages!.find((item) => item.id === stageId);
+		if (stage) stage.tasks.push(input.manifest.id);
+		else index.executionStages!.push({ id: stageId, tasks: [input.manifest.id] });
 		advanceContractRevision(index, input.authority);
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
@@ -483,14 +492,12 @@ export class WorkItemStore {
 		const previous = await Promise.all([manifestPath, briefPath, acceptancePath, indexPath].map((path) => readFile(path, "utf8")));
 		const current = parseTaskManifest(previous[0]!, manifestPath);
 		const revised: TaskManifest = { ...input.manifest, status: current.status, ...(current.runtime ? { runtime: current.runtime } : {}) };
-		for (const unit of index.integrationUnits) unit.tasks = unit.tasks.filter((id) => id !== revised.id);
-		index.integrationUnits = index.integrationUnits.filter((unit) => unit.tasks.length > 0);
-		let unit = index.integrationUnits.find((candidate) => candidate.id === revised.assembly.integrationUnit);
-		if (!unit) {
-			unit = { id: revised.assembly.integrationUnit, tasks: [], intermediatePolicy: revised.assembly.intermediateState === "partial" ? "partial-allowed" : "coherent" };
-			index.integrationUnits.push(unit);
-		}
-		unit.tasks.push(revised.id);
+		for (const stage of index.executionStages!) stage.tasks = stage.tasks.filter((id) => id !== revised.id);
+		index.executionStages = index.executionStages!.filter((stage) => stage.tasks.length > 0);
+		const stageId = revised.assembly.stageId ?? revised.assembly.integrationUnit!;
+		let stage = index.executionStages.find((candidate) => candidate.id === stageId);
+		if (!stage) { stage = { id: stageId, tasks: [] }; index.executionStages.push(stage); }
+		stage.tasks.push(revised.id);
 		advanceContractRevision(index, input.authority);
 		try {
 			await atomicWriteFile(manifestPath, stringify(revised));
@@ -513,7 +520,7 @@ export class WorkItemStore {
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		const manifest = await this.readTask(workItemId, taskId);
-		if (manifest.runtime || ["running", "contribution_complete", "reviewing", "staged", "integrating", "integrated"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Task ${taskId} has delivery history and must be superseded rather than deleted`);
+		if (manifest.runtime || ["running", "contribution_complete", "reviewing", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Task ${taskId} has delivery history and must be superseded rather than deleted`);
 		for (const task of index.tasks.filter((candidate) => candidate.id !== taskId)) {
 			if ((await this.readTask(workItemId, task.id)).dependsOn.includes(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} still depends on ${taskId}`);
 		}
@@ -522,8 +529,8 @@ export class WorkItemStore {
 		const previousIndex = await readFile(indexPath, "utf8");
 		const backup = join(this.artifactRoot, `.${workItemId}-${taskId}.delete-${randomUUID()}`);
 		index.tasks = index.tasks.filter((task) => task.id !== taskId);
-		for (const unit of index.integrationUnits) unit.tasks = unit.tasks.filter((id) => id !== taskId);
-		index.integrationUnits = index.integrationUnits.filter((unit) => unit.tasks.length > 0);
+		for (const stage of index.executionStages!) stage.tasks = stage.tasks.filter((id) => id !== taskId);
+		index.executionStages = index.executionStages!.filter((stage) => stage.tasks.length > 0);
 		advanceContractRevision(index, authority);
 		try {
 			await rename(taskRoot, backup);
@@ -614,7 +621,7 @@ export class WorkItemStore {
 			const task = await this.readTask(workItemId, catalog.id);
 			if (task.status !== "blocked") continue;
 			const dependencies = await Promise.all(task.dependsOn.map((dependency) => this.readTask(workItemId, dependency)));
-			if (dependencies.every((dependency) => dependency.status === "integrated")) changed.push(await this.updateTask(workItemId, task.id, { status: "ready" }));
+			if (dependencies.every((dependency) => dependency.status === "merged" || dependency.status === "integrated")) changed.push(await this.updateTask(workItemId, task.id, { status: "ready" }));
 		}
 		return changed;
 	}
@@ -842,8 +849,8 @@ export class WorkItemStore {
 		const root = this.workItemRoot(workItemId);
 		const index = await this.assertCurrentApproval(workItemId);
 		for (const task of index.tasks) {
-			if ((await this.readTask(workItemId, task.id)).status !== "integrated") {
-				throw new HarnessError("INVALID_HANDOFF", `Task is not integrated: ${task.id}`);
+			if (!["merged", "integrated"].includes((await this.readTask(workItemId, task.id)).status)) {
+				throw new HarnessError("INVALID_HANDOFF", `Task is not merged: ${task.id}`);
 			}
 		}
 		const remainingFindings: Array<{ evaluation: string; id: string; severity: string; summary: string; status: string }> = [];

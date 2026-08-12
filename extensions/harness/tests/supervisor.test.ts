@@ -56,7 +56,9 @@ test("supervises a child contribution through a validated terminal handoff", asy
 	await store.submitPlanning("supervised");
 	await store.approve("supervised");
 	const task = await store.readTask("supervised", "supervised-task");
-	const allocation = await new WorktreeManager(identity).allocate("supervised", task);
+	const manager = new WorktreeManager(identity);
+	await manager.prepareFeatureBranch("supervised");
+	const allocation = await manager.allocate("supervised", task);
 
 	const fake = join(parent, "fake-child.mjs");
 	await writeFile(

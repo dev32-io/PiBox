@@ -19,16 +19,21 @@ export interface HarnessWorkflowAdapterOptions {
 	runtimeFor(ctx: ExtensionContext): Promise<HarnessWorkflowRuntime>;
 	launchTask(ctx: ExtensionContext, workItemId: string, taskId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	launchEvaluation(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
+	prepareFeatureBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
 }
 
 const WORK_ITEM = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
-const STEP = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)\/(task|integration-unit|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*)$/;
+const STEP = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)\/(task|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const terminalAgent = new Set(["completed", "failed", "protocol_failed", "cancelled"]);
-const taskDone = new Set(["contribution_complete", "staged", "integrating", "integrated"]);
+const taskDone = new Set(["merged", "integrated"]);
 
 function taskStatus(status: string, dependenciesDone: boolean): { status: WorkflowStepStatus; detail?: string } {
 	if (taskDone.has(status)) return { status: "done" };
-	if (status === "running" || status === "reviewing") return { status: "running" };
+	if (["running", "reviewing"].includes(status)) return { status: "running" };
+	if (["accepted", "merge_queued", "merging", "contribution_complete", "staged", "integrating"].includes(status)) {
+		if (!dependenciesDone) return { status: "pending" };
+		return { status: "ready", detail: status.replaceAll("_", " ") };
+	}
 	if (status === "ready") return dependenciesDone ? { status: "ready" } : { status: "pending" };
 	if (status === "cancelled") return { status: "cancelled" };
 	if (status === "failed" || status === "protocol_failed") return { status: "attention", detail: "failed" };
@@ -40,6 +45,12 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 	return {
 		id: "harness",
 		canHandle(ref) { return WORK_ITEM.test(ref) || STEP.test(ref); },
+		async prepareWorkflow(ref, ctx) {
+			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
+			const runtime = await options.runtimeFor(ctx);
+			if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, match[1]!);
+			else await new WorktreeManager(runtime.identity).prepareFeatureBranch(match[1]!);
+		},
 		async snapshot(ref, ctx): Promise<WorkflowSnapshot> {
 			const match = WORK_ITEM.exec(ref);
 			if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
@@ -49,24 +60,25 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			await runtime.workItems.activateDraftTasks(item.id);
 			const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
+			const stages = item.executionStages ?? item.integrationUnits.map((unit) => ({ id: unit.id, tasks: unit.tasks }));
+			const stageByTask = new Map(stages.flatMap((stage, index) => stage.tasks.map((taskId, order) => [taskId, { index, order }] as const)));
 			const steps: WorkflowStep[] = tasks.map((task) => {
-				const dependenciesDone = task.dependsOn.every((id) => taskById.get(id)?.status === "integrated");
-				return { ref: `work-item:${item.id}/task:${task.id}`, title: task.title, kind: "task", ...taskStatus(task.status, dependenciesDone), dependsOn: task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), parallelism: task.execution.parallelism, resourceClaims: task.execution.resourceClaims };
+				const position = stageByTask.get(task.id);
+				const priorStagesDone = !position || stages.slice(0, position.index).every((stage) => stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")));
+				const dependenciesDone = task.dependsOn.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? ""));
+				const mergePredecessorsDone = !position || stages[position.index]!.tasks.slice(0, position.order).every((id) => {
+					const predecessor = taskById.get(id); return predecessor?.execution.isolation !== "worktree" || ["merged", "integrated"].includes(predecessor.status);
+				});
+				const mapped = taskStatus(task.status, priorStagesDone && dependenciesDone && mergePredecessorsDone);
+				return { ref: `work-item:${item.id}/task:${task.id}`, title: task.title, kind: ["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status) ? "merge" : "task", ...mapped, dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(position && position.index > 0 ? stages[position.index - 1]!.tasks.map((id) => `work-item:${item.id}/task:${id}`) : [])], parallelism: task.execution.parallelism, resourceClaims: task.execution.isolation === "repository" || mapped.detail?.includes("merge") || task.status === "contribution_complete" ? ["feature-branch"] : task.execution.resourceClaims };
 			});
-			for (const unit of item.integrationUnits) {
-				const members = unit.tasks.map((id) => taskById.get(id)).filter(Boolean);
-				let status: WorkflowStepStatus = "pending"; let detail: string | undefined;
-				if (members.length > 0 && members.every((task) => task?.status === "integrated")) status = "done";
-				else if (members.length > 0 && members.every((task) => task && ["contribution_complete", "staged"].includes(task.status))) status = "ready";
-				else if (members.some((task) => task && (["failed", "protocol_failed", "paused", "changes_requested"].includes(task.status) || (task.status === "blocked" && task.dependsOn.every((id) => taskById.get(id)?.status === "integrated"))))) { status = "attention"; detail = "blocked"; }
-				steps.push({ ref: `work-item:${item.id}/integration-unit:${unit.id}`, title: `Integrate ${unit.id}`, kind: "integration", status, ...(detail ? { detail } : {}), dependsOn: unit.tasks.map((id) => `work-item:${item.id}/task:${id}`), parallelism: "serial", resourceClaims: ["canonical-repository"] });
-			}
 			const evaluations = await Promise.all(item.evaluations.map((entry) => runtime.workItems.readEvaluation(item.id, entry.id)));
 			const activeEvaluations = new Set((await runtime.agents.list()).filter((agent) => agent.workItemId === item.id && agent.evaluationId && !terminalAgent.has(agent.state)).map((agent) => agent.evaluationId!));
 			for (const evaluation of evaluations) {
+				const legacyStage = evaluation.scope.integrationUnit ? stages.find((stage) => stage.id === evaluation.scope.integrationUnit) : undefined;
 				const dependencies = evaluation.scope.task ? [`work-item:${item.id}/task:${evaluation.scope.task}`]
-					: evaluation.scope.integrationUnit ? [`work-item:${item.id}/integration-unit:${evaluation.scope.integrationUnit}`]
-					: item.integrationUnits.map((unit) => `work-item:${item.id}/integration-unit:${unit.id}`);
+					: legacyStage ? legacyStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
+					: tasks.map((task) => `work-item:${item.id}/task:${task.id}`);
 				const dependenciesDone = dependencies.every((dependency) => steps.find((step) => step.ref === dependency)?.status === "done");
 				let status: WorkflowStepStatus = "pending"; let detail: string | undefined;
 				if (["passed", "not_applicable"].includes(evaluation.status)) status = "done";
@@ -78,19 +90,21 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			return { ref, title: item.title || item.id, status, steps };
 		},
-		async runStep(ref, ctx, signal): Promise<WorkflowRunResult> {
+		async runStep(ref, ctx, _signal): Promise<WorkflowRunResult> {
 			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid harness workflow step: ${ref}`);
 			const [, workItemId, kind, id] = match;
 			if (kind === "task") {
-				const launched = await options.launchTask(ctx, workItemId!, id!, signal);
+				const runtime = await options.runtimeFor(ctx);
+				const task = await runtime.workItems.readTask(workItemId!, id!);
+				if (["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) {
+					const merged = await runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
+					return { ref, state: "completed", summary: `Merged ${id} into the feature branch as ${merged.commit.slice(0, 12)}.` };
+				}
+				const launched = await options.launchTask(ctx, workItemId!, id!);
 				const run = launched.details?.run; const state = run?.state === "completed" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
 				return { ref, state, summary: launched.content[0]?.text ?? `Task ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: state === "blocked" || state === "failed" };
 			}
-			if (kind === "integration-unit") {
-				const runtime = await options.runtimeFor(ctx); const integrated = await new WorktreeManager(runtime.identity).integrateUnit(workItemId!, id!);
-				return { ref, state: "completed", summary: `Integrated ${id} as ${integrated.commit.slice(0, 12)}.` };
-			}
-			const launched = await options.launchEvaluation(ctx, workItemId!, id!, signal);
+			const launched = await options.launchEvaluation(ctx, workItemId!, id!);
 			const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
@@ -99,13 +113,15 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const runtime = await options.runtimeFor(ctx);
 			const workItemId = workflow[1]!;
 			if (action === "resume") {
+				if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, workItemId);
+				else await new WorktreeManager(runtime.identity).prepareFeatureBranch(workItemId);
 				const item = await runtime.workItems.read(workItemId);
 				if (item.planning.status !== "approved") throw new Error(`Workflow plan ${item.id} is not approved. Use /harness approve ${item.id} to approve the workflow plan first.`);
 				const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 				const taskById = new Map(tasks.map((task) => [task.id, task]));
 				for (const task of tasks) {
 					if (!["cancelled", "paused", "failed", "protocol_failed"].includes(task.status)) continue;
-					const dependenciesDone = task.dependsOn.every((id) => taskById.get(id)?.status === "integrated");
+					const dependenciesDone = task.dependsOn.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? ""));
 					await runtime.mutex.run(`workflow-resume:${item.id}:${task.id}`, () => runtime.workItems.updateTask(item.id, task.id, { status: dependenciesDone ? "ready" : "blocked" }));
 				}
 				return;

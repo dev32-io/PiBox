@@ -62,7 +62,7 @@ Approval is continuity rather than a blanket mutation freeze. The main orchestra
 
 ### Exploration and execution
 
-The independent workflow extension owns the generic background execution surface. `workflow_start` asks the registered harness adapter to derive current task, integration, and evaluation steps directly from the approved work item. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses when attention is required. Its widget above the editor shows current step progress.
+The independent workflow extension owns the generic background execution surface. `workflow_start` first requires a clean checkout, creates or switches to `feature/<work-item-id>`, and asks the registered harness adapter to derive current task, task-merge, and evaluation steps directly from the approved work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
 
 - `subagent_spawn` starts an adapter-owned task or evaluation reference in background mode by default; foreground mode remains available for explicit waiting.
 - `subagent_status`, `subagent_control`, and `subagent_respond` monitor and steer logical children.
@@ -71,7 +71,7 @@ The independent workflow extension owns the generic background execution surface
 - `agent_run` retains direct specialist invocation outside a managed work item.
 - Workers receive a focused task packet in their persistent system context. `task_clarify` provides optional, targeted access to broader story/change context when a concrete uncertainty remains; `task_complete` records completion.
 
-The harness adapter continues to own worktree allocation, integration checks, evaluator contracts, and canonical state transitions. The workflow extension contains no harness artifact or approval logic.
+The harness adapter continues to own feature-branch preparation, repository/worktree isolation, queued task merges, checks, evaluator contracts, and canonical state transitions. Work-item `executionStages` provide the ordered workflow spine; tasks inside one stage are a deliberate concurrency batch and merge in listed order before the next stage advances. Repository-isolated tasks commit directly to the feature branch, while worktree-isolated tasks merge back as a mini-step in their own lifecycle. The workflow extension contains no harness artifact or approval logic.
 
 New task worktrees live inside the canonical repository under an ignored root:
 
@@ -81,7 +81,7 @@ New task worktrees live inside the canonical repository under an ignored root:
 
 `/harness init` ensures `/.worktree/` is ignored. Private run records and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
 
-A task can intentionally be partial. Review and tests may be deferred until its integration unit is meaningful.
+A task can intentionally be partial. Task-level review/repair may happen before merge, while whole-feature E2E and final review run on the assembled feature branch. Completion leaves the feature branch checked out and tells the user which base branch it is ready to merge into.
 
 ### Evaluation
 

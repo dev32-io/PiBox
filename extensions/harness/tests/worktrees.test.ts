@@ -58,7 +58,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 		schemaVersion: 1,
 		id: "feature-check",
 		type: "deterministic",
-		scope: { integrationUnit: "feature-unit" },
+		scope: { workItem: "feature" },
 		status: "planned",
 		required: true,
 		attempt: 0,
@@ -68,6 +68,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	await store.submitPlanning("feature");
 	await store.approve("feature");
 	const manager = new WorktreeManager(identity);
+	await manager.prepareFeatureBranch("feature");
 	const allocation = await manager.allocate("feature", await store.readTask("feature", "add-feature"));
 	assert.equal(allocation.path, join(identity.root, ".worktree", "pibox", "feature", "add-feature"));
 	await store.updateTask("feature", "add-feature", { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
@@ -79,10 +80,10 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 		status: "contribution_complete",
 		runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit, completedCommit },
 	});
-	const integrated = await manager.integrateUnit("feature", "feature-unit");
+	const integrated = await manager.mergeTask("feature", "add-feature");
 	assert.equal(await readFile(join(root, "feature.txt"), "utf8"), "implemented\n");
-	assert.equal((await store.readTask("feature", "add-feature")).status, "integrated");
-	assert.match(await git(root, "show", "-s", "--format=%B", integrated.commit), /Harness-Integration-Unit: feature-unit/);
+	assert.equal((await store.readTask("feature", "add-feature")).status, "merged");
+	assert.equal(await git(root, "branch", "--show-current"), "feature/feature");
 	await store.recordEvaluation({
 		workItemId: "feature",
 		evaluationId: "feature-check",
@@ -108,6 +109,7 @@ test("resumes a dirty worktree recorded for the same task assignment", async (t)
 	await store.submitPlanning("resume");
 	await store.approve("resume");
 	const manager = new WorktreeManager(identity);
+	await manager.prepareFeatureBranch("resume");
 	const allocation = await manager.allocate("resume", await store.readTask("resume", manifest.id));
 	await store.updateTask("resume", manifest.id, { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
 	await writeFile(join(allocation.path, "partial.txt"), "retained\n");
@@ -129,8 +131,10 @@ test("refuses allocation when the repository-local worktree root is not ignored"
 	await store.defineTask({ workItemId: "unignored", manifest, brief: "Create a file", acceptance: "File exists" });
 	await store.submitPlanning("unignored");
 	await store.approve("unignored");
+	const manager = new WorktreeManager(identity);
+	await manager.prepareFeatureBranch("unignored");
 	await assert.rejects(
-		new WorktreeManager(identity).allocate("unignored", await store.readTask("unignored", manifest.id)),
+		manager.allocate("unignored", await store.readTask("unignored", manifest.id)),
 		(error: unknown) => error instanceof Error && /\/\.worktree\//.test(error.message),
 	);
 	assert.equal(await git(root, "status", "--porcelain"), "");

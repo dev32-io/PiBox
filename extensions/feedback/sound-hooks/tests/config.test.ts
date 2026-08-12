@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseSoundTheme, resolveSoundFile, soundHooksConfig } from "../config.js";
+import { isSuccessfulAssistantStop } from "../index.js";
 
 test("parses the supported response-complete mapping", () => {
 	assert.deepEqual(
@@ -39,6 +40,12 @@ test("keeps sound files inside the selected theme directory", () => {
 
 	const escapingTheme = { ...theme, sounds: { "response-complete": "../../secret.mp3" } };
 	assert.equal(resolveSoundFile("/sounds", escapingTheme, "response-complete"), undefined);
+});
+
+test("does not treat an escaped or failed turn as response completion", () => {
+	assert.equal(isSuccessfulAssistantStop("aborted"), false);
+	assert.equal(isSuccessfulAssistantStop("error"), false);
+	assert.equal(isSuccessfulAssistantStop("stop"), true);
 });
 
 test("reads environment overrides and disable switches", () => {

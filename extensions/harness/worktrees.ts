@@ -1,11 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, readFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
+import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
-import { assertCleanRepository, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
-import type { TaskManifest } from "./types.js";
+import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
+import type { TaskManifest, WorkItemIndex } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
 const execFileAsync = promisify(execFile);
@@ -33,9 +34,14 @@ export interface AllocatedWorktree {
 
 export interface IntegrationResult {
 	commit: string;
-	unitId: string;
-	tasks: string[];
+	taskId: string;
 	checks: Array<{ command: string; code: number; stdout: string; stderr: string }>;
+}
+
+export interface PreparedFeatureBranch {
+	baseBranch: string;
+	featureBranch: string;
+	created: boolean;
 }
 
 export class ResourceLockSet {
@@ -83,12 +89,39 @@ export class WorktreeManager {
 		this.worktreeRoot = join(identity.root, ".worktree", "pibox");
 	}
 
+	async prepareFeatureBranch(workItemId: string): Promise<PreparedFeatureBranch> {
+		await assertCleanRepository(this.identity.root);
+		const item = await this.workItems.assertCurrentApproval(workItemId);
+		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
+		if (!currentBranch) throw new HarnessError("GIT_OPERATION_FAILED", "Workflow start requires a named branch checkout");
+		const featureBranch = `feature/${safeSegment(workItemId)}`;
+		const baseBranch = item.delivery?.baseBranch ?? currentBranch;
+		const exists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${featureBranch}`], { cwd: this.identity.root }).then(() => true, () => false);
+		if (currentBranch !== featureBranch) await runGit(this.identity.root, exists ? ["switch", featureBranch] : ["switch", "-c", featureBranch]);
+		const changed = item.delivery?.baseBranch !== baseBranch || item.delivery?.featureBranch !== featureBranch;
+		if (changed) {
+			const path = join(this.workItems.workItemRoot(workItemId), "index.yaml");
+			const updated: WorkItemIndex = { ...item, delivery: { baseBranch, featureBranch, startedAt: item.delivery?.startedAt ?? new Date().toISOString() } };
+			await atomicWriteFile(path, stringify(updated));
+			await runGit(this.identity.root, ["add", "--", relative(this.identity.root, path)]);
+			await runGit(this.identity.root, ["commit", "-m", `harness(${workItemId}): start feature branch`]);
+		}
+		return { baseBranch, featureBranch, created: !exists };
+	}
+
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.assertCurrentApproval(workItemId);
 		for (const dependency of task.dependsOn) {
 			const dependencyTask = await this.workItems.readTask(workItemId, dependency);
 			if (dependencyTask.status !== "integrated") throw new HarnessError("INVALID_ARTIFACT", `Dependency is not integrated: ${dependency}`);
+		}
+		const featureBranch = `feature/${safeSegment(workItemId)}`;
+		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
+		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Workflow ${workItemId} must run on ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
+		if (task.execution.isolation === "repository") {
+			const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+			return { path: this.identity.root, branch: featureBranch, baseCommit };
 		}
 		const branch = `harness/${safeSegment(workItemId)}/${safeSegment(task.id)}`;
 		const path = join(this.worktreeRoot, workItemId, task.id);
@@ -118,57 +151,39 @@ export class WorktreeManager {
 		return { path, branch, baseCommit };
 	}
 
-	async integrateUnit(workItemId: string, unitId: string, checks?: string[]): Promise<IntegrationResult> {
+	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
-		const item = await this.workItems.read(workItemId);
-		if (item.planning.status !== "approved") throw new HarnessError("CAPABILITY_DENIED", "Planning is not approved");
-		const unit = item.integrationUnits.find((candidate) => candidate.id === unitId);
-		if (!unit) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${unitId}`);
-		const tasks = await Promise.all(unit.tasks.map((taskId) => this.workItems.readTask(workItemId, taskId)));
-		for (const task of tasks) {
-			if (task.status !== "contribution_complete" && task.status !== "staged") {
-				throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not contribution-complete`);
-			}
-			if (!task.runtime?.branch || !task.runtime.baseCommit) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no recorded branch/base`);
+		const item = await this.workItems.assertCurrentApproval(workItemId);
+		const featureBranch = item.delivery?.featureBranch ?? `feature/${safeSegment(workItemId)}`;
+		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
+		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Task merges require ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
+		let task = await this.workItems.readTask(workItemId, taskId);
+		if (["merged", "integrated"].includes(task.status)) return { commit: task.runtime?.mergedCommit ?? await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, checks: [] };
+		if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no completed contribution commit`);
+		if (task.execution.isolation === "repository") {
+			const present = await execFileAsync("git", ["merge-base", "--is-ancestor", task.runtime.completedCommit, "HEAD"], { cwd: this.identity.root }).then(() => true, () => false);
+			if (!present) throw new HarnessError("INVALID_HANDOFF", `Repository task ${task.id} commit is not present on ${featureBranch}`);
+		} else {
+			if (!["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not ready to merge from ${task.status}`);
+			if (task.status === "contribution_complete" || task.status === "accepted") task = await this.workItems.updateTask(workItemId, task.id, { status: "merge_queued" });
+			if (task.status === "merge_queued" || task.status === "staged") task = await this.workItems.updateTask(workItemId, task.id, { status: "merging" });
+			const taskBranch = task.runtime?.branch;
+			if (!taskBranch) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no recorded branch`);
+			await runGit(this.identity.root, ["merge", "--no-ff", "--no-edit", taskBranch]).catch(async (error) => {
+				await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
+				throw new HarnessError("GIT_OPERATION_FAILED", `Merge conflict for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
+			});
 		}
-
-		const expectedBase = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
-		const candidatePath = join(this.identity.privateRoot, "integration", workItemId, `${unitId}-${randomUUID()}`);
-		await mkdir(join(this.identity.privateRoot, "integration", workItemId), { recursive: true, mode: 0o700 });
-		await runGit(this.identity.root, ["worktree", "add", "--detach", candidatePath, expectedBase]);
 		const checkResults: IntegrationResult["checks"] = [];
-		const effectiveChecks = checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
-		try {
-			for (const task of tasks) {
-				await runGit(candidatePath, ["cherry-pick", "--no-commit", `${task.runtime?.baseCommit}..${task.runtime?.branch}`]).catch(async (error) => {
-					await runGit(candidatePath, ["cherry-pick", "--abort"]).catch(() => undefined);
-					throw new HarnessError("GIT_OPERATION_FAILED", `Integration conflict while applying ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
-				});
-			}
-			for (const command of effectiveChecks) {
-				const result = await runShell(command, candidatePath);
-				checkResults.push({ command, ...result });
-				if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Integration check failed: ${command}`, result);
-			}
-			const trailers = [
-				`Harness-Work-Item: ${workItemId}`,
-				`Harness-Integration-Unit: ${unitId}`,
-				`Harness-Tasks: ${tasks.map((task) => task.id).join(", ")}`,
-				`Source-Commits: ${tasks.map((task) => task.runtime?.completedCommit).filter(Boolean).join(", ")}`,
-			].join("\n");
-			await runGit(candidatePath, ["commit", "-m", `harness(${workItemId}): integrate ${unitId}`, "-m", trailers]);
-			const commit = await runGit(candidatePath, ["rev-parse", "HEAD"]);
-			if ((await runGit(this.identity.root, ["rev-parse", "HEAD"])) !== expectedBase) {
-				throw new HarnessError("GIT_OPERATION_FAILED", "Canonical branch advanced while integration candidate was running");
-			}
-			await runGit(this.identity.root, ["merge", "--ff-only", commit]);
-			for (const task of tasks) await this.workItems.updateTask(workItemId, task.id, { status: "integrated" });
-			await this.workItems.refreshReadyTasks(workItemId);
-			return { commit, unitId, tasks: tasks.map((task) => task.id), checks: checkResults };
-		} finally {
-			await runGit(this.identity.root, ["worktree", "remove", "--force", candidatePath]).catch(() => undefined);
-			await rm(candidatePath, { recursive: true, force: true });
+		for (const command of checks ?? task.verification.taskChecks) {
+			const result = await runShell(command, this.identity.root);
+			checkResults.push({ command, ...result });
+			if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Post-merge check failed: ${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`, result);
 		}
+		const commit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		await this.workItems.updateTask(workItemId, task.id, { status: "merged", runtime: { mergedCommit: commit } });
+		await this.workItems.refreshReadyTasks(workItemId);
+		return { commit, taskId, checks: checkResults };
 	}
 }
 
