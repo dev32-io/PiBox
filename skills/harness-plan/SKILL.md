@@ -127,7 +127,7 @@ Do not call `harness_create`, `harness_patch`, `harness_delete`, `harness_apply_
 
 ## Draft the Contract
 
-1. Call `harness_list` before creation. Select and update an existing matching work item when one exists; never create a replacement work item to escape a correctable draft. Use `harness_create` only for genuinely new intent.
+1. Call `harness_list` before creation. Select and update an existing matching work item when one exists; never create a replacement work item to escape a correctable draft. For genuinely new intent, create the initial parent work item with a single `harness_create` call. Only after it succeeds, add child artifacts, tasks, and evaluations. Do not wrap that one creation in `harness_apply_change`; reserve batching for coherent multi-resource revisions.
 2. Specify user-visible and system behavior with stable acceptance criteria before implementation design.
 3. Record confirmed and delegated decisions without laundering recommendations into user requirements.
 4. Keep unresolved material choices out of claims of planning readiness.

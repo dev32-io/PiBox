@@ -38,6 +38,9 @@ test("orchestrator and planner act as constructive product partners before canon
 	assert.match(orchestrator, /conversational refinement or \/harness approve/i);
 	assert.match(orchestrator, /trusted canonical coordinator/i);
 	assert.match(orchestrator, /Never create a second work item to repair an existing draft/i);
+	assert.match(orchestrator, /create the initial work item with one harness_create call/i);
+	assert.match(orchestrator, /never use a batch merely to wrap one creation/i);
+	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
 	assert.match(orchestrator, /Approval is continuity, not a blanket mutation freeze/i);
 	assert.match(planner, /requested solution as one hypothesis, not the goal itself/i);
 	assert.match(planner, /Proximate technical cause/i);
@@ -45,6 +48,7 @@ test("orchestrator and planner act as constructive product partners before canon
 	assert.match(planner, /Parallel execution is an option[\s\S]+never create tasks merely to increase concurrency/i);
 	assert.match(planner, /without requiring a special phrase/i);
 	assert.match(planner, /audited `retain-approval` disposition/i);
+	assert.match(planner, /initial parent work item with a single `harness_create` call/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /Do not reward task count or concurrency/i);
 });

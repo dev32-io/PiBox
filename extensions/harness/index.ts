@@ -51,7 +51,7 @@ Discovery — For bugs, distinguish symptom, expected behavior, reproduction, pr
 
 Proportionality — Keep clear, local, reversible work ad hoc; words such as plan, design, story, or change do not justify ceremony. Delegate fact-finding when isolation preserves main context. Delegate implementation only when specialist capability, fresh context, independent evidence, or contribution size repays overhead. Parallelism is optional, not a metric.
 
-Resource protocol — Use harness_list before creating and harness_get before patching. Canonical references are work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. Create child resources with the complete file-backed representation returned by get/list: artifacts use semantic sections or content; tasks use {manifest, brief/acceptance or semantic sections}; evaluations use {manifest}. Use harness_apply_change for coherent multi-resource revisions and request resolution. Never create a second work item to repair an existing draft.
+Resource protocol — Use harness_list before creating and harness_get before patching. Canonical references are work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. For genuinely new intent, create the initial work item with one harness_create call, then add child artifacts, tasks, and evaluations after the parent exists. Create child resources with the complete file-backed representation returned by get/list: artifacts use semantic sections or content; tasks use {manifest, brief/acceptance or semantic sections}; evaluations use {manifest}. Reserve harness_apply_change for coherent multi-resource revisions and request resolution; never use a batch merely to wrap one creation or other single operation. Never create a second work item to repair an existing draft.
 
 Managed work — Do not mutate canonical planning until shared understanding and a user request to draft, unless choices were explicitly delegated. Use resource capabilities rather than editing agent-artifacts. The main orchestrator is the trusted canonical coordinator: inspect and revise existing resources instead of creating replacement work items, and normally resolve subagent change requests within delegated intent using an audited retain-approval amendment. Ask the user only when a change materially alters their outcome, explicit constraints, consequential policy, privacy/security posture, irreversible effects, or a decision they retained. Approval is continuity, not a blanket mutation freeze. Plan delivery as an ordered series of execution stages: one coherent task or one deliberate concurrency batch per stage, with later stages waiting for every current-stage task to merge. Use repository isolation for serial feature-branch work and worktree isolation only when independent or concurrent execution repays spawning, context, review, and merge overhead. Choose functional ownership boundaries that reduce merge conflicts; do not create tiny file-oriented tasks merely to increase parallelism. Within a concurrent stage, list tasks in intended merge order. Submit a coherent draft, then offer conversational refinement or /harness approve <work-item-id> without a magic phrase. Route existing work to research, plan, execute, evaluate, or recover at its current boundary. Verify at the smallest coherent boundary and claim completion only from fresh recorded evidence.
 
@@ -327,7 +327,6 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 
 export default function harness(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
-	let whitespaceToolDeltaBytes = 0;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	const supervisor = new SubagentSupervisor();
 	registerWorkerCapabilities(pi);
@@ -1317,10 +1316,6 @@ export default function harness(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("agent_start", () => {
-		whitespaceToolDeltaBytes = 0;
-	});
-
 	pi.on("message_end", async (event) => {
 		if (!isSubagentProcess() || event.message.role !== "assistant") return;
 		const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;
@@ -1328,20 +1323,6 @@ export default function harness(pi: ExtensionAPI): void {
 		if (!agentRoot || !attemptId) return;
 		const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 		await atomicWriteFile(join(agentRoot, "attempts", attemptId, "result.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId, text, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
-	});
-
-	pi.on("message_update", (event, ctx) => {
-		const update = event.assistantMessageEvent;
-		if (update.type !== "toolcall_delta") return;
-		if (update.delta.trim().length > 0) {
-			whitespaceToolDeltaBytes = 0;
-			return;
-		}
-		whitespaceToolDeltaBytes += Buffer.byteLength(update.delta, "utf8");
-		if (whitespaceToolDeltaBytes <= 16 * 1024) return;
-		whitespaceToolDeltaBytes = 0;
-		ctx.abort();
-		if (ctx.hasUI) ctx.ui.notify("Harness aborted a malformed tool call after 16 KiB of whitespace-only argument streaming.", "warning");
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
