@@ -92,6 +92,18 @@ function tokenCount(value: number): string {
 	return value.toLocaleString("en-US");
 }
 
+function liveUsageDetail(startedAt: number, characters: number, inputTokens: number, tokensPerCharacter: number): string {
+	const elapsedMs = Math.max(0, Date.now() - startedAt);
+	const outputTokens = Math.round(characters / tokensPerCharacter);
+	const metrics = [
+		duration(elapsedMs),
+		...(inputTokens > 0 ? [`↑ ${tokenCount(inputTokens)}`] : []),
+		...(outputTokens > 0 ? [`↓ ${tokenCount(outputTokens)}`] : []),
+		...(outputTokens > 0 && elapsedMs >= 1_000 ? [`${(outputTokens / (elapsedMs / 1_000)).toFixed(1)} tok/s`] : []),
+	];
+	return metrics.join(" · ");
+}
+
 function roundUsage(messages: unknown[]): { inputTokens: number; outputTokens: number; cost?: number } {
 	let inputTokens = 0;
 	let outputTokens = 0;
@@ -114,6 +126,7 @@ export default function spinners(pi: ExtensionAPI): void {
 	let activeContext: ExtensionContext | undefined;
 	let startedAt = 0;
 	let characters = 0;
+	let inputTokens = 0;
 	let currentMessage = "Analyzing";
 	let hasLiveThinking = false;
 	let shimmerPhase = 0;
@@ -133,8 +146,7 @@ export default function spinners(pi: ExtensionAPI): void {
 	const update = () => {
 		const ctx = activeContext;
 		if (!ctx || ctx.mode !== "tui" || startedAt === 0) return;
-		const estimate = Math.round(characters / config.tokensPerCharacter);
-		const detail = [duration(Date.now() - startedAt), ...(estimate > 0 ? [`≈${estimate.toLocaleString("en-US")} tokens`] : [])].join(" · ");
+		const detail = liveUsageDetail(startedAt, characters, inputTokens, config.tokensPerCharacter);
 		ctx.ui.setWorkingMessage(
 			`${shimmer(currentMessage, shimmerPhase, ctx.ui.theme)}\n${ctx.ui.theme.fg("dim", "└─")} ${ctx.ui.theme.fg("dim", detail)}`,
 		);
@@ -152,6 +164,7 @@ export default function spinners(pi: ExtensionAPI): void {
 		activeContext = undefined;
 		startedAt = 0;
 		characters = 0;
+		inputTokens = 0;
 		hasLiveThinking = false;
 	};
 
@@ -159,7 +172,7 @@ export default function spinners(pi: ExtensionAPI): void {
 		const summary = entry.data;
 		if (!summary) return undefined;
 		const metrics = [`↑ ${tokenCount(summary.inputTokens)}`, `↓ ${tokenCount(summary.outputTokens)}`, ...(summary.cost === undefined ? [] : [`$${summary.cost.toFixed(2)}`])];
-		const text = `◒ ${summary.word} for ${duration(summary.durationMs)} · ${metrics.join("  ")}`;
+		const text = `◒ ${summary.word} for ${duration(summary.durationMs)} · ${metrics.join(" · ")}`;
 		return new Text(theme.fg("dim", text), 1, 0);
 	});
 
@@ -178,6 +191,7 @@ export default function spinners(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		activeContext = ctx;
 		startedAt = Date.now();
+		inputTokens = ctx.getContextUsage()?.tokens ?? 0;
 		currentMessage = nextVerb("");
 		shimmerPhase = 0;
 		update();
@@ -198,6 +212,8 @@ export default function spinners(pi: ExtensionAPI): void {
 	});
 	pi.on("message_update", (event) => {
 		characters = responseCharacters(event.message);
+		const assistant = assistantMessage(event.message);
+		inputTokens = assistant?.usage?.input || inputTokens;
 		const thinking = latestThinking(event.message);
 		if (thinking) {
 			hasLiveThinking = true;
