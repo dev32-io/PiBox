@@ -25,14 +25,30 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 	assert.deepEqual(updates, [["second", "ready"], ["third", "blocked"]]);
 });
 
+test("stop ignores reported agents whose process already exited", async () => {
+	const reported = { id: "reviewer", workItemId: "example", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited" }] };
+	let reads = 0;
+	const runtime: any = {
+		identity: { root: "/repo" },
+		workItems: { async read() { return { id: "example", planning: { status: "approved" }, tasks: [], evaluations: [] }; } },
+		agents: { async list() { return [reported]; }, async get() { reads++; return reported; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	await adapter.controlWorkflow("work-item:example", "stop", {} as any);
+	assert.equal(reads, 0, "settled agents are not sent through process signaling");
+	const result = await adapter.controlSubagent(reported.id, "stop", {} as any) as any;
+	assert.equal(result.signaled, false);
+});
+
 test("derives and refreshes task, integration, and evaluation steps without copying a workflow graph", async () => {
 	let tasks: any[] = [task("first", "ready"), task("second", "blocked", ["first"])];
 	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };
+	let agents: any[] = [];
 	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
 	const runtime: any = {
 		identity: { root: "/repo" },
 		workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } },
-		agents: { async list() { return []; } },
+		agents: { async list() { return agents; } },
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:example", {} as any);
@@ -50,6 +66,33 @@ test("derives and refreshes task, integration, and evaluation steps without copy
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "ready");
 	evaluation = { ...evaluation, status: "passed" };
+	agents = [{ id: "old-review", state: "reported", evaluationId: "review", updatedAt: new Date(0).toISOString(), attempts: [{ id: "attempt", state: "exited" }], currentAttemptId: "attempt" }];
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
-	assert.equal(snapshot.status, "done");
+	assert.equal(snapshot.status, "done", "canonical completion wins over a stale reported agent");
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "done");
+});
+
+test("does not render exited or reported evaluation agents as running", async () => {
+	const tasks: any[] = [task("first", "merged")];
+	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, tasks: [{ id: "first" }], executionStages: [{ id: "delivery", tasks: ["first"] }], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", status: "planned", scope: { workItem: "example" } };
+	let agent: any = { id: "reviewer", state: "running", evaluationId: "review", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running" }] };
+	const runtime: any = {
+		identity: { root: "/repo" },
+		workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask() { return tasks[0]; }, async readEvaluation() { return evaluation; } },
+		agents: { async list() { return [agent]; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "running");
+
+	agent = { ...agent, state: "reported", attempts: [{ id: "attempt", state: "exited" }] };
+	snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "attention");
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.detail, "result pending reconciliation");
+
+	agent = { ...agent, state: "running" };
+	snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "attention");
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.detail, "stale process state");
 });

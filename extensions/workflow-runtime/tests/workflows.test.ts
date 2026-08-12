@@ -125,6 +125,9 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 	assert.match(completion?.message.content ?? "", /outcome\.md.*brief the user/i);
 	const widget = f.widget() as ((...args: any[]) => any);
 	const component = widget?.({}, f.ctx.ui.theme);
-	assert.ok(component.render(100).every((line: string) => line.startsWith(" ") && line.endsWith(" ")));
+	const rendered = component.render(100) as string[];
+	assert.ok(rendered.every((line: string) => line.startsWith(" ") && line.endsWith(" ")));
+	assert.ok(rendered.every((line: string) => line.includes(" │ ")), "wide dashboards visibly separate tasks from workflow events");
+	assert.ok(rendered.every((line: string) => line.indexOf(" │ ") < 65), "the event pane starts near the task content instead of at the far right");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });

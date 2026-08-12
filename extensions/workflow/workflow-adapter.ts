@@ -168,12 +168,13 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				return;
 			}
 			if (action === "pause") return;
-			for (const agent of await runtime.agents.list()) if (agent.workItemId === workItemId && !terminalAgent.has(agent.state)) await this.controlSubagent(agent.id, "stop", ctx);
+			for (const agent of await runtime.agents.list()) if (agent.workItemId === workItemId && isAgentProcessActive(agent)) await this.controlSubagent(agent.id, "stop", ctx);
 		},
 		async listSubagents(ctx) { return (await options.runtimeFor(ctx)).agents.list(); },
 		async listMessages(ctx) { return (await options.runtimeFor(ctx)).agents.listMessages().then((messages) => messages.filter((message) => message.status === "open")); },
 		async controlSubagent(agentId, action, ctx) {
 			const runtime = await options.runtimeFor(ctx); const agent = await runtime.agents.get(agentId); const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
+			if (!isAgentProcessActive(agent)) return { agent, signaled: false, reason: "Agent has no active process." };
 			if (!attempt) throw new Error(`Agent ${agent.id} has no current process attempt.`);
 			const heartbeatText = await readTextIfExists(join(runtime.agents.root, "agents", agent.id, "attempts", attempt.id, "heartbeat.json"));
 			const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
