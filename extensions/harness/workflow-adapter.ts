@@ -95,10 +95,23 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
 		async controlWorkflow(ref, action, ctx) {
-			if (action === "resume" || action === "pause") return;
 			const workflow = WORK_ITEM.exec(ref); if (!workflow) throw new Error(`Invalid harness workflow: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
-			for (const agent of await runtime.agents.list()) if (agent.workItemId === workflow[1] && !terminalAgent.has(agent.state)) await this.controlSubagent(agent.id, action === "stop" ? "stop" : "pause", ctx);
+			const workItemId = workflow[1]!;
+			if (action === "resume") {
+				const item = await runtime.workItems.read(workItemId);
+				if (item.planning.status !== "approved") throw new Error(`Workflow plan ${item.id} is not approved. Use /harness approve ${item.id} to approve the workflow plan first.`);
+				const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
+				const taskById = new Map(tasks.map((task) => [task.id, task]));
+				for (const task of tasks) {
+					if (!["cancelled", "paused", "failed", "protocol_failed"].includes(task.status)) continue;
+					const dependenciesDone = task.dependsOn.every((id) => taskById.get(id)?.status === "integrated");
+					await runtime.mutex.run(`workflow-resume:${item.id}:${task.id}`, () => runtime.workItems.updateTask(item.id, task.id, { status: dependenciesDone ? "ready" : "blocked" }));
+				}
+				return;
+			}
+			if (action === "pause") return;
+			for (const agent of await runtime.agents.list()) if (agent.workItemId === workItemId && !terminalAgent.has(agent.state)) await this.controlSubagent(agent.id, "stop", ctx);
 		},
 		async listSubagents(ctx) { return (await options.runtimeFor(ctx)).agents.list(); },
 		async listMessages(ctx) { return (await options.runtimeFor(ctx)).agents.listMessages().then((messages) => messages.filter((message) => message.status === "open")); },

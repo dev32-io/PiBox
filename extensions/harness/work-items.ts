@@ -109,16 +109,16 @@ const TASK_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 	blocked: ["ready", "cancelled"],
 	ready: ["blocked", "running", "cancelled"],
 	running: ["blocked", "paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
-	paused: ["running", "cancelled"],
+	paused: ["blocked", "ready", "running", "cancelled"],
 	contribution_complete: ["reviewing", "staged", "integrating", "integrated", "changes_requested"],
 	reviewing: ["changes_requested", "staged", "integrating", "integrated"],
 	changes_requested: ["running", "cancelled"],
 	staged: ["integrating", "integrated", "changes_requested"],
 	integrating: ["integrated", "changes_requested", "failed"],
 	integrated: [],
-	failed: ["running", "cancelled"],
-	protocol_failed: ["running", "cancelled"],
-	cancelled: [],
+	failed: ["blocked", "ready", "running", "cancelled"],
+	protocol_failed: ["blocked", "ready", "running", "cancelled"],
+	cancelled: ["blocked", "ready"],
 };
 
 export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {

@@ -159,7 +159,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "workflow_control", label: "Control Workflow", description: "Pause, resume, or stop a workflow without changing its canonical plan.",
+		name: "workflow_control", label: "Control Workflow", description: "Pause, resume, or stop workflow execution. Stop terminates active attempts but preserves adapter-owned work; resume prepares incomplete stopped work and starts fresh attempts when the workflow remains approved.",
 		parameters: Type.Object({ ref: Type.String(), action: StringEnum(["pause", "resume", "stop"] as const) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const adapter = adapterFor(params.ref); await adapter.controlWorkflow(params.ref, params.action, ctx);

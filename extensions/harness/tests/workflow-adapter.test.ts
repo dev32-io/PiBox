@@ -6,6 +6,24 @@ function task(id: string, status: string, dependsOn: string[] = []) {
 	return { id, title: id, status, dependsOn, execution: { parallelism: "allowed", resourceClaims: [id] } };
 }
 
+test("resume prepares stopped tasks from current dependency state", async () => {
+	const tasks: any[] = [task("first", "integrated"), task("second", "cancelled", ["first"]), task("third", "failed", ["second"])];
+	const item: any = { id: "example", planning: { status: "approved" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
+	const updates: Array<[string, string]> = [];
+	const runtime: any = {
+		workItems: {
+			async read() { return item; },
+			async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); },
+			async updateTask(_workItemId: string, id: string, update: any) { updates.push([id, update.status]); tasks.find((entry) => entry.id === id).status = update.status; },
+		},
+		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { return operation(); } },
+		agents: { async list() { return []; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
+	assert.deepEqual(updates, [["second", "ready"], ["third", "blocked"]]);
+});
+
 test("derives and refreshes task, integration, and evaluation steps without copying a workflow graph", async () => {
 	let tasks: any[] = [task("first", "ready"), task("second", "blocked", ["first"])];
 	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };

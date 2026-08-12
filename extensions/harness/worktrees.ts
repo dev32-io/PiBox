@@ -102,8 +102,9 @@ export class WorktreeManager {
 			const actualBranch = await runGit(path, ["branch", "--show-current"]);
 			if (actualBranch !== branch) throw new HarnessError("GIT_OPERATION_FAILED", `Existing worktree belongs to ${actualBranch || "detached HEAD"}`);
 			const status = await runGit(path, ["status", "--porcelain=v1"]);
-			if (status && task.status !== "running" && task.status !== "paused") {
-				throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Recovered task worktree is dirty outside a resumable run: ${path}`, { status });
+			const recordedWorktreeMatches = task.runtime?.worktree === path && task.runtime?.branch === branch;
+			if (status && task.status !== "running" && task.status !== "paused" && !recordedWorktreeMatches) {
+				throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Recovered task worktree is dirty outside a recorded resumable assignment: ${path}`, { status });
 			}
 			return { path, branch, baseCommit: task.runtime?.baseCommit ?? baseCommit };
 		}

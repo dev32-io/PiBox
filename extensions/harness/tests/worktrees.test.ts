@@ -99,6 +99,25 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("resumes a dirty worktree recorded for the same task assignment", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "resume", title: "Resume", kind: "change", intent: "Resume retained work" });
+	const manifest = task();
+	await store.defineTask({ workItemId: "resume", manifest, brief: "Create a file", acceptance: "File exists" });
+	await store.submitPlanning("resume");
+	await store.approve("resume");
+	const manager = new WorktreeManager(identity);
+	const allocation = await manager.allocate("resume", await store.readTask("resume", manifest.id));
+	await store.updateTask("resume", manifest.id, { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+	await writeFile(join(allocation.path, "partial.txt"), "retained\n");
+	await store.updateTask("resume", manifest.id, { status: "cancelled" });
+	await store.updateTask("resume", manifest.id, { status: "ready" });
+	const resumed = await manager.allocate("resume", await store.readTask("resume", manifest.id));
+	assert.equal(resumed.path, allocation.path);
+	assert.equal(await readFile(join(resumed.path, "partial.txt"), "utf8"), "retained\n");
+});
+
 test("refuses allocation when the repository-local worktree root is not ignored", async (t) => {
 	const { root, identity } = await fixture(t);
 	await writeFile(join(root, ".gitignore"), "");

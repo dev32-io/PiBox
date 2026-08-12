@@ -39,6 +39,7 @@ test("registers the generalized workflow and subagent surface", () => {
 	const f = fixture();
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
 	assert.match(f.tools.get("subagent_spawn").description, /Background is the default/);
+	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 });
 
 test("failed workflow start returns an error and leaves no dashboard", async () => {
