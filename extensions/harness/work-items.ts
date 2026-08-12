@@ -586,6 +586,27 @@ export class WorkItemStore {
 		}
 	}
 
+	async activateDraftTasks(workItemId: string): Promise<TaskManifest[]> {
+		await assertCleanRepository(this.repositoryRoot);
+		const item = await this.read(workItemId);
+		if (item.planning.status !== "approved") throw new HarnessError("CAPABILITY_DENIED", `Workflow plan ${workItemId} is not approved. Use /harness approve ${workItemId} to approve the workflow plan first.`);
+		const drafts = (await Promise.all(item.tasks.map((catalog) => this.readTask(workItemId, catalog.id)))).filter((task) => task.status === "draft");
+		if (drafts.length === 0) return [];
+		const files = drafts.map((task) => ({
+			path: join(this.workItemRoot(workItemId), "tasks", task.id, "task.yaml"),
+			content: stringify({ ...task, status: task.dependsOn.length === 0 ? "ready" : "blocked" }),
+		}));
+		const previous = await Promise.all(files.map(async (file) => ({ path: file.path, content: await readFile(file.path, "utf8") })));
+		try {
+			for (const file of files) await atomicWriteFile(file.path, file.content);
+			await this.commit(files.map((file) => file.path), `harness(${workItemId}): activate approved tasks`);
+			return Promise.all(drafts.map((task) => this.readTask(workItemId, task.id)));
+		} catch (error) {
+			await this.restore(previous);
+			throw error;
+		}
+	}
+
 	async refreshReadyTasks(workItemId: string): Promise<TaskManifest[]> {
 		const item = await this.read(workItemId);
 		const changed: TaskManifest[] = [];
@@ -593,9 +614,7 @@ export class WorkItemStore {
 			const task = await this.readTask(workItemId, catalog.id);
 			if (task.status !== "blocked") continue;
 			const dependencies = await Promise.all(task.dependsOn.map((dependency) => this.readTask(workItemId, dependency)));
-			if (dependencies.every((dependency) => dependency.status === "integrated")) {
-				changed.push(await this.updateTask(workItemId, task.id, { status: "ready" }));
-			}
+			if (dependencies.every((dependency) => dependency.status === "integrated")) changed.push(await this.updateTask(workItemId, task.id, { status: "ready" }));
 		}
 		return changed;
 	}
@@ -931,7 +950,10 @@ export class WorkItemStore {
 			index.planning.status = "awaiting_approval";
 			index.state = "waiting_user";
 		} else {
-			if (index.planning.status === "approved") return index;
+			if (index.planning.status === "approved") {
+				await this.activateDraftTasks(id);
+				return index;
+			}
 			if (index.planning.status !== "awaiting_approval") {
 				throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is not awaiting approval`);
 			}
@@ -946,6 +968,7 @@ export class WorkItemStore {
 		try {
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([indexPath], `harness(${id}): ${operation === "approve" ? "approve planning" : "submit planning"}`);
+			if (operation === "approve") await this.activateDraftTasks(id);
 			return index;
 		} catch (error) {
 			await this.restore([{ path: indexPath, content: previous }]);

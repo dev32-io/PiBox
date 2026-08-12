@@ -90,6 +90,26 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("approval activates draft tasks according to dependencies", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "activation", title: "Activation", kind: "change", intent: "Activate approved work." });
+	const manifest = (id: string, dependsOn: string[]): TaskManifest => ({
+		schemaVersion: 1, id, title: id, status: "draft", dependsOn,
+		references: { specs: [], designs: [], decisions: [] },
+		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [id], complexity: "low", assignment: { role: "implementer", model: "luna", effort: "low", minimumCapabilityRank: 0, allowFallback: false, rationale: "Fixture" } },
+		assembly: { integrationUnit: "delivery", intermediateState: "complete" },
+		verification: { timing: "integration-unit", methods: [], taskChecks: [], rationale: "Fixture" },
+	});
+	await store.defineTask({ workItemId: "activation", manifest: manifest("first", []), brief: "First task", acceptance: "First accepted" });
+	await store.defineTask({ workItemId: "activation", manifest: manifest("second", ["first"]), brief: "Second task", acceptance: "Second accepted" });
+	await store.submitPlanning("activation");
+	await store.approve("activation");
+	assert.equal((await store.readTask("activation", "first")).status, "ready");
+	assert.equal((await store.readTask("activation", "second")).status, "blocked");
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
 test("renders schema-v2 intent, artifacts, and task contracts from semantic values", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);

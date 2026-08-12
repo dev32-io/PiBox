@@ -45,7 +45,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
 			const item = await runtime.workItems.read(match[1]!);
-			if (item.planning.status !== "approved") throw new Error(`Planning for ${item.id} is ${item.planning.status}`);
+			if (item.planning.status !== "approved") throw new Error(`Workflow plan ${item.id} is not approved. Use /harness approve ${item.id} to approve the workflow plan first.`);
+			await runtime.workItems.activateDraftTasks(item.id);
 			const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
 			const steps: WorkflowStep[] = tasks.map((task) => {

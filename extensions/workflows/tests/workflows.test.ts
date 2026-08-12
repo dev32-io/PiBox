@@ -41,6 +41,22 @@ test("registers the generalized workflow and subagent surface", () => {
 	assert.match(f.tools.get("subagent_spawn").description, /Background is the default/);
 });
 
+test("failed workflow start returns an error and leaves no dashboard", async () => {
+	const f = fixture();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() { throw new Error("Workflow plan example is not approved. Use /harness approve example to approve the workflow plan first."); },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await assert.rejects(f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx), /\/harness approve example/);
+	assert.equal(f.widget(), undefined);
+	assert.equal(f.entries.length, 0);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("background spawning returns immediately and later emits a lifecycle message", async () => {
 	const f = fixture();
 	let release!: () => void;

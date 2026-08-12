@@ -11,7 +11,7 @@ test("derives and refreshes task, integration, and evaluation steps without copy
 	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };
 	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, tasks: [{ id: "first" }, { id: "second" }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
 	const runtime: any = {
-		workItems: { async read() { return item; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } },
+		workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } },
 		agents: { async list() { return []; } },
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });

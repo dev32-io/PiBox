@@ -145,10 +145,16 @@ export default function workflows(pi: ExtensionAPI): void {
 		description: "Start deterministic background execution for an approved workflow reference. The registered adapter refreshes current steps and the workflow runner advances routine ready work.",
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
-			const snapshot = await adapterFor(params.ref).snapshot(params.ref, ctx);
-			active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
-			void tick(ctx);
-			return result(`Started workflow ${params.ref} in background with ${snapshot.steps.length} step(s).`, snapshot);
+			try {
+				const snapshot = await adapterFor(params.ref).snapshot(params.ref, ctx);
+				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
+				void tick(ctx);
+				return result(`Started workflow ${params.ref} in background with ${snapshot.steps.length} step(s).`, snapshot);
+			} catch (error) {
+				active.delete(params.ref);
+				if (currentRef === params.ref) { currentRef = undefined; currentSnapshot = undefined; renderDashboard(ctx); }
+				throw error;
+			}
 		},
 	});
 
