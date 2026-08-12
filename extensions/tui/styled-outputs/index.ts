@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
 	AssistantMessageComponent,
 	ToolExecutionComponent,
@@ -9,6 +11,7 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
+	generateDiffString,
 	type ExtensionAPI,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
@@ -45,15 +48,25 @@ function installMessagePatches(): void {
 			const theme = globalState().theme;
 			const children = this.contentContainer?.children;
 			if (!theme || !Array.isArray(children)) return;
-			for (let index = 0; index < children.length; index++) {
-				const child = children[index];
+
+			// Thinking remains in the session and model context, but is presented live
+			// in the working row instead of accumulating in transcript history.
+			this.contentContainer.children = children.filter((child: any) =>
+				!(child instanceof Markdown && (child as any).defaultTextStyle?.italic),
+			);
+			const visibleChildren = this.contentContainer.children;
+			if (visibleChildren.every((child: any) => child instanceof Spacer)) {
+				this.contentContainer.clear();
+				return;
+			}
+			for (let index = 0; index < visibleChildren.length; index++) {
+				const child = visibleChildren[index];
 				if (!(child instanceof Markdown)) continue;
 				const text = (child as any).text;
-				if (!text) continue;
-				const thinking = !!(child as any).defaultTextStyle?.italic;
-				children[index] = createPrefixedMarkdown(text, this.markdownTheme, theme, thinking
-					? { prefix: "✽", prefixColor: "accent", bodyColor: "thinkingText", italic: true }
-					: { prefix: "●", prefixColor: "text" });
+				if (text) visibleChildren[index] = createPrefixedMarkdown(text, this.markdownTheme, theme, {
+					prefix: "●",
+					prefixColor: "text",
+				});
 			}
 		};
 		assistantPrototype[PATCH_FLAG] = true;
@@ -139,17 +152,18 @@ function installToolPatch(): void {
 				const prefix = `${shellIndent}${theme.fg("dim", "└─")} ${theme.fg(color, status)}${theme.fg("dim", " • ")}`;
 				const continuation = `${shellIndent}   `;
 				const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-				const suffix = !this.isPartial && !this.expanded ? theme.fg("dim", ` • ${toggle} to expand`) : "";
+				const collapsed = !this.isPartial && !this.expanded;
 				renderContainer.children[1] = new LinePrefixedComponent(
 					result,
 					prefix,
 					continuation,
 					visibleWidth(prefix),
 					visibleWidth(continuation),
-					suffix,
-					visibleWidth(suffix),
-					!this.isPartial && !this.expanded ? 1 : undefined,
-					!this.isPartial && !this.expanded ? (text) => theme.fg("muted", text) : undefined,
+					"",
+					0,
+					collapsed ? 3 : undefined,
+					collapsed ? (text) => theme.fg("muted", text) : undefined,
+					collapsed ? (omitted) => theme.fg("dim", `… +${omitted} lines (${toggle} to expand)`) : undefined,
 				);
 			}
 		}
@@ -175,6 +189,22 @@ function registerStyledTools(pi: ExtensionAPI): void {
 			// Keep every built-in in the same padded shell. Edit otherwise inherits
 			// its native self-rendering shell and escapes transcript indentation.
 			renderShell: "default",
+			async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+				if (name !== "write") return tool.execute(toolCallId, params, signal, onUpdate, ctx);
+				let previous: string | undefined;
+				try {
+					previous = await readFile(resolve(cwd, params.path), "utf8");
+				} catch {
+					// A missing or unreadable target is classified as a create. The wrapped
+					// write tool remains responsible for reporting actual write failures.
+				}
+				const result = await tool.execute(toolCallId, params, signal, onUpdate, ctx);
+				const diff = generateDiffString(previous ?? "", params.content).diff;
+				return {
+					...result,
+					details: { piboxWrite: { action: previous === undefined ? "create" : "rewrite", diff } },
+				};
+			},
 			renderCall: (args: any, theme: Theme, ctx: any) => renderToolCall(name, args, theme, ctx),
 			renderResult: (result: any, options: any, theme: Theme, ctx: any) => renderToolResult(name, result, options, theme, ctx),
 		});

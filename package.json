@@ -35,6 +35,7 @@
       "./extensions/providers/ollama-cloud/index.ts",
       "./extensions/providers/local-llm/index.ts",
       "./extensions/tui/chat-input/index.ts",
+      "./extensions/tui/effort/index.ts",
       "./extensions/tui/status-bar/index.ts",
       "./extensions/tui/styled-outputs/index.ts",
       "./extensions/tui/spinners/index.ts",

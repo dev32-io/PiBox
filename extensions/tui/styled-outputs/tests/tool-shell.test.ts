@@ -18,23 +18,28 @@ test("decorates third-party tool output while preserving nested lines", () => {
 	]);
 });
 
-test("places expansion hints beside padded Box status text", () => {
+test("shows three preview lines and a dynamic expansion hint", () => {
 	const box = new Box(1, 0, (text) => `\x1b[42m${text}\x1b[0m`);
-	box.addChild(new Text("3 sources", 0, 0));
-	box.addChild(new Text("preview that should stay collapsed", 0, 0));
+	box.addChild(new Text("first\nsecond\nthird\nfourth\nfifth", 0, 0));
 	const component = new LinePrefixedComponent(
 		box,
 		"└─ Done • ",
 		"   ",
 		10,
 		3,
-		" • ctrl+o to expand",
-		19,
-		1,
+		"",
+		0,
+		3,
 		(text) => text,
+		(omitted) => `… +${omitted} lines (ctrl+o to expand)`,
 	);
 
-	assert.deepEqual(component.render(80), ["└─ Done • 3 sources • ctrl+o to expand"]);
+	assert.deepEqual(component.render(80).map((line) => stripTerminalSequences(line).trimEnd()), [
+		"└─ Done • first",
+		"    second",
+		"    third",
+		"   … +2 lines (ctrl+o to expand)",
+	]);
 });
 
 test("reserves enough width for the longest lifecycle prefix", () => {

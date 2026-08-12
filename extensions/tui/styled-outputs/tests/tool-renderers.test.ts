@@ -8,7 +8,7 @@ const theme = {
 	bold: (value: string) => value,
 } as unknown as Theme;
 
-test("renders compact Pikit-style tool graphics", () => {
+test("caps read previews at ten lines", () => {
 	const call = renderToolCall("read", { path: "/tmp/project/file.ts" }, theme, {
 		cwd: "/tmp/project",
 		isPartial: false,
@@ -16,13 +16,17 @@ test("renders compact Pikit-style tool graphics", () => {
 	});
 	assert.match(call.render(100).join("\n"), /^✓ Read file\.ts/);
 
-	const result = renderToolResult("read", { content: [{ type: "text", text: "one\ntwo" }] }, { expanded: false }, theme, {
+	const lines = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`);
+	const result = renderToolResult("read", { content: [{ type: "text", text: lines.join("\n") }] }, { expanded: false }, theme, {
 		args: { path: "/tmp/project/file.ts" },
 		isError: false,
+		state: {},
 	});
 	const rendered = result.render(100).join("\n");
-	assert.match(rendered, /^└─ Done • 2 lines/);
-	assert.match(rendered, /to expand/);
+	assert.match(rendered, /^└─ Done • 12 lines/);
+	assert.match(rendered, /line 10/);
+	assert.doesNotMatch(rendered, /line 11/);
+	assert.match(rendered, /… \+2 more lines \(ctrl\+o to expand\)/);
 });
 
 test("keeps expanded output nested beneath the message-aligned tool row", () => {

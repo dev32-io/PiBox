@@ -12,13 +12,14 @@ export class LinePrefixedComponent implements Component {
 		private readonly firstSuffixWidth = 0,
 		private readonly maxLines?: number,
 		private readonly firstLineStyle?: (text: string) => string,
+		private readonly overflowLine?: (omitted: number) => string,
 	) {}
 
 	render(width: number): string[] {
 		const reserved = Math.max(this.firstPrefixWidth + this.firstSuffixWidth, this.continuationPrefixWidth);
 		const rendered = this.child.render(Math.max(1, width - reserved));
 		const lines = this.maxLines === undefined ? rendered : rendered.slice(0, this.maxLines);
-		return lines.map((line, index) => {
+		const output = lines.map((line, index) => {
 			// Box renderers pad every line to their full width. Remove that visual tail
 			// so lifecycle hints sit beside the status instead of at the far edge.
 			const plain = stripTerminalSequences(line);
@@ -35,6 +36,12 @@ export class LinePrefixedComponent implements Component {
 			}
 			return `${this.continuationPrefix}${compact}`;
 		});
+		const omitted = rendered.length - lines.length;
+		if (omitted > 0 && this.overflowLine) {
+			const overflow = truncateToWidth(this.overflowLine(omitted), Math.max(1, width - this.continuationPrefixWidth));
+			output.push(`${this.continuationPrefix}${overflow}`);
+		}
+		return output;
 	}
 
 	invalidate(): void {

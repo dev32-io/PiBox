@@ -1,13 +1,10 @@
 import { relative } from "node:path";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { renderDiff } from "@earendil-works/pi-coding-agent";
-import { getKeybindings, Text } from "@earendil-works/pi-tui";
-
-const MAX_EXPANDED_LINES = 40;
-// The patched default tool shell owns transcript indentation. Keeping it out
-// of individual renderers also aligns third-party tools during session startup.
+import { DEFAULT_MAX_LINES, renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
+import { Container, getKeybindings, Text } from "@earendil-works/pi-tui";
+import { LinePrefixedComponent } from "./tool-shell.js";
 
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
+type PreviewLine = { text: string; omitted?: boolean; diff?: boolean };
 
 function shortenPath(value: string, cwd: string): string {
 	if (!value) return ".";
@@ -26,6 +23,21 @@ function nonEmptyLines(value: string): string[] {
 	return value.split("\n").filter((line) => line.trim().length > 0);
 }
 
+function writeMetadata(result: any): { action?: "create" | "rewrite"; diff?: string } | undefined {
+	return result?.details?.piboxWrite;
+}
+
+function actionLabel(name: ToolName, ctx: any): string {
+	if (name === "edit") return "Update";
+	if (name === "write") {
+		const action = ctx.state?.piboxWrite?.action;
+		if (action === "create") return "Create";
+		if (action === "rewrite") return "Rewrite";
+		return "Write";
+	}
+	return name === "bash" ? "Bash" : name[0]?.toUpperCase() + name.slice(1);
+}
+
 function summary(name: ToolName, args: any, cwd: string): string {
 	switch (name) {
 		case "read":
@@ -38,74 +50,81 @@ function summary(name: ToolName, args: any, cwd: string): string {
 	}
 }
 
-function label(name: ToolName): string {
-	return name === "bash" ? "Bash" : name[0]?.toUpperCase() + name.slice(1);
-}
-
-function trimLines(lines: string[], strategy: "head" | "tail" | "head-tail"): Array<{ text: string; omitted?: boolean }> {
-	if (lines.length <= MAX_EXPANDED_LINES) return lines.map((text) => ({ text }));
-	if (strategy === "head") return [
-		...lines.slice(0, MAX_EXPANDED_LINES).map((text) => ({ text })),
-		{ text: `─── ${lines.length - MAX_EXPANDED_LINES} more lines ───`, omitted: true },
-	];
-	if (strategy === "tail") return [
-		{ text: `─── ${lines.length - MAX_EXPANDED_LINES} lines above ───`, omitted: true },
-		...lines.slice(-MAX_EXPANDED_LINES).map((text) => ({ text })),
-	];
-	const half = Math.floor(MAX_EXPANDED_LINES / 2);
-	return [
-		...lines.slice(0, half).map((text) => ({ text })),
-		{ text: `─── ${lines.length - half * 2} more lines ───`, omitted: true },
-		...lines.slice(-half).map((text) => ({ text })),
-	];
-}
-
-function expandedOutput(lines: string[], strategy: "head" | "tail" | "head-tail", theme: Theme): string {
-	return trimLines(lines, strategy)
-		.map((line) => `\n   ${theme.fg(line.omitted ? "muted" : "dim", line.text)}`)
-		.join("");
-}
-
 function countLabel(name: ToolName, args: any, lines: string[]): string | undefined {
-	if (name === "edit") {
-		const count = Array.isArray(args.edits) ? args.edits.length : 0;
-		return count > 0 ? `${count} edit${count === 1 ? "" : "s"}` : undefined;
-	}
-	if (name === "write") {
-		const count = typeof args.content === "string" ? args.content.split("\n").length : 0;
-		return count > 0 ? `${count} line${count === 1 ? "" : "s"}` : undefined;
+	if (name === "edit" || name === "write") {
+		let additions = 0;
+		let removals = 0;
+		for (const line of lines) {
+			if (line.startsWith("+") && !line.startsWith("+++")) additions++;
+			if (line.startsWith("-") && !line.startsWith("---")) removals++;
+		}
+		if (additions || removals) return `+${additions} −${removals}`;
 	}
 	if (lines.length === 0) return undefined;
 	const noun = name === "grep" ? "matches" : name === "find" ? "files" : name === "ls" ? "entries" : "lines";
 	return `${lines.length} ${noun}`;
 }
 
+function previewLimit(name: ToolName): number {
+	return name === "read" ? 10 : 3;
+}
+
+function previewLines(name: ToolName, lines: string[], expanded: boolean): PreviewLine[] {
+	if (expanded) return lines.map((text) => ({ text, diff: name === "edit" || name === "write" }));
+	if (name === "edit") {
+		const shown: PreviewLine[] = lines.slice(0, DEFAULT_MAX_LINES).map((text) => ({ text, diff: true }));
+		if (lines.length > DEFAULT_MAX_LINES) shown.push({ text: `+${lines.length - DEFAULT_MAX_LINES} more lines`, omitted: true });
+		return shown;
+	}
+	const limit = previewLimit(name);
+	const selected = name === "bash" ? lines.slice(-limit) : lines.slice(0, limit);
+	const shown: PreviewLine[] = selected.map((text) => ({ text, diff: name === "write" }));
+	if (lines.length > selected.length) shown.push({ text: `+${lines.length - selected.length} more lines`, omitted: true });
+	return shown;
+}
+
+function appendPreview(container: Container, name: ToolName, lines: PreviewLine[], theme: Theme): void {
+	const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
+	for (const line of lines) {
+		let content: string;
+		if (line.omitted) {
+			const color = name === "edit" ? "warning" : "dim";
+			content = theme.fg(color, `… ${line.text} (${toggle} to expand)`);
+		} else {
+			content = line.diff ? line.text : theme.fg("dim", line.text);
+		}
+		container.addChild(new LinePrefixedComponent(new Text(content, 0, 0), "   ", "   ", 3, 3));
+	}
+}
+
 export function renderToolCall(name: ToolName, args: any, theme: Theme, ctx: any): Text {
 	const isError = ctx.isError;
 	const prefix = ctx.isPartial ? theme.fg("muted", "✽") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-	const header = `${prefix} ${theme.bold(theme.fg("toolTitle", label(name)))} ${theme.fg("dim", summary(name, args, ctx.cwd ?? process.cwd()))}`;
+	const header = `${prefix} ${theme.bold(theme.fg("toolTitle", actionLabel(name, ctx)))} ${theme.fg("dim", summary(name, args, ctx.cwd ?? process.cwd()))}`;
 	const detail = ctx.isPartial ? `\n${theme.fg("dim", "└─")} ${theme.fg("muted", "Running…")}` : "";
 	const component = ctx.lastComponent instanceof Text ? ctx.lastComponent : new Text("", 0, 0);
 	component.setText(header + detail);
 	return component;
 }
 
-export function renderToolResult(name: ToolName, result: any, options: { expanded: boolean }, theme: Theme, ctx: any): Text {
+export function renderToolResult(name: ToolName, result: any, options: { expanded: boolean }, theme: Theme, ctx: any): Container {
+	const metadata = name === "write" ? writeMetadata(result) : undefined;
+	if (metadata && ctx.state && ctx.state.piboxWrite !== metadata) {
+		ctx.state.piboxWrite = metadata;
+		ctx.invalidate?.();
+	}
+
 	const raw = firstText(result);
-	let lines = nonEmptyLines(raw);
-	if (name === "edit" && options.expanded && result.details?.diff) lines = renderDiff(result.details.diff).split("\n");
+	let rawLines = nonEmptyLines(raw);
+	const diff = name === "edit" ? result.details?.diff : metadata?.diff;
+	if (diff) rawLines = diff.split("\n");
+	const renderedLines = diff ? renderDiff(diff).split("\n") : rawLines;
 	const error = !!ctx.isError;
 	const status = error ? theme.fg("error", "Error") : theme.fg("success", "Done");
-	const count = countLabel(name, ctx.args ?? {}, lines);
-	const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-	const hint = !options.expanded && lines.length > 0 ? theme.fg("dim", ` • ${toggle} to expand`) : "";
+	const count = countLabel(name, ctx.args ?? {}, rawLines);
 	const countText = count ? `${theme.fg("dim", " • ")}${theme.fg("muted", count)}` : "";
-	let text = `${theme.fg("dim", "└─")} ${status}${countText}${hint}`;
-	if (options.expanded && lines.length > 0) {
-		const strategy = name === "bash" ? "tail" : name === "read" || name === "edit" ? "head-tail" : "head";
-		text += expandedOutput(lines, strategy, theme);
-	}
-	const component = ctx.lastComponent instanceof Text ? ctx.lastComponent : new Text("", 0, 0);
-	component.setText(text);
+	const component = new Container();
+	component.addChild(new Text(`${theme.fg("dim", "└─")} ${status}${countText}`, 0, 0));
+	if (renderedLines.length > 0) appendPreview(component, name, previewLines(name, renderedLines, options.expanded), theme);
 	return component;
 }

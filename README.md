@@ -1,54 +1,29 @@
 # PiBox
 
-PiBox is a visual, feedback, provider, and workflow package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; sound feedback hooks; `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints; and a capability-backed managed development workflow.
+PiBox is a small extension pack for the [Pi coding agent](https://github.com/badlogic/pi-mono): a cool-steel TUI, useful provider integrations, sound feedback, and an optional managed workflow.
 
-Design and behavior contracts:
+## Included
 
-- [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md)
-- [`docs/specs/feedback-hooks.md`](docs/specs/feedback-hooks.md)
-- [`docs/specs/agent-workflow.md`](docs/specs/agent-workflow.md)
-- [`docs/workflow.md`](docs/workflow.md) — setup, workflow, configuration, and verification
-- [`docs/workflow-e2e.md`](docs/workflow-e2e.md) — real empty-repository E2E exercise and fixes
+- **`rattle` theme** — cool-steel colors for Pi.
+- **TUI extensions** — responsive status bar, refined chat input, compact tool previews/diffs, animated working status, and startup display.
+- **`/effort`** — choose a reasoning effort supported by the active model; non-reasoning models safely use `off`.
+- **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.
+- **Sound hooks** — optional completion feedback.
+- **Workflow** — capability-backed planning, delegated worktrees, verification, and recovery. See [docs/workflow.md](docs/workflow.md).
 
-## Managed workflow
-
-The workflow extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. It supports planning artifacts, direct user approval, configurable specialist roles and model routing, supervised task worktrees, structured worker handoffs, integration-unit assembly, evidence manifests, completion gates, and crash/capacity recovery.
-
-```text
-/workflow init [standard|economy]
-/workflow status
-/workflow approve <work-item-id>
-/workflow pause <task-id>
-/workflow resume <task-id>
-/workflow stop <task-id>
-/workflow recover
-```
-
-Canonical mutations require a trusted, clean Git repository and create traceable commits. Child implementers cannot mutate `agent-artifacts/`; they communicate through run-scoped capabilities. Review and testing are proportionate and may be skipped, deferred, batched, or combined at meaningful integration boundaries.
-
-Configuration merges built-ins, `~/.pi/agent/harness/config.yaml`, and `<repository>/.pi/harness.yaml`. Model aliases default to `sol`, `terra`, and `luna`; unavailable or under-ranked candidates produce visible fallback attempts or a recoverable waiting state.
-
-## Sound feedback
-
-The sound-hooks extension plays a user-supplied sound when `agent_settled` confirms that Pi has finished the complete agent loop. Copyrighted audio is not distributed. See [`extensions/feedback/sound-hooks/README.md`](extensions/feedback/sound-hooks/README.md) for local installation and configuration.
-
-## Development
+## Install and verify
 
 ```bash
 npm install
 npm run verify
 ```
 
-Local preview, without loading globally installed extensions:
+Pi loads the package extensions listed in `package.json`. For a local preview without globally configured extensions:
 
 ```bash
 pi --no-extensions \
-  -e ./extensions/workflow-runtime/index.ts \
-  -e ./extensions/workflow/index.ts \
-  -e ./extensions/feedback/sound-hooks/index.ts \
-  -e ./extensions/providers/ollama-cloud/index.ts \
-  -e ./extensions/providers/local-llm/index.ts \
   -e ./extensions/tui/chat-input/index.ts \
+  -e ./extensions/tui/effort/index.ts \
   -e ./extensions/tui/status-bar/index.ts \
   -e ./extensions/tui/styled-outputs/index.ts \
   -e ./extensions/tui/spinners/index.ts \
@@ -56,9 +31,30 @@ pi --no-extensions \
   --theme ./themes/rattle.json
 ```
 
-The CLI flag makes `rattle` available for that run; select **rattle** from Pi's `/theme` menu to preview it. Do not save the selection if you want to leave the active Pi configuration unchanged.
+## Effort defaults
 
-PiBox does not provide provider-account quota or weekly usage metrics. Context occupancy comes from Pi's current-session context accounting.
+The default is `medium`; unsupported levels are safely clamped for each model. User configuration loads first and repository configuration overrides it:
+
+- `~/.pi/agent/pibox/effort.yaml`
+- `.pi/pibox-effort.yaml`
+
+```yaml
+default: medium
+models:
+  openai-codex/gpt-5.6-luna: high
+```
+
+Use `/effort` to select a compatible level interactively, or `/effort high` directly.
+
+## Workflow
+
+```text
+/workflow init [standard|economy]
+/workflow status
+/workflow approve <work-item-id>
+```
+
+See [docs/workflow.md](docs/workflow.md) for setup and behavior, and [docs/specs/visual-tui.md](docs/specs/visual-tui.md) for visual contracts.
 
 ## License
 
