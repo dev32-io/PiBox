@@ -29,8 +29,8 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/workflows/index.ts",
-      "./extensions/harness/index.ts",
+      "./extensions/workflow-runtime/index.ts",
+      "./extensions/workflow/index.ts",
       "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",
       "./extensions/providers/local-llm/index.ts",

@@ -1,27 +1,27 @@
 # PiBox
 
-PiBox is a visual, feedback, provider, and workflow package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; sound feedback hooks; `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints; and a capability-backed development harness.
+PiBox is a visual, feedback, provider, and workflow package for the [Pi coding agent](https://github.com/badlogic/pi-mono). It provides the cool-steel `rattle` theme; independent chat-input, status-bar, styled-output, spinner, and startup components; sound feedback hooks; `/login` integrations for Ollama Cloud and custom OpenAI-compatible endpoints; and a capability-backed managed development workflow.
 
 Design and behavior contracts:
 
 - [`docs/specs/visual-tui.md`](docs/specs/visual-tui.md)
 - [`docs/specs/feedback-hooks.md`](docs/specs/feedback-hooks.md)
-- [`docs/specs/agent-harness.md`](docs/specs/agent-harness.md)
-- [`docs/harness.md`](docs/harness.md) — setup, workflow, configuration, and verification
-- [`docs/harness-e2e.md`](docs/harness-e2e.md) — real empty-repository E2E exercise and fixes
+- [`docs/specs/agent-workflow.md`](docs/specs/agent-workflow.md)
+- [`docs/workflow.md`](docs/workflow.md) — setup, workflow, configuration, and verification
+- [`docs/workflow-e2e.md`](docs/workflow-e2e.md) — real empty-repository E2E exercise and fixes
 
-## Agent harness
+## Managed workflow
 
-The harness extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. It supports planning artifacts, direct user approval, configurable specialist roles and model routing, supervised task worktrees, structured worker handoffs, integration-unit assembly, evidence manifests, completion gates, and crash/capacity recovery.
+The workflow extension establishes canonical managed work items under `agent-artifacts/` and private append-only operational events under `~/.pi/agent/harness/`. It supports planning artifacts, direct user approval, configurable specialist roles and model routing, supervised task worktrees, structured worker handoffs, integration-unit assembly, evidence manifests, completion gates, and crash/capacity recovery.
 
 ```text
-/harness init [standard|economy]
-/harness status
-/harness approve <work-item-id>
-/harness pause <task-id>
-/harness resume <task-id>
-/harness stop <task-id>
-/harness recover
+/workflow init [standard|economy]
+/workflow status
+/workflow approve <work-item-id>
+/workflow pause <task-id>
+/workflow resume <task-id>
+/workflow stop <task-id>
+/workflow recover
 ```
 
 Canonical mutations require a trusted, clean Git repository and create traceable commits. Child implementers cannot mutate `agent-artifacts/`; they communicate through run-scoped capabilities. Review and testing are proportionate and may be skipped, deferred, batched, or combined at meaningful integration boundaries.
@@ -43,7 +43,8 @@ Local preview, without loading globally installed extensions:
 
 ```bash
 pi --no-extensions \
-  -e ./extensions/harness/index.ts \
+  -e ./extensions/workflow-runtime/index.ts \
+  -e ./extensions/workflow/index.ts \
   -e ./extensions/feedback/sound-hooks/index.ts \
   -e ./extensions/providers/ollama-cloud/index.ts \
   -e ./extensions/providers/local-llm/index.ts \
