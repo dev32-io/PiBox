@@ -10,8 +10,8 @@ export interface PromptSurface {
 export const BUILT_IN_PROMPT_SURFACES: PromptSurface[] = [
 	{ id: "orchestrator-contract", category: "orchestrator", source: "extensions/workflow/index.ts#ORCHESTRATOR_CONTRACT", completion: "none" },
 	...[
-		"workflow-discover", "workflow-plan", "workflow-run",
-	].map((id): PromptSurface => ({ id, category: "skill", source: `skills/${id}/SKILL.md`, completion: id === "workflow-plan" ? "workflow_transition:submit" : id === "workflow-run" ? "work_item_complete" : "none" })),
+		"product-discussion", "shape-story", "plan-delivery", "workflow-run",
+	].map((id): PromptSurface => ({ id, category: "skill", source: `skills/${id}/SKILL.md`, completion: id === "plan-delivery" ? "workflow_transition:submit" : id === "workflow-run" ? "work_item_complete" : "none" })),
 	...[
 		"explorer", "researcher", "plan-critic", "implementer", "test-implementer", "spec-reviewer", "quality-reviewer", "e2e-tester", "repair-implementer",
 	].map((id): PromptSurface => ({ id, category: "role", source: `extensions/workflow/roles/${id}.md`, completion: id.includes("reviewer") || id === "e2e-tester" ? "evaluation_complete" : id.includes("implementer") ? "task_complete" : "none" })),

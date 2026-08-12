@@ -44,18 +44,20 @@ scenarios:
       - quality-reviewer
       - e2e-tester
       - repair-implementer
-      - workflow-discover
-      - workflow-plan
+      - product-discussion
+      - shape-story
+      - plan-delivery
       - workflow-run
     repetitionsPerSurface: 5
     result: pending-rerun
     passed: 0
-    adjudication: Luna ran five fresh-context repetitions for every listed surface. Keyword scoring undercounted semantically equivalent wording for explorer, researcher, plan critic, workflow-discover, and workflow-run; every flagged result was read manually. Researcher and E2E completion contracts were tightened from the initial control, then each passed a dedicated Luna candidate rerun 5/5.
+    adjudication: Luna ran five fresh-context repetitions for every listed surface. Keyword scoring undercounted semantically equivalent wording for explorer, researcher, plan critic, product-discussion, and workflow-run; every flagged result was read manually. Researcher and E2E completion contracts were tightened from the initial control, then each passed a dedicated Luna candidate rerun 5/5.
   - id: mixed-fix-and-roadmap-stays-conversational
     surfaces:
       - orchestrator-contract
-      - workflow-discover
-      - workflow-plan
+      - product-discussion
+      - shape-story
+      - plan-delivery
       - workflow-run
     repetitions: 5
     result: pending-rerun
@@ -74,8 +76,9 @@ scenarios:
   - id: delivered-work-is-history-by-default
     surfaces:
       - orchestrator-contract
-      - workflow-discover
-      - workflow-plan
+      - product-discussion
+      - shape-story
+      - plan-delivery
     repetitions: 5
     result: pending-rerun
     passed: 0
@@ -93,10 +96,10 @@ scenarios:
   - id: orchestrator-clarifies-before-writing
     surfaces:
       - orchestrator-contract
-      - workflow-discover
+      - product-discussion
     repetitions: 5
-    result: pass
-    passed: 5
+    result: pending-rerun
+    passed: 0
     requiredProperties:
       - inspects repository facts before questioning the user
       - asks a numbered frontier of material decisions with recommendations
@@ -108,10 +111,10 @@ scenarios:
       effort: low
     fixture: empty repository receiving a request to plan a basic React todo list
   - id: planner-post-draft-next-steps
-    surface: workflow-plan
+    surface: plan-delivery
     repetitions: 5
-    result: pass
-    passed: 5
+    result: pending-rerun
+    passed: 0
     requiredProperties:
       - submits the coherent draft without requiring a magic phrase
       - offers conversational refinement
@@ -120,13 +123,35 @@ scenarios:
       provider: openai-codex
       id: gpt-5.6-luna
       effort: low
+  - id: phase-handoff-retains-planning-momentum
+    surfaces:
+      - orchestrator-contract
+      - product-discussion
+      - shape-story
+      - plan-delivery
+    repetitions: 5
+    result: pending-rerun
+    passed: 0
+    requiredProperties:
+      - allows many freeform discussion turns without creating workflow state
+      - offers story shaping naturally once common ground emerges
+      - creates only high-level story artifacts during shape-story
+      - continues into delivery planning when the user already requested end-to-end planning
+      - does not stop at a draft with an offer to plan later
+      - submits an execution-ready plan and provides the direct approval command
+      - never treats acknowledgement or approval as permission to execute
+    fixture: after a long product discussion the user asks to make this a story and plan it; during shaping the user says good, then expects planning to continue to an approval-ready handoff
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
   - id: product-partner-outcome-stepback
     surfaces:
       - orchestrator-contract
-      - workflow-discover
+      - product-discussion
     repetitions: 5
-    result: pass
-    passed: 5
+    result: pending-rerun
+    passed: 0
     requiredProperties:
       - separates the support outcome from the requested dashboard
       - inspects repository facts before asking
@@ -139,10 +164,10 @@ scenarios:
   - id: product-premise-footgun-challenge
     surfaces:
       - orchestrator-contract
-      - workflow-discover
+      - product-discussion
     repetitions: 5
-    result: pass
-    passed: 5
+    result: pending-rerun
+    passed: 0
     requiredProperties:
       - identifies enabled-but-ignored payment interaction as a product-contract conflict
       - distinguishes frontend suppression from backend idempotency
@@ -155,10 +180,10 @@ scenarios:
   - id: proportional-local-plan
     surfaces:
       - orchestrator-contract
-      - workflow-discover
+      - product-discussion
     repetitions: 5
-    result: pass
-    passed: 5
+    result: pending-rerun
+    passed: 0
     requiredProperties:
       - inspects the exact typo location
       - returns a concise conversational plan

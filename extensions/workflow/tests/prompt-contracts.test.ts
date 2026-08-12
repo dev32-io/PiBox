@@ -26,38 +26,38 @@ test("role prompts use instruction contracts instead of identity preambles", asy
 	}
 });
 
-test("discovery preserves product partnership while planning stays executable", async () => {
+test("collaboration phases have focused boundaries and natural handoffs", async () => {
 	const orchestrator = await readFile(join(root, "extensions/workflow/index.ts"), "utf8");
-	const discovery = await readFile(join(root, "skills/workflow-discover/SKILL.md"), "utf8");
-	const planner = await readFile(join(root, "skills/workflow-plan/SKILL.md"), "utf8");
+	const discussion = await readFile(join(root, "skills/product-discussion/SKILL.md"), "utf8");
+	const shaping = await readFile(join(root, "skills/shape-story/SKILL.md"), "utf8");
+	const delivery = await readFile(join(root, "skills/plan-delivery/SKILL.md"), "utf8");
 	const critic = await readFile(join(root, "extensions/workflow/roles/plan-critic.md"), "utf8");
 	assert.match(orchestrator, /constructive product and technical partner/i);
 	assert.match(orchestrator, /Seek the outcome behind requested solutions/i);
-	assert.match(orchestrator, /workflow-discover[\s\S]+workflow-plan[\s\S]+workflow-run/i);
+	assert.match(orchestrator, /product-discussion[\s\S]+shape-story[\s\S]+plan-delivery[\s\S]+workflow-run/i);
+	assert.match(orchestrator, /Each active phase owns one deliverable and naturally offers the next phase/i);
+	assert.match(orchestrator, /continue from shape-story into plan-delivery without asking them to repeat permission/i);
 	assert.match(orchestrator, /Keep clear, local, reversible work ad hoc/i);
 	assert.match(orchestrator, /List before create and get before patch/i);
 	assert.match(orchestrator, /Initial approval is user-only through \/workflow approve/i);
-	assert.match(orchestrator, /mixes a concrete change with questions[\s\S]+before any canonical mutation or execution/i);
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /Track the outcome currently being discussed/i);
 	assert.match(orchestrator, /Finished or delivered stories\/changes are historical context/i);
 	assert.match(orchestrator, /New follow-up defects and enhancements normally form a new work item/i);
 	assert.match(orchestrator, /Preserve dirty or conflicting work/i);
 	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
-	assert.match(discovery, /requested mechanism as a hypothesis/i);
-	assert.match(discovery, /proximate cause[\s\S]+upstream enabling condition/i);
-	assert.match(discovery, /checkpoint only meaningful changes/i);
-	assert.match(discovery, /never write every turn/i);
-	assert.match(discovery, /Treat mixed turns as discovery/i);
-	assert.match(discovery, /do not stop, start, resume, patch, or add work to an existing workflow/i);
-	assert.match(discovery, /first give the user a substantive conversational response/i);
-	assert.match(discovery, /treat finished or delivered stories\/changes as history/i);
-	assert.match(planner, /coherent vertical contributions/i);
-	assert.match(planner, /Finished or delivered stories\/changes are immutable history by default/i);
-	assert.match(planner, /New follow-up defects, enhancements, and grouped increments normally get a new parent/i);
-	assert.match(planner, /concurrency only for independent work/i);
-	assert.match(planner, /new parent through `workflow_create`, followed by its children/i);
-	assert.match(planner, /Initial approval is user-only/i);
+	assert.match(discussion, /Think with the user in an open room/i);
+	assert.match(discussion, /Respond substantively before interviewing them/i);
+	assert.match(discussion, /Do not create or modify canonical workflow resources/i);
+	assert.match(discussion, /Want me to shape this into a high-level story/i);
+	assert.match(shaping, /reviewable high-level story/i);
+	assert.match(shaping, /Do not define tasks, stages, model assignments/i);
+	assert.match(shaping, /Want me to turn it into an execution-ready delivery plan/i);
+	assert.match(shaping, /hand off to `plan-delivery` in the same turn/i);
+	assert.match(delivery, /coherent vertical contributions/i);
+	assert.match(delivery, /parallel only when their interfaces and resource claims are compatible/i);
+	assert.match(delivery, /call `workflow_transition` with `submit`/i);
+	assert.match(delivery, /after approval the user can say “start the workflow”/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /Do not reward task count or concurrency/i);
 });

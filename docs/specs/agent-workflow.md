@@ -461,19 +461,20 @@ Multi-file transactions produce one canonical commit. Workers submit amendment a
 
 ## 9. Planning behavior
 
+The collaboration lifecycle and enduring design principles are defined in [`../agent-collaboration-flow.md`](../agent-collaboration-flow.md). Prompt, skill, and workflow changes should preserve that flow.
+
 ### 9.1 Main-session skills
 
 The orchestrator uses focused skills rather than one giant workflow prompt:
 
 ```text
-workflow-discover
-workflow-plan
-workflow-run
-workflow-run
-workflow-run
+product-discussion  → freeform exploration without canonical workflow pressure
+shape-story         → high-level intent, specification, design, and decisions
+plan-delivery       → technical tasks, stages, assignments, and verification
+workflow-run        → approved execution, recovery, completion, and briefing
 ```
 
-These skills describe judgment and behavior. The extension provides the mechanical capabilities.
+Each phase owns one primary deliverable and naturally offers the next phase. Prior authorization to plan carries across story shaping into delivery planning unless a material decision requires the user; execution still requires explicit approval and a clear request to run. These skills describe judgment and behavior. The extension provides the mechanical capabilities.
 
 ### 9.2 Research and brainstorming
 
