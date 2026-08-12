@@ -11,7 +11,7 @@ Translate shared understanding into an executable contract. Do not repeat broad 
 
 ## Build the Contract
 
-1. Call `workflow_list`; revise a matching draft only when the user clearly intends to continue that same managed outcome. Semantic overlap or related code is evidence, not consent to amend previous work. For new intent, create the parent once with `workflow_create`, then add children after it exists. Use `workflow_apply_change` only for genuinely coherent multi-resource changes.
+1. Call `workflow_list` and identify the outcome currently being discussed. Revise a matching resource only when it is that current unfinished outcome. Finished or delivered stories/changes are immutable history by default; reopen or extend one only when the user specifically chooses that exact work item. Related code, criteria, or product area does not make it the current target. New follow-up defects, enhancements, and grouped increments normally get a new parent through `workflow_create`, followed by its children. Use `workflow_apply_change` only for genuinely coherent multi-resource changes.
 2. Preserve provenance. Record confirmed or delegated choices without turning recommendations, silence, or preferred technology into user requirements.
 3. Specify outcome, included/excluded scope, stable observable acceptance criteria, constraints, assumptions, and material edge cases before implementation design.
 4. Add only useful specifications, designs, and decisions. Prefer the smallest set that makes implementation and review unambiguous.

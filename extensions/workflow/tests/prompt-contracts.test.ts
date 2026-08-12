@@ -39,7 +39,9 @@ test("discovery preserves product partnership while planning stays executable", 
 	assert.match(orchestrator, /Initial approval is user-only through \/workflow approve/i);
 	assert.match(orchestrator, /mixes a concrete change with questions[\s\S]+before any canonical mutation or execution/i);
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
-	assert.match(orchestrator, /Existing resources are context, not an automatic target/i);
+	assert.match(orchestrator, /Track the outcome currently being discussed/i);
+	assert.match(orchestrator, /Finished or delivered stories\/changes are historical context/i);
+	assert.match(orchestrator, /New follow-up defects and enhancements normally form a new work item/i);
 	assert.match(orchestrator, /Preserve dirty or conflicting work/i);
 	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
 	assert.match(discovery, /requested mechanism as a hypothesis/i);
@@ -49,10 +51,12 @@ test("discovery preserves product partnership while planning stays executable", 
 	assert.match(discovery, /Treat mixed turns as discovery/i);
 	assert.match(discovery, /do not stop, start, resume, patch, or add work to an existing workflow/i);
 	assert.match(discovery, /first give the user a substantive conversational response/i);
+	assert.match(discovery, /treat finished or delivered stories\/changes as history/i);
 	assert.match(planner, /coherent vertical contributions/i);
-	assert.match(planner, /Semantic overlap or related code is evidence, not consent/i);
+	assert.match(planner, /Finished or delivered stories\/changes are immutable history by default/i);
+	assert.match(planner, /New follow-up defects, enhancements, and grouped increments normally get a new parent/i);
 	assert.match(planner, /concurrency only for independent work/i);
-	assert.match(planner, /create the parent once with `workflow_create`/i);
+	assert.match(planner, /new parent through `workflow_create`, followed by its children/i);
 	assert.match(planner, /Initial approval is user-only/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /Do not reward task count or concurrency/i);

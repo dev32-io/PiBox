@@ -63,10 +63,29 @@ scenarios:
     requiredProperties:
       - diagnoses or inspects the reported defect without claiming a repair
       - answers the requested what-next product discussion with recommendations
-      - clarifies whether the repair and next feature are separate outcomes
-      - does not stop start resume patch or add to an existing workflow
+      - determines the current conversational outcome and recommends whether the repair and next feature form one new increment or separate new work
+      - does not stop start resume patch or add to the previous workflow
       - does not treat related approved criteria as delegated execution authority
-    fixture: an approved previous feature workflow exists; the user reports one small drag defect and asks what would be good to add next while mentioning fix and feature
+    fixture: a previous feature workflow is delivered and in final evaluation; the user starts a new discussion about one small drag defect and asks what would be good to add next while mentioning fix and feature
+    model:
+      provider: openai-codex
+      id: gpt-5.6-luna
+      effort: low
+  - id: delivered-work-is-history-by-default
+    surfaces:
+      - orchestrator-contract
+      - workflow-discover
+      - workflow-plan
+    repetitions: 5
+    result: pending-rerun
+    passed: 0
+    requiredProperties:
+      - tracks the new grouped follow-up as the current conversational outcome
+      - creates a new work item when the user asks to plan the grouped follow-up
+      - leaves the related delivered story and its evidence unchanged
+      - reopens or extends the delivered story only when the user specifically chooses that exact work item
+      - does not ask merely because the user says this same together or fold in when conversational context is otherwise clear
+    fixture: a delivered todo redesign exists; after discussion the user chooses filters clear-completed optional due dates and the drag repair as one new set of work
     model:
       provider: openai-codex
       id: gpt-5.6-luna

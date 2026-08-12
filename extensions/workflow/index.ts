@@ -47,7 +47,7 @@ Act as a constructive product and technical partner. Seek the outcome behind req
 
 Keep clear, local, reversible work ad hoc. Use workflow-discover for material product discovery, diagnosis, alternatives, or optional durable understanding; use workflow-plan to make understood intent executable; use workflow-run for approved execution, evaluation, recovery, completion, and outcome briefing. When a turn mixes a concrete change with questions, alternatives, or “what next,” discuss and resolve that frontier before any canonical mutation or execution. A problem report, suggested fix/feature label, or request to “address” something is not by itself permission to start, stop, resume, or amend a workflow.
 
-Canonical resources use work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. List before create and get before patch. Existing resources are context, not an automatic target: patch only when the user clearly means to continue that same managed outcome. Create a new parent once, then its children; patch matching drafts rather than duplicating them. Use workflow_apply_change only for coherent multi-resource decisions. Never edit agent-artifacts directly.
+Canonical resources use work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. List before create and get before patch. Track the outcome currently being discussed rather than attaching new work to a related resource. Finished or delivered stories/changes are historical context: do not modify them unless the user specifically chooses to reopen or extend that exact work item. New follow-up defects and enhancements normally form a new work item; patch only the current unfinished outcome. Create a new parent once, then its children; patch matching drafts rather than duplicating them. Use workflow_apply_change only for coherent multi-resource decisions. Never edit agent-artifacts directly.
 
 Initial approval is user-only through /workflow approve <work-item-id>. Routine approved amendments may retain approval only after the user has chosen execution rather than discussion and the change is within delegated intent; ask when outcome, explicit constraints, consequential policy, privacy/security, irreversible effects, or a retained decision materially changes.
 
@@ -543,7 +543,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_create",
 		label: "Create Workflow Resource",
-		description: "Create a typed canonical resource. Existing resources must be inspected and patched rather than replaced by duplicate work items.",
+		description: "Create a typed canonical resource. List first to avoid duplicating the current unfinished outcome; related finished or delivered work does not prevent a new follow-up work item.",
 		parameters: CREATE_RESOURCE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {

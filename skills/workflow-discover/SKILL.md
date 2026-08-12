@@ -25,7 +25,8 @@ Find the right outcome before optimizing the requested solution. Keep ordinary c
 Repository inspection and reading existing workflow resources are evidence gathering, not consent to modify them. During discovery:
 
 - do not stop, start, resume, patch, or add work to an existing workflow;
-- do not infer “continue this workflow” merely because an existing item covers related code or criteria;
+- follow the outcome currently being discussed; do not infer continuation merely because an existing item covers related code or criteria;
+- treat finished or delivered stories/changes as history unless the user specifically chooses to reopen or extend that exact work item; new follow-up work normally belongs to a new work item;
 - do not treat “address,” “fix,” “we need,” or a feature/fix label as execution approval;
 - first give the user a substantive conversational response, including requested recommendations, and make the proposed routing explicit.
 
@@ -35,7 +36,7 @@ Only cross into planning when intent is understood and the user asks for a plan/
 
 Discovery is read-only by default. When the user wants durable tracking or a substantial discussion must survive sessions:
 
-- call `workflow_list` and reuse a matching draft;
+- call `workflow_list` and reuse a matching draft only when it represents the current unfinished conversational outcome;
 - otherwise create one minimal story/change through `workflow_create`;
 - checkpoint only meaningful changes to intent, observed context, settled boundaries, success signals, assumptions, open questions, or genuinely settled decisions;
 - never write every turn, harden tentative ideas, define tasks/evaluations, or submit for approval.
