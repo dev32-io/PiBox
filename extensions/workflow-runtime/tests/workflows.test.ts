@@ -98,6 +98,33 @@ test("background spawning returns immediately and later emits a lifecycle messag
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("running step kinds use distinct icons without redundant state labels", async () => {
+	const f = fixture();
+	const snapshot: WorkflowSnapshot = {
+		ref: "test:workflow", title: "Active states", status: "running",
+		steps: [
+			{ ref: "test:task", title: "Implement", kind: "task", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
+			{ ref: "test:merge", title: "Merge", kind: "merge", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
+			{ ref: "test:evaluation", title: "Evaluate", kind: "evaluation", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
+		],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	const widget = f.widget() as ((...args: any[]) => any);
+	const rendered = widget?.({}, f.ctx.ui.theme).render(70) as string[];
+	assert.equal(rendered.some((line) => /\b(running|merging)\b/.test(line)), false);
+	const icons = rendered.slice(1).map((line) => line.trimStart()[0]);
+	assert.equal(new Set(icons).size, 3, "task, merge, and evaluation activity have distinct animated icon families");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("workflow runner derives ready steps from refreshed adapter snapshots and renders the widget", async () => {
 	const f = fixture();
 	let taskDone = false;

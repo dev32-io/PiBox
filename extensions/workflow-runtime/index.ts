@@ -5,7 +5,12 @@ import { Type } from "typebox";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const RUNNING_FRAMES: Record<string, readonly string[]> = {
+	task: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+	merge: ["⇢", "→", "⇢", "⇒"],
+	evaluation: ["◐", "◓", "◑", "◒"],
+};
+const DEFAULT_RUNNING_FRAMES = RUNNING_FRAMES.task!;
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
@@ -53,12 +58,15 @@ export default function workflows(pi: ExtensionAPI): void {
 			let icon: string;
 			let color: "success" | "warning" | "error" | "muted" | "accent" = "muted";
 			if (step.status === "done") { icon = "✓"; color = "success"; }
-			else if (step.status === "running") { icon = SPINNER[frame % SPINNER.length]!; color = "accent"; }
+			else if (step.status === "running") {
+				const frames = RUNNING_FRAMES[step.kind] ?? DEFAULT_RUNNING_FRAMES;
+				icon = frames[frame % frames.length]!;
+				color = "accent";
+			}
 			else if (step.status === "attention") { icon = step.detail?.includes("fail") ? "×" : "!"; color = step.detail?.includes("fail") ? "error" : "warning"; }
 			else if (step.status === "cancelled") icon = "–";
 			else icon = "○";
-			const suffix = step.status === "running" ? "  running" : step.status === "attention" && step.detail ? `  ${step.detail}` : "";
-			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${ctx.ui.theme.fg("dim", suffix)}`);
+			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}`);
 		}
 		return lines;
 	};
