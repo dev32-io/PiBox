@@ -70,6 +70,11 @@ function shimmer(value: string, phase: number, theme: Theme): string {
 	}).join("");
 }
 
+// The provider does not stream request-token usage. Animate Pi's per-call
+// context estimate during the request so the working row still communicates
+// outbound progress before the first response token arrives.
+const INPUT_ESTIMATE_ANIMATION_MS = 1_200;
+
 const COMPLETION_WORDS = [
 	"Cooked",
 	"Brewed",
@@ -92,16 +97,26 @@ function tokenCount(value: number): string {
 	return value.toLocaleString("en-US");
 }
 
-function liveUsageDetail(startedAt: number, characters: number, inputTokens: number, tokensPerCharacter: number): string {
+function estimateAddedContextTokens(previous: string | undefined, current: string, tokensPerCharacter: number): number {
+	// Contexts normally grow by appending finalized messages. Count only that
+	// suffix; this deliberately avoids treating the retained conversation as
+	// new input on every model request.
+	if (previous === undefined) return 0;
+	let shared = 0;
+	const length = Math.min(previous.length, current.length);
+	while (shared < length && previous[shared] === current[shared]) shared++;
+	return Math.ceil((current.length - shared) / tokensPerCharacter);
+}
+
+function liveUsageDetail(startedAt: number, characters: number, inputEstimate: number, tokensPerCharacter: number): string {
 	const elapsedMs = Math.max(0, Date.now() - startedAt);
 	const outputTokens = Math.round(characters / tokensPerCharacter);
-	const metrics = [
-		duration(elapsedMs),
-		...(inputTokens > 0 ? [`↑ ${tokenCount(inputTokens)}`] : []),
-		...(outputTokens > 0 ? [`↓ ${tokenCount(outputTokens)}`] : []),
-		...(outputTokens > 0 && elapsedMs >= 1_000 ? [`${(outputTokens / (elapsedMs / 1_000)).toFixed(1)} tok/s`] : []),
-	];
-	return metrics.join(" · ");
+	if (outputTokens === 0) {
+		const sent = Math.round(inputEstimate * Math.min(1, elapsedMs / INPUT_ESTIMATE_ANIMATION_MS));
+		return `${duration(elapsedMs)}${inputEstimate > 0 ? ` · ↑ ${tokenCount(sent)}` : ""}`;
+	}
+	const rate = elapsedMs >= 1_000 ? ` (${(outputTokens / (elapsedMs / 1_000)).toFixed(1)} tok/s)` : "";
+	return `${duration(elapsedMs)} · ↓ ${tokenCount(outputTokens)}${rate}`;
 }
 
 function roundUsage(messages: unknown[]): { inputTokens: number; outputTokens: number; cost?: number } {
@@ -125,8 +140,10 @@ export default function spinners(pi: ExtensionAPI): void {
 	let lastCompletionWord = "";
 	let activeContext: ExtensionContext | undefined;
 	let startedAt = 0;
+	let requestStartedAt = 0;
+	let inputEstimate = 0;
+	let previousContext: string | undefined;
 	let characters = 0;
-	let inputTokens = 0;
 	let currentMessage = "Analyzing";
 	let hasLiveThinking = false;
 	let shimmerPhase = 0;
@@ -146,7 +163,7 @@ export default function spinners(pi: ExtensionAPI): void {
 	const update = () => {
 		const ctx = activeContext;
 		if (!ctx || ctx.mode !== "tui" || startedAt === 0) return;
-		const detail = liveUsageDetail(startedAt, characters, inputTokens, config.tokensPerCharacter);
+		const detail = liveUsageDetail(requestStartedAt || startedAt, characters, inputEstimate, config.tokensPerCharacter);
 		ctx.ui.setWorkingMessage(
 			`${shimmer(currentMessage, shimmerPhase, ctx.ui.theme)}\n${ctx.ui.theme.fg("dim", "└─")} ${ctx.ui.theme.fg("dim", detail)}`,
 		);
@@ -163,8 +180,9 @@ export default function spinners(pi: ExtensionAPI): void {
 		if (restore && activeContext?.mode === "tui") activeContext.ui.setWorkingMessage();
 		activeContext = undefined;
 		startedAt = 0;
+		requestStartedAt = 0;
+		inputEstimate = 0;
 		characters = 0;
-		inputTokens = 0;
 		hasLiveThinking = false;
 	};
 
@@ -191,7 +209,6 @@ export default function spinners(pi: ExtensionAPI): void {
 		if (ctx.mode !== "tui") return;
 		activeContext = ctx;
 		startedAt = Date.now();
-		inputTokens = ctx.getContextUsage()?.tokens ?? 0;
 		currentMessage = nextVerb("");
 		shimmerPhase = 0;
 		update();
@@ -210,10 +227,19 @@ export default function spinners(pi: ExtensionAPI): void {
 	pi.on("turn_start", () => {
 		hasLiveThinking = false;
 	});
+	pi.on("context", (event) => {
+		const currentContext = event.messages.map((message) => JSON.stringify(message)).join("\n");
+		// Some providers build/inspect context more than once before sending. An
+		// unchanged snapshot is not a new request and must not restart the meter.
+		if (currentContext === previousContext) return;
+		inputEstimate = estimateAddedContextTokens(previousContext, currentContext, config.tokensPerCharacter);
+		previousContext = currentContext;
+		requestStartedAt = Date.now();
+		characters = 0;
+		update();
+	});
 	pi.on("message_update", (event) => {
 		characters = responseCharacters(event.message);
-		const assistant = assistantMessage(event.message);
-		inputTokens = assistant?.usage?.input || inputTokens;
 		const thinking = latestThinking(event.message);
 		if (thinking) {
 			hasLiveThinking = true;
