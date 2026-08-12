@@ -59,7 +59,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				`Workflow ${item.id} has completed. Give the user a concise but informative delivery briefing; do not reply silently.`,
 				`First read ${runtime.workItems.workItemRoot(item.id)}/outcome.md when it exists, then reconcile it with the task/evaluation results and workflow events you observed.`,
 				"Report what was delivered, verification and review outcomes, deviations, residual risks or follow-up, and the checked-out working branch.",
-				item.delivery ? `The working branch is ${item.delivery.featureBranch}; tell the user it remains checked out and is ready for them to merge into ${item.delivery.baseBranch}.` : "Inspect Git and report the checked-out delivery branch and intended base.",
+				item.delivery?.branchMode === "continue"
+					? `This work item delivered onto the ongoing branch ${item.delivery.featureBranch}; describe this increment without implying the larger branch is finished or ready to merge.`
+					: item.delivery?.featureBranch ? `The working branch is ${item.delivery.featureBranch}; tell the user it remains checked out and is ready for them to merge into ${item.delivery.baseBranch}.` : "Inspect Git and report the checked-out delivery branch and intended base.",
 			].join("\n");
 		},
 		async snapshot(ref, ctx): Promise<WorkflowSnapshot> {

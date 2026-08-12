@@ -5,7 +5,7 @@ import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import type { EvaluationManifest, MutationAuthority, TaskManifest, TaskStatus, WorkItemIndex, WorkItemKind } from "./types.js";
+import type { DeliveryBranchMode, DeliveryBranchType, EvaluationManifest, MutationAuthority, TaskManifest, TaskStatus, WorkItemDelivery, WorkItemIndex, WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions" } as const;
@@ -39,6 +39,14 @@ function advanceContractRevision(index: WorkItemIndex, authority?: MutationAutho
 
 function validateId(id: string, label: string): void {
 	if (!ID_PATTERN.test(id)) throw new HarnessError("INVALID_ARTIFACT", `${label} must be a kebab-case identifier`);
+}
+
+function validateDelivery(delivery: WorkItemDelivery): void {
+	if (delivery.baseBranch !== "develop") throw new HarnessError("INVALID_ARTIFACT", "New delivery contracts must use develop as baseBranch");
+	if (!delivery.branchType || !(["feature", "fix"] as DeliveryBranchType[]).includes(delivery.branchType)) throw new HarnessError("INVALID_ARTIFACT", "Delivery branchType must be feature or fix");
+	if (!delivery.branchMode || !(["create", "continue"] as DeliveryBranchMode[]).includes(delivery.branchMode)) throw new HarnessError("INVALID_ARTIFACT", "Delivery branchMode must be create or continue");
+	if (delivery.branchMode === "continue" && !delivery.featureBranch?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Continued delivery requires featureBranch");
+	if (delivery.featureBranch && !new RegExp(`^${delivery.branchType}/[a-z0-9]+(?:-[a-z0-9]+)*$`).test(delivery.featureBranch)) throw new HarnessError("INVALID_ARTIFACT", `Delivery branch must match ${delivery.branchType}/<kebab-case-name>`);
 }
 
 function ensureInside(root: string, path: string): void {
@@ -88,6 +96,16 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	}
 	if (!Array.isArray(index.artifacts) || !Array.isArray(index.tasks) || !Array.isArray(index.evaluations)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid catalogs`);
+	}
+	if (index.delivery !== undefined) {
+		const typedDelivery = index.delivery.branchType !== undefined || index.delivery.branchMode !== undefined;
+		if (typedDelivery && (!index.delivery.branchType || !index.delivery.branchMode)) throw new HarnessError("INVALID_ARTIFACT", `${source} delivery branchType and branchMode must be declared together`);
+		if (typedDelivery && index.delivery.baseBranch !== "develop") throw new HarnessError("INVALID_ARTIFACT", `${source} delivery must use develop as its base branch`);
+		if (index.delivery.branchType !== undefined && !["feature", "fix"].includes(index.delivery.branchType)) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid delivery branch type`);
+		if (index.delivery.branchMode !== undefined && !["create", "continue"].includes(index.delivery.branchMode)) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid delivery branch mode`);
+		if (index.delivery.featureBranch !== undefined && (typeof index.delivery.featureBranch !== "string" || !index.delivery.featureBranch.trim())) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid delivery branch`);
+		if (index.delivery.branchMode === "continue" && !index.delivery.featureBranch) throw new HarnessError("INVALID_ARTIFACT", `${source} continued delivery requires an explicit featureBranch`);
+		if (!typedDelivery && !index.delivery.featureBranch) throw new HarnessError("INVALID_ARTIFACT", `${source} legacy delivery requires a recorded featureBranch`);
 	}
 	if (index.integrationUnits === undefined) index.integrationUnits = [];
 	if (!Array.isArray(index.integrationUnits)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid integration units`);
@@ -203,7 +221,7 @@ export class WorkItemStore {
 		return item;
 	}
 
-	async create(input: { id: string; title: string; kind: WorkItemKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
+	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
 		validateId(input.id, "Work-item id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		const intent = narrativeSchemaVersion === 2
@@ -214,6 +232,7 @@ export class WorkItemStore {
 			})()
 			: input.intent;
 		if (!input.title.trim() || !intent?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Title and intent must not be empty");
+		if (input.delivery) validateDelivery(input.delivery);
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.id);
 		if (await pathExists(root)) throw new HarnessError("WORK_ITEM_EXISTS", `Work item already exists: ${input.id}`);
@@ -233,6 +252,7 @@ export class WorkItemStore {
 				artifacts: [{ id: "intent", type: "intent", path: "intent.md", status: "draft", narrativeSchemaVersion }],
 				tasks: [],
 				integrationUnits: [],
+				...(input.delivery ? { delivery: input.delivery } : {}),
 				evaluations: [],
 			};
 			await writeFile(join(temporary, "index.yaml"), stringify(index), "utf8");
@@ -251,7 +271,7 @@ export class WorkItemStore {
 		}
 	}
 
-	async reviseWorkItem(input: { workItemId: string; title?: string; kind?: WorkItemKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
+	async reviseWorkItem(input: { workItemId: string; title?: string; kind?: WorkItemKind; delivery?: WorkItemDelivery; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
@@ -265,6 +285,7 @@ export class WorkItemStore {
 			index.title = input.title.trim();
 		}
 		if (input.kind !== undefined) index.kind = input.kind;
+		if (input.delivery !== undefined) { validateDelivery(input.delivery); index.delivery = input.delivery; }
 		if (input.intent !== undefined || input.intentSections !== undefined) {
 			const version = input.narrativeSchemaVersion ?? index.artifacts.find((artifact) => artifact.id === "intent")?.narrativeSchemaVersion ?? 1;
 			const content = version === 2 ? renderArtifact("intent", `Intent: ${index.title}`, input.intentSections ?? {}) : input.intent;

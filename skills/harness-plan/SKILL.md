@@ -135,6 +135,16 @@ Do not call `harness_create`, `harness_patch`, `harness_delete`, `harness_apply_
 6. Use exploration, an experiment, or a diagnostic contribution when learning is cheaper than premature commitment.
 7. Declare only evaluations the outcome and risk require.
 
+## Choose Delivery Branch Intent
+
+Work-item kind describes planning scope; it does not determine Git branch purpose. Every new work item records a delivery contract:
+
+- `branchType: feature` for capabilities, enhancements, and refactors; `fix` for defect or regression repair.
+- `branchMode: create` for a new branch from updated `develop`; `continue` when the user is intentionally adding another story/change to the currently checked-out ongoing `feature/*` or `fix/*` branch.
+- `baseBranch: develop` always. For `continue`, record the exact current branch as `featureBranch`; never continue on `main` or `develop`.
+
+Infer feature versus fix from clear product intent. Infer continuation only from clear user intent plus current Git state; ask when creating versus continuing materially changes delivery. New-branch workflow start will switch to `develop`, pull it fast-forward-only, and create `<branchType>/<work-item-id>`. Continued delivery requires a clean checkout already on the recorded branch and does not pull, merge, or rebase `develop` automatically.
+
 ## Design Contributions Sensibly
 
 The goal is prompt, credible delivery—not a task-count or parallelism score.

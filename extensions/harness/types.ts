@@ -1,6 +1,18 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export type WorkItemKind = "change" | "story";
+export type DeliveryBranchType = "feature" | "fix";
+export type DeliveryBranchMode = "create" | "continue";
+
+export interface WorkItemDelivery {
+	/** Optional only for legacy work items whose recorded branch remains authoritative. */
+	branchType?: DeliveryBranchType;
+	/** Optional only for legacy work items whose recorded branch remains authoritative. */
+	branchMode?: DeliveryBranchMode;
+	baseBranch: string;
+	featureBranch?: string;
+	startedAt?: string;
+}
 export type WorkItemPhase = "planning" | "execution" | "evaluation" | "complete";
 export type WorkItemState = "active" | "waiting_user" | "paused" | "postponed" | "blocked" | "failed" | "complete" | "archived";
 export type PlanningStatus = "draft" | "awaiting_approval" | "approved" | "stale";
@@ -200,7 +212,7 @@ export interface WorkItemIndex {
 	executionStages?: Array<{ id: string; tasks: string[]; checks?: string[] }>;
 	/** Legacy schema-v1 grouping, migrated to executionStages when the latter is absent. */
 	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
-	delivery?: { baseBranch: string; featureBranch: string; startedAt?: string };
+	delivery?: WorkItemDelivery;
 	evaluations: Array<{ id: string; path: string }>;
 	finalization?: { locked: boolean; reason: string; lockedAt: string };
 }

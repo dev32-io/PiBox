@@ -26,6 +26,11 @@ async function fixture(t: test.TestContext) {
 	await writeFile(join(root, ".gitignore"), "/.worktree/\n");
 	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
+	await git(root, "branch", "-M", "develop");
+	const remote = join(parent, "remote.git");
+	await git(parent, "init", "--bare", "--quiet", remote);
+	await git(root, "remote", "add", "origin", remote);
+	await git(root, "push", "--quiet", "-u", "origin", "develop");
 	return { parent, root, identity: await discoverRepository(root, join(parent, "home")) };
 }
 
@@ -52,7 +57,7 @@ function task(): TaskManifest {
 test("allocates isolated work and atomically integrates a meaningful unit", async (t) => {
 	const { root, identity } = await fixture(t);
 	const store = new WorkItemStore(root);
-	await store.create({ id: "feature", title: "Feature", kind: "story", intent: "Add a feature" });
+	await store.create({ id: "feature", title: "Feature", kind: "story", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Add a feature" });
 	await store.defineTask({ workItemId: "feature", manifest: task(), brief: "Add feature.txt", acceptance: "feature.txt exists" });
 	const evaluation: EvaluationManifest = {
 		schemaVersion: 1,
@@ -83,7 +88,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	const integrated = await manager.mergeTask("feature", "add-feature");
 	assert.equal(await readFile(join(root, "feature.txt"), "utf8"), "implemented\n");
 	assert.equal((await store.readTask("feature", "add-feature")).status, "merged");
-	assert.equal(await git(root, "branch", "--show-current"), "story/feature");
+	assert.equal(await git(root, "branch", "--show-current"), "feature/feature");
 	await store.recordEvaluation({
 		workItemId: "feature",
 		evaluationId: "feature-check",
@@ -100,10 +105,32 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("continues an explicitly recorded current feature branch without syncing develop", async (t) => {
+	const { root, identity } = await fixture(t);
+	await git(root, "switch", "-c", "feature/large-refactor");
+	const store = new WorkItemStore(root);
+	await store.create({ id: "follow-up", title: "Follow-up", kind: "change", delivery: { branchType: "feature", branchMode: "continue", baseBranch: "develop", featureBranch: "feature/large-refactor" }, intent: "Continue the larger refactor" });
+	await store.submitPlanning("follow-up");
+	await store.approve("follow-up");
+	const prepared = await new WorktreeManager(identity).prepareFeatureBranch("follow-up");
+	assert.deepEqual(prepared, { baseBranch: "develop", featureBranch: "feature/large-refactor", created: false });
+	assert.equal(await git(root, "branch", "--show-current"), "feature/large-refactor");
+});
+
+test("new delivery refuses to leave another branch implicitly", async (t) => {
+	const { root, identity } = await fixture(t);
+	await git(root, "switch", "-c", "feature/existing-work");
+	const store = new WorkItemStore(root);
+	await store.create({ id: "separate", title: "Separate", kind: "story", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Create separate work" });
+	await store.submitPlanning("separate");
+	await store.approve("separate");
+	await assert.rejects(new WorktreeManager(identity).prepareFeatureBranch("separate"), /must start from develop.*feature\/existing-work/);
+});
+
 test("resumes a dirty worktree recorded for the same task assignment", async (t) => {
 	const { root, identity } = await fixture(t);
 	const store = new WorkItemStore(root);
-	await store.create({ id: "resume", title: "Resume", kind: "change", intent: "Resume retained work" });
+	await store.create({ id: "resume", title: "Resume", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Resume retained work" });
 	const manifest = task();
 	await store.defineTask({ workItemId: "resume", manifest, brief: "Create a file", acceptance: "File exists" });
 	await store.submitPlanning("resume");
@@ -126,7 +153,7 @@ test("refuses allocation when the repository-local worktree root is not ignored"
 	await git(root, "add", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "remove ignore");
 	const store = new WorkItemStore(root);
-	await store.create({ id: "unignored", title: "Unignored", kind: "change", intent: "Test ignore enforcement" });
+	await store.create({ id: "unignored", title: "Unignored", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Test ignore enforcement" });
 	const manifest = task();
 	await store.defineTask({ workItemId: "unignored", manifest, brief: "Create a file", acceptance: "File exists" });
 	await store.submitPlanning("unignored");

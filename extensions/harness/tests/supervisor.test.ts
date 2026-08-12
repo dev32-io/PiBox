@@ -49,9 +49,14 @@ test("supervises a child contribution through a validated terminal handoff", asy
 	await writeFile(join(root, ".gitignore"), "/.worktree/\n");
 	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
+	await git(root, "branch", "-M", "develop");
+	const remote = join(parent, "remote.git");
+	await git(parent, "init", "--bare", "--quiet", remote);
+	await git(root, "remote", "add", "origin", remote);
+	await git(root, "push", "--quiet", "-u", "origin", "develop");
 	const identity = await discoverRepository(root, join(parent, "home"));
 	const store = new WorkItemStore(root);
-	await store.create({ id: "supervised", title: "Supervised", kind: "change", intent: "Exercise supervision" });
+	await store.create({ id: "supervised", title: "Supervised", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Exercise supervision" });
 	await store.defineTask({ workItemId: "supervised", manifest: manifest(), brief: "Create child.txt", acceptance: "child.txt is committed" });
 	await store.submitPlanning("supervised");
 	await store.approve("supervised");

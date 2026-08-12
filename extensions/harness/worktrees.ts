@@ -94,19 +94,40 @@ export class WorktreeManager {
 		const item = await this.workItems.assertCurrentApproval(workItemId);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (!currentBranch) throw new HarnessError("GIT_OPERATION_FAILED", "Workflow start requires a named branch checkout");
-		const featureBranch = item.delivery?.featureBranch ?? `${item.kind}/${safeSegment(workItemId)}`;
-		const baseBranch = item.delivery?.baseBranch ?? currentBranch;
-		const exists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${featureBranch}`], { cwd: this.identity.root }).then(() => true, () => false);
-		if (currentBranch !== featureBranch) await runGit(this.identity.root, exists ? ["switch", featureBranch] : ["switch", "-c", featureBranch]);
-		const changed = item.delivery?.baseBranch !== baseBranch || item.delivery?.featureBranch !== featureBranch;
-		if (changed) {
-			const path = join(this.workItems.workItemRoot(workItemId), "index.yaml");
-			const updated: WorkItemIndex = { ...item, delivery: { baseBranch, featureBranch, startedAt: item.delivery?.startedAt ?? new Date().toISOString() } };
-			await atomicWriteFile(path, stringify(updated));
-			await runGit(this.identity.root, ["add", "--", relative(this.identity.root, path)]);
-			await runGit(this.identity.root, ["commit", "-m", `harness(${workItemId}): start feature branch`]);
+
+		// Existing recorded branches remain authoritative for backward-compatible resume.
+		if (item.delivery?.featureBranch && !item.delivery.branchMode) {
+			if (!(await this.branchExists(item.delivery.featureBranch))) throw new HarnessError("GIT_OPERATION_FAILED", `Recorded delivery branch does not exist: ${item.delivery.featureBranch}`);
+			if (currentBranch !== item.delivery.featureBranch) await runGit(this.identity.root, ["switch", item.delivery.featureBranch]);
+			return { baseBranch: item.delivery.baseBranch, featureBranch: item.delivery.featureBranch, created: false };
 		}
-		return { baseBranch, featureBranch, created: !exists };
+
+		const delivery = item.delivery;
+		if (!delivery?.branchType || !delivery.branchMode) throw new HarnessError("INVALID_ARTIFACT", `Work item ${workItemId} must declare delivery.branchType (feature|fix), delivery.branchMode (create|continue), and baseBranch develop before workflow start`);
+		const baseBranch = delivery.baseBranch;
+		if (baseBranch !== "develop") throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} must use develop as its base branch`);
+		const featureBranch = delivery.featureBranch ?? `${delivery.branchType}/${safeSegment(workItemId)}`;
+
+		if (delivery.branchMode === "continue") {
+			if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Continued workflow ${workItemId} requires current branch ${featureBranch}; current branch is ${currentBranch}`);
+			if (!(await this.branchExists(featureBranch))) throw new HarnessError("GIT_OPERATION_FAILED", `Continued delivery branch does not exist: ${featureBranch}`);
+			return { baseBranch, featureBranch, created: false };
+		}
+
+		if (currentBranch !== baseBranch) throw new HarnessError("CAPABILITY_DENIED", `New workflow ${workItemId} must start from ${baseBranch}; current branch is ${currentBranch}. Switch intentionally after preserving any branch-local planning work.`);
+		await runGit(this.identity.root, ["pull", "--ff-only", "origin", baseBranch]);
+		if (await this.branchExists(featureBranch)) throw new HarnessError("GIT_OPERATION_FAILED", `New delivery branch already exists: ${featureBranch}; use branchMode continue to add work to it`);
+		await runGit(this.identity.root, ["switch", "-c", featureBranch]);
+		const path = join(this.workItems.workItemRoot(workItemId), "index.yaml");
+		const updated: WorkItemIndex = { ...item, delivery: { ...delivery, baseBranch, featureBranch, startedAt: delivery.startedAt ?? new Date().toISOString() } };
+		await atomicWriteFile(path, stringify(updated));
+		await runGit(this.identity.root, ["add", "--", relative(this.identity.root, path)]);
+		await runGit(this.identity.root, ["commit", "-m", `harness(${workItemId}): start ${delivery.branchType} branch`]);
+		return { baseBranch, featureBranch, created: true };
+	}
+
+	private async branchExists(branch: string): Promise<boolean> {
+		return execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: this.identity.root }).then(() => true, () => false);
 	}
 
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
@@ -116,7 +137,8 @@ export class WorktreeManager {
 			const dependencyTask = await this.workItems.readTask(workItemId, dependency);
 			if (!["merged", "integrated"].includes(dependencyTask.status)) throw new HarnessError("INVALID_ARTIFACT", `Dependency is not merged: ${dependency}`);
 		}
-		const featureBranch = item.delivery?.featureBranch ?? `${item.kind}/${safeSegment(workItemId)}`;
+		const featureBranch = item.delivery?.featureBranch;
+		if (!featureBranch) throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} has no prepared delivery branch`);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Workflow ${workItemId} must run on ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
 		if (task.execution.isolation === "repository") {
@@ -154,7 +176,8 @@ export class WorktreeManager {
 	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.assertCurrentApproval(workItemId);
-		const featureBranch = item.delivery?.featureBranch ?? `${item.kind}/${safeSegment(workItemId)}`;
+		const featureBranch = item.delivery?.featureBranch;
+		if (!featureBranch) throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} has no prepared delivery branch`);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Task merges require ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
 		let task = await this.workItems.readTask(workItemId, taskId);

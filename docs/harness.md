@@ -62,7 +62,7 @@ Approval is continuity rather than a blanket mutation freeze. The main orchestra
 
 ### Exploration and execution
 
-The independent workflow extension owns the generic background execution surface. `workflow_start` first requires a clean checkout, creates or switches to `story/<work-item-id>` or `change/<work-item-id>` according to work-item kind, and asks the registered harness adapter to derive current task, task-merge, and evaluation steps directly from the approved work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
+The independent workflow extension owns the generic background execution surface. Each work item separates planning kind (`story | change`) from delivery intent (`feature | fix`, `create | continue`, base `develop`). For new delivery, `workflow_start` requires a clean checkout, switches to `develop`, pulls with `--ff-only`, and creates `feature/<work-item-id>` or `fix/<work-item-id>`. For continued delivery, it requires a clean checkout already on the recorded ongoing feature/fix branch and does not sync `develop`. It then asks the registered harness adapter to derive current task, task-merge, and evaluation steps directly from the approved work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
 
 - `subagent_spawn` starts an adapter-owned task or evaluation reference in background mode by default; foreground mode remains available for explicit waiting.
 - `subagent_status`, `subagent_control`, and `subagent_respond` monitor and steer logical children.
@@ -81,7 +81,7 @@ New task worktrees live inside the canonical repository under an ignored root:
 
 `/harness init` ensures `/.worktree/` is ignored. Private run records and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
 
-A task can intentionally be partial. Task-level review/repair may happen before merge, while whole-feature E2E and final review run on the assembled feature branch. Completion leaves the feature branch checked out and tells the user which base branch it is ready to merge into.
+A task can intentionally be partial. Task-level review/repair may happen before merge, while whole-feature E2E and final review run on the assembled delivery branch. Completion leaves the branch checked out. A newly created branch is reported ready to merge into `develop`; completion on a continued branch reports only the delivered increment and does not imply the larger branch is finished.
 
 ### Evaluation
 
