@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 
@@ -9,6 +9,8 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 const terminalAgent = new Set(["completed", "failed", "protocol_failed", "cancelled"]);
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
+
+type WorkflowNotice = { title: string; detail?: string; attention: boolean };
 
 export default function workflows(pi: ExtensionAPI): void {
 	const adapters: WorkflowAdapter[] = [];
@@ -20,6 +22,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	let ticking = false;
 	let frame = 0;
 	let sessionCtx: ExtensionContext | undefined;
+	let latestNotice: WorkflowNotice | undefined;
 
 	const adapterFor = (ref: string): WorkflowAdapter => {
 		const adapter = adapters.find((candidate) => candidate.canHandle(ref));
@@ -31,9 +34,12 @@ export default function workflows(pi: ExtensionAPI): void {
 		pi.appendEntry("pibox-workflow", { ref, state, at: new Date().toISOString() });
 	};
 
-	const sendEvent = (text: string, attention = false) => {
+	const sendEvent = (title: string, detail?: string, attention = false) => {
+		latestNotice = { title, ...(detail ? { detail } : {}), attention };
+		if (sessionCtx) renderDashboard(sessionCtx);
 		try {
-			pi.sendMessage({ customType: "pibox-workflow-event", content: text, display: true }, attention
+			// Keep workflow plumbing out of chat history; attention still steers the orchestrator.
+			pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow ${attention ? "attention" : "event"}]\n${title}${detail ? `\n${detail}` : ""}`, display: false }, attention
 				? { deliverAs: "steer", triggerTurn: true }
 				: { deliverAs: "steer", triggerTurn: false });
 		} catch {
@@ -41,7 +47,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 	};
 
-	const linesFor = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
+	const rawTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
 		const done = snapshot.steps.filter((step) => step.status === "done").length;
 		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 		for (const step of snapshot.steps) {
@@ -58,11 +64,33 @@ export default function workflows(pi: ExtensionAPI): void {
 		return lines;
 	};
 
+	const dashboardLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number): string[] => {
+		const innerWidth = Math.max(1, width - 2);
+		const tasks = rawTaskLines(snapshot, ctx);
+		const showNotice = Boolean(latestNotice && innerWidth >= 72);
+		const eventWidth = showNotice ? Math.min(44, Math.max(22, Math.floor(innerWidth * 0.34))) : 0;
+		const gap = showNotice ? 3 : 0;
+		const taskWidth = innerWidth - eventWidth - gap;
+		const notice = latestNotice;
+		return tasks.map((task, index) => {
+			const left = truncateToWidth(task, taskWidth, "…");
+			let content = left;
+			if (showNotice && notice) {
+				const padding = " ".repeat(Math.max(0, taskWidth - visibleWidth(left) + gap));
+				const eventText = index === 0
+					? ctx.ui.theme.fg(notice.attention ? "warning" : "accent", ctx.ui.theme.bold(notice.title))
+					: index === 1 && notice.detail ? ctx.ui.theme.fg("dim", notice.detail.replaceAll("\n", " ")) : "";
+				content = `${left}${padding}${truncateToWidth(eventText, eventWidth, "…")}`;
+			}
+			const padded = `${content}${" ".repeat(Math.max(0, innerWidth - visibleWidth(content)))}`;
+			return ctx.ui.theme.bg("customMessageBg", ` ${padded} `);
+		});
+	};
+
 	const renderDashboard = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI || !currentSnapshot) { ctx.ui.setWidget("pibox-workflow", undefined); return; }
-		const lines = linesFor(currentSnapshot, ctx);
 		ctx.ui.setWidget("pibox-workflow", (_tui, _theme) => ({
-			render(width: number) { return lines.map((line) => truncateToWidth(line, width)); },
+			render(width: number) { return dashboardLines(currentSnapshot!, ctx, width); },
 			invalidate() {},
 		}));
 	};
@@ -70,13 +98,13 @@ export default function workflows(pi: ExtensionAPI): void {
 	const settleStep = async (adapter: WorkflowAdapter, step: WorkflowStep, promise: Promise<WorkflowRunResult>, ctx: ExtensionContext, workflowRef?: string) => {
 		try {
 			const settled = await promise;
-			sendEvent(`[Workflow event]\n${settled.summary}`, Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed"));
+			sendEvent(`${step.title} · ${settled.state}`, settled.summary, Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed"));
 			if (settled.attention || settled.state === "blocked" || settled.state === "failed") {
 				if (workflowRef) { active.set(workflowRef, "paused"); persist(workflowRef, "paused"); }
 			}
 		} catch (error) {
 			if (workflowRef) { active.set(workflowRef, "paused"); persist(workflowRef, "paused"); }
-			sendEvent(`[Workflow attention]\n${step.title} failed to settle: ${error instanceof Error ? error.message : String(error)}`, true);
+			sendEvent(`${step.title} · failed`, error instanceof Error ? error.message : String(error), true);
 		} finally {
 			inFlight.delete(step.ref);
 			await tick(ctx);
@@ -86,7 +114,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const startStep = (adapter: WorkflowAdapter, step: WorkflowStep, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult> => {
 		if (inFlight.has(step.ref)) throw new Error(`Step is already running: ${step.ref}`);
 		inFlight.add(step.ref);
-		sendEvent(`[Workflow event]\nStarting ${step.title}.`);
+		sendEvent(`Starting ${step.title}`);
 		return adapter.runStep(step.ref, ctx, signal);
 	};
 
@@ -118,7 +146,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				catch (error) {
 					if (state === "running") {
 						active.set(ref, "paused"); persist(ref, "paused");
-						sendEvent(`[Workflow attention]\n${error instanceof Error ? error.message : String(error)}`, true);
+						sendEvent(`${ref} · attention`, error instanceof Error ? error.message : String(error), true);
 					}
 					continue;
 				}
@@ -127,9 +155,12 @@ export default function workflows(pi: ExtensionAPI): void {
 					renderDashboard(ctx);
 				}
 				if (state !== "running") continue;
-				if (snapshot.status === "attention") { active.set(ref, "paused"); persist(ref, "paused"); sendEvent(`[Workflow attention]\n${snapshot.title} needs intervention.`, true); continue; }
+				if (snapshot.status === "attention") { active.set(ref, "paused"); persist(ref, "paused"); sendEvent(`${snapshot.title} · attention`, "Workflow needs intervention.", true); continue; }
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
-					active.delete(ref); persist(ref, "stopped"); sendEvent(`[Workflow event]\n${snapshot.title} finished all workflow steps.`); continue;
+					active.delete(ref); persist(ref, "stopped"); sendEvent(`${snapshot.title} · complete`, "Finished all workflow steps.");
+					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? `Workflow ${ref} completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.`;
+					try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* session recovery can inspect canonical completion state */ }
+					continue;
 				}
 				for (const step of runnable(snapshot)) {
 					const promise = startStep(adapter, step, ctx);
@@ -137,7 +168,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				}
 			}
 		} catch (error) {
-			sendEvent(`[Workflow attention]\n${error instanceof Error ? error.message : String(error)}`, true);
+			sendEvent("Workflow runner · attention", error instanceof Error ? error.message : String(error), true);
 		} finally { ticking = false; }
 	};
 

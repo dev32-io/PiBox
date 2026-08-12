@@ -94,7 +94,7 @@ export class WorktreeManager {
 		const item = await this.workItems.assertCurrentApproval(workItemId);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (!currentBranch) throw new HarnessError("GIT_OPERATION_FAILED", "Workflow start requires a named branch checkout");
-		const featureBranch = `feature/${safeSegment(workItemId)}`;
+		const featureBranch = item.delivery?.featureBranch ?? `${item.kind}/${safeSegment(workItemId)}`;
 		const baseBranch = item.delivery?.baseBranch ?? currentBranch;
 		const exists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${featureBranch}`], { cwd: this.identity.root }).then(() => true, () => false);
 		if (currentBranch !== featureBranch) await runGit(this.identity.root, exists ? ["switch", featureBranch] : ["switch", "-c", featureBranch]);
@@ -114,9 +114,9 @@ export class WorktreeManager {
 		const item = await this.workItems.assertCurrentApproval(workItemId);
 		for (const dependency of task.dependsOn) {
 			const dependencyTask = await this.workItems.readTask(workItemId, dependency);
-			if (dependencyTask.status !== "integrated") throw new HarnessError("INVALID_ARTIFACT", `Dependency is not integrated: ${dependency}`);
+			if (!["merged", "integrated"].includes(dependencyTask.status)) throw new HarnessError("INVALID_ARTIFACT", `Dependency is not merged: ${dependency}`);
 		}
-		const featureBranch = `feature/${safeSegment(workItemId)}`;
+		const featureBranch = item.delivery?.featureBranch ?? `${item.kind}/${safeSegment(workItemId)}`;
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Workflow ${workItemId} must run on ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
 		if (task.execution.isolation === "repository") {
@@ -154,7 +154,7 @@ export class WorktreeManager {
 	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.assertCurrentApproval(workItemId);
-		const featureBranch = item.delivery?.featureBranch ?? `feature/${safeSegment(workItemId)}`;
+		const featureBranch = item.delivery?.featureBranch ?? `${item.kind}/${safeSegment(workItemId)}`;
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Task merges require ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
 		let task = await this.workItems.readTask(workItemId, taskId);

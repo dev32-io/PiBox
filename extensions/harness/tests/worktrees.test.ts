@@ -83,7 +83,7 @@ test("allocates isolated work and atomically integrates a meaningful unit", asyn
 	const integrated = await manager.mergeTask("feature", "add-feature");
 	assert.equal(await readFile(join(root, "feature.txt"), "utf8"), "implemented\n");
 	assert.equal((await store.readTask("feature", "add-feature")).status, "merged");
-	assert.equal(await git(root, "branch", "--show-current"), "feature/feature");
+	assert.equal(await git(root, "branch", "--show-current"), "story/feature");
 	await store.recordEvaluation({
 		workItemId: "feature",
 		evaluationId: "feature-check",

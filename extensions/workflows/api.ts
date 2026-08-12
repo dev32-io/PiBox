@@ -35,6 +35,7 @@ export interface WorkflowAdapter {
 	id: string;
 	canHandle(ref: string): boolean;
 	prepareWorkflow?(ref: string, ctx: ExtensionContext): Promise<void>;
+	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;

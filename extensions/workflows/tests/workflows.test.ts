@@ -27,7 +27,7 @@ function fixture() {
 	const ctx: any = {
 		hasUI: true,
 		ui: {
-			theme: { fg: (_c: string, text: string) => text, bold: (text: string) => text },
+			theme: { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text },
 			setWidget(_id: string, value: unknown) { widget = value; },
 		},
 		sessionManager: { getEntries: () => entries },
@@ -94,6 +94,7 @@ test("background spawning returns immediately and later emits a lifecycle messag
 	release();
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background step completed")), true);
+	assert.equal(f.messages.find((entry) => String(entry.message.content).includes("Background step completed"))?.message.display, false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -105,7 +106,7 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 		steps: [{ ref: "test:task", title: "Implement example", kind: "task", status: taskDone ? "done" : "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }],
 	});
 	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshots(); },
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async completionPrompt() { return "Read outcome.md and brief the user."; }, async snapshot() { return snapshots(); },
 		async runStep(ref) { taskDone = true; return { ref, state: "completed", summary: "Implementation done." }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
 		async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
@@ -118,5 +119,12 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 	assert.equal(taskDone, true);
 	assert.ok(f.widget());
 	assert.equal(f.entries.some((entry) => entry.data.ref === "test:workflow"), true);
+	const completion = f.messages.find((entry) => entry.message.customType === "pibox-workflow-complete");
+	assert.equal(completion?.message.display, false);
+	assert.equal(completion?.options.triggerTurn, true);
+	assert.match(completion?.message.content ?? "", /outcome\.md.*brief the user/i);
+	const widget = f.widget() as ((...args: any[]) => any);
+	const component = widget?.({}, f.ctx.ui.theme);
+	assert.ok(component.render(100).every((line: string) => line.startsWith(" ") && line.endsWith(" ")));
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
