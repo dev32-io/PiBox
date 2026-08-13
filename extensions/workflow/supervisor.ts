@@ -28,6 +28,7 @@ export interface LaunchTaskOptions {
 	workspace: string;
 	branch: string;
 	baseCommit: string;
+	executionMode: "repository" | "worktree";
 	planningRevision: number;
 	model: LaunchModel;
 	rolePrompt?: string;
@@ -112,10 +113,10 @@ export class SubagentSupervisor {
 		});
 		await updateTask(`run-start:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, {
 			status: "running",
-			runtime: { branch: options.branch, worktree: options.workspace, baseCommit: options.baseCommit, lastRunId: created.record.id },
+			runtime: { executionMode: options.executionMode, branch: options.branch, worktree: options.workspace, baseCommit: options.baseCommit, lastRunId: created.record.id },
 		}));
 		let contributionBase = options.baseCommit;
-		if (options.task.execution.isolation === "repository") {
+		if (options.executionMode === "repository") {
 			const { runGit } = await import("./repository.js");
 			contributionBase = await runGit(options.workspace, ["rev-parse", "HEAD"]);
 			await runs.update(created.record.id, { baseCommit: contributionBase }, "run.repository_base_prepared");

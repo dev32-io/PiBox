@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
 
-function task(id: string, status: string, dependsOn: string[] = []) {
-	return { id, title: id, status, dependsOn, execution: { parallelism: "allowed", resourceClaims: [id] } };
+function task(id: string, status: string, dependsOn: string[] = [], stageId = "delivery") {
+	return { id, title: id, status, dependsOn, execution: { resourceClaims: [id] }, assembly: { stageId } };
 }
 
 test("resume prepares stopped tasks from current dependency state", async () => {
@@ -70,6 +70,27 @@ test("derives and refreshes task, integration, and evaluation steps without copy
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.status, "done", "canonical completion wins over a stale reported agent");
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "done");
+});
+
+test("derives singleton repository execution and parallel stage merge barriers", async () => {
+	const tasks: any[] = [task("first", "ready", [], "serial"), task("left", "ready", ["first"], "parallel"), task("right", "ready", ["first"], "parallel")];
+	const item: any = { id: "topology", title: "Topology", planning: { status: "approved" }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "serial", tasks: ["first"] }, { id: "parallel", tasks: ["left", "right"] }], integrationUnits: [], evaluations: [] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let snapshot = await adapter.snapshot("work-item:topology", {} as any);
+	const first = snapshot.steps.find((step) => step.ref.endsWith("task:first"))!;
+	assert.equal(first.parallelism, "serial"); assert.deepEqual(first.resourceClaims, ["feature-branch"]);
+	tasks[0].status = "merged";
+	snapshot = await adapter.snapshot("work-item:topology", {} as any);
+	for (const id of ["left", "right"]) { const step = snapshot.steps.find((candidate) => candidate.ref.endsWith(`task:${id}`))!; assert.equal(step.status, "ready"); assert.equal(step.parallelism, "allowed"); assert.deepEqual(step.resourceClaims, [id]); }
+	tasks[1].status = "contribution_complete";
+	snapshot = await adapter.snapshot("work-item:topology", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.status, "pending");
+	tasks[2].status = "contribution_complete";
+	snapshot = await adapter.snapshot("work-item:topology", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.status, "ready");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.kind, "merge");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:right"))?.status, "pending");
 });
 
 test("does not render exited or reported evaluation agents as running", async () => {

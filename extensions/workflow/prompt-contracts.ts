@@ -23,6 +23,7 @@ export const BUILT_IN_PROMPT_SURFACES: PromptSurface[] = [
 	{ id: "exploration-protocol-nudge", category: "protocol", source: "extensions/workflow/index.ts#exploration_launch", completion: "exploration_complete" },
 	{ id: "missing-role-fallback", category: "fallback", source: "extensions/workflow-runtime/direct-agent.ts#runDirectAgent", completion: "none" },
 	{ id: "orchestrator-tool-pointers", category: "tool-pointer", source: "extensions/workflow/index.ts#registerTool", completion: "none" },
+	{ id: "progressive-workflow-reads", category: "tool-pointer", source: "extensions/workflow/progressive-disclosure.ts#paginateCatalog", completion: "none" },
 	{ id: "worker-tool-pointers", category: "tool-pointer", source: "extensions/workflow/worker-capabilities.ts#registerWorkerCapabilities", completion: "task_complete" },
 	{ id: "evaluator-tool-pointers", category: "tool-pointer", source: "extensions/workflow/evaluator-capabilities.ts#registerEvaluatorCapabilities", completion: "evaluation_complete" },
 	{ id: "explorer-tool-pointers", category: "tool-pointer", source: "extensions/workflow/exploration-capabilities.ts#registerExplorationCapabilities", completion: "exploration_complete" },

@@ -5,6 +5,7 @@ import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
+import { taskExecutionTopology, type TaskExecutionIsolation } from "./execution-topology.js";
 import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
 import type { TaskManifest, WorkItemIndex } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
@@ -30,11 +31,14 @@ export interface AllocatedWorktree {
 	path: string;
 	branch: string;
 	baseCommit: string;
+	isolation: TaskExecutionIsolation;
 }
 
 export interface IntegrationResult {
 	commit: string;
 	taskId: string;
+	taskIds: string[];
+	stageId: string;
 	checks: Array<{ command: string; code: number; stdout: string; stderr: string }>;
 }
 
@@ -150,6 +154,19 @@ export class WorktreeManager {
 		return execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: this.identity.root }).then(() => true, () => false);
 	}
 
+	private stageBaseRef(workItemId: string, stageId: string): string {
+		return `refs/pibox/stages/${safeSegment(workItemId)}/${safeSegment(stageId)}`;
+	}
+
+	private async parallelStageBase(workItemId: string, stageId: string): Promise<string> {
+		const ref = this.stageBaseRef(workItemId, stageId);
+		const existing = await execFileAsync("git", ["rev-parse", "--verify", ref], { cwd: this.identity.root, encoding: "utf8" }).then((result) => result.stdout.trim(), () => undefined);
+		if (existing) return existing;
+		const head = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		await runGit(this.identity.root, ["update-ref", ref, head]);
+		return head;
+	}
+
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.assertCurrentApproval(workItemId);
@@ -161,16 +178,17 @@ export class WorktreeManager {
 		if (!featureBranch) throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} has no prepared delivery branch`);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Workflow ${workItemId} must run on ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
-		if (task.execution.isolation === "repository") {
+		const topology = taskExecutionTopology(item, task);
+		if (topology.isolation === "repository") {
 			const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
-			return { path: this.identity.root, branch: featureBranch, baseCommit };
+			return { path: this.identity.root, branch: featureBranch, baseCommit, isolation: "repository" };
 		}
 		const branch = `harness/${safeSegment(workItemId)}/${safeSegment(task.id)}`;
 		const path = join(this.worktreeRoot, workItemId, task.id);
 		if (!(await isGitPathIgnored(this.identity.root, ".worktree/pibox/.ignore-check"))) {
 			throw new HarnessError("CONFIG_INVALID", "Repository-local workflow worktrees require an effective /.worktree/ ignore rule. Run /workflow init or add it to .gitignore before task launch.");
 		}
-		const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		const baseCommit = task.runtime?.baseCommit ?? await this.parallelStageBase(workItemId, topology.stageId);
 		await mkdir(join(this.worktreeRoot, workItemId), { recursive: true, mode: 0o700 });
 
 		if (await exists(path)) {
@@ -181,7 +199,7 @@ export class WorktreeManager {
 			if (status && task.status !== "running" && task.status !== "paused" && !recordedWorktreeMatches) {
 				throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Recovered task worktree is dirty outside a recorded resumable assignment: ${path}`, { status });
 			}
-			return { path, branch, baseCommit: task.runtime?.baseCommit ?? baseCommit };
+			return { path, branch, baseCommit: task.runtime?.baseCommit ?? baseCommit, isolation: "worktree" };
 		}
 
 		const branchExists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: this.identity.root }).then(
@@ -190,7 +208,7 @@ export class WorktreeManager {
 		);
 		if (branchExists) await runGit(this.identity.root, ["worktree", "add", path, branch]);
 		else await runGit(this.identity.root, ["worktree", "add", "-b", branch, path, baseCommit]);
-		return { path, branch, baseCommit };
+		return { path, branch, baseCommit, isolation: "worktree" };
 	}
 
 	async listManaged(): Promise<ManagedWorktree[]> {
@@ -238,33 +256,53 @@ export class WorktreeManager {
 		if (!featureBranch) throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} has no prepared delivery branch`);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Task merges require ${featureBranch}; current branch is ${currentBranch || "detached HEAD"}`);
-		let task = await this.workItems.readTask(workItemId, taskId);
-		if (["merged", "integrated"].includes(task.status)) return { commit: task.runtime?.mergedCommit ?? await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, checks: [] };
-		if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no completed contribution commit`);
-		if (task.execution.isolation === "repository") {
-			const present = await execFileAsync("git", ["merge-base", "--is-ancestor", task.runtime.completedCommit, "HEAD"], { cwd: this.identity.root }).then(() => true, () => false);
-			if (!present) throw new HarnessError("INVALID_HANDOFF", `Repository task ${task.id} commit is not present on ${featureBranch}`);
-		} else {
+
+		const requestedTask = await this.workItems.readTask(workItemId, taskId);
+		const topology = taskExecutionTopology(item, requestedTask);
+		const taskIds = topology.isolation === "worktree" && topology.stageSize > 1 ? topology.stageTasks : [taskId];
+		const tasks = await Promise.all(taskIds.map((id) => this.workItems.readTask(workItemId, id)));
+		const pending = tasks.filter((task) => !["merged", "integrated"].includes(task.status));
+		if (pending.length === 0) {
+			return { commit: requestedTask.runtime?.mergedCommit ?? await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, taskIds, stageId: topology.stageId, checks: [] };
+		}
+		for (const task of pending) {
+			if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no completed contribution commit`);
 			if (!["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not ready to merge from ${task.status}`);
-			if (task.status === "contribution_complete" || task.status === "accepted") task = await this.workItems.updateTask(workItemId, task.id, { status: "merge_queued" });
-			if (task.status === "merge_queued" || task.status === "staged") task = await this.workItems.updateTask(workItemId, task.id, { status: "merging" });
-			const taskBranch = task.runtime?.branch;
-			if (!taskBranch) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no recorded branch`);
-			await runGit(this.identity.root, ["merge", "--no-ff", "--no-edit", taskBranch]).catch(async (error) => {
-				await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
-				throw new HarnessError("GIT_OPERATION_FAILED", `Merge conflict for ${task.id}: ${error instanceof Error ? error.message : String(error)}`);
-			});
 		}
+
+		const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 		const checkResults: IntegrationResult["checks"] = [];
-		for (const command of checks ?? task.verification.taskChecks) {
-			const result = await runShell(command, this.identity.root);
-			checkResults.push({ command, ...result });
-			if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Post-merge check failed: ${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`, result);
+		try {
+			if (topology.isolation === "repository") {
+				const completedCommit = pending[0]!.runtime!.completedCommit!;
+				const present = await execFileAsync("git", ["merge-base", "--is-ancestor", completedCommit, "HEAD"], { cwd: this.identity.root }).then(() => true, () => false);
+				if (!present) throw new HarnessError("INVALID_HANDOFF", `Repository task ${pending[0]!.id} commit is not present on ${featureBranch}`);
+			} else {
+				for (const task of pending) {
+					const taskBranch = task.runtime?.branch;
+					if (!taskBranch) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no recorded branch`);
+					await runGit(this.identity.root, ["merge", "--no-ff", "--no-edit", taskBranch]);
+				}
+			}
+
+			const stage = (item.executionStages ?? []).find((candidate) => candidate.id === topology.stageId);
+			const commands = checks ?? stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
+			for (const command of commands) {
+				const result = await runShell(command, this.identity.root);
+				checkResults.push({ command, ...result });
+				if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Post-stage check failed: ${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`, result);
+			}
+			const integratedCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+			for (const task of pending) await this.workItems.updateTask(workItemId, task.id, { status: "merged", runtime: { mergedCommit: integratedCommit } });
+		} catch (error) {
+			await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
+			await runGit(this.identity.root, ["reset", "--hard", baseCommit]).catch(() => undefined);
+			if (error instanceof HarnessError) throw error;
+			throw new HarnessError("GIT_OPERATION_FAILED", `Atomic stage merge failed for ${topology.stageId}: ${error instanceof Error ? error.message : String(error)}`);
 		}
-		const commit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
-		await this.workItems.updateTask(workItemId, task.id, { status: "merged", runtime: { mergedCommit: commit } });
+		if (topology.stageSize > 1) await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(workItemId, topology.stageId)]).catch(() => undefined);
 		await this.workItems.refreshReadyTasks(workItemId);
-		return { commit, taskId, checks: checkResults };
+		return { commit: await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, taskIds, stageId: topology.stageId, checks: checkResults };
 	}
 }
 

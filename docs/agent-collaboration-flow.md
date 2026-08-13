@@ -108,11 +108,12 @@ Make the high-level story executable in technical terms and optimize delivery th
 
 - Inspect the actual repository, architecture, tests, and integration boundaries.
 - Resolve technical feasibility and compatibility unknowns.
-- Decompose work into context-bounded contributions rather than maximizing task count; each task should be a focused context capsule for one model attempt.
-- Keep implementation and tests for one concern together, while splitting independently understandable feature areas, reasoning modes, and failure boundaries.
-- Run work sequentially where dependencies or overlapping resources require it and where a small stable foundation reduces later task context.
-- Use parallel work only when independence, cost, and speed justify coordination and worktree overhead.
-- Define dependencies, resource claims, intermediate states, integration expectations, and recovery boundaries.
+- Draft tracer-bullet contributions: each task delivers a narrow end-to-end behavior with its focused tests, is independently demoable or verifiable, and fits one fresh worker context.
+- Keep setup and layers with the behavior that needs them; use preparatory or expand–migrate–contract tasks only when vertical slices cannot remain coherent.
+- Present the proposed granularity and blocking edges to the user before publishing tickets.
+- Encode execution as ordered stages: blockers live in earlier stages, while tasks in one stage form the independent parallel frontier.
+- Let runtime derive mechanics: singleton stages execute on the feature branch; multi-task stages use per-task worktrees and an atomic merge barrier.
+- Define resource claims, intermediate states, integration expectations, and recovery boundaries only where they constrain safe execution.
 - Assign semantic capability tier and deliberation after decomposition; let harness configuration resolve the concrete provider, model, and model-specific effort.
 - Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
 - Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
@@ -125,7 +126,7 @@ A fully written, execution-ready story plan containing:
 - high-level product artifacts;
 - technical tasks and contribution boundaries;
 - ordered or parallel execution stages;
-- assignments and isolation choices;
+- capability assignments and runtime-derived execution stages;
 - integration expectations;
 - verification and evaluation coverage;
 - known risks and assumptions.
@@ -192,7 +193,7 @@ When changing prompts, skills, or workflow mechanics, check:
 - Does the agent challenge feature fixation and recover the underlying outcome when useful?
 - Is the transition into story shaping explicit and user-chosen?
 - Are high-level product artifacts coherent before technical decomposition begins?
-- Does delivery planning optimize task boundaries, sequence, parallelism, cost, and verification intentionally?
+- Does delivery planning produce user-reviewed tracer bullets with honest blockers, one-context fit, and runtime-derived execution mechanics?
 - Can new evidence move the collaboration back to the correct phase?
 - Does authorization persist across intermediate checkpoints without leaking into execution?
 - Does each skill have one clear deliverable and a natural next-step invitation?

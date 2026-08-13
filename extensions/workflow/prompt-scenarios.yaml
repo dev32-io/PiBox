@@ -129,14 +129,15 @@ scenarios:
     result: pending-rerun
     passed: 0
     requiredProperties:
-      - decomposes independently understandable feature areas into bounded task context capsules
-      - keeps each concern with its focused implementation tests
-      - uses sequential foundations and parallel work only when dependency and resource boundaries justify them
-      - explains why task boundaries reduce context rather than maximizing task count
+      - proposes tracer-bullet tasks that each deliver end-to-end behavior with focused tests and fit one fresh context
+      - presents the numbered task graph and asks the user to review granularity and blocking edges before publishing
+      - separates filters and bulk cleanup from due-date behavior and from pointer reorder interaction when each is independently verifiable
+      - places blockers in earlier sequential stages and only independent resource-compatible tasks in one parallel stage
+      - does not ask the planner to select repository or worktree isolation because runtime derives it from stage size
       - defaults clear common work to medium standard and reserves stronger routing for irreducible complexity
       - records only capability tier and deliberation rather than raw model or effort
-      - rejects one task spanning drag geometry persistence dates controls styling accessibility and most story criteria without critic justification
-    fixture: a small React todo app story combines filtered search controls clear completed optional persisted due dates and complex pointer-following reorder behavior across shared files
+      - rejects one task spanning drag geometry persistence dates controls styling accessibility and most story criteria
+    fixture: a small React todo app story combines filtered search controls clear completed optional persisted due dates and complex pointer-following reorder behavior across shared files; the proposed plan must remain free to choose serial tracer bullets despite shared files
     model:
       provider: openai-codex
       id: gpt-5.6-luna

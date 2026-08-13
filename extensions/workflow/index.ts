@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
+import { Check, Errors } from "typebox/value";
 import { reconcileReportedAgents } from "./agent-reconciliation.js";
 import { isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import { loadHarnessConfig } from "./config.js";
@@ -19,8 +20,9 @@ import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildTaskPersistentContext } from "./implementation-context.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType } from "./orchestrator-resources.js";
+import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
-import { isTierTaskAssignment, type CapabilityTier, type Deliberation, type EvaluationManifest, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest, type WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type CapabilityTier, type Deliberation, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
@@ -47,7 +49,7 @@ Act as a constructive product and technical partner. Seek the outcome behind req
 
 Keep clear, local, reversible work ad hoc. Treat collaboration as phases with retained conversational momentum: use product-discussion for free exploration without workflow pressure; shape-story when the user chooses to make the outcome, scope, specification, or design boundary durable; plan-delivery when a coherent story should become an execution-ready technical plan; and workflow-run only for approved execution, evaluation, recovery, completion, and outcome briefing. Each active phase owns one deliverable and naturally offers the next phase in user-friendly words. If the user already requested end-to-end planning, continue from shape-story into plan-delivery without asking them to repeat permission unless a material checkpoint needs their decision. An acknowledgement can confirm progress within an already authorized shaping or planning phase, but never initiates planning or execution by itself. When a turn mixes a concrete change with questions, alternatives, or “what next,” stay in product discussion until that frontier is settled. A problem report, suggested fix/feature label, or request to “address” something is not by itself permission to start, stop, resume, or amend a workflow.
 
-Canonical resources use work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. List before create and get before patch. Track the outcome currently being discussed rather than attaching new work to a related resource. Finished or delivered stories/changes are historical context: do not modify them unless the user specifically chooses to reopen or extend that exact work item. New follow-up defects and enhancements normally form a new work item; patch only the current unfinished outcome. Create a new parent once, then its children; patch matching drafts rather than duplicating them. Use workflow_apply_change only for coherent multi-resource decisions. Never edit agent-artifacts directly.
+Canonical resources use work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. List compact summaries before create and get summary or bounded detail before patch; follow cursors and offsets only when omitted context is relevant. Call workflow_schema for an unfamiliar mutation shape. Track the outcome currently being discussed rather than attaching new work to a related resource. Finished or delivered stories/changes are historical context: do not modify them unless the user specifically chooses to reopen or extend that exact work item. New follow-up defects and enhancements normally form a new work item; patch only the current unfinished outcome. Create a new parent once, then its children; patch matching drafts rather than duplicating them. Use workflow_apply_change only for coherent multi-resource decisions. Never edit agent-artifacts directly.
 
 Initial approval is user-only through /workflow approve <work-item-id>. Routine approved amendments may retain approval only after the user has chosen execution rather than discussion and the change is within delegated intent; ask when outcome, explicit constraints, consequential policy, privacy/security, irreversible effects, or a retained decision materially changes.
 
@@ -57,6 +59,7 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_status",
 	"workflow_list",
 	"workflow_get",
+	"workflow_schema",
 	"workflow_create",
 	"workflow_patch",
 	"workflow_delete",
@@ -87,8 +90,6 @@ const textResult = (text: string, details: unknown = null) => ({
 	content: [{ type: "text" as const, text }],
 	details,
 });
-const resourceResult = (summary: string, value: unknown) => textResult(`${summary}\n${JSON.stringify(value, null, 2)}`, value);
-
 const CANONICAL_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("evaluation")]);
 const LISTABLE_RESOURCE_TYPE = Type.Union([CANONICAL_RESOURCE_TYPE, Type.Literal("agent"), Type.Literal("message"), Type.Literal("run")]);
 const MUTATION_AUTHORITY = Type.Object({
@@ -105,7 +106,7 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 	dependsOn: Type.Array(Type.String()),
 	references: Type.Object({ specs: Type.Array(Type.String()), designs: Type.Array(Type.String()), decisions: Type.Array(Type.String()) }, { additionalProperties: false }),
 	execution: Type.Object({
-		isolation: Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for the normal implementer role" }), parallelism: Type.Union([Type.Literal("allowed"), Type.Literal("serial")]), resourceClaims: Type.Array(Type.String()),
+		resourceClaims: Type.Array(Type.String({ description: "Shared files or external resources used to validate parallel-stage compatibility" })),
 		assignment: Type.Object({
 			role: Type.String({ description: "Configured role name, normally implementer" }),
 			tier: CAPABILITY_TIER,
@@ -182,6 +183,62 @@ const CREATE_RESOURCE_PARAMETERS = Type.Union([
 	Type.Object({ resource: Type.Literal("integration-unit"), parent: Type.String(), body: INTEGRATION_UNIT_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("evaluation"), parent: Type.String(), body: EVALUATION_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 ]);
+const APPLY_CHANGE_PARAMETERS = Type.Object({
+	authority: MUTATION_AUTHORITY,
+	executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("restart-affected"), Type.Literal("pause-affected")]),
+	operations: Type.Array(Type.Union([
+		...CREATE_OPERATION_VARIANTS,
+		...PATCH_OPERATION_VARIANTS,
+		Type.Object({ method: Type.Literal("delete"), ref: Type.String() }, { additionalProperties: false }),
+	])),
+	response: Type.Optional(Type.Object({ agentId: Type.String(), messageId: Type.String(), text: Type.String() }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+// Keep the always-visible mutation schemas small. Exact per-resource schemas are
+// available on demand through workflow_schema and are revalidated before mutation.
+const OPEN_OBJECT = Type.Record(Type.String(), Type.Unknown());
+const COMPACT_CREATE_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, parent: Type.Optional(Type.String()), body: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
+const COMPACT_PATCH_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, ref: Type.String(), patch: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
+const COMPACT_APPLY_CHANGE_PARAMETERS = Type.Object({
+	authority: MUTATION_AUTHORITY,
+	executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("restart-affected"), Type.Literal("pause-affected")]),
+	operations: Type.Array(Type.Object({ method: Type.Union([Type.Literal("create"), Type.Literal("patch"), Type.Literal("delete")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String()), ref: Type.Optional(Type.String()), body: Type.Optional(OPEN_OBJECT), patch: Type.Optional(OPEN_OBJECT) }, { additionalProperties: false })),
+	response: Type.Optional(Type.Object({ agentId: Type.String(), messageId: Type.String(), text: Type.String() }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+function assertExactSchema(schema: any, value: unknown, label: string): void {
+	if (Check(schema, value)) return;
+	const problems = [...Errors(schema, value)].slice(0, 4).map((error) => `${error.instancePath || "/"} ${error.message}`);
+	throw new HarnessError("INVALID_ARTIFACT", `${label} does not match its exact resource schema: ${problems.join("; ")}. Call workflow_schema for the bounded contract.`);
+}
+
+function createdResourceRef(resource: CanonicalResourceType, parent: string | undefined, body: Record<string, any>): string {
+	if (resource === "work-item") return `work-item:${body.id}`;
+	if (!parent) throw new HarnessError("INVALID_ARTIFACT", `${resource} creation requires parent`);
+	const workItemId = parseResourceRef(parent).workItemId;
+	const id = resource === "task" || resource === "evaluation" ? body.manifest?.id : body.id;
+	if (typeof id !== "string") throw new HarnessError("INVALID_ARTIFACT", `${resource} body is missing its id`);
+	return `work-item:${workItemId}/${resource}:${id}`;
+}
+
+async function mutationReceipt(runtime: HarnessRuntime, commit: string | undefined, changes: Array<{ action: "create" | "patch" | "delete" | "transition"; ref: string }>, extra: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+	const affectedIds = [...new Set(changes.map((change) => parseResourceRef(change.ref).workItemId))];
+	const affected = [];
+	for (const id of affectedIds) {
+		const item = await runtime.workItems.read(id).catch((error) => error instanceof HarnessError && error.code === "WORK_ITEM_NOT_FOUND" ? undefined : Promise.reject(error));
+		if (item) affected.push({ ref: `work-item:${id}`, revision: item.planning.revision, planningStatus: item.planning.status, state: item.state });
+	}
+	return { ok: true, ...(commit ? { commit } : {}), changes, affected, ...extra };
+}
+
+function schemaFor(operation: "create" | "patch" | "apply-change", resource?: CanonicalResourceType): unknown {
+	if (operation === "apply-change") return APPLY_CHANGE_PARAMETERS;
+	if (!resource) throw new HarnessError("INVALID_ARTIFACT", `resource is required for the ${operation} schema`);
+	const variants = operation === "create" ? CREATE_RESOURCE_PARAMETERS.anyOf : PATCH_RESOURCE_PARAMETERS.anyOf;
+	const selected = variants.find((variant: any) => variant.properties?.resource?.const === resource);
+	if (!selected) throw new HarnessError("INVALID_ARTIFACT", `No ${operation} schema is available for ${resource}`);
+	return selected;
+}
 
 function structuredCapabilityError(error: unknown, ref?: string): Error {
 	const harness = error instanceof HarnessError ? error : undefined;
@@ -403,6 +460,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				workspace: allocation.path,
 				branch: allocation.branch,
 				baseCommit: allocation.baseCommit,
+				executionMode: allocation.isolation,
 				planningRevision: item.planning.revision,
 				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: `${plannedRouting.tier}:${plannedRouting.deliberation}${modelOverride ? `:${modelOverride.model}${modelOverride.effort ? `:${modelOverride.effort}` : ""}` : ""}` },
 				...(rolePolicy.prompt && resolveConfiguredPath(runtime.identity.root, rolePolicy.prompt)
@@ -529,20 +587,24 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_list",
 		label: "List Workflow Resources",
-		description: "List canonical file-backed resources or session runtime resources. Prefer this over inferring catalogs from status text.",
-		parameters: Type.Object({ resource: LISTABLE_RESOURCE_TYPE, workItemId: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		description: "List a compact, filtered page of canonical or runtime resource summaries. Use the returned cursor for the next page; use workflow_get to zoom into one ref.",
+		parameters: Type.Object({ resource: LISTABLE_RESOURCE_TYPE, workItemId: Type.Optional(Type.String()), query: Type.Optional(Type.String()), cursor: Type.Optional(Type.String()), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const runtime = await runtimeFor(ctx);
-				if (params.resource === "agent") return resourceResult("Session agents.", await runtime.agents.list());
-				if (params.resource === "message") return resourceResult("Session agent messages.", await runtime.agents.listMessages());
-				if (params.resource === "run") {
+				let resources: Array<Record<string, unknown>>;
+				if (params.resource === "agent") resources = (await runtime.agents.list()).filter((agent) => !params.workItemId || agent.workItemId === params.workItemId).map((agent) => ({ ref: `agent:${agent.id}`, id: agent.id, role: agent.role, state: agent.state, workItemId: agent.workItemId, taskId: agent.taskId, evaluationId: agent.evaluationId, model: `${agent.provider}/${agent.model}:${agent.effort}`, updatedAt: agent.updatedAt, ...(agent.summary ? { summary: agent.summary.slice(0, 240) } : {}) }));
+				else if (params.resource === "message") {
+					const agents = new Map((await runtime.agents.list()).map((agent) => [agent.id, agent]));
+					resources = (await runtime.agents.listMessages()).filter((message) => !params.workItemId || agents.get(message.agentId)?.workItemId === params.workItemId).map((message) => ({ ref: `message:${message.id}`, id: message.id, agentId: message.agentId, type: message.type, status: message.status, blocking: message.blocking, summary: message.summary.slice(0, 240), updatedAt: message.updatedAt }));
+				} else if (params.resource === "run") {
 					const items = params.workItemId ? [await runtime.workItems.read(params.workItemId)] : await runtime.workItems.list();
 					const runs = (await Promise.all(items.map((item) => new HarnessRunStore(runtime.identity.privateRoot, item.id).list()))).flat();
-					return resourceResult("Workflow runs.", runs);
-				}
-				const resources = await new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config).list(params.resource as CanonicalResourceType, params.workItemId);
-				return resourceResult(`${resources.length} ${params.resource} resource(s).`, resources);
+					resources = runs.map((run) => ({ ref: `run:${run.id}`, id: run.id, workItemId: run.workItemId, taskId: run.taskId, evaluationId: run.evaluationId, role: run.role, state: run.state, model: run.resolvedModel ? `${run.resolvedProvider}/${run.resolvedModel}:${run.resolvedEffort}` : undefined }));
+				} else resources = await new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config).listSummaries(params.resource as CanonicalResourceType, params.workItemId);
+				const page = paginateCatalog(resources, { ...(params.query ? { query: params.query } : {}), ...(params.cursor ? { cursor: params.cursor } : {}), ...(params.limit ? { limit: params.limit } : {}), searchableText: (resource) => JSON.stringify(resource) });
+				const continuation = page.page.nextCursor ? `\nMore results omitted. Call workflow_list again with cursor ${JSON.stringify(page.page.nextCursor)}.` : "";
+				return textResult(`${page.page.returned} of ${page.page.total} ${params.resource} resource(s), snapshot ${page.page.snapshot}.\n${JSON.stringify(page.items, null, 2)}${continuation}`, page);
 			} catch (error) { throw structuredCapabilityError(error); }
 		},
 	});
@@ -550,32 +612,67 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_get",
 		label: "Get Workflow Resource",
-		description: "Get one complete file-backed resource, its current revision, approval lineage, relationships, and allowed actions.",
-		parameters: Type.Object({ ref: Type.String({ description: "For example work-item:checkout/task:implement-checkout or agent:<id>" }) }, { additionalProperties: false }),
+		description: "Get a compact resource summary by default. Request view=full with offset/limit or findText to read a bounded, revision-pinned slice of the complete representation.",
+		parameters: Type.Object({ ref: Type.String({ description: "For example work-item:checkout/task:implement-checkout or agent:<id>" }), view: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("full")])), revision: Type.Optional(Type.Integer({ minimum: 1 })), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })), findText: Type.Optional(Type.String({ maxLength: 500 })) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const runtime = await runtimeFor(ctx);
-				if (params.ref.startsWith("agent:")) return resourceResult(params.ref, await runtime.agents.get(params.ref.slice(6)));
-				return resourceResult(params.ref, await new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config).get(params.ref));
+				const view = params.view ?? (params.offset !== undefined || params.findText !== undefined ? "full" : "summary");
+				if (view === "summary" && (params.offset !== undefined || params.findText !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "offset and findText require view=full");
+				if (params.ref.startsWith("agent:")) {
+					if (params.revision !== undefined) throw new HarnessError("INVALID_ARTIFACT", "Runtime agent resources use updatedAt rather than canonical revisions");
+					const agent = await runtime.agents.get(params.ref.slice(6));
+					if (view === "summary") return textResult(`${params.ref}\n${JSON.stringify({ ref: params.ref, id: agent.id, role: agent.role, state: agent.state, scope: { workItemId: agent.workItemId, taskId: agent.taskId, evaluationId: agent.evaluationId }, model: `${agent.provider}/${agent.model}:${agent.effort}`, updatedAt: agent.updatedAt, summary: agent.summary, availableViews: ["summary", "full"] }, null, 2)}`);
+					const slice = sliceText(JSON.stringify(agent, null, 2), { ...(params.offset !== undefined ? { offset: params.offset } : {}), ...(params.limit ? { limit: params.limit } : {}), ...(params.findText ? { findText: params.findText } : {}) });
+					return textResult(`${params.ref} full ${slice.mode}.\n${slice.text}${slice.page.nextOffset !== undefined ? `\nMore omitted; call workflow_get with view=full and offset=${slice.page.nextOffset}.` : ""}`, { ref: params.ref, view, page: slice.page });
+				}
+				const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+				if (view === "summary") {
+					const summary = await service.summary(params.ref);
+					if (params.revision !== undefined && summary.revision !== params.revision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `${params.ref} advanced from requested revision ${params.revision} to ${summary.revision as number}`);
+					return textResult(`${params.ref}\n${JSON.stringify(summary, null, 2)}`, summary);
+				}
+				const complete = await service.get(params.ref) as { revision: number };
+				if (params.revision !== undefined && complete.revision !== params.revision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `${params.ref} advanced from requested revision ${params.revision} to ${complete.revision}`);
+				const slice = sliceText(JSON.stringify(complete, null, 2), { ...(params.offset !== undefined ? { offset: params.offset } : {}), ...(params.limit ? { limit: params.limit } : {}), ...(params.findText ? { findText: params.findText } : {}) });
+				return textResult(`${params.ref} @ revision ${complete.revision}, full ${slice.mode}.\n${slice.text}${slice.page.nextOffset !== undefined ? `\nMore omitted; call workflow_get with revision=${complete.revision}, view=full, offset=${slice.page.nextOffset}.` : ""}`, { ref: params.ref, revision: complete.revision, view, page: slice.page });
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
+		},
+	});
+
+	pi.registerTool({
+		name: "workflow_schema",
+		label: "Read Workflow Mutation Schema",
+		description: "Read a bounded exact schema for one create or patch resource shape, or the compact batch envelope. Use before an unfamiliar mutation instead of keeping every schema in prompt context.",
+		parameters: Type.Object({ operation: Type.Union([Type.Literal("create"), Type.Literal("patch"), Type.Literal("apply-change")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })) }, { additionalProperties: false }),
+		async execute(_id, params) {
+			try {
+				const schema = JSON.stringify(schemaFor(params.operation, params.resource as CanonicalResourceType | undefined), null, 2);
+				const slice = sliceText(schema, { ...(params.offset !== undefined ? { offset: params.offset } : {}), ...(params.limit ? { limit: params.limit } : {}) });
+				return textResult(`${params.operation}${params.resource ? `/${params.resource}` : ""} schema.\n${slice.text}${slice.page.nextOffset !== undefined ? `\nMore omitted; call workflow_schema with offset=${slice.page.nextOffset}.` : ""}`, { operation: params.operation, resource: params.resource, page: slice.page });
+			} catch (error) { throw structuredCapabilityError(error); }
 		},
 	});
 
 	pi.registerTool({
 		name: "workflow_create",
 		label: "Create Workflow Resource",
-		description: "Create a typed canonical resource. List first to avoid duplicating the current unfinished outcome; related finished or delivered work does not prevent a new follow-up work item.",
-		parameters: CREATE_RESOURCE_PARAMETERS,
+		description: "Create one canonical resource and return a compact receipt. Call workflow_schema for the exact body shape; list first to avoid duplicating unfinished work.",
+		parameters: COMPACT_CREATE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
+				assertExactSchema(CREATE_RESOURCE_PARAMETERS, params, "workflow_create");
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const exact = params as any;
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
-					const parent = "parent" in params ? params.parent : undefined;
-					const result = await service.transaction(`harness: create ${params.resource}`, () => service.create(params.resource as CanonicalResourceType, parent, params.body, params.authority as MutationAuthority));
-					await runtime.events.append("resource.created", { resource: params.resource, parent, authority: params.authority, commit: result.commit });
-					return resourceResult(`Created ${params.resource}${result.commit ? ` at ${result.commit.slice(0, 12)}` : ""}.`, result);
+					const parent = exact.parent as string | undefined;
+					const ref = createdResourceRef(exact.resource, parent, exact.body);
+					const result = await service.transaction(`harness: create ${exact.resource}`, () => service.create(exact.resource, parent, exact.body, exact.authority));
+					await runtime.events.append("resource.created", { resource: exact.resource, parent, authority: exact.authority, commit: result.commit });
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "create", ref }]);
+					return textResult(`Created ${ref}${result.commit ? ` at ${result.commit.slice(0, 12)}` : ""}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, "parent" in params ? params.parent : undefined); }
 		},
@@ -584,17 +681,20 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_patch",
 		label: "Patch Workflow Resource",
-		description: "Apply a validated merge patch to any mutable canonical resource. Approved planning may retain approval through an audited orchestrator amendment.",
-		parameters: PATCH_RESOURCE_PARAMETERS,
+		description: "Apply one validated merge patch and return a compact receipt. Get the current summary first; call workflow_schema for an unfamiliar patch shape.",
+		parameters: COMPACT_PATCH_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
+				assertExactSchema(PATCH_RESOURCE_PARAMETERS, params, "workflow_patch");
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const exact = params as any;
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
-					const result = await service.transaction(`harness: patch ${params.ref}`, () => service.patch(params.ref, params.patch, { authority: params.authority as MutationAuthority }));
-					await runtime.events.append("resource.patched", { ref: params.ref, authority: params.authority, commit: result.commit });
-					return resourceResult(`Patched ${params.ref}${params.authority.disposition === "retain-approval" ? " with approval continuity" : " and requested user review"}.`, result);
+					const result = await service.transaction(`harness: patch ${exact.ref}`, () => service.patch(exact.ref, exact.patch, { authority: exact.authority }));
+					await runtime.events.append("resource.patched", { ref: exact.ref, authority: exact.authority, commit: result.commit });
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "patch", ref: exact.ref }]);
+					return textResult(`Patched ${exact.ref}${exact.authority.disposition === "retain-approval" ? " with approval continuity" : " and requested user review"}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},
@@ -613,7 +713,8 @@ export default function workflow(pi: ExtensionAPI): void {
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
 					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { authority: params.authority as MutationAuthority }));
 					await runtime.events.append("resource.deleted", { ref: params.ref, authority: params.authority, commit: result.commit });
-					return resourceResult(`Deleted ${params.ref}.`, result);
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "delete", ref: params.ref }]);
+					return textResult(`Deleted ${params.ref}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},
@@ -622,51 +723,44 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_apply_change",
 		label: "Apply Orchestrator Change",
-		description: "Apply a coherent batch of create, patch, and delete operations as one canonical commit, with explicit authority, execution disposition, provenance, and optional subagent response.",
-		parameters: Type.Object({
-			authority: MUTATION_AUTHORITY,
-			executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("restart-affected"), Type.Literal("pause-affected")]),
-			operations: Type.Array(Type.Union([
-				...CREATE_OPERATION_VARIANTS,
-				...PATCH_OPERATION_VARIANTS,
-				Type.Object({ method: Type.Literal("delete"), ref: Type.String() }, { additionalProperties: false }),
-			])),
-			response: Type.Optional(Type.Object({ agentId: Type.String(), messageId: Type.String(), text: Type.String() }, { additionalProperties: false })),
-		}, { additionalProperties: false }),
+		description: "Apply a coherent batch as one canonical commit and return only a compact change receipt. Operation bodies follow the exact workflow_create/workflow_patch schemas available through workflow_schema.",
+		parameters: COMPACT_APPLY_CHANGE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
+				assertExactSchema(APPLY_CHANGE_PARAMETERS, params, "workflow_apply_change");
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const exact = params as any;
+					const operations = exact.operations as any[];
+					const changes = operations.map((operation): { action: "create" | "patch" | "delete"; ref: string } => operation.method === "create"
+						? { action: "create", ref: createdResourceRef(operation.resource, operation.parent, operation.body) }
+						: { action: operation.method, ref: operation.ref });
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
 					const baselines = new Map<string, Awaited<ReturnType<WorkItemStore["read"]>> | undefined>();
-					for (const operation of params.operations) {
-						let workItemId: string | undefined;
-						if (operation.method === "create") workItemId = operation.resource === "work-item" ? operation.body.id as string : operation.parent ? parseResourceRef(operation.parent).workItemId : undefined;
-						else workItemId = parseResourceRef(operation.ref).workItemId;
-						if (workItemId && !baselines.has(workItemId)) baselines.set(workItemId, await runtime.workItems.read(workItemId).catch((error) => error instanceof HarnessError && error.code === "WORK_ITEM_NOT_FOUND" ? undefined : Promise.reject(error)));
+					for (const change of changes) {
+						const workItemId = parseResourceRef(change.ref).workItemId;
+						if (!baselines.has(workItemId)) baselines.set(workItemId, await runtime.workItems.read(workItemId).catch((error) => error instanceof HarnessError && error.code === "WORK_ITEM_NOT_FOUND" ? undefined : Promise.reject(error)));
 					}
-					const respondingAgent = params.response ? await runtime.agents.get(params.response.agentId) : undefined;
+					const respondingAgent = exact.response ? await runtime.agents.get(exact.response.agentId) : undefined;
 					const result = await service.transaction("harness: apply orchestrator change", async () => {
-						const values: unknown[] = [];
-						for (const operation of params.operations) {
-							if (operation.method === "create") values.push(await service.create(operation.resource as CanonicalResourceType, "parent" in operation ? operation.parent : undefined, operation.body, params.authority as MutationAuthority));
-							else if (operation.method === "patch") values.push(await service.patch(operation.ref, operation.patch, { authority: params.authority as MutationAuthority }));
-							else values.push(await service.delete(operation.ref, { authority: params.authority as MutationAuthority }));
+						for (const operation of operations) {
+							if (operation.method === "create") await service.create(operation.resource, operation.parent, operation.body, exact.authority);
+							else if (operation.method === "patch") await service.patch(operation.ref, operation.patch, { authority: exact.authority });
+							else await service.delete(operation.ref, { authority: exact.authority });
 						}
-						if (params.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId && respondingAgent.taskId) {
+						if (exact.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId && respondingAgent.taskId) {
 							const task = await runtime.workItems.readTask(respondingAgent.workItemId, respondingAgent.taskId);
 							if (task.status === "blocked") await runtime.workItems.updateTask(respondingAgent.workItemId, respondingAgent.taskId, { status: "ready" });
 						}
-						const resources = [];
-						for (const [workItemId, baseline] of baselines) resources.push(await service.coalesceRevision(workItemId, baseline, params.authority as MutationAuthority));
-						return { values, resources };
+						for (const [workItemId, baseline] of baselines) await service.coalesceRevision(workItemId, baseline, exact.authority);
 					});
-					const message = params.response ? await runtime.agents.respondMessage(params.response.agentId, params.response.messageId, params.response.text) : undefined;
-					await runtime.events.append("orchestrator.change_applied", { authority: params.authority, executionDisposition: params.executionDisposition, operations: params.operations.length, commit: result.commit, messageId: params.response?.messageId });
-					if (params.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${respondingAgent.workItemId}`, action: "resume" });
-					if (params.executionDisposition === "pause-affected") for (const workItemId of baselines.keys()) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${workItemId}`, action: "pause" });
-					return resourceResult(`Applied ${params.operations.length} canonical operation(s)${result.commit ? ` as ${result.commit.slice(0, 12)}` : ""}.`, { ...result, message });
+					const message = exact.response ? await runtime.agents.respondMessage(exact.response.agentId, exact.response.messageId, exact.response.text) : undefined;
+					await runtime.events.append("orchestrator.change_applied", { authority: exact.authority, executionDisposition: exact.executionDisposition, operations: operations.length, commit: result.commit, messageId: exact.response?.messageId });
+					if (exact.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${respondingAgent.workItemId}`, action: "resume" });
+					if (exact.executionDisposition === "pause-affected") for (const workItemId of baselines.keys()) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${workItemId}`, action: "pause" });
+					const receipt = await mutationReceipt(runtime, result.commit, changes, message ? { message: { id: message.id, status: message.status, agentId: message.agentId } } : {});
+					return textResult(`Applied ${operations.length} canonical operation(s)${result.commit ? ` as ${result.commit.slice(0, 12)}` : ""}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error); }
 		},
@@ -683,10 +777,12 @@ export default function workflow(pi: ExtensionAPI): void {
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const ref = parseResourceRef(params.ref);
-					if (ref.type === "work-item" && params.action === "submit") return textResult(`Submitted ${ref.id}.`, await runtime.workItems.submitPlanning(ref.id));
-					if (ref.type === "work-item" && ["postpone", "resume", "archive", "reopen", "request-user"].includes(params.action)) return textResult(`${params.action} ${ref.id}.`, await runtime.workItems.transitionWorkItem(ref.id, params.action as "postpone" | "resume" | "archive" | "reopen" | "request-user", params.reason));
-					if (ref.type === "task") return textResult(`Task ${ref.id} is now ${params.action}.`, await runtime.workItems.updateTask(ref.workItemId, ref.id, { status: params.action as TaskManifest["status"] }));
-					throw new HarnessError("CAPABILITY_DENIED", `Unsupported transition ${params.action} for ${ref.type}`);
+					if (ref.type === "work-item" && params.action === "submit") await runtime.workItems.submitPlanning(ref.id);
+					else if (ref.type === "work-item" && ["postpone", "resume", "archive", "reopen", "request-user"].includes(params.action)) await runtime.workItems.transitionWorkItem(ref.id, params.action as "postpone" | "resume" | "archive" | "reopen" | "request-user", params.reason);
+					else if (ref.type === "task") await runtime.workItems.updateTask(ref.workItemId, ref.id, { status: params.action as TaskManifest["status"] });
+					else throw new HarnessError("CAPABILITY_DENIED", `Unsupported transition ${params.action} for ${ref.type}`);
+					const receipt = await mutationReceipt(runtime, await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), [{ action: "transition", ref: params.ref }], { transition: params.action });
+					return textResult(`${params.ref} transitioned to ${params.action}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},

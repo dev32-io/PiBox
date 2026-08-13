@@ -5,6 +5,7 @@ import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistr
 import type { RepositoryIdentity } from "./repository.js";
 import { readTextIfExists } from "./repository.js";
 import type { WorkItemStore } from "./work-items.js";
+import { orderedExecutionStages, taskExecutionTopology } from "./execution-topology.js";
 import { WorktreeManager } from "./worktrees.js";
 import type { RepositoryMutex } from "./idempotency.js";
 
@@ -100,21 +101,30 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			}
 			const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
-			const stages = item.executionStages ?? item.integrationUnits.map((unit) => ({ id: unit.id, tasks: unit.tasks }));
-			const stageByTask = new Map(stages.flatMap((stage, index) => stage.tasks.map((taskId, order) => [taskId, { index, order }] as const)));
+			const stages = orderedExecutionStages(item);
+			const contributionStates = new Set(["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating", "merged", "integrated"]);
 			const steps: WorkflowStep[] = tasks.map((task) => {
-				const position = stageByTask.get(task.id);
-				const priorStagesDone = !position || stages.slice(0, position.index).every((stage) => stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")));
+				const topology = taskExecutionTopology(item, task);
+				const priorStagesDone = stages.slice(0, topology.stageIndex).every((stage) => stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")));
 				const dependenciesDone = task.dependsOn.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? ""));
-				const mergePredecessorsDone = !position || stages[position.index]!.tasks.slice(0, position.order).every((id) => {
-					const predecessor = taskById.get(id); return predecessor?.execution.isolation !== "worktree" || ["merged", "integrated"].includes(predecessor.status);
-				});
-				let mapped = taskStatus(task.status, priorStagesDone && dependenciesDone && mergePredecessorsDone);
+				const isMergeState = contributionStates.has(task.status) && !["merged", "integrated"].includes(task.status);
+				const parallelStageReadyToMerge = topology.stageSize === 1 || topology.stageTasks.every((id) => contributionStates.has(taskById.get(id)?.status ?? ""));
+				const mergeBarrierOwner = topology.stageSize === 1 || topology.stageTasks[0] === task.id;
+				let mapped = taskStatus(task.status, priorStagesDone && dependenciesDone);
+				if (isMergeState && (!parallelStageReadyToMerge || !mergeBarrierOwner)) mapped = { status: "pending", detail: parallelStageReadyToMerge ? "waiting for stage merge barrier" : "waiting for parallel contributions" };
 				if (mapped.status === "running") {
 					const activity = scopeActivity(agents, "taskId", task.id);
 					if (!activity.running) mapped = { status: "attention", detail: activity.attention ?? "stale process state" };
 				}
-				return { ref: `work-item:${item.id}/task:${task.id}`, title: task.title, kind: ["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status) ? "merge" : "task", ...mapped, dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(position && position.index > 0 ? stages[position.index - 1]!.tasks.map((id) => `work-item:${item.id}/task:${id}`) : [])], parallelism: task.execution.parallelism, resourceClaims: task.execution.isolation === "repository" || mapped.detail?.includes("merge") || task.status === "contribution_complete" ? ["feature-branch"] : task.execution.resourceClaims };
+				return {
+					ref: `work-item:${item.id}/task:${task.id}`,
+					title: task.title,
+					kind: isMergeState ? "merge" : "task",
+					...mapped,
+					dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(topology.stageIndex > 0 ? stages[topology.stageIndex - 1]!.tasks.map((id) => `work-item:${item.id}/task:${id}`) : [])],
+					parallelism: isMergeState ? "serial" : topology.parallelism,
+					resourceClaims: isMergeState || topology.isolation === "repository" ? ["feature-branch"] : task.execution.resourceClaims,
+				};
 			});
 			const evaluations = await Promise.all(item.evaluations.map((entry) => runtime.workItems.readEvaluation(item.id, entry.id)));
 			for (const evaluation of evaluations) {
@@ -144,7 +154,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const task = await runtime.workItems.readTask(workItemId!, id!);
 				if (["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) {
 					const merged = await runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
-					return { ref, state: "completed", summary: `Merged ${id} into the feature branch as ${merged.commit.slice(0, 12)}.` };
+					return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the feature branch as ${merged.commit.slice(0, 12)}.` };
 				}
 				const launched = await options.launchTask(ctx, workItemId!, id!);
 				const run = launched.details?.run; const state = run?.state === "completed" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";

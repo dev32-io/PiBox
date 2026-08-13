@@ -78,7 +78,6 @@ export class OrchestratorResourceService {
 				throw new HarnessError("CONFIG_INVALID", `Task model override is not configured in any tier: ${assignment.modelOverride.model}`);
 			}
 		}
-		if (role.workspace === "worktree" && manifest.execution.isolation !== "worktree") throw new HarnessError("CONFIG_INVALID", `Role ${assignment.role} requires worktree isolation`);
 	}
 
 	private async assertOwnedCommits(base: string): Promise<void> {
@@ -131,6 +130,59 @@ export class OrchestratorResourceService {
 		return current;
 	}
 
+	async listSummaries(type: CanonicalResourceType, workItemId?: string): Promise<Array<Record<string, unknown>>> {
+		const items = workItemId ? [await this.store.read(workItemId)] : await this.store.list();
+		const results: Array<Record<string, unknown>> = [];
+		for (const item of items) {
+			const finalized = Boolean(item.finalization?.locked || item.phase === "complete");
+			if (type === "work-item") {
+				results.push({
+					ref: `work-item:${item.id}`,
+					revision: item.planning.revision,
+					id: item.id,
+					title: item.title,
+					kind: item.kind,
+					phase: item.phase,
+					state: item.state,
+					planningStatus: item.planning.status,
+					counts: { artifacts: item.artifacts.length, tasks: item.tasks.length, stages: item.executionStages?.length ?? 0, evaluations: item.evaluations.length },
+					allowedActions: allowed(type, finalized),
+				});
+			}
+			if (type === "artifact") for (const artifact of item.artifacts) results.push({ ref: `work-item:${item.id}/artifact:${artifact.id}`, revision: item.planning.revision, id: artifact.id, type: artifact.type, status: artifact.status, ...(artifact.narrativeSchemaVersion ? { narrativeSchemaVersion: artifact.narrativeSchemaVersion } : {}), allowedActions: allowed(type, finalized) });
+			if (type === "task") for (const catalog of item.tasks) {
+				const task = await this.store.readTask(item.id, catalog.id);
+				const assignment = task.execution.assignment;
+				results.push({
+					ref: `work-item:${item.id}/task:${task.id}`,
+					revision: item.planning.revision,
+					id: task.id,
+					title: task.title,
+					status: task.status,
+					stageId: task.assembly.stageId ?? task.assembly.integrationUnit,
+					blockedBy: task.dependsOn,
+					assignment: isTierTaskAssignment(assignment) ? { role: assignment.role, tier: assignment.tier, deliberation: assignment.deliberation } : { role: assignment.role, legacyModel: assignment.model },
+					allowedActions: allowed(type, finalized),
+				});
+			}
+			if (type === "integration-unit") for (const unit of item.integrationUnits) results.push({ ref: `work-item:${item.id}/integration-unit:${unit.id}`, revision: item.planning.revision, id: unit.id, taskCount: unit.tasks.length, intermediatePolicy: unit.intermediatePolicy, allowedActions: allowed(type, finalized) });
+			if (type === "evaluation") for (const catalog of item.evaluations) {
+				const evaluation = await this.store.readEvaluation(item.id, catalog.id);
+				results.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, revision: item.planning.revision, id: evaluation.id, type: evaluation.type, status: evaluation.status, required: evaluation.required, scope: evaluation.scope, allowedActions: allowed(type, finalized) });
+			}
+		}
+		return results;
+	}
+
+	async summary(ref: string): Promise<Record<string, unknown>> {
+		const parsed = parseResourceRef(ref);
+		const summaries = await this.listSummaries(parsed.type, parsed.workItemId);
+		const summary = summaries.find((candidate) => candidate.ref === ref);
+		if (!summary) throw new HarnessError("INVALID_ARTIFACT", `Unknown ${parsed.type} resource: ${ref}`);
+		return { ...summary, availableViews: ["summary", "full"] };
+	}
+
+	/** Complete representations remain available for bounded workflow_get reads. */
 	async list(type: CanonicalResourceType, workItemId?: string): Promise<unknown[]> {
 		const items = workItemId ? [await this.store.read(workItemId)] : await this.store.list();
 		if (type === "work-item") return items.map((item) => ({ resource: item, ref: `work-item:${item.id}`, revision: item.planning.revision, allowedActions: allowed(type, Boolean(item.finalization?.locked || item.phase === "complete")) }));

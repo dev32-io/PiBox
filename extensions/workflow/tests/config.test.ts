@@ -40,7 +40,7 @@ test("resolves explicit role inheritance while preserving routing defaults", () 
 			custom: { extends: "implementer", tools: ["read"], tier: "low" },
 		},
 	});
-	assert.equal(config.roles.custom?.workspace, "worktree");
+	assert.equal(config.roles.custom?.workspace, "repository");
 	assert.deepEqual(config.roles.custom?.tools, ["read"]);
 	assert.equal(config.roles.custom?.tier, "low");
 	assert.equal(config.roles.custom?.deliberation, "standard");

@@ -130,8 +130,9 @@ export interface TaskManifest {
 		decisions: string[];
 	};
 	execution: {
-		isolation: "worktree" | "repository";
-		parallelism: "allowed" | "serial";
+		/** Legacy planner-selected mechanics; accepted for reading but ignored for new execution. */
+		isolation?: "worktree" | "repository";
+		parallelism?: "allowed" | "serial";
 		resourceClaims: string[];
 		/** Legacy schema-v1 planning field. New task plans express capability through assignment.tier. */
 		complexity?: Complexity;
@@ -167,6 +168,8 @@ export interface TaskManifest {
 		rationale: string;
 	};
 	runtime?: {
+		/** Persisted once execution starts so recovery preserves the original allocation. */
+		executionMode?: "repository" | "worktree";
 		branch?: string;
 		worktree?: string;
 		baseCommit?: string;

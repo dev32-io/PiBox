@@ -27,8 +27,6 @@ function manifest(): TaskManifest {
 		dependsOn: [],
 		references: { specs: [], designs: [], decisions: [] },
 		execution: {
-			isolation: "worktree",
-			parallelism: "allowed",
 			resourceClaims: [],
 			assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "test" },
 		},
@@ -80,6 +78,7 @@ test("supervises a child contribution through a validated terminal handoff", asy
 		workspace: allocation.path,
 		branch: allocation.branch,
 		baseCommit: allocation.baseCommit,
+		executionMode: allocation.isolation,
 		planningRevision: 2,
 		persistentContext: "# Persistent Implementation Context\n\nBuild the supervised fixture.\n",
 		model: { provider: "fake", model: "fake", effort: "medium", requested: "luna:medium" },

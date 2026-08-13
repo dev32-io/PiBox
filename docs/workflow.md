@@ -45,9 +45,11 @@ Managed planning begins as a product and technical conversation, not an artifact
 
 The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator drafts and submits the coherent contract, then offers two natural next steps: refine it conversationally, or approve it with `/workflow approve <work-item-id>`. No magic readiness phrase is required.
 
-- `workflow_list` and `workflow_get` inspect complete canonical resources and revisions.
-- `workflow_create`, `workflow_patch`, and `workflow_delete` provide resource-oriented CRUD over work items, artifacts, tasks, integration units, and evaluations.
-- `workflow_apply_change` applies a coherent multi-resource amendment as one canonical commit and can resolve a subagent request in the same orchestration decision.
+- `workflow_list` returns compact filtered catalog pages with snapshot-pinned cursors.
+- `workflow_get` returns a compact summary by default and bounded revision-pinned ranges or matching passages on demand.
+- `workflow_schema` progressively discloses exact mutation contracts only when a model needs them, keeping always-visible tool schemas small.
+- `workflow_create`, `workflow_patch`, and `workflow_delete` provide resource-oriented CRUD and return compact mutation receipts rather than full resources.
+- `workflow_apply_change` applies a coherent multi-resource amendment as one canonical commit, can resolve a subagent request in the same decision, and returns changed refs/revisions only.
 - `workflow_transition` submits, postpones, resumes, archives, reopens, or otherwise advances a resource lifecycle.
 
 Legacy resource-specific planning tools remain registered for compatibility but are hidden from the normal main-session tool surface.
@@ -72,7 +74,7 @@ The independent workflow extension owns the generic background execution surface
 - `agent_run` retains direct specialist invocation outside a managed work item.
 - Workers receive a focused task packet in their persistent system context. `task_clarify` provides optional, targeted access to broader story/change context when a concrete uncertainty remains; `task_complete` records completion.
 
-The managed-work adapter continues to own feature-branch preparation, repository/worktree isolation, queued task merges, checks, evaluator contracts, and canonical state transitions. Work-item `executionStages` provide the ordered workflow spine; tasks inside one stage are a deliberate concurrency batch and merge in listed order before the next stage advances. Repository-isolated tasks commit directly to the feature branch, while worktree-isolated tasks merge back as a mini-step in their own lifecycle. The generic runtime contains no canonical artifact or approval logic.
+The managed-work adapter continues to own feature-branch preparation, runtime-derived isolation, stage merge barriers, checks, evaluator contracts, and canonical state transitions. Work-item `executionStages` are the complete execution topology: stages advance sequentially, while tasks inside one stage are one parallel frontier. A singleton stage commits directly to the feature branch. A multi-task stage allocates one worktree per task from a pinned common base, waits for every contribution, merges the batch in declared order, runs stage checks, and publishes it atomically before the next stage advances. Planners do not encode `isolation` or `parallelism`. The generic runtime contains no canonical artifact or approval logic.
 
 New task worktrees live inside the canonical repository under an ignored root:
 

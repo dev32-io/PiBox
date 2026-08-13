@@ -55,8 +55,6 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 		dependsOn: [],
 		references: { specs: ["identity"], designs: [], decisions: [] },
 		execution: {
-			isolation: "worktree",
-			parallelism: "allowed",
 			resourceClaims: [],
 			assignment: {
 				role: "implementer",
@@ -91,15 +89,15 @@ test("approval activates draft tasks according to dependencies", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);
 	await store.create({ id: "activation", title: "Activation", kind: "change", intent: "Activate approved work." });
-	const manifest = (id: string, dependsOn: string[]): TaskManifest => ({
+	const manifest = (id: string, dependsOn: string[], stageId: string): TaskManifest => ({
 		schemaVersion: 1, id, title: id, status: "draft", dependsOn,
 		references: { specs: [], designs: [], decisions: [] },
-		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [id], assignment: { role: "implementer", tier: "low", deliberation: "standard", rationale: "Fixture" } },
-		assembly: { integrationUnit: "delivery", intermediateState: "complete" },
+		execution: { resourceClaims: [id], assignment: { role: "implementer", tier: "low", deliberation: "standard", rationale: "Fixture" } },
+		assembly: { stageId, intermediateState: "complete" },
 		verification: { timing: "integration-unit", methods: [], taskChecks: [], rationale: "Fixture" },
 	});
-	await store.defineTask({ workItemId: "activation", manifest: manifest("first", []), brief: "First task", acceptance: "First accepted" });
-	await store.defineTask({ workItemId: "activation", manifest: manifest("second", ["first"]), brief: "Second task", acceptance: "Second accepted" });
+	await store.defineTask({ workItemId: "activation", manifest: manifest("first", [], "foundation"), brief: "First task", acceptance: "First accepted" });
+	await store.defineTask({ workItemId: "activation", manifest: manifest("second", ["first"], "delivery"), brief: "Second task", acceptance: "Second accepted" });
 	await store.submitPlanning("activation");
 	await store.approve("activation");
 	assert.equal((await store.readTask("activation", "first")).status, "ready");
@@ -123,7 +121,7 @@ test("renders schema-v2 intent, artifacts, and task contracts from semantic valu
 	});
 	const manifest: TaskManifest = {
 		schemaVersion: 1, id: "render-contract", title: "Render contract", status: "ready", dependsOn: [], references: { specs: ["contract"], designs: [], decisions: [] },
-		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } },
+		execution: { resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } },
 		assembly: { integrationUnit: "contract-unit", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: [], rationale: "assembled proof" },
 	};
 	await store.defineTask({
@@ -192,6 +190,18 @@ assembly: { stageId: legacy-stage, intermediateState: complete }
 verification: { timing: task, methods: [], taskChecks: [], rationale: Historical proof }
 `);
 	assert.equal("model" in manifest.execution.assignment ? manifest.execution.assignment.model : undefined, "luna");
+});
+
+test("rejects same-stage blockers and conflicting parallel resource claims on submit", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "bad-topology", title: "Bad topology", kind: "change", intent: "Reject unsafe stage topology." });
+	const manifest = (id: string, dependsOn: string[], claim: string): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn, references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [claim], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "fixture" } }, assembly: { stageId: "parallel", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
+	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("first", [], "shared"), brief: "First", acceptance: "First accepted" });
+	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("second", ["first"], "other"), brief: "Second", acceptance: "Second accepted" });
+	await assert.rejects(store.submitPlanning("bad-topology"), /blockers must be placed in an earlier execution stage/);
+	const second = await store.readTaskContract("bad-topology", "second"); second.manifest.dependsOn = []; second.manifest.execution.resourceClaims = ["shared"];
+	await store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { disposition: "request-user", rationale: "repair fixture" } });
+	await assert.rejects(store.submitPlanning("bad-topology"), /conflicting resource claim shared/);
 });
 
 test("approval uses explicit planning status without contract hash gates", async (t) => {

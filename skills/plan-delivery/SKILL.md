@@ -17,21 +17,18 @@ If a new finding changes the product outcome, user-visible behavior, consequenti
 
 ## Plan the Delivery
 
-1. Inspect the implementation, tests, build system, repository conventions, and relevant integration boundaries.
-2. Resolve technical unknowns that affect feasibility, decomposition, compatibility, migration, failure recovery, or verification. Ask only when the choice is material to the user or changes the agreed product contract.
-3. Define delivery independently from work-item size:
-   - `feature` for capabilities, enhancements, and refactors; `fix` for defects or regressions;
-   - `create` from updated `develop`, or `continue` on the explicitly current feature/fix branch.
-4. Decompose the story into context-bounded contributions before assigning execution capability. A task is the authoritative context capsule for one model attempt, not merely a scheduling unit.
-5. Keep implementation and focused tests for one concern together. Split when a candidate task spans independently understandable feature areas, unrelated reasoning modes, several primary risks, most story criteria, or so much of the repository that its brief must restate the whole story. Do not use a stronger model or deeper deliberation to compensate for an oversized task.
-6. Keep work together when splitting would duplicate most context, create an unstable interface, or divide one invariant across workers. Every split must reduce context or create a meaningful dependency, isolation, verification, or recovery boundary; task count is not a goal.
-7. Give each task one dominant contribution goal and primary failure boundary, plus included and excluded scope, dependencies and interfaces, required work, expected intermediate state, integration expectation, risks, and cheapest meaningful proof. Its brief must be sufficient without unrelated story areas.
-8. Order stages by real dependencies. Sequential stages are valuable when they let later tasks build on a small stable foundation; parallel stages are valuable only when interfaces and resource claims are compatible and the speed benefit repays coordination and worktree cost. State why each stage is sequential or parallel.
-9. Select repository or worktree isolation intentionally. Prefer repository isolation for serial branch work and worktrees for genuine isolation or concurrency.
-10. Assign a capability tier and deliberation profile only after decomposition, using the protocol below. The harness—not the planner—selects provider, concrete model, and model-specific effort from configuration.
-11. Map every binding acceptance criterion to task contributions and verification. Add deterministic checks, independent review, regression, migration, or E2E evaluation only where the risk warrants it.
-12. Use a plan critic for consequential ambiguity, blast radius, or decomposition risk—and whenever a multi-dimensional story is proposed as one task. Refine findings into the plan rather than adding ceremony.
-13. Use `workflow_apply_change` for genuinely coherent multi-resource revisions. Keep canonical resources internally consistent and avoid replacement duplicates.
+1. Inspect only the implementation seams needed to plan this story; zoom into more repository or canonical detail only when a decision depends on it.
+2. Resolve technical unknowns that affect feasibility, compatibility, migration, recovery, or verification. Ask only when the answer changes the agreed product contract.
+3. Define delivery independently from task count: `feature` for capabilities/refactors, `fix` for defects; `create` from `develop`, or `continue` on the explicitly current feature/fix branch.
+4. Draft **tracer-bullet contributions**. Each task must cut a narrow but complete path through the layers and focused tests its behavior needs, produce an independently demoable or verifiable result, and fit one fresh worker context.
+5. Keep setup, implementation, tests, and documentation with the behavior that needs them. Use a preparatory task only when it creates a stable seam that materially simplifies later tracer bullets. Use expand–migrate–contract only for wide mechanical changes that cannot remain green as vertical slices.
+6. Give every task a short title, what it delivers, observable acceptance, and explicit blockers. Add interfaces, risks, or file/resource claims only where they constrain another task or safe concurrency. Do not turn the task brief into a restatement of the whole story.
+7. Present the proposed task graph to the user before publishing it. Ask whether granularity and blocking edges are right and whether anything should merge or split. Preserve the user's freedom to prefer a coarser or finer graph unless safety or context fit makes it untenable.
+8. Arrange blockers into ordered execution stages. Tasks in one stage are the parallel frontier; stages run sequentially. Parallel-stage tasks must not depend on each other and must have compatible resource claims. The runtime—not the planner—executes singleton stages on the feature branch and allocates worktrees for multi-task stages.
+9. Assign capability tier and deliberation only after task boundaries are settled. The harness selects provider, concrete model, and model-specific effort.
+10. Map every binding criterion to contributions and the cheapest meaningful proof. Add deterministic checks, review, regression, migration, or E2E only where risk warrants it.
+11. Use an unanchored plan critic for material ambiguity, topology, or context-fit risk. Ask it to judge the proposed graph rather than ratify a preferred task count; use the configured critic routing unless the user explicitly overrides it.
+12. Publish the user-reviewed graph through canonical capabilities. Use compact summaries first, bounded detail reads when needed, and coherent batch mutation only when the resources form one decision.
 
 ## Capability and Deliberation Protocol
 
@@ -58,13 +55,14 @@ Before submission, verify that:
 - every task advances the story, has one dominant concern, and is bounded enough for one model context;
 - no task relies on model strength or deep deliberation to hide avoidable scope;
 - any single-task multi-dimensional story has an explicit decomposition analysis and critic justification;
-- dependencies, ordering, parallelism, resource claims, and the reason for each stage shape are explicit;
+- each task is a tracer bullet that fits one fresh context and has explicit blockers;
+- tasks in one stage are genuinely independent and compatible; execution isolation is not encoded in task plans;
 - intermediate and assembled states are meaningful;
 - acceptance criteria have sufficient implementation and verification coverage;
 - capability tier and deliberation match the bounded work;
 - no material product or technical decision remains hidden.
 
-Refine the story plan with the user whenever new constraints surface. A planning turn may span many conversational turns; do not submit while a material decision remains unresolved.
+Refine the story plan with the user whenever new constraints surface. Do not publish tickets until the user has reviewed granularity and blockers, and do not submit while a material decision remains unresolved.
 
 ## Approval Handoff
 

@@ -38,7 +38,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(orchestrator, /Each active phase owns one deliverable and naturally offers the next phase/i);
 	assert.match(orchestrator, /continue from shape-story into plan-delivery without asking them to repeat permission/i);
 	assert.match(orchestrator, /Keep clear, local, reversible work ad hoc/i);
-	assert.match(orchestrator, /List before create and get before patch/i);
+	assert.match(orchestrator, /List compact summaries before create and get summary or bounded detail before patch/i);
 	assert.match(orchestrator, /Initial approval is user-only through \/workflow approve/i);
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /Track the outcome currently being discussed/i);
@@ -54,16 +54,19 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(shaping, /Do not define tasks, stages, model assignments/i);
 	assert.match(shaping, /Want me to turn it into an execution-ready delivery plan/i);
 	assert.match(shaping, /hand off to `plan-delivery` in the same turn/i);
-	assert.match(delivery, /context-bounded contributions/i);
-	assert.match(delivery, /task is the authoritative context capsule/i);
-	assert.match(delivery, /Do not use a stronger model or deeper deliberation to compensate for an oversized task/i);
-	assert.match(delivery, /parallel stages are valuable only when interfaces and resource claims are compatible/i);
+	assert.match(delivery, /tracer-bullet contributions/i);
+	assert.match(delivery, /fit one fresh worker context/i);
+	assert.match(delivery, /Present the proposed task graph to the user before publishing it/i);
+	assert.match(delivery, /Tasks in one stage are the parallel frontier/i);
+	assert.match(delivery, /runtime—not the planner—executes singleton stages on the feature branch/i);
 	assert.match(delivery, /Use `medium\/standard` by default/i);
-	assert.match(delivery, /harness—not the planner—selects provider, concrete model, and model-specific effort/i);
+	assert.match(delivery, /harness selects provider, concrete model, and model-specific effort/i);
 	assert.match(delivery, /call `workflow_transition` with `submit`/i);
 	assert.match(delivery, /after approval the user can say “start the workflow”/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /Do not reward task count or concurrency/i);
+	assert.match(critic, /Judge the graph without accepting the caller's preferred task count/i);
+	assert.match(critic, /Tracer-bullet fit/i);
 });
 
 test("explorer supports evidence-driven code understanding and diagnosis", async () => {

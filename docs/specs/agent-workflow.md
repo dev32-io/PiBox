@@ -399,8 +399,6 @@ references:
   decisions: [server-minted-session-ids]
 
 execution:
-  isolation: worktree
-  parallelism: allowed
   resourceClaims: [session-schema]
   assignment:
     role: implementer
@@ -443,7 +441,7 @@ Evidence manifests record producing evaluation, canonical commit, environment, c
 
 ### 8.6 Artifact mutation
 
-Only the main orchestrator can mutate canonical artifacts through dedicated capabilities. Mutations:
+Only the main orchestrator can mutate canonical artifacts through dedicated capabilities. Read capabilities use progressive disclosure: catalogs are compact cursor pages, one resource is a summary by default, and full content is retrieved through revision-pinned ranges or matching passages. Exact mutation schemas are loaded on demand rather than occupying every main-session prompt. Mutations:
 
 1. Acquire the canonical lock.
 2. Require a clean feature branch.
@@ -452,7 +450,7 @@ Only the main orchestrator can mutate canonical artifacts through dedicated capa
 5. Validate the complete resulting schema.
 6. Update indexes and informational revision metadata.
 7. Commit the transaction.
-8. Return a compact receipt.
+8. Return a compact receipt containing the canonical commit, changed refs, and affected work-item revisions—not complete intermediate resources.
 
 Multi-file transactions produce one canonical commit. Workers submit amendment and decision requests instead of editing `agent-artifacts/`.
 
@@ -518,15 +516,15 @@ Each task must be:
 - Clear about whether it is a complete behavior or a partial contribution.
 - Honest about dependencies and its expected intermediate state.
 - Assigned to a stage when several tasks must be assembled before they are meaningful.
-- Given an intentional isolation policy.
+- Assigned to an ordered stage; blockers live in earlier stages and same-stage siblings are independent.
 - Given a proportionate verification timing: task, integration-unit, work-item, or intentionally skipped.
 - Assigned a capability tier and deliberation profile only after decomposition.
 
-The planner splits independently understandable feature areas, unrelated reasoning modes, multiple primary risks, and story-sized context. It keeps work together when splitting would duplicate most context, destabilize an interface, or divide one invariant across workers. Every split must reduce context or create a meaningful dependency, isolation, verification, or recovery boundary; neither task count nor concurrency is a goal.
+The planner drafts tracer-bullet contributions rather than horizontal implementation layers. Each task cuts a narrow but complete path through the behavior, implementation layers, and focused tests it needs; is independently demoable or verifiable; and fits one fresh worker context. Setup belongs with the behavior that needs it. Preparatory seams and expand–migrate–contract sequences are exceptions used only when vertical slices cannot remain coherent or green.
 
-A task does not need independent acceptance criteria, evaluator runs, or E2E coverage when those checks are meaningless before assembly. It needs a clear contribution contract and a structured handoff. The planner explains where verification is deferred and what later gate covers it. A stronger tier or deep deliberation never compensates for avoidable task scope.
+Before publishing tasks, the planner presents the numbered graph with what each task delivers and its blockers, then asks the user whether granularity and blocking edges are right or whether tasks should merge or split. A stronger tier or deep deliberation never compensates for avoidable task scope.
 
-Parallel tasks cannot depend on one another's unintegrated code. Sequential stages deliberately let later tasks build on small stable foundations; parallel stages require compatible interfaces and resource claims plus enough speed benefit to repay coordination and worktree cost.
+Tasks in one execution stage are the parallel frontier. They cannot depend on one another and must have compatible resource claims. Blocked work belongs in a later stage. The extension derives execution mechanics from topology: singleton stages run directly on the feature branch; multi-task stages start isolated worktrees from one pinned base and cross one atomic merge-and-check barrier.
 
 ### 9.5 Plan critic
 
@@ -782,7 +780,9 @@ Optional states such as `reviewing` and `changes_requested` appear only when the
 
 A worker's structured handoff establishes that its assigned contribution is complete. The orchestrator decides whether to inspect it immediately, combine it with sibling work, or defer semantic verification until assembly.
 
-### 13.2 Integration units
+### 13.2 Execution stages and integration units
+
+Ordered execution stages are the scheduler topology. Each singleton stage executes directly on the feature branch; every multi-task stage is one parallel frontier whose tasks start from a pinned common base and cross an atomic merge barrier. Integration units remain semantic verification groupings and may span one or more stages.
 
 The planner may group related tasks into an integration unit:
 
@@ -817,7 +817,7 @@ Resource claims protect shared external or generated resources that separate Git
 
 ### 13.4 Scheduling
 
-The orchestrator chooses which tasks to launch, whether concurrency is appropriate, and whether a task starts from the canonical branch or an integration-unit staging base. The extension rejects launches when:
+The approved stage graph determines concurrency and isolation. The extension launches one singleton-stage task at a time on the canonical feature branch, or all compatible ready tasks in a multi-task stage in isolated worktrees. The extension rejects launches when:
 
 - The declared base or dependencies are not available.
 - Planning is unapproved or stale.
@@ -827,6 +827,8 @@ The orchestrator chooses which tasks to launch, whether concurrency is appropria
 - Worktree allocation fails.
 
 ### 13.5 Worktree allocation
+
+Worktrees are allocated only for multi-task stages. Every sibling is based on the same pinned stage commit; a planner cannot request a worktree for a serial task or direct-repository execution for a parallel task.
 
 ```text
 branch:
@@ -845,8 +847,8 @@ The harness never auto-stashes or auto-commits a dirty feature branch.
 
 An implementation task must finish with:
 
-- A clean worker worktree.
-- One or more task-branch commits.
+- A clean assigned workspace (feature branch for a singleton stage, worktree for a parallel stage).
+- One or more contribution commits.
 - A structured contribution summary.
 - The checks the planner assigned to this task, which may be none.
 - Explicit disclosure of expected failures or incomplete assembly state.
@@ -859,27 +861,23 @@ A task is not required to claim full acceptance, pass the whole repository build
 
 ### 14.1 Ownership
 
-Children commit only to task branches. The orchestrator alone owns integration-unit staging refs and the canonical feature branch. Reviewers inspect whichever boundary the orchestrator assigns: a task branch, integration unit, or completed work-item candidate.
+A singleton-stage child commits directly to the checked-out feature branch under the scheduler's exclusive feature-branch claim. Multi-task-stage children commit only to task branches. The orchestrator owns the canonical feature branch and atomic stage barrier. Reviewers inspect whichever boundary the orchestrator assigns: a task contribution, integrated stage/unit, or completed work-item candidate.
 
-### 14.2 Integration-unit staging
+### 14.2 Parallel-stage merge barrier
 
 ```text
-task branches
+parallel task branches from one pinned base
     ↓
-orchestrator-controlled unit candidate/worktree
+wait for every stage contribution
     ↓
-apply contributions serially
+merge in declared order on the canonical feature branch
     ↓
-resolve or repair assembly issues
+run the stage's declared checks
     ↓
-run the unit's declared checks, if any
-    ↓
-publish the unit to the canonical feature branch
+publish all or reset the complete stage merge
 ```
 
-The unit candidate allows multiple task contributions to become coherent before the feature branch advances. Dependent tasks can use durable unit staging commits as controlled bases.
-
-A unit marked `partial-allowed` may temporarily fail a broad repository build when that failure is an explicit part of the plan. The orchestrator must still preserve Git cleanliness, traceability, and the declared later gate that will close the gap.
+No later stage observes a partially merged parallel batch. A failed merge or stage check resets the canonical branch to the pre-barrier commit while preserving task branches and worktrees for recovery. Integration units remain available as semantic review and evaluation boundaries over the assembled state.
 
 ### 14.3 Atomic canonical update
 
@@ -1558,7 +1556,7 @@ This architecture provides strong execution guarantees without making the harnes
 
 ## 25. Resource-oriented orchestrator authority
 
-The main-session capability surface is a stateless resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, complete representations, typed validation, and explicit relationships. The preferred planning surface is `workflow_list`, `workflow_get`, `workflow_create`, `workflow_patch`, `workflow_delete`, `workflow_apply_change`, and `workflow_transition`; legacy resource-specific tools are compatibility adapters rather than the normal model surface.
+The main-session capability surface is a stateless, progressively disclosed resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, typed validation, and explicit relationships. `workflow_list` exposes compact filterable pages; `workflow_get` exposes summaries and bounded revision-pinned detail; `workflow_schema` exposes exact mutation contracts on demand. The preferred mutation surface is `workflow_create`, `workflow_patch`, `workflow_delete`, `workflow_apply_change`, and `workflow_transition`; successful mutations return receipts rather than full resources.
 
 The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend approved planning in response to repository evidence, evaluator findings, or subagent requests. A `retain-approval` amendment records rationale, sources, and orchestrator decision while preserving the user's approval lineage. A `request-user` disposition is a semantic judgment reserved for materially consequential or explicitly user-owned decisions, not an automatic consequence of changing a digest.
 

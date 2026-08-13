@@ -20,7 +20,7 @@ async function repository(t: test.TestContext): Promise<string> {
 	return root;
 }
 function task(id = "build-app"): TaskManifest {
-	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { isolation: "worktree", parallelism: "serial", resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
+	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
 }
 const retain = { disposition: "retain-approval" as const, rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
 
@@ -41,6 +41,19 @@ test("builds a focused persistent implementation packet", async (t) => {
 	assert.match(packet, /task_clarify.*broader design/i);
 	assert.match(packet, /test -f app\.txt/);
 	assert.doesNotMatch(packet, /Broad intent|planning revision|sha256|assignment rationale/i);
+});
+
+test("lists compact resource summaries without embedding complete task contracts", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "summary-flow", title: "Summary flow", kind: "change", intent: "A very broad intent that should not appear in catalogs." });
+	await store.defineTask({ workItemId: "summary-flow", manifest: task(), brief: "A very long implementation brief that should only appear in bounded detail reads.", acceptance: "A very long acceptance contract that should only appear in bounded detail reads." });
+	const items = await service.listSummaries("work-item");
+	assert.deepEqual(items[0]?.counts, { artifacts: 1, tasks: 1, stages: 1, evaluations: 0 });
+	assert.equal("resource" in items[0]!, false);
+	const tasks = await service.listSummaries("task", "summary-flow");
+	assert.equal(tasks[0]?.stageId, "app");
+	assert.equal(JSON.stringify(tasks).includes("very long implementation brief"), false);
+	assert.deepEqual((await service.summary("work-item:summary-flow/task:build-app")).availableViews, ["summary", "full"]);
 });
 
 test("revises an approved task in place while retaining approval continuity", async (t) => {

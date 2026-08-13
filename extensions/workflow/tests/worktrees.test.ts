@@ -34,74 +34,75 @@ async function fixture(t: test.TestContext) {
 	return { parent, root, identity: await discoverRepository(root, join(parent, "home")) };
 }
 
-function task(): TaskManifest {
+function task(id = "add-feature", stageId = "feature-unit", claim = `${id}-files`): TaskManifest {
 	return {
 		schemaVersion: 1,
-		id: "add-feature",
-		title: "Add feature",
+		id,
+		title: id,
 		status: "ready",
 		dependsOn: [],
 		references: { specs: [], designs: [], decisions: [] },
 		execution: {
-			isolation: "worktree",
-			parallelism: "allowed",
-			resourceClaims: ["feature-files"],
+			resourceClaims: [claim],
 			assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "fixture" },
 		},
-		assembly: { integrationUnit: "feature-unit", intermediateState: "complete" },
-		verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f feature.txt"], rationale: "assembled check" },
+		assembly: { stageId, intermediateState: "complete" },
+		verification: { timing: "integration-unit", methods: ["test"], taskChecks: [`test -f ${id}.txt`], rationale: "assembled check" },
 	};
 }
 
-test("allocates isolated work and atomically integrates a meaningful unit", async (t) => {
+async function addParallelSibling(store: WorkItemStore, workItemId: string, stageId: string): Promise<void> {
+	await store.defineTask({ workItemId, manifest: task("sibling", stageId), brief: "Sibling contribution", acceptance: "Sibling accepted" });
+}
+
+test("derives parallel worktrees and merges the stage through one atomic barrier", async (t) => {
 	const { root, identity } = await fixture(t);
 	const store = new WorkItemStore(root);
 	await store.create({ id: "feature", title: "Feature", kind: "story", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Add a feature" });
-	await store.defineTask({ workItemId: "feature", manifest: task(), brief: "Add feature.txt", acceptance: "feature.txt exists" });
-	const evaluation: EvaluationManifest = {
-		schemaVersion: 1,
-		id: "feature-check",
-		type: "deterministic",
-		scope: { workItem: "feature" },
-		status: "planned",
-		required: true,
-		attempt: 0,
-		methods: ["test -f feature.txt"],
-	};
+	await store.defineTask({ workItemId: "feature", manifest: task(), brief: "Add add-feature.txt", acceptance: "Feature exists" });
+	await addParallelSibling(store, "feature", "feature-unit");
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "feature-check", type: "deterministic", scope: { workItem: "feature" }, status: "planned", required: true, attempt: 0, methods: ["files exist"] };
 	await store.defineEvaluation("feature", evaluation);
 	await store.submitPlanning("feature");
 	await store.approve("feature");
 	const manager = new WorktreeManager(identity);
 	await manager.prepareFeatureBranch("feature");
-	const allocation = await manager.allocate("feature", await store.readTask("feature", "add-feature"));
-	assert.equal(allocation.path, join(identity.root, ".worktree", "pibox", "feature", "add-feature"));
-	await store.updateTask("feature", "add-feature", { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
-	await writeFile(join(allocation.path, "feature.txt"), "implemented\n");
-	await git(allocation.path, "add", "feature.txt");
-	await git(allocation.path, "commit", "--quiet", "-m", "implement feature");
-	const completedCommit = await git(allocation.path, "rev-parse", "HEAD");
-	await store.updateTask("feature", "add-feature", {
-		status: "contribution_complete",
-		runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit, completedCommit },
-	});
+	const allocations = [];
+	for (const id of ["add-feature", "sibling"]) {
+		const allocation = await manager.allocate("feature", await store.readTask("feature", id));
+		allocations.push(allocation);
+		assert.equal(allocation.isolation, "worktree");
+		assert.equal(allocation.path, join(identity.root, ".worktree", "pibox", "feature", id));
+		await store.updateTask("feature", id, { status: "running", runtime: { executionMode: allocation.isolation, branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+		await writeFile(join(allocation.path, `${id}.txt`), `${id}\n`);
+		await git(allocation.path, "add", `${id}.txt`);
+		await git(allocation.path, "commit", "--quiet", "-m", `implement ${id}`);
+		await store.updateTask("feature", id, { status: "contribution_complete", runtime: { completedCommit: await git(allocation.path, "rev-parse", "HEAD") } });
+	}
+	assert.equal(allocations[0]!.baseCommit, allocations[1]!.baseCommit, "parallel tasks share one stage base");
 	const integrated = await manager.mergeTask("feature", "add-feature");
-	assert.equal(await readFile(join(root, "feature.txt"), "utf8"), "implemented\n");
+	assert.deepEqual(integrated.taskIds, ["add-feature", "sibling"]);
+	assert.equal(await readFile(join(root, "add-feature.txt"), "utf8"), "add-feature\n");
+	assert.equal(await readFile(join(root, "sibling.txt"), "utf8"), "sibling\n");
 	assert.equal((await store.readTask("feature", "add-feature")).status, "merged");
+	assert.equal((await store.readTask("feature", "sibling")).status, "merged");
 	assert.equal(await git(root, "branch", "--show-current"), "feature/feature");
-	await store.recordEvaluation({
-		workItemId: "feature",
-		evaluationId: "feature-check",
-		verdict: "pass",
-		report: "# Result\n\nThe integrated feature exists.",
-		evidence: [{ command: "test -f feature.txt", result: "passed", path: "feature.txt" }],
-		findings: [{ id: "QUALITY-001", severity: "low", status: "accepted", summary: "Optional polish remains", blocking: false }],
-	});
+	await store.recordEvaluation({ workItemId: "feature", evaluationId: "feature-check", verdict: "pass", report: "# Result\n\nBoth files exist.", evidence: [{ result: "passed", description: "stage files" }], findings: [{ id: "QUALITY-001", severity: "low", status: "accepted", summary: "Optional polish remains", blocking: false }] });
 	const completed = await store.completeWorkItem("feature", "# Outcome\n\nDelivered the feature with deterministic evidence.");
 	assert.equal(completed.phase, "complete");
-	assert.equal(completed.state, "complete");
 	assert.match(await readFile(join(root, "agent-artifacts", "feature", "outcome.md"), "utf8"), /QUALITY-001/);
-	assert.match(await readFile(join(root, "agent-artifacts", "feature", "evidence", "feature-check", "manifest.yaml"), "utf8"), /checksum: sha256:/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("derives singleton stages as direct feature-branch execution", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "serial", title: "Serial", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Run serially" });
+	await store.defineTask({ workItemId: "serial", manifest: task(), brief: "Direct work", acceptance: "Direct accepted" });
+	await store.submitPlanning("serial"); await store.approve("serial");
+	const manager = new WorktreeManager(identity); await manager.prepareFeatureBranch("serial");
+	const allocation = await manager.allocate("serial", await store.readTask("serial", "add-feature"));
+	assert.equal(allocation.path, identity.root); assert.equal(allocation.isolation, "repository"); assert.equal(allocation.branch, "fix/serial");
 });
 
 test("continues an explicitly recorded current feature branch without syncing develop", async (t) => {
@@ -132,6 +133,7 @@ test("resumes a dirty worktree recorded for the same task assignment", async (t)
 	await store.create({ id: "resume", title: "Resume", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Resume retained work" });
 	const manifest = task();
 	await store.defineTask({ workItemId: "resume", manifest, brief: "Create a file", acceptance: "File exists" });
+	await addParallelSibling(store, "resume", "feature-unit");
 	await store.submitPlanning("resume");
 	await store.approve("resume");
 	const manager = new WorktreeManager(identity);
@@ -152,6 +154,7 @@ test("lists and safely cleans only inactive clean PiBox worktrees", async (t) =>
 	await store.create({ id: "cleanup", title: "Cleanup", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Test retained worktree cleanup" });
 	const manifest = task();
 	await store.defineTask({ workItemId: "cleanup", manifest, brief: "No-op", acceptance: "No-op" });
+	await addParallelSibling(store, "cleanup", "feature-unit");
 	await store.submitPlanning("cleanup");
 	await store.approve("cleanup");
 	const manager = new WorktreeManager(identity);
@@ -174,6 +177,7 @@ test("refuses allocation when the repository-local worktree root is not ignored"
 	await store.create({ id: "unignored", title: "Unignored", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Test ignore enforcement" });
 	const manifest = task();
 	await store.defineTask({ workItemId: "unignored", manifest, brief: "Create a file", acceptance: "File exists" });
+	await addParallelSibling(store, "unignored", "feature-unit");
 	await store.submitPlanning("unignored");
 	await store.approve("unignored");
 	const manager = new WorktreeManager(identity);

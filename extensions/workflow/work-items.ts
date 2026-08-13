@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
+import { validateExecutionTopology } from "./execution-topology.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import { isTierTaskAssignment, type DeliveryBranchMode, type DeliveryBranchType, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 
@@ -176,7 +177,8 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 	validateId(stageId, "Execution-stage id");
 	task.assembly.stageId = stageId;
 	if (!Array.isArray(task.execution.resourceClaims) || !Array.isArray(task.verification.methods) || !Array.isArray(task.verification.taskChecks)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid policy arrays`);
-	if (!["worktree", "repository"].includes(task.execution.isolation) || !["allowed", "serial"].includes(task.execution.parallelism)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid execution isolation or parallelism`);
+	if (task.execution.isolation !== undefined && !["worktree", "repository"].includes(task.execution.isolation)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid legacy execution isolation`);
+	if (task.execution.parallelism !== undefined && !["allowed", "serial"].includes(task.execution.parallelism)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid legacy execution parallelism`);
 	const assignment = task.execution.assignment as TaskManifest["execution"]["assignment"];
 	if (typeof assignment.role !== "string" || typeof assignment.rationale !== "string" || !assignment.rationale.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid assignment`);
 	if (isTierTaskAssignment(assignment)) {
@@ -980,6 +982,8 @@ export class WorkItemStore {
 			throw new HarnessError("WORK_ITEM_NOT_FOUND", `Work item does not exist: ${id}`);
 		});
 		const index = parseWorkItemIndex(previous, indexPath);
+		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
+		validateExecutionTopology(index, tasks);
 		if (operation === "submit") {
 			if (index.planning.status === "approved") return index;
 			index.planning.status = "awaiting_approval";
