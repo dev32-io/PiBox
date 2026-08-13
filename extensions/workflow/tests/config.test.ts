@@ -44,6 +44,8 @@ test("resolves explicit role inheritance while preserving routing defaults", () 
 	assert.deepEqual(config.roles.custom?.tools, ["read"]);
 	assert.equal(config.roles.custom?.tier, "low");
 	assert.equal(config.roles.custom?.deliberation, "standard");
+	assert.equal(config.roles["plan-critic"]?.tier, "medium");
+	assert.equal(config.roles["plan-critic"]?.deliberation, "standard");
 });
 
 test("fails closed on legacy aliases and unknown top-level configuration", () => {

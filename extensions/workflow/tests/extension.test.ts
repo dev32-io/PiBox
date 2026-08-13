@@ -50,6 +50,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"workflow_list",
 		"workflow_get",
 		"workflow_schema",
+		"workflow_plan_write",
 		"workflow_create",
 		"workflow_patch",
 		"workflow_delete",
@@ -67,6 +68,8 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_patch")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_apply_change")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_create")), /tier|deliberation|isolation|parallelism/);
+	const planWriteSchema = JSON.stringify(schemas.get("workflow_plan_write"));
+	for (const token of ["create", "update", "basedOn", "target", "expectedRevision"]) assert.match(planWriteSchema, new RegExp(token));
 	assert.ok(JSON.stringify(schemas.get("workflow_apply_change")).length < 2500, "always-visible batch schema stays compact");
 	assert.match(JSON.stringify(schemas.get("workflow_list")), /cursor.*limit/);
 	assert.match(JSON.stringify(schemas.get("workflow_get")), /summary.*full.*findText/);
@@ -75,6 +78,6 @@ test("registers the resource API and hides legacy planning tools from the main s
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });
 	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(tools.includes(legacy), false, legacy);
-	for (const preferred of ["workflow_list", "workflow_get", "workflow_schema", "workflow_create", "workflow_patch", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
+	for (const preferred of ["workflow_list", "workflow_get", "workflow_schema", "workflow_plan_write", "workflow_create", "workflow_patch", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
 	assert.equal(activeTools.includes("read"), true);
 });

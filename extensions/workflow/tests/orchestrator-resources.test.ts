@@ -153,6 +153,35 @@ test("rolls back every canonical commit when a batch operation fails", async (t)
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("writes complete plans with explicit create and revision-pinned update identity", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	const spec = { id: "behavior", type: "spec", content: "# Behavior\n\n## Acceptance Criteria\n\n- **AC-001:** The app works.\n" };
+	const firstTask = { manifest: task("first-task"), brief: "Build the first behavior.", acceptance: "It works." };
+	firstTask.manifest.assembly = { stageId: "first-stage", intermediateState: "complete" };
+	const createPlan = {
+		workItem: { id: "fresh-plan", title: "Fresh plan", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Create a fresh plan." },
+		artifacts: [spec], tasks: [firstTask], integrationUnits: [{ id: "delivery", tasks: ["first-task"], intermediatePolicy: "coherent" }], evaluations: [],
+	};
+	const createBase = await git(root, "rev-parse", "HEAD");
+	await assert.rejects(service.transaction("harness: reject invalid complete plan", () => service.writePlan({ mode: "create", plan: { ...createPlan, workItem: { ...createPlan.workItem, id: "broken-plan" }, tasks: [{ ...firstTask, manifest: { ...firstTask.manifest, references: { specs: ["missing-spec"], designs: [], decisions: [] } } }] } }, retain)), /Unknown spec reference/);
+	assert.equal(await git(root, "rev-parse", "HEAD"), createBase);
+	await assert.rejects(store.read("broken-plan"), /does not exist/);
+	await service.transaction("harness: create complete plan", () => service.writePlan({ mode: "create", plan: createPlan }, retain));
+	const created = await store.read("fresh-plan");
+	assert.deepEqual(created.tasks.map((entry) => entry.id), ["first-task"]);
+	const staleRevision = created.planning.revision;
+	const secondTask = { manifest: task("second-task"), brief: "Build the replacement behavior.", acceptance: "It works better." };
+	secondTask.manifest.assembly = { stageId: "second-stage", intermediateState: "complete" };
+	const updatePlan = { ...createPlan, workItem: { ...createPlan.workItem, title: "Replaced plan" }, tasks: [secondTask], integrationUnits: [{ id: "delivery-v2", tasks: ["second-task"], intermediatePolicy: "coherent" }] };
+	await service.transaction("harness: update complete plan", () => service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, retain));
+	const updated = await store.read("fresh-plan");
+	assert.equal(updated.title, "Replaced plan");
+	assert.deepEqual(updated.tasks.map((entry) => entry.id), ["second-task"]);
+	assert.deepEqual(updated.integrationUnits.map((entry) => entry.id), ["delivery-v2"]);
+	await assert.rejects(service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, retain), /advanced from requested revision/);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
 test("postponement stays mutable while archive requires explicit reopen", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "lifecycle", title: "Lifecycle", kind: "story", intent: "Exercise lifecycle." });

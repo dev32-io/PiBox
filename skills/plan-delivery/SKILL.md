@@ -23,12 +23,16 @@ If a new finding changes the product outcome, user-visible behavior, consequenti
 4. Draft **tracer-bullet contributions**. Each task must cut a narrow but complete path through the layers and focused tests its behavior needs, produce an independently demoable or verifiable result, and fit one fresh worker context.
 5. Keep setup, implementation, tests, and documentation with the behavior that needs them. Use a preparatory task only when it creates a stable seam that materially simplifies later tracer bullets. Use expand–migrate–contract only for wide mechanical changes that cannot remain green as vertical slices.
 6. Give every task a short title, what it delivers, observable acceptance, and explicit blockers. Add interfaces, risks, or file/resource claims only where they constrain another task or safe concurrency. Do not turn the task brief into a restatement of the whole story.
-7. Present the proposed task graph to the user before publishing it. Ask whether granularity and blocking edges are right and whether anything should merge or split. Preserve the user's freedom to prefer a coarser or finer graph unless safety or context fit makes it untenable.
-8. Arrange blockers into ordered execution stages. Tasks in one stage are the parallel frontier; stages run sequentially. Parallel-stage tasks must not depend on each other and must have compatible resource claims. The runtime—not the planner—executes singleton stages on the feature branch and allocates worktrees for multi-task stages.
-9. Assign capability tier and deliberation only after task boundaries are settled. The harness selects provider, concrete model, and model-specific effort.
-10. Map every binding criterion to contributions and the cheapest meaningful proof. Add deterministic checks, review, regression, migration, or E2E only where risk warrants it.
-11. Use an unanchored plan critic for material ambiguity, topology, or context-fit risk. Ask it to judge the proposed graph rather than ratify a preferred task count; use the configured critic routing unless the user explicitly overrides it.
-12. Publish the user-reviewed graph through canonical capabilities. Use compact summaries first, bounded detail reads when needed, and coherent batch mutation only when the resources form one decision.
+7. Arrange blockers into ordered execution stages. Tasks in one stage are the parallel frontier; stages run sequentially. Parallel-stage tasks must not depend on each other and must have compatible resource claims. The runtime—not the planner—executes singleton stages on the feature branch and allocates worktrees for multi-task stages.
+8. Assign capability tier and deliberation only after task boundaries are settled. The harness selects provider, concrete model, and model-specific effort.
+9. Map every binding criterion to contributions and the cheapest meaningful proof. Add deterministic checks, review, regression, migration, or E2E only where risk warrants it.
+10. Read the bounded `plan-write` schema, then write the complete draft with `workflow_plan_write`: `create` for a new, fresh, separate, or ignore-previous plan; `update` only when the user explicitly asks to revise that exact plan. A `basedOn` plan is read-only context. If identity is genuinely ambiguous, ask one question before writing.
+11. Read the written plan back at the exact returned revision, then self-review that durable artifact with fresh eyes; this is your own short checklist, not a subagent dispatch:
+   - **Coverage:** point every binding criterion and constraint to an owning task and proof; identify any gap.
+   - **Vagueness:** find placeholders and instructions such as “handle edge cases,” “add validation,” or “write tests” that lack an observable contract.
+   - **Consistency:** ensure task dependencies, stage IDs, artifact/criterion references, interface names, and produced/consumed contracts agree across the graph.
+   If the review finds issues, fix them in one revision-pinned `workflow_plan_write` update. Do not repeat the self-review.
+12. Submit the reviewed plan and hand it to the user. A separate planning critique is optional and runs only when the user explicitly requests it; `plan-critic` remains available through `agent_run` without delaying ordinary plans.
 
 ## Capability and Deliberation Protocol
 
@@ -48,21 +52,22 @@ Use `medium/standard` by default.
 
 Capability and deliberation are orthogonal: a security-sensitive but exact patch may be `max/standard`; a subtle bounded race diagnosis may be `high/deep`. Never select raw provider, model, or effort in an ordinary plan. When the user explicitly pins a configured concrete model or effort, preserve it through the optional assignment `modelOverride` and cite it as a user constraint; never manufacture an override from planner preference.
 
-## Readiness Review
+## Readiness Gate
 
-Before submission, verify that:
+Use the read-after-write self-review above as the single pre-submission gate. Verify that:
 
 - every task advances the story, has one dominant concern, and is bounded enough for one model context;
 - no task relies on model strength or deep deliberation to hide avoidable scope;
-- any single-task multi-dimensional story has an explicit decomposition analysis and critic justification;
+- any single-task multi-dimensional story has an explicit decomposition analysis;
 - each task is a tracer bullet that fits one fresh context and has explicit blockers;
 - tasks in one stage are genuinely independent and compatible; execution isolation is not encoded in task plans;
 - intermediate and assembled states are meaningful;
+- plan identity matches the user's explicit create/update wording;
 - acceptance criteria have sufficient implementation and verification coverage;
 - capability tier and deliberation match the bounded work;
 - no material product or technical decision remains hidden.
 
-Refine the story plan with the user whenever new constraints surface. Do not publish tickets until the user has reviewed granularity and blockers, and do not submit while a material decision remains unresolved.
+Refine the story plan with the user whenever new constraints surface. Do not submit while a material decision remains unresolved.
 
 ## Approval Handoff
 

@@ -43,13 +43,14 @@ The main session selects ad-hoc work when ceremony is unnecessary. Managed work 
 
 Managed planning begins as a product and technical conversation, not an artifact write. The orchestrator recovers the outcome behind a proposed solution, inspects discoverable facts, and treats inherited product rules, UX/UI flows, schemas, APIs, and architecture as revisitable decisions when they manufacture contradictory guarantees or disproportionate complexity. It distinguishes symptoms, technical causes, and upstream enabling conditions for bug work; probes only materially consequential hidden cases; and stops discovery when another answer would not change the contract. Clear local reversible work remains ad hoc even when the user asks for a plan.
 
-The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator drafts and submits the coherent contract, then offers two natural next steps: refine it conversationally, or approve it with `/workflow approve <work-item-id>`. No magic readiness phrase is required.
+The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator writes the complete draft atomically, reads that exact revision back, and performs one lightweight self-review for requirement coverage, vague placeholders, and cross-task consistency. If needed, it applies one revision-pinned update, then submits and hands the plan to the user. It offers two natural next steps: refine it conversationally, or approve it with `/workflow approve <work-item-id>`. No magic readiness phrase is required.
 
+- `workflow_plan_write` atomically creates or replaces a complete plan. `create` always uses a new ID and treats `basedOn` as read-only context; `update` requires the exact target and expected revision.
+- `agent_run` can invoke any configured role. `plan-critic` remains an optional read-only specialist when the user asks for an independent critique; ordinary plans do not wait for it.
 - `workflow_list` returns compact filtered catalog pages with snapshot-pinned cursors.
 - `workflow_get` returns a compact summary by default and bounded revision-pinned ranges or matching passages on demand.
 - `workflow_schema` progressively discloses exact mutation contracts only when a model needs them, keeping always-visible tool schemas small.
-- `workflow_create`, `workflow_patch`, and `workflow_delete` provide resource-oriented CRUD and return compact mutation receipts rather than full resources.
-- `workflow_apply_change` applies a coherent multi-resource amendment as one canonical commit, can resolve a subagent request in the same decision, and returns changed refs/revisions only.
+- `workflow_create`, `workflow_patch`, `workflow_delete`, and `workflow_apply_change` remain targeted compatibility/repair surfaces rather than the ordinary plan-writing path.
 - `workflow_transition` submits, postpones, resumes, archives, reopens, or otherwise advances a resource lifecycle.
 
 Legacy resource-specific planning tools remain registered for compatibility but are hidden from the normal main-session tool surface.

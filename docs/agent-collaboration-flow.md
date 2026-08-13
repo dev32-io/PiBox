@@ -110,13 +110,16 @@ Make the high-level story executable in technical terms and optimize delivery th
 - Resolve technical feasibility and compatibility unknowns.
 - Draft tracer-bullet contributions: each task delivers a narrow end-to-end behavior with its focused tests, is independently demoable or verifiable, and fits one fresh worker context.
 - Keep setup and layers with the behavior that needs them; use preparatory or expand–migrate–contract tasks only when vertical slices cannot remain coherent.
-- Present the proposed granularity and blocking edges to the user before publishing tickets.
+- Write the complete draft atomically with explicit identity: create a new plan when the user says new/fresh/separate/ignore previous, and update only an explicitly selected existing plan revision.
 - Encode execution as ordered stages: blockers live in earlier stages, while tasks in one stage form the independent parallel frontier.
 - Let runtime derive mechanics: singleton stages execute on the feature branch; multi-task stages use per-task worktrees and an atomic merge barrier.
 - Define resource claims, intermediate states, integration expectations, and recovery boundaries only where they constrain safe execution.
 - Assign semantic capability tier and deliberation after decomposition; let harness configuration resolve the concrete provider, model, and model-specific effort.
 - Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
 - Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
+- Write the complete draft atomically, read the exact written revision back, then self-review once for criterion/constraint coverage, vague placeholders, and consistency across dependencies, stages, references, and interfaces.
+- If self-review finds issues, apply one revision-pinned update; do not repeat the review.
+- Keep independent `plan-critic` review optional for explicit user requests rather than delaying every plan.
 - Continue refining with the user when planning reveals new constraints or product questions.
 
 ### Deliverable

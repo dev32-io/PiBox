@@ -772,6 +772,30 @@ export class WorkItemStore {
 		}
 	}
 
+	async removeIntegrationUnit(workItemId: string, unitId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
+		await assertCleanRepository(this.repositoryRoot);
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		assertContractMutable(index);
+		if (!index.integrationUnits.some((unit) => unit.id === unitId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${unitId}`);
+		for (const evaluation of index.evaluations) {
+			const manifest = await this.readEvaluation(workItemId, evaluation.id);
+			if (manifest.scope.integrationUnit === unitId) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${manifest.id} still references integration unit ${unitId}`);
+		}
+		index.integrationUnits = index.integrationUnits.filter((unit) => unit.id !== unitId);
+		advanceContractRevision(index, authority);
+		const indexPath = join(root, "index.yaml");
+		const previous = await readFile(indexPath, "utf8");
+		try {
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([indexPath], `harness(${workItemId}): remove integration unit ${unitId}`);
+			return index;
+		} catch (error) {
+			await this.restore([{ path: indexPath, content: previous }]);
+			throw error;
+		}
+	}
+
 	async readArtifact(workItemId: string, artifactId: string): Promise<{ metadata: WorkItemIndex["artifacts"][number]; content: string; workItemRevision: number }> {
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);

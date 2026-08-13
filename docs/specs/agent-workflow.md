@@ -522,13 +522,13 @@ Each task must be:
 
 The planner drafts tracer-bullet contributions rather than horizontal implementation layers. Each task cuts a narrow but complete path through the behavior, implementation layers, and focused tests it needs; is independently demoable or verifiable; and fits one fresh worker context. Setup belongs with the behavior that needs it. Preparatory seams and expand–migrate–contract sequences are exceptions used only when vertical slices cannot remain coherent or green.
 
-Before publishing tasks, the planner presents the numbered graph with what each task delivers and its blockers, then asks the user whether granularity and blocking edges are right or whether tasks should merge or split. A stronger tier or deep deliberation never compensates for avoidable task scope.
+The planner writes the complete draft atomically, reads the exact written revision back, and only then performs one lightweight self-review with fresh eyes: map each binding criterion and constraint to an owning task and proof, find vague placeholders, and verify dependencies, stages, references, and produced/consumed interfaces agree across the graph. If needed, it applies one revision-pinned update and does not repeat the review. A stronger tier or deep deliberation never compensates for avoidable task scope.
 
 Tasks in one execution stage are the parallel frontier. They cannot depend on one another and must have compatible resource claims. Blocked work belongs in a later stage. The extension derives execution mechanics from topology: singleton stages run directly on the feature branch; multi-task stages start isolated worktrees from one pinned base and cross one atomic merge-and-check barrier.
 
-### 9.5 Plan critic
+### 9.5 Optional plan critic
 
-A fresh plan-critic agent checks:
+When the user explicitly requests an independent critique, a fresh plan-critic agent checks:
 
 - Intent, spec, and design consistency.
 - Missing edge cases.
@@ -541,7 +541,7 @@ A fresh plan-critic agent checks:
 - Model assignments.
 - Security, privacy, migration, and operational risks.
 
-The critic reports findings to the orchestrator. It cannot edit canonical artifacts or approve the plan for the user.
+The critic reports findings to the orchestrator. It cannot edit canonical artifacts or approve the plan for the user, and ordinary planning does not wait for a critic run.
 
 ## 10. Role system
 
@@ -954,7 +954,7 @@ verification:
 
 Each binding acceptance criterion must have a credible final verification story, but it need not map to a separate evaluator or test run. One combined evaluation can cover many criteria and tasks.
 
-The plan critic challenges missing final confidence, not the absence of per-task ceremony.
+When requested, the plan critic challenges missing final confidence, not the absence of per-task ceremony.
 
 ### 15.3 Orchestrator discretion
 

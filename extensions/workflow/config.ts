@@ -46,7 +46,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	roles: {
 		researcher: { workspace: "none", canDelegate: false, tier: "high", deliberation: "standard" },
 		explorer: { workspace: "repository", canDelegate: false, tier: "medium", deliberation: "standard" },
-		"plan-critic": { workspace: "repository", canDelegate: false, tier: "max", deliberation: "deep" },
+		"plan-critic": { workspace: "repository", canDelegate: false, tier: "medium", deliberation: "standard" },
 		implementer: { workspace: "repository", canDelegate: false, completionSchema: "implementer-v1", tier: "medium", deliberation: "standard" },
 		"spec-reviewer": { workspace: "repository", canDelegate: false, tier: "high", deliberation: "deep" },
 		"quality-reviewer": { workspace: "repository", canDelegate: false, tier: "high", deliberation: "deep" },

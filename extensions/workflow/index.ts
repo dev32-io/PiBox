@@ -31,6 +31,7 @@ import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type Workflow
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
+const BUILT_IN_ROLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "roles");
 
 const WORKER_TOOL_NAMES = new Set([
 	"task_clarify",
@@ -49,7 +50,7 @@ Act as a constructive product and technical partner. Seek the outcome behind req
 
 Keep clear, local, reversible work ad hoc. Treat collaboration as phases with retained conversational momentum: use product-discussion for free exploration without workflow pressure; shape-story when the user chooses to make the outcome, scope, specification, or design boundary durable; plan-delivery when a coherent story should become an execution-ready technical plan; and workflow-run only for approved execution, evaluation, recovery, completion, and outcome briefing. Each active phase owns one deliverable and naturally offers the next phase in user-friendly words. If the user already requested end-to-end planning, continue from shape-story into plan-delivery without asking them to repeat permission unless a material checkpoint needs their decision. An acknowledgement can confirm progress within an already authorized shaping or planning phase, but never initiates planning or execution by itself. When a turn mixes a concrete change with questions, alternatives, or “what next,” stay in product discussion until that frontier is settled. A problem report, suggested fix/feature label, or request to “address” something is not by itself permission to start, stop, resume, or amend a workflow.
 
-Canonical resources use work-item:<id> and work-item:<id>/<artifact|task|integration-unit|evaluation>:<id>. List compact summaries before create and get summary or bounded detail before patch; follow cursors and offsets only when omitted context is relevant. Call workflow_schema for an unfamiliar mutation shape. Track the outcome currently being discussed rather than attaching new work to a related resource. Finished or delivered stories/changes are historical context: do not modify them unless the user specifically chooses to reopen or extend that exact work item. New follow-up defects and enhancements normally form a new work item; patch only the current unfinished outcome. Create a new parent once, then its children; patch matching drafts rather than duplicating them. Use workflow_apply_change only for coherent multi-resource decisions. Never edit agent-artifacts directly.
+Write plans with workflow_plan_write. Choose its identity mode from the user's words: create for a new, fresh, separate, or ignore-previous plan; update only when the user explicitly asks to revise or replace that exact existing plan. A create source is read-only background and never authorizes mutation of that source. If create versus update remains genuinely ambiguous, ask one identity question before mutation. Supply the complete plan bundle so the write is atomic; do not assemble ordinary plans through child-by-child resource patches. Raw resource tools are compatibility and repair surfaces. Never edit agent-artifacts directly.
 
 Initial approval is user-only through /workflow approve <work-item-id>. Routine approved amendments may retain approval only after the user has chosen execution rather than discussion and the change is within delegated intent; ask when outcome, explicit constraints, consequential policy, privacy/security, irreversible effects, or a retained decision materially changes.
 
@@ -60,6 +61,7 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_list",
 	"workflow_get",
 	"workflow_schema",
+	"workflow_plan_write",
 	"workflow_create",
 	"workflow_patch",
 	"workflow_delete",
@@ -150,6 +152,20 @@ const TASK_RESOURCE_BODY = Type.Union([
 ]);
 const INTEGRATION_UNIT_RESOURCE_BODY = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String({ description: "Bare task id in this work item, not a resource reference" })), intermediatePolicy: Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")]) }, { additionalProperties: false });
 const EVALUATION_RESOURCE_BODY = Type.Object({ manifest: EVALUATION_MANIFEST_RESOURCE }, { additionalProperties: false });
+const PLAN_BUNDLE = Type.Object({
+	workItem: WORK_ITEM_RESOURCE_BODY,
+	artifacts: Type.Array(ARTIFACT_RESOURCE_BODY),
+	tasks: Type.Array(TASK_RESOURCE_BODY),
+	integrationUnits: Type.Array(INTEGRATION_UNIT_RESOURCE_BODY),
+	evaluations: Type.Array(EVALUATION_RESOURCE_BODY),
+}, { additionalProperties: false });
+const PLAN_WRITE_PARAMETERS = Type.Object({
+	mode: Type.Union([Type.Literal("create"), Type.Literal("update")]),
+	basedOn: Type.Optional(Type.String({ description: "Create only: optional existing work-item ref used as read-only background; it is never mutated" })),
+	target: Type.Optional(Type.String({ description: "Update only: exact existing work-item ref to replace" })),
+	expectedRevision: Type.Optional(Type.Integer({ minimum: 1, description: "Update only: revision the complete replacement was planned from" })),
+	plan: PLAN_BUNDLE,
+}, { additionalProperties: false });
 const CREATE_OPERATION_VARIANTS = [
 	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("artifact"), parent: Type.String(), body: ARTIFACT_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
@@ -197,6 +213,13 @@ const APPLY_CHANGE_PARAMETERS = Type.Object({
 // Keep the always-visible mutation schemas small. Exact per-resource schemas are
 // available on demand through workflow_schema and are revalidated before mutation.
 const OPEN_OBJECT = Type.Record(Type.String(), Type.Unknown());
+const COMPACT_PLAN_WRITE_PARAMETERS = Type.Object({
+	mode: Type.Union([Type.Literal("create"), Type.Literal("update")]),
+	basedOn: Type.Optional(Type.String()),
+	target: Type.Optional(Type.String()),
+	expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })),
+	plan: OPEN_OBJECT,
+}, { additionalProperties: false });
 const COMPACT_CREATE_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, parent: Type.Optional(Type.String()), body: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
 const COMPACT_PATCH_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, ref: Type.String(), patch: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
 const COMPACT_APPLY_CHANGE_PARAMETERS = Type.Object({
@@ -231,7 +254,8 @@ async function mutationReceipt(runtime: HarnessRuntime, commit: string | undefin
 	return { ok: true, ...(commit ? { commit } : {}), changes, affected, ...extra };
 }
 
-function schemaFor(operation: "create" | "patch" | "apply-change", resource?: CanonicalResourceType): unknown {
+function schemaFor(operation: "create" | "patch" | "apply-change" | "plan-write", resource?: CanonicalResourceType): unknown {
+	if (operation === "plan-write") return PLAN_WRITE_PARAMETERS;
 	if (operation === "apply-change") return APPLY_CHANGE_PARAMETERS;
 	if (!resource) throw new HarnessError("INVALID_ARTIFACT", `resource is required for the ${operation} schema`);
 	const variants = operation === "create" ? CREATE_RESOURCE_PARAMETERS.anyOf : PATCH_RESOURCE_PARAMETERS.anyOf;
@@ -643,8 +667,8 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_schema",
 		label: "Read Workflow Mutation Schema",
-		description: "Read a bounded exact schema for one create or patch resource shape, or the compact batch envelope. Use before an unfamiliar mutation instead of keeping every schema in prompt context.",
-		parameters: Type.Object({ operation: Type.Union([Type.Literal("create"), Type.Literal("patch"), Type.Literal("apply-change")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })) }, { additionalProperties: false }),
+		description: "Read a bounded exact schema for a complete plan write or one low-level resource mutation. Use before an unfamiliar write instead of keeping every schema in prompt context.",
+		parameters: Type.Object({ operation: Type.Union([Type.Literal("plan-write"), Type.Literal("create"), Type.Literal("patch"), Type.Literal("apply-change")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })) }, { additionalProperties: false }),
 		async execute(_id, params) {
 			try {
 				const schema = JSON.stringify(schemaFor(params.operation, params.resource as CanonicalResourceType | undefined), null, 2);
@@ -655,9 +679,46 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "workflow_plan_write",
+		label: "Write Complete Workflow Plan",
+		description: "Atomically write one complete plan draft or its single post-review correction. Use mode=create for a new, fresh, separate, or ignore-previous plan; basedOn is read-only context and is never mutated. Use mode=update only when the user explicitly asks to revise that exact plan or when correcting its just-read self-review findings, pinned to expectedRevision. Call workflow_schema with operation=plan-write for the exact bundle shape.",
+		parameters: COMPACT_PLAN_WRITE_PARAMETERS,
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					assertExactSchema(PLAN_WRITE_PARAMETERS, params, "workflow_plan_write");
+					const exact = params as any;
+					if (exact.mode === "create" && (exact.target !== undefined || exact.expectedRevision !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan create accepts basedOn, not target or expectedRevision");
+					if (exact.mode === "update" && (typeof exact.target !== "string" || !Number.isInteger(exact.expectedRevision) || exact.basedOn !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan update requires target and expectedRevision and does not accept basedOn");
+					if (exact.mode === "create" && exact.basedOn) {
+						const source = parseResourceRef(exact.basedOn);
+						if (source.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "basedOn must be a work-item ref");
+						await runtime.workItems.read(source.id);
+						if (source.id === exact.plan.workItem.id) throw new HarnessError("INVALID_ARTIFACT", "A new plan needs a new work-item id; basedOn remains read-only");
+					}
+					const workItemId = exact.plan.workItem.id as string;
+					const ref = `work-item:${workItemId}`;
+					if (exact.mode === "update") {
+						const target = parseResourceRef(exact.target);
+						if (target.type !== "work-item" || target.id !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Update target ${exact.target} must match plan id ${workItemId}`);
+					}
+					const authority: MutationAuthority = { disposition: "request-user", rationale: exact.mode === "create" ? "Write the new complete plan for user review" : "Replace the explicitly selected plan for user review", ...(exact.basedOn ? { sources: [exact.basedOn] } : {}) };
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const result = await service.transaction(`harness: ${exact.mode} complete plan ${workItemId}`, () => service.writePlan(exact.mode === "create" ? { mode: "create", plan: exact.plan } : { mode: "update", target: exact.target, expectedRevision: exact.expectedRevision, plan: exact.plan }, authority));
+					await runtime.events.append("plan.written", { mode: exact.mode, ref, ...(exact.basedOn ? { basedOn: exact.basedOn } : {}), commit: result.commit });
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: exact.mode === "create" ? "create" : "patch", ref }], { mode: exact.mode });
+					return textResult(`${exact.mode === "create" ? "Created" : "Updated"} complete plan ${ref}${result.commit ? ` at ${result.commit.slice(0, 12)}` : ""}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+				});
+			} catch (error) { throw structuredCapabilityError(error, "target" in params ? params.target : undefined); }
+		},
+	});
+
+	pi.registerTool({
 		name: "workflow_create",
 		label: "Create Workflow Resource",
-		description: "Create one canonical resource and return a compact receipt. Call workflow_schema for the exact body shape; list first to avoid duplicating unfinished work.",
+		description: "Compatibility/repair surface for creating one canonical resource. For ordinary planning, use workflow_plan_write so the complete plan is atomic and its create/update identity is explicit.",
 		parameters: COMPACT_CREATE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -681,7 +742,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_patch",
 		label: "Patch Workflow Resource",
-		description: "Apply one validated merge patch and return a compact receipt. Get the current summary first; call workflow_schema for an unfamiliar patch shape.",
+		description: "Compatibility/repair surface for one targeted resource patch. For ordinary plan replacement, use workflow_plan_write mode=update.",
 		parameters: COMPACT_PATCH_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -723,7 +784,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_apply_change",
 		label: "Apply Orchestrator Change",
-		description: "Apply a coherent batch as one canonical commit and return only a compact change receipt. Operation bodies follow the exact workflow_create/workflow_patch schemas available through workflow_schema.",
+		description: "Compatibility/repair surface for a coherent multi-resource amendment. For ordinary plan creation or replacement, use workflow_plan_write.",
 		parameters: COMPACT_APPLY_CHANGE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -885,13 +946,13 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "agent_run",
 		label: "Run Workflow Specialist",
-		description: "Directly invoke a configurable specialist role without requiring a managed work item.",
+		description: "Spawn one generic read-only subagent using any configured role. Use the exact role name from the configured roles; the harness applies that role's prompt, tools, and default routing (plan-critic defaults to medium/standard).",
 		parameters: Type.Object({
-			role: Type.String(),
+			role: Type.String({ description: "Exact configured role name, such as plan-critic, explorer, researcher, or quality-reviewer" }),
 			task: Type.String(),
 			tier: Type.Optional(CAPABILITY_TIER),
 			deliberation: Type.Optional(DELIBERATION),
-			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override" })),
+			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override; normally omit to use role policy" })),
 			effort: Type.Optional(EFFORT),
 			strict: Type.Optional(Type.Boolean()),
 		}),
@@ -900,7 +961,12 @@ export default function workflow(pi: ExtensionAPI): void {
 				requireTrusted(ctx);
 				const runtime = await runtimeFor(ctx);
 				const role = runtime.config.roles[params.role];
-				if (!role) throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow role: ${params.role}`);
+				if (!role) {
+					const available = Object.keys(runtime.config.roles).sort();
+					const normalized = params.role.replace(/[_\s]+/g, "-").toLowerCase();
+					const suggestion = available.find((name) => name === normalized || name.includes(normalized) || normalized.includes(name));
+					throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow role: ${params.role}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Available roles: ${available.join(", ")}`);
+				}
 				if (params.effort && !params.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
 				const routing = {
 					tier: (params.tier ?? role.tier!) as CapabilityTier,
@@ -930,7 +996,11 @@ export default function workflow(pi: ExtensionAPI): void {
 					model: resolution.model.id,
 					effort: resolution.effort,
 					tools: role.tools ?? defaultTools[params.role] ?? ["read", "grep", "find"],
-					...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
+					...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt)
+						? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string }
+						: existsSync(join(BUILT_IN_ROLE_ROOT, `${params.role}.md`))
+							? { promptPath: join(BUILT_IN_ROLE_ROOT, `${params.role}.md`) }
+							: {}),
 					...(signal ? { signal } : {}),
 					...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: params.role, state: "running" })) } : {}),
 				});

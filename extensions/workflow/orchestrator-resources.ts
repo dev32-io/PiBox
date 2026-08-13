@@ -18,6 +18,14 @@ export interface ResourceMutationContext {
 	authority: MutationAuthority;
 }
 
+export interface PlanBundle {
+	workItem: Record<string, unknown>;
+	artifacts: Array<Record<string, unknown>>;
+	tasks: Array<Record<string, unknown>>;
+	integrationUnits: Array<Record<string, unknown>>;
+	evaluations: Array<Record<string, unknown>>;
+}
+
 const REF = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(artifact|task|integration-unit|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*))?$/;
 
 export function parseResourceRef(ref: string): ParsedResourceRef {
@@ -209,6 +217,59 @@ export class OrchestratorResourceService {
 			return envelope(unit);
 		}
 		return envelope(await this.store.readEvaluation(item.id, parsedRef.id));
+	}
+
+	async writePlan(input: { mode: "create"; plan: PlanBundle } | { mode: "update"; target: string; expectedRevision: number; plan: PlanBundle }, authority: MutationAuthority): Promise<WorkItemIndex> {
+		const plan = input.plan;
+		const planId = string(plan.workItem.id, "plan.workItem.id");
+		if (input.mode === "update") {
+			const target = parseResourceRef(input.target);
+			if (target.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "Plan update target must be a work item");
+			if (target.id !== planId) throw new HarnessError("INVALID_ARTIFACT", `Update plan id ${planId} must match target ${target.id}`);
+			const current = await this.store.read(target.id);
+			if (current.planning.revision !== input.expectedRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `${input.target} advanced from requested revision ${input.expectedRevision} to ${current.planning.revision}`);
+			if (current.phase !== "planning" || current.finalization?.locked) throw new HarnessError("CAPABILITY_DENIED", `Plan ${target.id} cannot be replaced after delivery or finalization`);
+			for (const task of current.tasks) {
+				const manifest = await this.store.readTask(target.id, task.id);
+				if (manifest.runtime || !["draft", "blocked", "ready"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Plan ${target.id} has task delivery history and cannot be replaced`);
+			}
+			for (const evaluation of current.evaluations) {
+				const manifest = await this.store.readEvaluation(target.id, evaluation.id);
+				if (manifest.attempt > 0 || manifest.result) throw new HarnessError("CAPABILITY_DENIED", `Plan ${target.id} has evaluation history and cannot be replaced`);
+			}
+			for (const evaluation of current.evaluations) await this.store.removeEvaluation(target.id, evaluation.id, authority);
+			for (const unit of current.integrationUnits) await this.store.removeIntegrationUnit(target.id, unit.id, authority);
+			const remainingTaskIds = new Set(current.tasks.map((task) => task.id));
+			while (remainingTaskIds.size > 0) {
+				const manifests = await Promise.all([...remainingTaskIds].map((id) => this.store.readTask(target.id, id)));
+				const leaf = manifests.find((candidate) => !manifests.some((other) => other.dependsOn.includes(candidate.id)));
+				if (!leaf) throw new HarnessError("INVALID_ARTIFACT", `Existing task graph for ${target.id} contains a dependency cycle`);
+				await this.store.removeTask(target.id, leaf.id, authority);
+				remainingTaskIds.delete(leaf.id);
+			}
+			for (const artifact of current.artifacts.filter((entry) => entry.id !== "intent" && !plan.artifacts.some((desired) => desired.id === entry.id))) await this.store.removeArtifact(target.id, artifact.id, authority);
+			const { id: _id, ...workItemPatch } = plan.workItem;
+			await this.patch(input.target, workItemPatch, { authority });
+			const remaining = await this.store.read(target.id);
+			for (const artifact of plan.artifacts) {
+				const id = string(artifact.id, "artifact id");
+				const exists = remaining.artifacts.some((entry) => entry.id === id);
+				if (exists) await this.patch(`work-item:${target.id}/artifact:${id}`, artifact, { authority });
+				else await this.create("artifact", input.target, artifact, authority);
+			}
+			for (const task of plan.tasks) await this.create("task", input.target, task, authority);
+			for (const unit of plan.integrationUnits) await this.create("integration-unit", input.target, unit, authority);
+			for (const evaluation of plan.evaluations) await this.create("evaluation", input.target, evaluation, authority);
+			return this.coalesceRevision(target.id, current, authority);
+		}
+
+		await this.create("work-item", undefined, plan.workItem, authority);
+		const parent = `work-item:${planId}`;
+		for (const artifact of plan.artifacts) await this.create("artifact", parent, artifact, authority);
+		for (const task of plan.tasks) await this.create("task", parent, task, authority);
+		for (const unit of plan.integrationUnits) await this.create("integration-unit", parent, unit, authority);
+		for (const evaluation of plan.evaluations) await this.create("evaluation", parent, evaluation, authority);
+		return this.coalesceRevision(planId, undefined, authority);
 	}
 
 	async create(type: CanonicalResourceType, parent: string | undefined, bodyValue: unknown, authority: MutationAuthority): Promise<unknown> {
