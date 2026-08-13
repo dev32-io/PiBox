@@ -77,6 +77,41 @@ test("background step failure pauses instead of retrying unchanged state", async
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("transient snapshot attention does not pause an in-flight step or block routine advancement", async () => {
+	const f = fixture();
+	let releaseFirst!: () => void;
+	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+	let firstRunning = false;
+	let firstDone = false;
+	let secondDone = false;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() {
+			return {
+				ref: "test:workflow", title: "Transient settlement", status: firstRunning && !firstDone ? "attention" : firstDone && secondDone ? "done" : "ready",
+				steps: [
+					{ ref: "test:first", title: "First", kind: "task", status: firstDone ? "done" : firstRunning ? "attention" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] },
+					{ ref: "test:second", title: "Second", kind: "task", status: secondDone ? "done" : firstDone ? "ready" : "pending", dependsOn: ["test:first"], parallelism: "serial", resourceClaims: [] },
+				],
+			};
+		},
+		async runStep(ref) {
+			if (ref === "test:first") { firstRunning = true; await firstGate; firstDone = true; return { ref, state: "completed", summary: "First settled." }; }
+			secondDone = true; return { ref, state: "completed", summary: "Second settled." };
+		},
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 550));
+	assert.equal(f.entries.some((entry) => (entry.data as any).state === "paused"), false);
+	releaseFirst();
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.equal(secondDone, true, "runner advances to the next ready step without orchestrator intervention");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("background spawning delegates a role and prompt and later emits a lifecycle message", async () => {
 	const f = fixture();
 	let release!: () => void;

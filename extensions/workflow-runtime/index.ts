@@ -174,7 +174,10 @@ export default function workflows(pi: ExtensionAPI): void {
 					renderDashboard(ctx);
 				}
 				if (state !== "running") continue;
-				if (snapshot.status === "attention") { active.set(ref, "paused"); persist(ref, "paused"); sendEvent(`${snapshot.title} · attention`, "Workflow needs intervention.", true); continue; }
+				// An adapter snapshot can briefly observe canonical settlement between child exit
+				// and runStep completion. The in-flight promise remains authoritative until it
+				// settles; only attention with no active step should pause the workflow.
+				if (snapshot.status === "attention" && !snapshot.steps.some((step) => inFlight.has(step.ref))) { active.set(ref, "paused"); persist(ref, "paused"); sendEvent(`${snapshot.title} · attention`, "Workflow needs intervention.", true); continue; }
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
 					active.delete(ref); persist(ref, "stopped"); sendEvent(`${snapshot.title} · complete`, "Finished all workflow steps.");
 					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? `Workflow ${ref} completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.`;
