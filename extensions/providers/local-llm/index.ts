@@ -1,9 +1,43 @@
-import { createProvider, openAICompletionsApi, type ApiKeyCredential, type Model } from "@earendil-works/pi-ai/compat";
+import {
+	createProvider,
+	openAICompletionsApi,
+	type Api,
+	type ApiKeyCredential,
+	type Context,
+	type Model,
+	type SimpleStreamOptions,
+	type StreamOptions,
+} from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverOpenAIModels, normalizeBaseUrl } from "../shared/openai-compatible.js";
+import { normalizeStrictToolSchemas } from "../shared/strict-tool-schema.js";
 
 const PROVIDER_ID = "local-llm";
 const URL_FIELD = "LOCAL_LLM_BASE_URL";
+
+function strictToolSchemaCompatibleApi() {
+	const api = openAICompletionsApi();
+	const withNormalizedPayload = async (
+		payload: unknown,
+		model: Model<Api>,
+		onPayload: StreamOptions["onPayload"],
+	): Promise<unknown> => normalizeStrictToolSchemas((await onPayload?.(payload, model)) ?? payload);
+
+	return {
+		stream(model: Model<"openai-completions">, context: Context, options?: StreamOptions) {
+			return api.stream(model, context, {
+				...options,
+				onPayload: (payload, payloadModel) => withNormalizedPayload(payload, payloadModel, options?.onPayload),
+			});
+		},
+		streamSimple(model: Model<"openai-completions">, context: Context, options?: SimpleStreamOptions) {
+			return api.streamSimple(model, context, {
+				...options,
+				onPayload: (payload, payloadModel) => withNormalizedPayload(payload, payloadModel, options?.onPayload),
+			});
+		},
+	};
+}
 
 export default function localLlmProvider(pi: ExtensionAPI): void {
 	const loginModels: Model<"openai-completions">[] = [];
@@ -75,7 +109,7 @@ export default function localLlmProvider(pi: ExtensionAPI): void {
 					defaultMaxTokens: 16_384,
 				});
 			},
-			api: openAICompletionsApi(),
+			api: strictToolSchemaCompatibleApi(),
 		}),
 	);
 }
