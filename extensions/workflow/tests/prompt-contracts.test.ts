@@ -44,7 +44,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(orchestrator, /Initial approval is user-only through \/workflow approve/i);
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /A create source is read-only background/i);
-	assert.match(orchestrator, /do not assemble ordinary plans through child-by-child resource patches/i);
+	assert.match(orchestrator, /initial write is atomic[\s\S]+use edit rather than resending unchanged plan content/i);
 	assert.match(orchestrator, /Preserve dirty or conflicting work/i);
 	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
 	assert.match(discussion, /Think with the user in an open room/i);
@@ -58,9 +58,10 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /tracer-bullet contributions/i);
 	assert.match(delivery, /fit one fresh worker context/i);
 	assert.match(delivery, /write the complete draft with `workflow_plan_write`/i);
-	assert.match(delivery, /Read the written plan back at the exact returned revision[\s\S]+self-review/i);
+	assert.match(delivery, /structured task brief and acceptance fields/i);
+	assert.match(delivery, /Read the whole written plan back[\s\S]+`view=full`[\s\S]+exact returned revision[\s\S]+self-review/i);
 	assert.match(delivery, /Coverage:[\s\S]+Vagueness:[\s\S]+Consistency:/i);
-	assert.match(delivery, /one revision-pinned `workflow_plan_write` update[\s\S]+Do not repeat the self-review/i);
+	assert.match(delivery, /one revision-pinned `workflow_plan_write` `edit`[\s\S]+do not resend the unchanged plan[\s\S]+Do not repeat the self-review/i);
 	assert.match(delivery, /planning critique is optional[\s\S]+user explicitly requests it/i);
 	assert.match(delivery, /Tasks in one stage are the parallel frontier/i);
 	assert.match(delivery, /runtime—not the planner—executes singleton stages on the feature branch/i);

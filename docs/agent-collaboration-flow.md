@@ -117,8 +117,8 @@ Make the high-level story executable in technical terms and optimize delivery th
 - Assign semantic capability tier and deliberation after decomposition; let harness configuration resolve the concrete provider, model, and model-specific effort.
 - Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
 - Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
-- Write the complete draft atomically, read the exact written revision back, then self-review once for criterion/constraint coverage, vague placeholders, and consistency across dependencies, stages, references, and interfaces.
-- If self-review finds issues, apply one revision-pinned update; do not repeat the review.
+- Write the complete draft atomically, read the whole plan at the exact written revision back, then self-review once for criterion/constraint coverage, vague placeholders, and consistency across dependencies, stages, references, and interfaces.
+- If self-review finds issues, apply one revision-pinned surgical edit without rewriting unchanged plan resources; do not repeat the review.
 - Keep independent `plan-critic` review optional for explicit user requests rather than delaying every plan.
 - Continue refining with the user when planning reveals new constraints or product questions.
 

@@ -19,7 +19,8 @@ import { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildTaskPersistentContext } from "./implementation-context.js";
-import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType } from "./orchestrator-resources.js";
+import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType, type PlanEdit } from "./orchestrator-resources.js";
+import { normalizePlanBundle, normalizePlanEdit } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
 import { isTierTaskAssignment, type CapabilityTier, type Deliberation, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
@@ -50,7 +51,7 @@ Act as a constructive product and technical partner. Seek the outcome behind req
 
 Keep clear, local, reversible work ad hoc. Treat collaboration as phases with retained conversational momentum: use product-discussion for free exploration without workflow pressure; shape-story when the user chooses to make the outcome, scope, specification, or design boundary durable; plan-delivery when a coherent story should become an execution-ready technical plan; and workflow-run only for approved execution, evaluation, recovery, completion, and outcome briefing. Each active phase owns one deliverable and naturally offers the next phase in user-friendly words. If the user already requested end-to-end planning, continue from shape-story into plan-delivery without asking them to repeat permission unless a material checkpoint needs their decision. An acknowledgement can confirm progress within an already authorized shaping or planning phase, but never initiates planning or execution by itself. When a turn mixes a concrete change with questions, alternatives, or “what next,” stay in product discussion until that frontier is settled. A problem report, suggested fix/feature label, or request to “address” something is not by itself permission to start, stop, resume, or amend a workflow.
 
-Write plans with workflow_plan_write. Choose its identity mode from the user's words: create for a new, fresh, separate, or ignore-previous plan; update only when the user explicitly asks to revise or replace that exact existing plan. A create source is read-only background and never authorizes mutation of that source. If create versus update remains genuinely ambiguous, ask one identity question before mutation. Supply the complete plan bundle so the write is atomic; do not assemble ordinary plans through child-by-child resource patches. Raw resource tools are compatibility and repair surfaces. Never edit agent-artifacts directly.
+Write plans with workflow_plan_write. Choose its identity mode from the user's words: create for a new, fresh, separate, or ignore-previous plan; update only when the user explicitly asks to replace that exact existing plan; edit for revision-pinned surgical corrections after reading a written plan. A create source is read-only background and never authorizes mutation of that source. If create versus update remains genuinely ambiguous, ask one identity question before mutation. Supply the complete plan bundle for create or replacement so the initial write is atomic; use edit rather than resending unchanged plan content for self-review corrections. Raw resource tools are compatibility and repair surfaces. Never edit agent-artifacts directly.
 
 Initial approval is user-only through /workflow approve <work-item-id>. Routine approved amendments may retain approval only after the user has chosen execution rather than discussion and the change is within delegated intent; ask when outcome, explicit constraints, consequential policy, privacy/security, irreversible effects, or a retained decision materially changes.
 
@@ -152,19 +153,85 @@ const TASK_RESOURCE_BODY = Type.Union([
 ]);
 const INTEGRATION_UNIT_RESOURCE_BODY = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String({ description: "Bare task id in this work item, not a resource reference" })), intermediatePolicy: Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")]) }, { additionalProperties: false });
 const EVALUATION_RESOURCE_BODY = Type.Object({ manifest: EVALUATION_MANIFEST_RESOURCE }, { additionalProperties: false });
-const PLAN_BUNDLE = Type.Object({
+const CANONICAL_PLAN_BUNDLE = Type.Object({
 	workItem: WORK_ITEM_RESOURCE_BODY,
 	artifacts: Type.Array(ARTIFACT_RESOURCE_BODY),
 	tasks: Type.Array(TASK_RESOURCE_BODY),
 	integrationUnits: Type.Array(INTEGRATION_UNIT_RESOURCE_BODY),
 	evaluations: Type.Array(EVALUATION_RESOURCE_BODY),
 }, { additionalProperties: false });
+
+// Planner-facing authoring contracts omit harness-owned lifecycle and schema
+// boilerplate. Normalization restores the complete canonical shape before write.
+const PLAN_WORK_ITEM = Type.Object({
+	id: Type.String({ description: "Bare kebab-case work-item id" }),
+	title: Type.String(),
+	kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])),
+	delivery: Type.Object({
+		branchType: Type.Union([Type.Literal("feature"), Type.Literal("fix")]),
+		branchMode: Type.Optional(Type.Union([Type.Literal("create"), Type.Literal("continue")])),
+		featureBranch: Type.Optional(Type.String({ description: "Required only when branchMode=continue" })),
+	}, { additionalProperties: false }),
+	intentSections: INTENT_SECTIONS,
+}, { additionalProperties: false });
+const PLAN_ARTIFACT = Type.Union([
+	Type.Object({ id: Type.String(), type: Type.Literal("spec"), title: Type.Optional(Type.String()), sections: SPEC_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String(), type: Type.Literal("design"), title: Type.Optional(Type.String()), sections: DESIGN_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String(), type: Type.Literal("decision"), title: Type.Optional(Type.String()), sections: DECISION_SECTIONS }, { additionalProperties: false }),
+]);
+const PLAN_TASK = Type.Object({
+	id: Type.String({ description: "Bare kebab-case task id" }),
+	title: Type.Optional(Type.String()),
+	dependsOn: Type.Optional(Type.Array(Type.String())),
+	references: Type.Optional(Type.Object({ specs: Type.Optional(Type.Array(Type.String())), designs: Type.Optional(Type.Array(Type.String())), decisions: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false })),
+	stageId: Type.Optional(Type.String({ description: "Defaults to the task id, producing a safe singleton stage" })),
+	intermediateState: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("partial")])),
+	resourceClaims: Type.Optional(Type.Array(Type.String())),
+	assignment: Type.Optional(Type.Object({
+		role: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER), deliberation: Type.Optional(DELIBERATION),
+		modelOverride: Type.Optional(Type.Object({ model: Type.String(), effort: Type.Optional(EFFORT), strict: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
+		rationale: Type.Optional(Type.String()),
+	}, { additionalProperties: false })),
+	verification: Type.Optional(Type.Object({
+		timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])),
+		methods: Type.Optional(Type.Array(Type.String())), taskChecks: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()),
+	}, { additionalProperties: false })),
+	briefSections: Type.Object({
+		contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()),
+		requiredWork: Type.Optional(Type.Array(Type.String())), integrationExpectation: Type.Optional(Type.String()),
+		boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())),
+	}, { additionalProperties: false }),
+	acceptanceSections: Type.Object({
+		deliverables: Type.Optional(Type.Array(Type.String())),
+		criterionContributions: Type.Array(Type.Object({ criteria: Type.Array(Type.String({ description: "Qualified artifact#AC-NNN references" })), contribution: Type.String() }, { additionalProperties: false })),
+		boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())),
+	}, { additionalProperties: false }),
+}, { additionalProperties: false });
+const PLAN_INTEGRATION_UNIT = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String()), intermediatePolicy: Type.Optional(Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")])) }, { additionalProperties: false });
+const PLAN_EVALUATION = Type.Object({
+	id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
+	scope: Type.Optional(Type.Union([Type.Object({ task: Type.String() }, { additionalProperties: false }), Type.Object({ integrationUnit: Type.String() }, { additionalProperties: false }), Type.Object({ workItem: Type.String() }, { additionalProperties: false })])),
+	required: Type.Optional(Type.Boolean()), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String())),
+}, { additionalProperties: false });
+const PLAN_BUNDLE = Type.Object({
+	workItem: PLAN_WORK_ITEM,
+	artifacts: Type.Optional(Type.Array(PLAN_ARTIFACT)),
+	tasks: Type.Array(PLAN_TASK),
+	integrationUnits: Type.Optional(Type.Array(PLAN_INTEGRATION_UNIT)),
+	evaluations: Type.Optional(Type.Array(PLAN_EVALUATION)),
+}, { additionalProperties: false });
+const PLAN_EDIT = Type.Object({
+	action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("delete")]),
+	ref: Type.String({ description: "Exact child resource ref within target; target itself for a work-item update" }),
+	value: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: "Compact resource body for create, or only changed fields for update; omit for delete" })),
+}, { additionalProperties: false });
 const PLAN_WRITE_PARAMETERS = Type.Object({
-	mode: Type.Union([Type.Literal("create"), Type.Literal("update")]),
+	mode: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("edit")]),
 	basedOn: Type.Optional(Type.String({ description: "Create only: optional existing work-item ref used as read-only background; it is never mutated" })),
-	target: Type.Optional(Type.String({ description: "Update only: exact existing work-item ref to replace" })),
-	expectedRevision: Type.Optional(Type.Integer({ minimum: 1, description: "Update only: revision the complete replacement was planned from" })),
-	plan: PLAN_BUNDLE,
+	target: Type.Optional(Type.String({ description: "Update/edit: exact existing work-item ref" })),
+	expectedRevision: Type.Optional(Type.Integer({ minimum: 1, description: "Update/edit: revision read before writing" })),
+	plan: Type.Optional(PLAN_BUNDLE),
+	edits: Type.Optional(Type.Array(PLAN_EDIT, { minItems: 1 })),
 }, { additionalProperties: false });
 const CREATE_OPERATION_VARIANTS = [
 	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
@@ -214,11 +281,12 @@ const APPLY_CHANGE_PARAMETERS = Type.Object({
 // available on demand through workflow_schema and are revalidated before mutation.
 const OPEN_OBJECT = Type.Record(Type.String(), Type.Unknown());
 const COMPACT_PLAN_WRITE_PARAMETERS = Type.Object({
-	mode: Type.Union([Type.Literal("create"), Type.Literal("update")]),
+	mode: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("edit")]),
 	basedOn: Type.Optional(Type.String()),
 	target: Type.Optional(Type.String()),
 	expectedRevision: Type.Optional(Type.Integer({ minimum: 1 })),
-	plan: OPEN_OBJECT,
+	plan: Type.Optional(OPEN_OBJECT),
+	edits: Type.Optional(Type.Array(Type.Object({ action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("delete")]), ref: Type.String(), value: Type.Optional(OPEN_OBJECT) }, { additionalProperties: false }))),
 }, { additionalProperties: false });
 const COMPACT_CREATE_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, parent: Type.Optional(Type.String()), body: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
 const COMPACT_PATCH_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, ref: Type.String(), patch: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
@@ -636,7 +704,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_get",
 		label: "Get Workflow Resource",
-		description: "Get a compact resource summary by default. Request view=full with offset/limit or findText to read a bounded, revision-pinned slice of the complete representation.",
+		description: "Get a compact resource summary by default. For a work item, view=full returns the whole plan graph—artifact contents, structured task contracts, units, and evaluations—in revision-pinned slices for review.",
 		parameters: Type.Object({ ref: Type.String({ description: "For example work-item:checkout/task:implement-checkout or agent:<id>" }), view: Type.Optional(Type.Union([Type.Literal("summary"), Type.Literal("full")])), revision: Type.Optional(Type.Integer({ minimum: 1 })), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })), findText: Type.Optional(Type.String({ maxLength: 500 })) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
@@ -671,7 +739,9 @@ export default function workflow(pi: ExtensionAPI): void {
 		parameters: Type.Object({ operation: Type.Union([Type.Literal("plan-write"), Type.Literal("create"), Type.Literal("patch"), Type.Literal("apply-change")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })) }, { additionalProperties: false }),
 		async execute(_id, params) {
 			try {
-				const schema = JSON.stringify(schemaFor(params.operation, params.resource as CanonicalResourceType | undefined), null, 2);
+				// Compact JSON keeps the ordinary plan-write contract within one bounded
+				// read while remaining an exact machine-readable schema.
+				const schema = JSON.stringify(schemaFor(params.operation, params.resource as CanonicalResourceType | undefined));
 				const slice = sliceText(schema, { ...(params.offset !== undefined ? { offset: params.offset } : {}), ...(params.limit ? { limit: params.limit } : {}) });
 				return textResult(`${params.operation}${params.resource ? `/${params.resource}` : ""} schema.\n${slice.text}${slice.page.nextOffset !== undefined ? `\nMore omitted; call workflow_schema with offset=${slice.page.nextOffset}.` : ""}`, { operation: params.operation, resource: params.resource, page: slice.page });
 			} catch (error) { throw structuredCapabilityError(error); }
@@ -681,7 +751,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_plan_write",
 		label: "Write Complete Workflow Plan",
-		description: "Atomically write one complete plan draft or its single post-review correction. Use mode=create for a new, fresh, separate, or ignore-previous plan; basedOn is read-only context and is never mutated. Use mode=update only when the user explicitly asks to revise that exact plan or when correcting its just-read self-review findings, pinned to expectedRevision. Call workflow_schema with operation=plan-write for the exact bundle shape.",
+		description: "Write a structured workflow plan. Use create for a new/fresh/separate plan, update only for an explicit complete replacement, and revision-pinned edit for surgical self-review corrections without resending unchanged content. basedOn is read-only. Harness-owned defaults keep create/update compact; task brief and acceptance structure stays mandatory. Read workflow_schema operation=plan-write for exact fields.",
 		parameters: COMPACT_PLAN_WRITE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -690,26 +760,41 @@ export default function workflow(pi: ExtensionAPI): void {
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					assertExactSchema(PLAN_WRITE_PARAMETERS, params, "workflow_plan_write");
 					const exact = params as any;
-					if (exact.mode === "create" && (exact.target !== undefined || exact.expectedRevision !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan create accepts basedOn, not target or expectedRevision");
-					if (exact.mode === "update" && (typeof exact.target !== "string" || !Number.isInteger(exact.expectedRevision) || exact.basedOn !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan update requires target and expectedRevision and does not accept basedOn");
+					if (exact.mode === "create" && (exact.target !== undefined || exact.expectedRevision !== undefined || exact.plan === undefined || exact.edits !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan create requires plan and accepts basedOn, not target, expectedRevision, or edits");
+					if (exact.mode === "update" && (typeof exact.target !== "string" || !Number.isInteger(exact.expectedRevision) || exact.plan === undefined || exact.basedOn !== undefined || exact.edits !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan update requires target, expectedRevision, and plan; it does not accept basedOn or edits");
+					if (exact.mode === "edit" && (typeof exact.target !== "string" || !Number.isInteger(exact.expectedRevision) || !Array.isArray(exact.edits) || exact.edits.length === 0 || exact.plan !== undefined || exact.basedOn !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "Plan edit requires target, expectedRevision, and edits; it does not accept plan or basedOn");
+					const normalizedPlan = exact.plan === undefined ? undefined : normalizePlanBundle(exact.plan);
 					if (exact.mode === "create" && exact.basedOn) {
 						const source = parseResourceRef(exact.basedOn);
 						if (source.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "basedOn must be a work-item ref");
 						await runtime.workItems.read(source.id);
-						if (source.id === exact.plan.workItem.id) throw new HarnessError("INVALID_ARTIFACT", "A new plan needs a new work-item id; basedOn remains read-only");
+						if (source.id === normalizedPlan!.workItem.id) throw new HarnessError("INVALID_ARTIFACT", "A new plan needs a new work-item id; basedOn remains read-only");
 					}
-					const workItemId = exact.plan.workItem.id as string;
+					const target = exact.target ? parseResourceRef(exact.target) : undefined;
+					if (target && target.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "Plan target must be a work-item ref");
+					const workItemId = exact.mode === "create" ? normalizedPlan!.workItem.id as string : target!.id;
+					if (exact.mode === "update" && normalizedPlan!.workItem.id !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Update target ${exact.target} must match plan id ${String(normalizedPlan!.workItem.id)}`);
+					if (normalizedPlan) assertExactSchema(CANONICAL_PLAN_BUNDLE, normalizedPlan, "normalized workflow plan");
 					const ref = `work-item:${workItemId}`;
-					if (exact.mode === "update") {
-						const target = parseResourceRef(exact.target);
-						if (target.type !== "work-item" || target.id !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Update target ${exact.target} must match plan id ${workItemId}`);
-					}
-					const authority: MutationAuthority = { disposition: "request-user", rationale: exact.mode === "create" ? "Write the new complete plan for user review" : "Replace the explicitly selected plan for user review", ...(exact.basedOn ? { sources: [exact.basedOn] } : {}) };
+					const authority: MutationAuthority = { disposition: "request-user", rationale: exact.mode === "create" ? "Write the new complete plan for user review" : exact.mode === "update" ? "Replace the explicitly selected plan for user review" : "Apply revision-pinned self-review corrections for user review", ...(exact.basedOn ? { sources: [exact.basedOn] } : {}) };
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
-					const result = await service.transaction(`harness: ${exact.mode} complete plan ${workItemId}`, () => service.writePlan(exact.mode === "create" ? { mode: "create", plan: exact.plan } : { mode: "update", target: exact.target, expectedRevision: exact.expectedRevision, plan: exact.plan }, authority));
-					await runtime.events.append("plan.written", { mode: exact.mode, ref, ...(exact.basedOn ? { basedOn: exact.basedOn } : {}), commit: result.commit });
-					const receipt = await mutationReceipt(runtime, result.commit, [{ action: exact.mode === "create" ? "create" : "patch", ref }], { mode: exact.mode });
-					return textResult(`${exact.mode === "create" ? "Created" : "Updated"} complete plan ${ref}${result.commit ? ` at ${result.commit.slice(0, 12)}` : ""}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+					let changes: Array<{ action: "create" | "patch" | "delete"; ref: string }>;
+					let result;
+					if (exact.mode === "edit") {
+						const edits = exact.edits.map((entry: { action: PlanEdit["action"]; ref: string; value?: unknown }) => {
+							const parsed = parseResourceRef(entry.ref);
+							return normalizePlanEdit(parsed.type, entry.action, entry.ref, entry.value, workItemId);
+						});
+						result = await service.transaction(`harness: edit plan ${workItemId}`, () => service.editPlan(exact.target, exact.expectedRevision, edits, authority));
+						changes = edits.map((edit: PlanEdit) => ({ action: edit.action === "create" ? "create" : edit.action === "delete" ? "delete" : "patch", ref: edit.ref }));
+					} else {
+						result = await service.transaction(`harness: ${exact.mode} complete plan ${workItemId}`, () => service.writePlan(exact.mode === "create" ? { mode: "create", plan: normalizedPlan! } : { mode: "update", target: exact.target, expectedRevision: exact.expectedRevision, plan: normalizedPlan! }, authority));
+						changes = [{ action: exact.mode === "create" ? "create" : "patch", ref }];
+					}
+					await runtime.events.append("plan.written", { mode: exact.mode, ref, ...(exact.basedOn ? { basedOn: exact.basedOn } : {}), changes: changes.length, commit: result.commit });
+					const receipt = await mutationReceipt(runtime, result.commit, changes, { mode: exact.mode });
+					const verb = exact.mode === "create" ? "Created" : exact.mode === "update" ? "Replaced" : "Edited";
+					return textResult(`${verb} plan ${ref}${result.commit ? ` at ${result.commit.slice(0, 12)}` : ""}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, "target" in params ? params.target : undefined); }
 		},

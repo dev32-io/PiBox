@@ -26,6 +26,12 @@ export interface PlanBundle {
 	evaluations: Array<Record<string, unknown>>;
 }
 
+export interface PlanEdit {
+	action: "create" | "update" | "delete";
+	ref: string;
+	value?: Record<string, unknown>;
+}
+
 const REF = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(artifact|task|integration-unit|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*))?$/;
 
 export function parseResourceRef(ref: string): ParsedResourceRef {
@@ -206,9 +212,29 @@ export class OrchestratorResourceService {
 
 	async get(ref: string): Promise<unknown> {
 		const parsedRef = parseResourceRef(ref);
+		const startHead = parsedRef.type === "work-item" ? await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]) : undefined;
 		const item = await this.store.read(parsedRef.workItemId);
 		const envelope = (resource: unknown) => ({ resource, ref, revision: item.planning.revision, approval: item.planning, allowedActions: allowed(parsedRef.type, Boolean(item.finalization?.locked || item.phase === "complete")) });
-		if (parsedRef.type === "work-item") return envelope({ ...item, intent: (await this.store.readArtifact(item.id, "intent")).content });
+		if (parsedRef.type === "work-item") {
+			const artifactContracts = await Promise.all(item.artifacts.map((artifact) => this.store.readArtifact(item.id, artifact.id)));
+			const taskContracts = await Promise.all(item.tasks.map((task) => this.store.readTaskContract(item.id, task.id)));
+			const evaluations = await Promise.all(item.evaluations.map((evaluation) => this.store.readEvaluation(item.id, evaluation.id)));
+			const endHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+			const endRevision = (await this.store.read(item.id)).planning.revision;
+			if (startHead !== endHead || endRevision !== item.planning.revision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `work-item:${item.id} changed while its complete plan was being read; retry the full read`);
+			return envelope({
+				workItem: {
+					id: item.id, title: item.title, kind: item.kind, phase: item.phase, state: item.state, planning: item.planning,
+					...(item.delivery ? { delivery: item.delivery } : {}), ...(item.finalization ? { finalization: item.finalization } : {}),
+				},
+				artifacts: artifactContracts.map(({ metadata, content }) => ({
+					id: metadata.id, type: metadata.type, status: metadata.status, ...(metadata.narrativeSchemaVersion ? { narrativeSchemaVersion: metadata.narrativeSchemaVersion } : {}),
+					...(metadata.links ? { links: metadata.links } : {}), content,
+				})),
+				tasks: taskContracts.map(({ manifest, brief, acceptance }) => ({ manifest, brief, acceptance })),
+				executionStages: item.executionStages ?? [], integrationUnits: item.integrationUnits, evaluations,
+			});
+		}
 		if (parsedRef.type === "artifact") return envelope(await this.store.readArtifact(item.id, parsedRef.id));
 		if (parsedRef.type === "task") return envelope(await this.store.readTaskContract(item.id, parsedRef.id));
 		if (parsedRef.type === "integration-unit") {
@@ -219,6 +245,51 @@ export class OrchestratorResourceService {
 		return envelope(await this.store.readEvaluation(item.id, parsedRef.id));
 	}
 
+	private async assertPlanEditable(workItemId: string, expectedRevision: number): Promise<WorkItemIndex> {
+		const current = await this.store.read(workItemId);
+		if (current.planning.revision !== expectedRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `work-item:${workItemId} advanced from requested revision ${expectedRevision} to ${current.planning.revision}`);
+		if (current.phase !== "planning" || current.finalization?.locked) throw new HarnessError("CAPABILITY_DENIED", `Plan ${workItemId} cannot be edited after delivery or finalization`);
+		for (const task of current.tasks) {
+			const manifest = await this.store.readTask(workItemId, task.id);
+			if (manifest.runtime || !["draft", "blocked", "ready"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Plan ${workItemId} has task delivery history and cannot be edited`);
+		}
+		for (const evaluation of current.evaluations) {
+			const manifest = await this.store.readEvaluation(workItemId, evaluation.id);
+			if (manifest.attempt > 0 || manifest.result) throw new HarnessError("CAPABILITY_DENIED", `Plan ${workItemId} has evaluation history and cannot be edited`);
+		}
+		return current;
+	}
+
+	/** Apply revision-pinned, resource-level plan corrections without rewriting the complete bundle. */
+	async editPlan(target: string, expectedRevision: number, edits: PlanEdit[], authority: MutationAuthority): Promise<WorkItemIndex> {
+		const parsedTarget = parseResourceRef(target);
+		if (parsedTarget.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "Plan edit target must be a work item");
+		if (edits.length === 0) throw new HarnessError("INVALID_ARTIFACT", "Plan edit requires at least one surgical change");
+		const current = await this.assertPlanEditable(parsedTarget.id, expectedRevision);
+		for (const edit of edits) {
+			const parsed = parseResourceRef(edit.ref);
+			if (parsed.workItemId !== parsedTarget.id) throw new HarnessError("INVALID_ARTIFACT", `Plan edit ${edit.ref} is outside ${target}`);
+			if (edit.action === "delete") {
+				if (parsed.type === "work-item") throw new HarnessError("CAPABILITY_DENIED", "Surgical plan edits cannot delete the work item");
+				if (parsed.type === "integration-unit") await this.store.removeIntegrationUnit(parsed.workItemId, parsed.id, authority);
+				else await this.delete(edit.ref, { authority });
+				continue;
+			}
+			if (!edit.value) throw new HarnessError("INVALID_ARTIFACT", `Plan ${edit.action} requires value for ${edit.ref}`);
+			if (edit.action === "update") {
+				await this.patch(edit.ref, edit.value, { authority });
+				continue;
+			}
+			if (parsed.type === "work-item") throw new HarnessError("INVALID_ARTIFACT", "A surgical plan edit cannot create another work item");
+			const bodyId = parsed.type === "task" || parsed.type === "evaluation"
+				? object(edit.value.manifest, `${parsed.type} manifest`).id
+				: edit.value.id;
+			if (bodyId !== parsed.id) throw new HarnessError("INVALID_ARTIFACT", `Created ${parsed.type} id ${String(bodyId)} must match edit ref ${parsed.id}`);
+			await this.create(parsed.type, target, edit.value, authority);
+		}
+		return this.coalesceRevision(parsedTarget.id, current, authority);
+	}
+
 	async writePlan(input: { mode: "create"; plan: PlanBundle } | { mode: "update"; target: string; expectedRevision: number; plan: PlanBundle }, authority: MutationAuthority): Promise<WorkItemIndex> {
 		const plan = input.plan;
 		const planId = string(plan.workItem.id, "plan.workItem.id");
@@ -226,17 +297,7 @@ export class OrchestratorResourceService {
 			const target = parseResourceRef(input.target);
 			if (target.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "Plan update target must be a work item");
 			if (target.id !== planId) throw new HarnessError("INVALID_ARTIFACT", `Update plan id ${planId} must match target ${target.id}`);
-			const current = await this.store.read(target.id);
-			if (current.planning.revision !== input.expectedRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `${input.target} advanced from requested revision ${input.expectedRevision} to ${current.planning.revision}`);
-			if (current.phase !== "planning" || current.finalization?.locked) throw new HarnessError("CAPABILITY_DENIED", `Plan ${target.id} cannot be replaced after delivery or finalization`);
-			for (const task of current.tasks) {
-				const manifest = await this.store.readTask(target.id, task.id);
-				if (manifest.runtime || !["draft", "blocked", "ready"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Plan ${target.id} has task delivery history and cannot be replaced`);
-			}
-			for (const evaluation of current.evaluations) {
-				const manifest = await this.store.readEvaluation(target.id, evaluation.id);
-				if (manifest.attempt > 0 || manifest.result) throw new HarnessError("CAPABILITY_DENIED", `Plan ${target.id} has evaluation history and cannot be replaced`);
-			}
+			const current = await this.assertPlanEditable(target.id, input.expectedRevision);
 			for (const evaluation of current.evaluations) await this.store.removeEvaluation(target.id, evaluation.id, authority);
 			for (const unit of current.integrationUnits) await this.store.removeIntegrationUnit(target.id, unit.id, authority);
 			const remainingTaskIds = new Set(current.tasks.map((task) => task.id));
@@ -316,7 +377,11 @@ export class OrchestratorResourceService {
 			const assemblyPatch = object((patch.manifest as Record<string, unknown> | undefined)?.assembly ?? directManifestPatch.assembly ?? {}, "assembly patch");
 			if (assemblyPatch.stageId === undefined && assemblyPatch.integrationUnit !== undefined) manifest.assembly.stageId = assemblyPatch.integrationUnit as string;
 			this.validateTaskAssignment(manifest);
-			return this.store.reviseTask({ workItemId: item.id, manifest, authority: context.authority, brief: (patch.brief as string | undefined) ?? current.brief, acceptance: (patch.acceptance as string | undefined) ?? current.acceptance, ...(patch.briefSections ? { briefSections: object(patch.briefSections, "briefSections") } : {}), ...(patch.acceptanceSections ? { acceptanceSections: object(patch.acceptanceSections, "acceptanceSections") } : {}), narrativeSchemaVersion: patch.briefSections || patch.acceptanceSections ? 2 : 1 });
+			const hasBriefSections = patch.briefSections !== undefined;
+			const hasAcceptanceSections = patch.acceptanceSections !== undefined;
+			if (hasBriefSections !== hasAcceptanceSections) throw new HarnessError("INVALID_ARTIFACT", "Task patches must provide briefSections and acceptanceSections together");
+			const structured = hasBriefSections && hasAcceptanceSections;
+			return this.store.reviseTask({ workItemId: item.id, manifest, authority: context.authority, brief: (patch.brief as string | undefined) ?? current.brief, acceptance: (patch.acceptance as string | undefined) ?? current.acceptance, ...(patch.briefSections ? { briefSections: object(patch.briefSections, "briefSections") } : {}), ...(patch.acceptanceSections ? { acceptanceSections: object(patch.acceptanceSections, "acceptanceSections") } : {}), ...(structured ? { narrativeSchemaVersion: 2 as const } : {}) });
 		}
 		if (parsedRef.type === "integration-unit") {
 			const current = item.integrationUnits.find((unit) => unit.id === parsedRef.id);

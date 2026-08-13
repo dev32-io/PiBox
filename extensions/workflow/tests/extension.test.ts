@@ -10,11 +10,13 @@ test("registers the resource API and hides legacy planning tools from the main s
 	const handlers = new Map<string, (...args: any[]) => unknown>();
 	const schemas = new Map<string, unknown>();
 	const descriptions = new Map<string, string>();
+	const definitions = new Map<string, any>();
 	let activeTools: string[] = [];
 	const pi = {
 		events: { on() {}, emit() {} },
 		registerTool(definition: { name: string; description?: string; parameters?: unknown }) {
 			tools.push(definition.name);
+			definitions.set(definition.name, definition);
 			descriptions.set(definition.name, definition.description ?? "");
 			schemas.set(definition.name, definition.parameters);
 		},
@@ -69,8 +71,12 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_apply_change")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_create")), /tier|deliberation|isolation|parallelism/);
 	const planWriteSchema = JSON.stringify(schemas.get("workflow_plan_write"));
-	for (const token of ["create", "update", "basedOn", "target", "expectedRevision"]) assert.match(planWriteSchema, new RegExp(token));
+	for (const token of ["create", "update", "edit", "edits", "basedOn", "target", "expectedRevision"]) assert.match(planWriteSchema, new RegExp(token));
+	assert.ok(planWriteSchema.length < 1500, "always-visible plan writer stays compact");
 	assert.ok(JSON.stringify(schemas.get("workflow_apply_change")).length < 2500, "always-visible batch schema stays compact");
+	const exactPlanSchema = await definitions.get("workflow_schema").execute("schema", { operation: "plan-write", limit: 12000 });
+	assert.equal(exactPlanSchema.details.page.hasMore, false, "exact plan-write schema fits one bounded read");
+	assert.ok(exactPlanSchema.details.page.totalCharacters < 12000);
 	assert.match(JSON.stringify(schemas.get("workflow_list")), /cursor.*limit/);
 	assert.match(JSON.stringify(schemas.get("workflow_get")), /summary.*full.*findText/);
 	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);

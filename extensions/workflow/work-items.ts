@@ -499,8 +499,8 @@ export class WorkItemStore {
 	async reviseTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
 		validateId(input.manifest.id, "Task id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
-		const brief = narrativeSchemaVersion === 2 ? renderArtifact("taskBrief", `Task Brief: ${input.manifest.title}`, input.briefSections ?? {}) : input.brief;
-		const acceptance = narrativeSchemaVersion === 2 ? renderArtifact("taskAcceptance", `Task Acceptance: ${input.manifest.title}`, input.acceptanceSections ?? {}) : input.acceptance;
+		const brief = narrativeSchemaVersion === 2 && input.briefSections !== undefined ? renderArtifact("taskBrief", `Task Brief: ${input.manifest.title}`, input.briefSections) : input.brief;
+		const acceptance = narrativeSchemaVersion === 2 && input.acceptanceSections !== undefined ? renderArtifact("taskAcceptance", `Task Acceptance: ${input.manifest.title}`, input.acceptanceSections) : input.acceptance;
 		if (!brief?.trim() || !acceptance?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Task brief and acceptance must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);

@@ -66,6 +66,7 @@ test("revises an approved task in place while retaining approval continuity", as
 	assert.equal(after.tasks.length, 1);
 	assert.deepEqual(after.executionStages, [{ id: "delivery", tasks: ["build-app"] }]);
 	assert.equal((await store.readTask("resource-flow", "build-app")).title, "Build the revised app");
+	assert.match((await store.readTaskContract("resource-flow", "build-app")).brief, /Build it/);
 	await service.transaction("harness: patch task verification", () => service.patch("work-item:resource-flow/task:build-app", { verification: { taskChecks: ["printf hello"] } }, { authority: retain }));
 	assert.deepEqual((await store.readTask("resource-flow", "build-app")).verification.taskChecks, ["printf hello"]);
 	assert.equal(after.planning.status, "approved");
@@ -180,6 +181,51 @@ test("writes complete plans with explicit create and revision-pinned update iden
 	assert.deepEqual(updated.integrationUnits.map((entry) => entry.id), ["delivery-v2"]);
 	await assert.rejects(service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, retain), /advanced from requested revision/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("returns the complete work-item plan for durable review", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "review-plan", title: "Review plan", kind: "story", intent: "Review all plan contracts." });
+	await store.putArtifact({ workItemId: "review-plan", id: "behavior", type: "spec", content: "# Behavior\n\nOne behavior.", operation: "create" });
+	await store.defineTask({ workItemId: "review-plan", manifest: task("review-task"), brief: "Structured worker boundary.", acceptance: "Observable worker proof." });
+	const full = await service.get("work-item:review-plan") as any;
+	assert.equal(full.revision, (await store.read("review-plan")).planning.revision);
+	assert.equal(full.resource.artifacts.find((entry: any) => entry.id === "behavior").content.includes("One behavior"), true);
+	assert.equal(full.resource.tasks[0].brief.includes("Structured worker boundary"), true);
+	assert.equal(full.resource.tasks[0].acceptance.includes("Observable worker proof"), true);
+});
+
+test("applies surgical plan edits in one revision and rejects stale edits", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "surgical-plan", title: "Surgical plan", kind: "story", intent: "Correct one written plan." });
+	await store.defineTask({ workItemId: "surgical-plan", manifest: task("build-app"), brief: "Original structured boundary.", acceptance: "Original observable proof." });
+	const baseline = await store.read("surgical-plan");
+	const revisedManifest = task("build-app"); revisedManifest.title = "Build corrected app";
+	await service.transaction("harness: edit plan", () => service.editPlan("work-item:surgical-plan", baseline.planning.revision, [
+		{ action: "update", ref: "work-item:surgical-plan", value: { title: "Corrected plan" } },
+		{ action: "update", ref: "work-item:surgical-plan/task:build-app", value: { manifest: revisedManifest, brief: "Corrected structured boundary.", acceptance: "Corrected observable proof." } },
+	], retain));
+	const revised = await store.read("surgical-plan");
+	assert.equal(revised.planning.revision, baseline.planning.revision + 1);
+	assert.equal(revised.title, "Corrected plan");
+	assert.equal((await store.readTask("surgical-plan", "build-app")).title, "Build corrected app");
+	assert.match((await store.readTaskContract("surgical-plan", "build-app")).brief, /Corrected structured boundary/);
+	await assert.rejects(service.editPlan("work-item:surgical-plan", baseline.planning.revision, [{ action: "update", ref: "work-item:surgical-plan", value: { title: "Stale" } }], retain), /advanced from requested revision/);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("requires surgical create ids to match their exact refs", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "edit-identity", title: "Edit identity", kind: "story", intent: "Keep edit refs exact." });
+	const revision = (await store.read("edit-identity")).planning.revision;
+	await assert.rejects(service.transaction("harness: reject mismatched edit", () => service.editPlan("work-item:edit-identity", revision, [
+		{ action: "update", ref: "work-item:edit-identity", value: { title: "Must roll back" } },
+		{ action: "create", ref: "work-item:edit-identity/task:expected", value: { manifest: task("different"), brief: "Brief", acceptance: "Proof" } },
+	], retain)), /must match edit ref/);
+	const unchanged = await store.read("edit-identity");
+	assert.equal(unchanged.title, "Edit identity");
+	assert.equal(unchanged.planning.revision, revision);
+	assert.deepEqual(unchanged.tasks, []);
 });
 
 test("postponement stays mutable while archive requires explicit reopen", async (t) => {
