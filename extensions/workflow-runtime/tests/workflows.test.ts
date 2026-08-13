@@ -38,7 +38,8 @@ function fixture() {
 test("registers the generalized workflow and subagent surface", () => {
 	const f = fixture();
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
-	assert.match(f.tools.get("subagent_spawn").description, /Background is the default/);
+	assert.match(f.tools.get("subagent_spawn").description, /read-only subagent.*configured specialist role and task prompt.*Background is the default/i);
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /role.*task.*background.*foreground/);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 });
 
@@ -75,26 +76,46 @@ test("background step failure pauses instead of retrying unchanged state", async
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("background spawning returns immediately and later emits a lifecycle message", async () => {
+test("background spawning delegates a role and prompt and later emits a lifecycle message", async () => {
 	const f = fixture();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
+	let request: any;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { await gate; return { ref, state: "completed", summary: "Background step completed." }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async spawnSubagent(input) { request = input; await gate; return { ref: "agent:one", agentId: "one", state: "completed", summary: "Background critic completed." }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
 		async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { ref: "test:step" }, undefined, undefined, f.ctx);
-	assert.match(spawned.content[0].text, /Spawned test:step in background/);
+	const spawned = await f.tools.get("subagent_spawn").execute("call", { role: "plan-critic", task: "Review it" }, undefined, undefined, f.ctx);
+	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
+	assert.deepEqual({ operationId: request.operationId, role: request.role, task: request.task }, { operationId: "call", role: "plan-critic", task: "Review it" });
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("completed")), false);
 	release();
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background step completed")), true);
-	assert.equal(f.messages.find((entry) => String(entry.message.content).includes("Background step completed"))?.message.display, false);
+	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), true);
+	assert.equal(f.messages.find((entry) => String(entry.message.content).includes("Background critic completed"))?.message.display, false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("foreground spawning waits for the delegated subagent result", async () => {
+	const f = fixture();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async spawnSubagent(request) { return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${request.role}: ready` }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const settled = await f.tools.get("subagent_spawn").execute("call", { role: "plan-critic", task: "Review", mode: "foreground" }, undefined, undefined, f.ctx);
+	assert.equal(settled.content[0].text, "plan-critic: ready");
+	assert.equal(settled.details.agentId, "critic");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

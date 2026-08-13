@@ -6,6 +6,18 @@ function task(id: string, status: string, dependsOn: string[] = [], stageId = "d
 	return { id, title: id, status, dependsOn, execution: { resourceClaims: [id] }, assembly: { stageId } };
 }
 
+test("exposes dynamic role delegation through the workflow adapter", async () => {
+	let captured: any;
+	const expected: any = { ref: "agent:critic", state: "completed", summary: "ready", agentId: "critic" };
+	const adapter = createHarnessWorkflowAdapter({
+		runtimeFor: async () => ({} as any), launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }),
+		spawnSubagent: async (request) => { captured = request; return expected; },
+	});
+	const request: any = { operationId: "spawn-1", role: "plan-critic", task: "Review" };
+	assert.equal(await adapter.spawnSubagent?.(request, {} as any), expected);
+	assert.deepEqual(captured, request);
+});
+
 test("resume prepares stopped tasks from current dependency state", async () => {
 	const tasks: any[] = [task("first", "integrated"), task("second", "cancelled", ["first"]), task("third", "failed", ["second"])];
 	const item: any = { id: "example", planning: { status: "approved" }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };

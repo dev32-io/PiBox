@@ -31,6 +31,18 @@ export interface WorkflowRunResult {
 	attention?: boolean;
 }
 
+/** Free-form main-session delegation. Managed workflow steps keep their canonical adapter-owned refs. */
+export interface DynamicSubagentRequest {
+	operationId: string;
+	role: string;
+	task: string;
+	tier?: "low" | "medium" | "high" | "max";
+	deliberation?: "standard" | "deep";
+	model?: string;
+	effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+	strict?: boolean;
+}
+
 export interface WorkflowAdapter {
 	id: string;
 	canHandle(ref: string): boolean;
@@ -38,6 +50,8 @@ export interface WorkflowAdapter {
 	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
+	/** Optional dynamic role/task launcher used by the main-session subagent_spawn tool. */
+	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;
 	listSubagents(ctx: ExtensionContext): Promise<unknown[]>;
 	listMessages(ctx: ExtensionContext): Promise<unknown[]>;

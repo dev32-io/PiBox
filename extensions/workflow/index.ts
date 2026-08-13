@@ -28,7 +28,7 @@ import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type WorkflowAdapterDiscovery } from "../workflow-runtime/api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
@@ -53,6 +53,8 @@ Keep clear, local, reversible work ad hoc. Treat collaboration as phases with re
 
 Write plans with workflow_plan_write. Choose its identity mode from the user's words: create for a new, fresh, separate, or ignore-previous plan; update only when the user explicitly asks to replace that exact existing plan; edit for revision-pinned surgical corrections after reading a written plan. A create source is read-only background and never authorizes mutation of that source. If create versus update remains genuinely ambiguous, ask one identity question before mutation. Supply the complete plan bundle for create or replacement so the initial write is atomic; use edit rather than resending unchanged plan content for self-review corrections. Raw resource tools are compatibility and repair surfaces. Never edit agent-artifacts directly.
 
+Use subagent_spawn for dynamic role-and-prompt delegation; it defaults to background. Managed workflow tasks and evaluations are scheduled internally by workflow_start or workflow resume and use the same child coordinator—do not ask the model to launch each planned task separately.
+
 Initial approval is user-only through /workflow approve <work-item-id>. Routine approved amendments may retain approval only after the user has chosen execution rather than discussion and the change is within delegated intent; ask when outcome, explicit constraints, consequential policy, privacy/security, irreversible effects, or a retained decision materially changes.
 
 Start approved delivery with workflow_start. Let the runtime advance routine stages, merges, and evaluations. Esc controls only the current chat turn. Preserve dirty or conflicting work, pause once on failure, and never resolve destructive recovery invisibly. Claim completion only from fresh evidence and brief the user from outcome.md plus observed workflow results.`;
@@ -69,7 +71,6 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_apply_change",
 	"workflow_transition",
 	"workflow_init",
-	"agent_run",
 	"exploration_launch",
 	"task_integrate",
 	"evaluation_record",
@@ -648,12 +649,70 @@ export default function workflow(pi: ExtensionAPI): void {
 		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
 	};
 
+	const spawnDynamicSubagent = async (request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult> => {
+		try {
+			requireTrusted(ctx);
+			const runtime = await runtimeFor(ctx);
+			const role = runtime.config.roles[request.role];
+			if (!role) {
+				const availableRoles = Object.keys(runtime.config.roles).sort();
+				const normalized = request.role.replace(/[_\s]+/g, "-").toLowerCase();
+				const suggestion = availableRoles.find((name) => name === normalized || name.includes(normalized) || normalized.includes(name));
+				throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow role: ${request.role}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Available roles: ${availableRoles.join(", ")}`);
+			}
+			if (request.effort && !request.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
+			const routing = {
+				tier: (request.tier ?? role.tier!) as CapabilityTier,
+				deliberation: (request.deliberation ?? role.deliberation!) as Deliberation,
+				...(request.model ? { override: { model: request.model, ...(request.effort ? { effort: request.effort as HarnessEffort } : {}) } } : {}),
+				strict: request.strict ?? false,
+			};
+			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+			const resolution = resolveHarnessModel(runtime.config, availableModels, routing);
+			if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No configured candidate is available", { attempts: resolution.attempts });
+			if (["implementer", "test-implementer", "repair-implementer"].includes(request.role)) throw new HarnessError("CAPABILITY_DENIED", `Role ${request.role} is managed-work execution and must be scheduled by workflow_start or workflow resume`);
+			const defaultTools: Record<string, string[]> = {
+				researcher: ["web_search", "source_check", "fetch_content", "get_search_content"],
+				explorer: ["read", "grep", "find", "bash"],
+				"plan-critic": ["read", "grep", "find"],
+				"spec-reviewer": ["read", "grep", "find", "bash"],
+				"quality-reviewer": ["read", "grep", "find", "bash"],
+				"e2e-tester": ["read", "grep", "find", "bash"],
+			};
+			const launched = await runtime.coordinator.launch({
+				operationId: request.operationId, role: request.role, task: request.task,
+				assignment: { schemaVersion: 1, role: request.role, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(request.deliberation ? { deliberation: request.deliberation } : {}), ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}), ...(request.strict !== undefined ? { strict: request.strict } : {}) }, cwd: runtime.identity.root,
+				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+				tools: role.tools ?? defaultTools[request.role] ?? ["read", "grep", "find"],
+				workspace: runtime.identity.root,
+				...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt)
+					? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string }
+					: existsSync(join(BUILT_IN_ROLE_ROOT, `${request.role}.md`))
+						? { promptPath: join(BUILT_IN_ROLE_ROOT, `${request.role}.md`) }
+						: {}),
+				...(role.skills ? { skillPaths: role.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) } : {}),
+				...(signal ? { signal } : {}), ...(onText ? { onText } : {}),
+			});
+			const direct = launched.result;
+			await runtime.events.append("subagent.settled", { agentId: launched.agent.id, role: request.role, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
+			return {
+				ref: `agent:${launched.agent.id}`,
+				state: direct.exitCode === 0 ? "completed" : "failed",
+				summary: direct.text || direct.stderr || `Subagent exited ${direct.exitCode}.`, agentId: launched.agent.id,
+				...(direct.exitCode === 0 ? {} : { attention: true }),
+			};
+		} catch (error) {
+			throw new Error(describeHarnessError(error));
+		}
+	};
+
 	pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: unknown) => {
 		const discovery = event as WorkflowAdapterDiscovery;
 		discovery.register(createHarnessWorkflowAdapter({
 			runtimeFor,
 			launchTask: launchManagedTask,
 			launchEvaluation: launchManagedEvaluation,
+			spawnSubagent: spawnDynamicSubagent,
 			async reconcileReported(runtime) {
 				await reconcileReportedAgents({ identity: runtime.identity, registry: runtime.agents, workItems: runtime.workItems, mutex: runtime.mutex });
 			},
@@ -1025,77 +1084,6 @@ export default function workflow(pi: ExtensionAPI): void {
 				const agent = await runtime.agents.transition(launched.agent.id, "completed", { summary: handoff.answer });
 				return textResult(handoff.answer, { agent, handoff });
 			} catch (error) { throw new Error(describeHarnessError(error)); }
-		},
-	});
-
-	pi.registerTool({
-		name: "agent_run",
-		label: "Run Workflow Specialist",
-		description: "Spawn one generic read-only subagent using any configured role. Use the exact role name from the configured roles; the harness applies that role's prompt, tools, and default routing (plan-critic defaults to medium/standard).",
-		parameters: Type.Object({
-			role: Type.String({ description: "Exact configured role name, such as plan-critic, explorer, researcher, or quality-reviewer" }),
-			task: Type.String(),
-			tier: Type.Optional(CAPABILITY_TIER),
-			deliberation: Type.Optional(DELIBERATION),
-			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override; normally omit to use role policy" })),
-			effort: Type.Optional(EFFORT),
-			strict: Type.Optional(Type.Boolean()),
-		}),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				const role = runtime.config.roles[params.role];
-				if (!role) {
-					const available = Object.keys(runtime.config.roles).sort();
-					const normalized = params.role.replace(/[_\s]+/g, "-").toLowerCase();
-					const suggestion = available.find((name) => name === normalized || name.includes(normalized) || normalized.includes(name));
-					throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow role: ${params.role}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Available roles: ${available.join(", ")}`);
-				}
-				if (params.effort && !params.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
-				const routing = {
-					tier: (params.tier ?? role.tier!) as CapabilityTier,
-					deliberation: (params.deliberation ?? role.deliberation!) as Deliberation,
-					...(params.model ? { override: { model: params.model, ...(params.effort ? { effort: params.effort as HarnessEffort } : {}) } } : {}),
-					strict: params.strict ?? false,
-				};
-				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-				const resolution = resolveHarnessModel(runtime.config, available, routing);
-				if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No configured candidate is available.", resolution);
-				await assertCleanRepository(runtime.identity.root);
-				const defaultTools: Record<string, string[]> = {
-					researcher: ["web_search", "source_check", "fetch_content", "get_search_content"],
-					explorer: ["read", "grep", "find", "bash"],
-					"plan-critic": ["read", "grep", "find"],
-					"spec-reviewer": ["read", "grep", "find", "bash"],
-					"quality-reviewer": ["read", "grep", "find", "bash"],
-					"e2e-tester": ["read", "grep", "find", "bash"],
-				};
-				const launched = await runtime.coordinator.launch({
-					operationId: toolCallId,
-					role: params.role,
-					task: params.task,
-					assignment: { schemaVersion: 1, role: params.role, task: params.task },
-					cwd: runtime.identity.root,
-					provider: resolution.model.provider,
-					model: resolution.model.id,
-					effort: resolution.effort,
-					tools: role.tools ?? defaultTools[params.role] ?? ["read", "grep", "find"],
-					...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt)
-						? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string }
-						: existsSync(join(BUILT_IN_ROLE_ROOT, `${params.role}.md`))
-							? { promptPath: join(BUILT_IN_ROLE_ROOT, `${params.role}.md`) }
-							: {}),
-					...(signal ? { signal } : {}),
-					...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: params.role, state: "running" })) } : {}),
-				});
-				const direct = launched.result;
-				await assertCleanRepository(runtime.identity.root);
-				await runtime.events.append("agent.direct_completed", { agentId: launched.agent.id, role: params.role, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
-				return textResult(direct.text || direct.stderr || `Specialist exited ${direct.exitCode}.`, { agent: launched.agent, result: direct });
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
 		},
 	});
 

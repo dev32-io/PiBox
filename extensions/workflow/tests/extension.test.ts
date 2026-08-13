@@ -60,7 +60,6 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"workflow_transition",
 		"workflow_init",
 		"exploration_launch",
-		"agent_run",
 		"task_integrate",
 		"evaluation_record",
 		"work_item_complete",
@@ -84,6 +83,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });
 	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(tools.includes(legacy), false, legacy);
+	assert.equal(tools.includes("agent_run"), false, "direct specialist duplication is removed");
 	for (const preferred of ["workflow_list", "workflow_get", "workflow_schema", "workflow_plan_write", "workflow_create", "workflow_patch", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
 	assert.equal(activeTools.includes("read"), true);
 });

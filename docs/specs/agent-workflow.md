@@ -1081,7 +1081,7 @@ subagent_respond
 
 The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates approved tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
 
-`subagent_spawn` accepts an opaque adapter-owned reference and defaults to background execution. `agent_run` and `exploration_launch` remain explicit non-workflow specialist capabilities. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
+`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured read-only specialist role and task prompt, defaults to background execution, and can wait in foreground mode when explicitly requested. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. `exploration_launch` remains a typed exploration capability. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
 
 ### 16.3 Worker capabilities
 

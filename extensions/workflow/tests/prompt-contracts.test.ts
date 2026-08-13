@@ -45,6 +45,8 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /A create source is read-only background/i);
 	assert.match(orchestrator, /initial write is atomic[\s\S]+use edit rather than resending unchanged plan content/i);
+	assert.match(orchestrator, /Use subagent_spawn for dynamic role-and-prompt delegation[\s\S]+Managed workflow tasks and evaluations are scheduled internally/i);
+	assert.match(orchestrator, /do not ask the model to launch each planned task separately/i);
 	assert.match(orchestrator, /Preserve dirty or conflicting work/i);
 	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
 	assert.match(discussion, /Think with the user in an open room/i);
@@ -63,6 +65,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /Coverage:[\s\S]+Vagueness:[\s\S]+Consistency:/i);
 	assert.match(delivery, /one revision-pinned `workflow_plan_write` `edit`[\s\S]+do not resend the unchanged plan[\s\S]+Do not repeat the self-review/i);
 	assert.match(delivery, /planning critique is optional[\s\S]+user explicitly requests it/i);
+	assert.match(delivery, /spawn `plan-critic` through `subagent_spawn`/i);
 	assert.match(delivery, /Tasks in one stage are the parallel frontier/i);
 	assert.match(delivery, /runtime—not the planner—executes singleton stages on the feature branch/i);
 	assert.match(delivery, /Use `medium\/standard` by default/i);
