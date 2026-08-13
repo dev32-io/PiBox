@@ -3,7 +3,7 @@ import { execFile, spawn } from "node:child_process";
 import { lstat, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { taskExecutionTopology, type TaskExecutionIsolation } from "./execution-topology.js";
 import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
@@ -132,6 +132,17 @@ export class WorktreeManager {
 		if (baseBranch !== "develop") throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} must use develop as its base branch`);
 		const featureBranch = delivery.featureBranch ?? `${delivery.branchType}/${safeSegment(workItemId)}`;
 
+		// branchMode records whether this delivery originally created or continued a branch;
+		// it is not rewritten after startup. A matching started delivery branch is therefore
+		// authoritative on resume, including when reload occurs while develop is checked out.
+		if (delivery.branchMode === "create" && await this.startedDeliveryExists(workItemId, featureBranch)) {
+			if (currentBranch !== featureBranch) {
+				if (currentBranch !== baseBranch) throw new HarnessError("CAPABILITY_DENIED", `Resumed workflow ${workItemId} requires ${featureBranch} or its base ${baseBranch}; current branch is ${currentBranch}`);
+				await runGit(this.identity.root, ["switch", featureBranch]);
+			}
+			return { baseBranch, featureBranch, created: false };
+		}
+
 		if (delivery.branchMode === "continue") {
 			if (currentBranch !== featureBranch) throw new HarnessError("CAPABILITY_DENIED", `Continued workflow ${workItemId} requires current branch ${featureBranch}; current branch is ${currentBranch}`);
 			if (!(await this.branchExists(featureBranch))) throw new HarnessError("GIT_OPERATION_FAILED", `Continued delivery branch does not exist: ${featureBranch}`);
@@ -158,6 +169,20 @@ export class WorktreeManager {
 
 	private async remoteExists(remote: string): Promise<boolean> {
 		return execFileAsync("git", ["remote", "get-url", remote], { cwd: this.identity.root }).then(() => true, () => false);
+	}
+
+	private async startedDeliveryExists(workItemId: string, featureBranch: string): Promise<boolean> {
+		if (!(await this.branchExists(featureBranch))) return false;
+		const indexPath = relative(this.identity.root, join(this.workItems.workItemRoot(workItemId), "index.yaml"));
+		try {
+			const candidate = parse(await runGit(this.identity.root, ["show", `${featureBranch}:${indexPath}`])) as Partial<WorkItemIndex>;
+			return candidate.id === workItemId
+				&& candidate.delivery?.branchMode === "create"
+				&& candidate.delivery.featureBranch === featureBranch
+				&& Boolean(candidate.delivery.startedAt);
+		} catch {
+			return false;
+		}
 	}
 
 	private stageBaseRef(workItemId: string, stageId: string): string {

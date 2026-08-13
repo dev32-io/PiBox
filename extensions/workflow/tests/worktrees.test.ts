@@ -127,6 +127,37 @@ test("still rejects an inaccessible configured origin", async (t) => {
 	assert.equal(await git(root, "branch", "--show-current"), "develop");
 });
 
+test("resumes a created delivery on its recorded feature branch", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "created-resume", title: "Created resume", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Resume an already started delivery" });
+	await store.submitPlanning("created-resume");
+	const manager = new WorktreeManager(identity);
+	assert.equal((await manager.prepareFeatureBranch("created-resume")).created, true);
+	assert.deepEqual(await manager.prepareFeatureBranch("created-resume"), { baseBranch: "develop", featureBranch: "feature/created-resume", created: false });
+});
+
+test("recovers a created delivery after reload while develop is checked out", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "reload-resume", title: "Reload resume", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Recover the recorded branch after reload" });
+	await store.submitPlanning("reload-resume");
+	const manager = new WorktreeManager(identity);
+	await manager.prepareFeatureBranch("reload-resume");
+	await git(root, "switch", "develop");
+	assert.deepEqual(await manager.prepareFeatureBranch("reload-resume"), { baseBranch: "develop", featureBranch: "feature/reload-resume", created: false });
+	assert.equal(await git(root, "branch", "--show-current"), "feature/reload-resume");
+});
+
+test("does not adopt an unrelated colliding feature branch", async (t) => {
+	const { root, identity } = await fixture(t);
+	await git(root, "branch", "feature/collision");
+	const store = new WorkItemStore(root);
+	await store.create({ id: "collision", title: "Collision", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Reject unrelated branch collisions" });
+	await store.submitPlanning("collision");
+	await assert.rejects(new WorktreeManager(identity).prepareFeatureBranch("collision"), /already exists/);
+});
+
 test("continues an explicitly recorded current feature branch without syncing develop", async (t) => {
 	const { root, identity } = await fixture(t);
 	await git(root, "switch", "-c", "feature/large-refactor");
