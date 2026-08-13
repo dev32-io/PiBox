@@ -48,7 +48,7 @@ test("launches a direct child through the registry with file-backed process outp
 	assert.match(await readFile(join(attemptRoot, "stdout.jsonl"), "utf8"), /mapped repository/);
 });
 
-test("resumes a waiting assignment as another process attempt under the same slot", async (t) => {
+test("resumes a waiting assignment as another process attempt under the same slot and Pi session", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-resume-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const registry = new SessionAgentRegistry(root, "session-1", 1, 1);
@@ -60,10 +60,12 @@ test("resumes a waiting assignment as another process attempt under the same slo
 	await registry.recordMessage(original.id, { operationId: "message-1", type: "change_request", blocking: true, summary: "Need a choice", rationale: "Contract ambiguity", evidence: [] });
 	const fake = join(root, "fake-resume.mjs");
 	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"resumed"}]}}));\n`);
-	const coordinator = new LaunchCoordinator(registry, "main:session-1", () => ({ command: process.execPath, args: [fake] }));
+	let sessionFile = "";
+	const coordinator = new LaunchCoordinator(registry, "main:session-1", (args) => { sessionFile = args[args.indexOf("--session") + 1] ?? ""; return { command: process.execPath, args: [fake] }; });
 	const resumed = await coordinator.launch({ operationId: "run-2", existingAgentId: original.id, role: "implementer", task: "Resume", assignment: { task: "one" }, cwd: root, provider: "test", model: "fake", effort: "low", tools: [], taskId: "task-1", runId: "run-2" });
 	assert.equal(resumed.agent.id, original.id);
 	assert.equal(resumed.agent.attempts.length, 2);
 	assert.equal(resumed.agent.runId, "run-2");
+	assert.equal(sessionFile, join(registry.root, "agents", original.id, "pi-session.jsonl"));
 	assert.equal(await registry.activeCount(), 0);
 });

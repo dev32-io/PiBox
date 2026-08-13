@@ -184,11 +184,15 @@ export interface EvaluationFinding {
 	blocking: boolean;
 }
 
+export type ReviewLoopState = "planned" | "reviewing" | "awaiting_manager" | "fixing" | "rereviewing" | "passed" | "skipped";
+
 export interface EvaluationManifest {
 	schemaVersion: 1;
 	id: string;
 	type: "deterministic" | "spec-review" | "quality-review" | "combined-review" | "regression" | "e2e";
 	scope: { task?: string; integrationUnit?: string; workItem?: string };
+	/** Planner checkpoints are selective; final E2E and branch review are harness defaults. */
+	checkpoint?: "planned" | "final-e2e" | "final-review";
 	status: "planned" | "running" | "passed" | "failed" | "blocked" | "not_applicable";
 	required: boolean;
 	attempt: number;
@@ -196,6 +200,16 @@ export interface EvaluationManifest {
 	criteria?: string[];
 	findings?: EvaluationFinding[];
 	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string };
+	/** Durable state for one visible review/fix loop and stable reviewer/fixer identities. */
+	loop?: {
+		state: ReviewLoopState;
+		iteration: number;
+		maxIterations: number;
+		reviewerAgentId?: string;
+		fixerAgentId?: string;
+		reviewedCommit?: string;
+		managerPrompt?: string;
+	};
 }
 
 export interface WorkItemIndex {

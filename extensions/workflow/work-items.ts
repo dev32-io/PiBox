@@ -652,9 +652,10 @@ export class WorkItemStore {
 		const priorIndex = await readFile(indexPath, "utf8");
 		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
 		advanceContractRevision(index, authority);
+		const evaluation: EvaluationManifest = { ...manifest, checkpoint: manifest.checkpoint ?? "planned", loop: manifest.loop ?? { state: "planned", iteration: 0, maxIterations: 2 } };
 		try {
 			await mkdir(evaluationRoot, { recursive: true });
-			await atomicWriteFile(manifestPath, stringify(manifest));
+			await atomicWriteFile(manifestPath, stringify(evaluation));
 			await atomicWriteFile(join(evaluationRoot, "report.md"), report);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): define evaluation ${manifest.id}`);
@@ -783,6 +784,45 @@ export class WorkItemStore {
 		return { metadata, content: await readFile(join(root, metadata.path), "utf8"), workItemRevision: index.planning.revision };
 	}
 
+	async ensureFinalEvaluations(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
+		const item = await this.read(workItemId);
+		const defaults: EvaluationManifest[] = [
+			{ schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Exercise the complete meaningful user journey; record not_applicable only when no runnable E2E surface exists."], loop: { state: "planned", iteration: 0, maxIterations } },
+			{ schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Review the complete feature-branch diff for specification fit, correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } },
+		];
+		for (const evaluation of defaults) if (!item.evaluations.some((entry) => entry.id === evaluation.id)) await this.defineRuntimeEvaluation(workItemId, evaluation);
+		return Promise.all(defaults.map((evaluation) => this.readEvaluation(workItemId, evaluation.id)));
+	}
+
+	private async defineRuntimeEvaluation(workItemId: string, manifest: EvaluationManifest): Promise<void> {
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const evaluationRoot = join(root, "evaluations", manifest.id);
+		const manifestPath = join(evaluationRoot, "evaluation.yaml");
+		const indexPath = join(root, "index.yaml");
+		if (index.evaluations.some((entry) => entry.id === manifest.id)) return;
+		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
+		await mkdir(evaluationRoot, { recursive: true });
+		await atomicWriteFile(manifestPath, stringify(manifest));
+		await atomicWriteFile(join(evaluationRoot, "report.md"), "# Evaluation\n\nPending.\n");
+		await atomicWriteFile(indexPath, stringify(index));
+		await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): add final review checkpoint ${manifest.id}`);
+	}
+
+	async updateEvaluationLoop(workItemId: string, evaluationId: string, update: Partial<NonNullable<EvaluationManifest["loop"]>>, status?: EvaluationManifest["status"]): Promise<EvaluationManifest> {
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		const catalog = index.evaluations.find((entry) => entry.id === evaluationId);
+		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
+		const path = join(root, catalog.path);
+		const evaluation = await this.readEvaluation(workItemId, evaluationId);
+		evaluation.loop = { state: "planned", iteration: 0, maxIterations: 2, ...evaluation.loop, ...update };
+		if (status) evaluation.status = status;
+		await atomicWriteFile(path, stringify(evaluation));
+		await this.commit([path], `harness(${workItemId}): update review loop ${evaluationId}`);
+		return evaluation;
+	}
+
 	async readEvaluation(workItemId: string, evaluationId: string): Promise<EvaluationManifest> {
 		validateId(evaluationId, "Evaluation id");
 		const root = this.workItemRoot(workItemId);
@@ -843,6 +883,12 @@ export class WorkItemStore {
 			const status = input.verdict === "pass" ? "passed" : input.verdict === "fail" ? "failed" : input.verdict;
 			evaluation.status = status;
 			evaluation.attempt += 1;
+			evaluation.loop = {
+				iteration: evaluation.loop?.iteration ?? 0,
+				maxIterations: evaluation.loop?.maxIterations ?? 2,
+				...evaluation.loop,
+				state: input.verdict === "pass" || input.verdict === "not_applicable" ? "passed" : "awaiting_manager",
+			};
 			if (input.findings) evaluation.findings = input.findings;
 			evaluation.result = {
 				verdict: input.verdict,

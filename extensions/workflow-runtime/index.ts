@@ -4,7 +4,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 
-const TOOL_NAMES = ["workflow_start", "workflow_control", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
+const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
 	task: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
 	merge: ["⇢", "→", "⇢", "⇒"],
@@ -177,7 +177,14 @@ export default function workflows(pi: ExtensionAPI): void {
 				// An adapter snapshot can briefly observe canonical settlement between child exit
 				// and runStep completion. The in-flight promise remains authoritative until it
 				// settles; only attention with no active step should pause the workflow.
-				if (snapshot.status === "attention" && !snapshot.steps.some((step) => inFlight.has(step.ref))) { active.set(ref, "paused"); persist(ref, "paused"); sendEvent(`${snapshot.title} · attention`, "Workflow needs intervention.", true); continue; }
+				if (snapshot.status === "attention" && !snapshot.steps.some((step) => inFlight.has(step.ref))) {
+					active.set(ref, "paused"); persist(ref, "paused");
+					const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
+					const detail = attentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
+					const checkpoint = attentionSteps.find((step) => step.kind === "evaluation");
+					sendEvent(`${snapshot.title} · attention`, `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref} to request changes, retry the same reviewer, continue, skip, or accept non-blocking risk. Do not manipulate Git or task state manually.` : ""}`, true);
+					continue;
+				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
 					active.delete(ref); persist(ref, "stopped"); sendEvent(`${snapshot.title} · complete`, "Finished all workflow steps.");
 					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? `Workflow ${ref} completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.`;
@@ -223,6 +230,21 @@ export default function workflows(pi: ExtensionAPI): void {
 			currentRef = params.ref; persist(params.ref, params.action === "stop" ? "stopped" : params.action === "resume" ? "running" : "paused");
 			if (params.action === "stop") { currentSnapshot = undefined; renderDashboard(ctx); } else await tick(ctx);
 			return result(`${params.action} recorded for workflow ${params.ref}.`);
+		},
+	});
+
+	pi.registerTool({
+		name: "workflow_checkpoint", label: "Decide Workflow Checkpoint",
+		description: "Apply the main orchestrator's decision at an actionable review/fix checkpoint. Use request_changes with a live repair prompt, retry to re-run the same reviewer, continue after an accepted clean state, skip only when justified, or accept_risk for non-blocking findings.",
+		parameters: Type.Object({ ref: Type.String({ description: "Exact evaluation step ref" }), action: StringEnum(["continue", "retry", "request_changes", "skip", "accept_risk"] as const), prompt: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		async execute(_id, params, _signal, _update, ctx) {
+			const adapter = adapterFor(params.ref);
+			if (!adapter.controlCheckpoint) throw new Error(`Workflow adapter does not support checkpoint decisions: ${params.ref}`);
+			const decision = await adapter.controlCheckpoint(params.ref, params.action, params.prompt, ctx);
+			const workflowRef = params.ref.split("/evaluation:")[0]!;
+			active.set(workflowRef, "running"); currentRef = workflowRef; persist(workflowRef, "running");
+			await tick(ctx);
+			return result(`${params.action} recorded for ${params.ref}.`, decision);
 		},
 	});
 

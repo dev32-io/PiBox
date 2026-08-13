@@ -24,6 +24,8 @@ export interface DirectAgentOptions {
 	env?: Record<string, string>;
 	/** Persist process streams so a child can survive loss of the launching Pi process. */
 	outputDirectory?: string;
+	/** Stable Pi session reused across attempts of one logical reviewer/fixer. */
+	sessionFile?: string;
 	invocationResolver?: (args: string[]) => { command: string; args: string[] };
 }
 
@@ -65,7 +67,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	await writeFile(promptFile, `${systemPrompt}\n`, { encoding: "utf8", mode: 0o600 });
 	const args = [
 		...(options.extensionPaths ?? []).flatMap((path) => ["-e", path]),
-		"--mode", "json", "-p", "--no-session",
+		"--mode", "json", "-p", ...(options.sessionFile ? ["--session", options.sessionFile] : ["--no-session"]),
 		"--model", `${options.provider}/${options.model}`,
 		"--thinking", options.effort,
 		"--tools", options.tools.join(","),

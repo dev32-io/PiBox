@@ -37,7 +37,7 @@ function fixture() {
 
 test("registers the generalized workflow and subagent surface", () => {
 	const f = fixture();
-	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
+	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
 	assert.match(f.tools.get("subagent_spawn").description, /read-only subagent.*configured specialist role and task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /role.*task.*background.*foreground/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*No separate approval command/i);

@@ -53,6 +53,7 @@ export interface WorkflowAdapter {
 	/** Optional dynamic role/task launcher used by the main-session subagent_spawn tool. */
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;
+	controlCheckpoint?(ref: string, action: "continue" | "retry" | "request_changes" | "skip" | "accept_risk", prompt: string | undefined, ctx: ExtensionContext): Promise<unknown>;
 	listSubagents(ctx: ExtensionContext): Promise<unknown[]>;
 	listMessages(ctx: ExtensionContext): Promise<unknown[]>;
 	controlSubagent(agentId: string, action: "pause" | "stop", ctx: ExtensionContext): Promise<unknown>;

@@ -26,6 +26,7 @@ test("workflow preparation serializes branch setup, execution state, and task ac
 		workItems: {
 			async submitPlanning() { calls.push(`submit:${insideMutex}`); },
 			async beginExecution(id: string) { calls.push(`begin:${insideMutex}`); return { id, phase: "execution", planning: { revision: 1 } }; },
+			async ensureFinalEvaluations() { calls.push(`final:${insideMutex}`); return []; },
 			async activateDraftTasks() { calls.push(`activate:${insideMutex}`); return []; },
 		},
 		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { insideMutex = true; try { return await operation(); } finally { insideMutex = false; } } },
@@ -33,7 +34,7 @@ test("workflow preparation serializes branch setup, execution state, and task ac
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), prepareFeatureBranch: async () => { calls.push(`branch:${insideMutex}`); } });
 	await adapter.prepareWorkflow?.("work-item:example", {} as any);
-	assert.deepEqual(calls, ["submit:true", "branch:true", "begin:true", "activate:true"]);
+	assert.deepEqual(calls, ["submit:true", "branch:true", "begin:true", "final:true", "activate:true"]);
 });
 
 test("resume prepares stopped tasks from current dependency state", async () => {
@@ -45,6 +46,7 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 		workItems: {
 			async submitPlanning() {},
 			async beginExecution() { return item; },
+			async ensureFinalEvaluations() { return []; },
 			async activateDraftTasks() { return []; },
 			async read() { return item; },
 			async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); },
@@ -56,6 +58,17 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), prepareFeatureBranch: async () => {} });
 	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
 	assert.deepEqual(updates, [["second", "ready"], ["third", "blocked"]]);
+});
+
+test("renders a review-fix loop as one checkpoint step with phase and iteration", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "final-review" }] };
+	const evaluation: any = { id: "final-review", type: "combined-review", checkpoint: "final-e2e", scope: { workItem: "example" }, status: "planned", required: true, attempt: 1, methods: [], loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps.length, 1);
+	assert.match(snapshot.steps[0]!.title, /Review loop final-review · re-reviewing #2/);
+	assert.equal(snapshot.steps[0]!.status, "ready");
 });
 
 test("stop ignores reported agents whose process already exited", async () => {

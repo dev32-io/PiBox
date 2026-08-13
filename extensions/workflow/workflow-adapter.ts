@@ -14,12 +14,14 @@ export interface HarnessWorkflowRuntime {
 	workItems: WorkItemStore;
 	mutex: RepositoryMutex;
 	agents: SessionAgentRegistry;
+	config?: { limits: { repairRounds: number } };
 }
 
 export interface HarnessWorkflowAdapterOptions {
 	runtimeFor(ctx: ExtensionContext): Promise<HarnessWorkflowRuntime>;
 	launchTask(ctx: ExtensionContext, workItemId: string, taskId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	launchEvaluation(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
+	launchRepair?(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
 	prepareFeatureBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
@@ -71,6 +73,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, match[1]!);
 				else await new WorktreeManager(runtime.identity).prepareFeatureBranch(match[1]!);
 				await runtime.workItems.beginExecution(match[1]!);
+				await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? 2);
 				await runtime.workItems.activateDraftTasks(match[1]!);
 			});
 		},
@@ -135,17 +138,21 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const legacyStage = evaluation.scope.integrationUnit ? stages.find((stage) => stage.id === evaluation.scope.integrationUnit) : undefined;
 				const dependencies = evaluation.scope.task ? [`work-item:${item.id}/task:${evaluation.scope.task}`]
 					: legacyStage ? legacyStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
-					: tasks.map((task) => `work-item:${item.id}/task:${task.id}`);
+					: evaluation.checkpoint === "final-review"
+						? [`work-item:${item.id}/evaluation:final-e2e`]
+						: tasks.map((task) => `work-item:${item.id}/task:${task.id}`);
 				const dependenciesDone = dependencies.every((dependency) => steps.find((step) => step.ref === dependency)?.status === "done");
 				let status: WorkflowStepStatus = "pending"; let detail: string | undefined;
 				const activity = scopeActivity(agents, "evaluationId", evaluation.id);
-				if (["passed", "not_applicable"].includes(evaluation.status)) status = "done";
-				else if (["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.status; }
-				else if (activity.running) status = "running";
+				if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "skipped") status = "done";
+				else if (evaluation.loop?.state === "fixing" || evaluation.loop?.state === "rereviewing") { status = dependenciesDone ? "ready" : "pending"; detail = `${evaluation.loop.state.replace("rereviewing", "re-reviewing")} · iteration ${evaluation.loop.iteration}`; }
+				else if (evaluation.loop?.state === "awaiting_manager" || ["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.loop?.state === "awaiting_manager" ? `awaiting manager · iteration ${evaluation.loop.iteration}` : evaluation.status; }
+				else if (activity.running) { status = "running"; detail = "reviewing"; }
 				else if (activity.attention) { status = "attention"; detail = activity.attention; }
 				else if (evaluation.status === "running") { status = "attention"; detail = "stale process state"; }
 				else if (dependenciesDone) status = "ready";
-				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Evaluate ${evaluation.id}`, kind: "evaluation", status, ...(detail ? { detail } : {}), dependsOn: dependencies, parallelism: "allowed", resourceClaims: [] });
+				const phase = evaluation.loop?.state === "rereviewing" ? `re-reviewing #${evaluation.loop.iteration}` : evaluation.loop?.state === "fixing" ? `fixing #${evaluation.loop.iteration}` : evaluation.loop?.state === "awaiting_manager" ? "awaiting manager" : "reviewing";
+				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${evaluation.checkpoint ? "Review loop" : "Evaluate"} ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(detail ? { detail } : {}), dependsOn: dependencies, parallelism: "allowed", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			return { ref, title: item.title || item.id, status, steps };
@@ -164,11 +171,39 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const run = launched.details?.run; const state = run?.state === "completed" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
 				return { ref, state, summary: launched.content[0]?.text ?? `Task ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: state === "blocked" || state === "failed" };
 			}
+			const evaluation = await (await options.runtimeFor(ctx)).workItems.readEvaluation(workItemId!, id!);
+			if (evaluation.loop?.state === "fixing") {
+				if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${id}`);
+				const repaired = await options.launchRepair(ctx, workItemId!, id!, _signal);
+				return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Repair for ${id} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+			}
 			const launched = await options.launchEvaluation(ctx, workItemId!, id!);
 			const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
 		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void) { return options.spawnSubagent!(request, ctx, signal, onText); } } : {}),
+		async controlCheckpoint(ref, action, prompt, ctx) {
+			const match = STEP.exec(ref);
+			if (!match || match[2] !== "evaluation") throw new Error(`Checkpoint decision requires an evaluation step ref: ${ref}`);
+			const [, workItemId, , evaluationId] = match;
+			const runtime = await options.runtimeFor(ctx);
+			return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
+				const evaluation = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
+				const loop = evaluation.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? 2 };
+				if (action === "request_changes") {
+					if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
+					if (loop.iteration >= loop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
+					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", iteration: loop.iteration + 1, managerPrompt: prompt });
+				}
+				if (action === "retry") {
+					if (loop.iteration >= loop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
+					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "rereviewing", iteration: loop.iteration + 1, ...(prompt ? { managerPrompt: prompt } : {}) });
+				}
+				if (action === "skip") return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "skipped", ...(prompt ? { managerPrompt: prompt } : {}) }, "not_applicable");
+				if (action === "accept_risk") return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "passed", ...(prompt ? { managerPrompt: prompt } : {}) }, "passed");
+				return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: evaluation.attempt > 0 ? "rereviewing" : "reviewing", ...(prompt ? { managerPrompt: prompt } : {}) }, "planned");
+			});
+		},
 		async controlWorkflow(ref, action, ctx) {
 			const workflow = WORK_ITEM.exec(ref); if (!workflow) throw new Error(`Invalid workflow reference: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
@@ -179,6 +214,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, workItemId);
 					else await new WorktreeManager(runtime.identity).prepareFeatureBranch(workItemId);
 					const begun = await runtime.workItems.beginExecution(workItemId);
+					await runtime.workItems.ensureFinalEvaluations(workItemId, runtime.config?.limits.repairRounds ?? 2);
 					await runtime.workItems.activateDraftTasks(workItemId);
 					return begun;
 				});

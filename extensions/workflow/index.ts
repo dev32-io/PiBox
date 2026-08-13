@@ -579,6 +579,34 @@ export default function workflow(pi: ExtensionAPI): void {
 		}
 	};
 
+	const launchManagedRepair = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
+		requireTrusted(ctx);
+		const runtime = await runtimeFor(ctx);
+		const item = await runtime.workItems.read(workItemId);
+		const evaluation = await runtime.workItems.readEvaluation(workItemId, evaluationId);
+		const loop = evaluation.loop;
+		if (!loop || loop.state !== "fixing" || !loop.managerPrompt?.trim()) throw new HarnessError("INVALID_HANDOFF", `Evaluation ${evaluationId} is not awaiting a prompted repair`);
+		const role = runtime.config.roles["repair-implementer"];
+		if (!role) throw new HarnessError("CONFIG_INVALID", "Missing repair-implementer role");
+		const routing = { tier: role.tier!, deliberation: role.deliberation! };
+		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+		const resolution = resolveHarnessModel(runtime.config, available, routing);
+		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No repair model is available");
+		const existing = loop.fixerAgentId ? await runtime.agents.get(loop.fixerAgentId).catch(() => undefined) : undefined;
+		const launched = await runtime.coordinator.launch({
+			operationId: `repair:${workItemId}:${evaluationId}:${loop.iteration}`, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
+			task: `Repair findings for ${evaluationId}, iteration ${loop.iteration}.\n\nManager direction:\n${loop.managerPrompt}\n\nInspect the recorded evaluation findings, make focused fixes on the feature branch, run affected checks, commit the changes, and leave the repository clean.`,
+			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
+			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: role.tools ?? ["read", "grep", "find", "bash", "edit", "write"],
+			workItemId, evaluationId, workspace: runtime.identity.root, deferCompletion: true, ...(signal ? { signal } : {}),
+			...(role.prompt && resolveConfiguredPath(runtime.identity.root, role.prompt) ? { promptPath: resolveConfiguredPath(runtime.identity.root, role.prompt) as string } : {}),
+		});
+		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
+		await assertCleanRepository(runtime.identity.root);
+		await runtime.mutex.run(`repair-settled:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "rereviewing", fixerAgentId: launched.agent.id }, "planned"));
+		return textResult(`Repair iteration ${loop.iteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: launched.agent.id, iteration: loop.iteration });
+	};
+
 	const launchManagedEvaluation = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
 		requireTrusted(ctx);
 		const runtime = await runtimeFor(ctx);
@@ -602,15 +630,15 @@ export default function workflow(pi: ExtensionAPI): void {
 			resolvedModel: resolution.model.id, resolvedEffort: resolution.effort,
 		});
 		const prompt = [
-			`Evaluate boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
+			`${evaluation.loop?.state === "rereviewing" ? `Re-review iteration ${evaluation.loop.iteration}` : "Evaluate"} boundary ${evaluation.id} (${evaluation.type}) for work item ${item.id}.`,
 			"Call evaluation_context before judging, read the assigned criteria, and collect fresh evidence without changing the evaluated work.",
 			"Place generated runtime evidence outside the repository and reference its absolute path.",
 			"Completion: call evaluation_complete with criterion results, evidence, findings, verdict, and residual risk.",
 		].join("\n");
-		let logicalAgentId: string | undefined;
+		let logicalAgentId: string | undefined = evaluation.loop?.reviewerAgentId;
 		const runEvaluator = async (taskPrompt: string) => {
 			const coordinated = await runtime.coordinator.launch({
-				operationId: created.record.id, role: roleName, task: taskPrompt,
+				operationId: created.record.id, ...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}), role: roleName, task: taskPrompt,
 				assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
 				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
 				tools: [...new Set([...(role.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]), "evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"])],
@@ -640,10 +668,10 @@ export default function workflow(pi: ExtensionAPI): void {
 		}
 		const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, async () => {
 			await assertCleanRepository(runtime.identity.root);
+			await runtime.workItems.updateEvaluationLoop(item.id, evaluation.id, { state: evaluation.loop?.state === "rereviewing" ? "rereviewing" : "reviewing", ...(logicalAgentId ? { reviewerAgentId: logicalAgentId } : {}), reviewedCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]) });
 			return runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
 		});
 		await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
-		if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "completed", { summary: `Evaluation ${evaluation.id}: ${handoff.verdict}` });
 		await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, agentId: logicalAgentId, verdict: handoff.verdict });
 		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
 	};
@@ -711,6 +739,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			runtimeFor,
 			launchTask: launchManagedTask,
 			launchEvaluation: launchManagedEvaluation,
+			launchRepair: launchManagedRepair,
 			spawnSubagent: spawnDynamicSubagent,
 			async reconcileReported(runtime) {
 				await reconcileReportedAgents({ identity: runtime.identity, registry: runtime.agents, workItems: runtime.workItems, mutex: runtime.mutex });

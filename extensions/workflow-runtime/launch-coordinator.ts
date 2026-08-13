@@ -59,7 +59,8 @@ export class LaunchCoordinator {
 			...(input.workspace ? { workspace: input.workspace } : {}),
 		});
 		const { attempt } = await this.registry.startAttempt(reserved.id);
-		const attemptRoot = join(this.registry.root, "agents", reserved.id, "attempts", attempt.id);
+		const agentRoot = join(this.registry.root, "agents", reserved.id);
+		const attemptRoot = join(agentRoot, "attempts", attempt.id);
 		let running: Promise<unknown> | undefined;
 		const invocationResolver = input.invocationResolver ?? this.invocationResolver;
 		try {
@@ -72,6 +73,7 @@ export class LaunchCoordinator {
 				effort: input.effort,
 				tools: input.tools,
 				outputDirectory: attemptRoot,
+				sessionFile: join(agentRoot, "pi-session.jsonl"),
 				env: {
 					...input.env,
 					PIBOX_WORKFLOW_SESSION_ID: this.registry.sessionId,
