@@ -5,12 +5,17 @@ title: Make Local LLM compatible with strict tool-schema servers
 phase: planning
 state: active
 planning:
-  revision: 1
+  revision: 2
   status: draft
 artifacts:
   - id: intent
     type: intent
     path: intent.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: strict-tool-schema-compatibility
+    type: spec
+    path: specs/strict-tool-schema-compatibility.md
     status: draft
     narrativeSchemaVersion: 2
 tasks: []
@@ -20,3 +25,4 @@ delivery:
   branchMode: create
   baseBranch: develop
 evaluations: []
+executionStages: []
