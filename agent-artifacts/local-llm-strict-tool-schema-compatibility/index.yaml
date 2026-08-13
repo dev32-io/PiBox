@@ -3,7 +3,7 @@ id: local-llm-strict-tool-schema-compatibility
 kind: change
 title: Make Local LLM compatible with strict tool-schema servers
 phase: planning
-state: active
+state: postponed
 planning:
   revision: 2
   status: draft
