@@ -194,7 +194,7 @@ The orchestrator may act autonomously while preserving the approved contract. Th
 - Rejecting incomplete handoffs.
 - Requesting additional evaluation.
 - Applying non-semantic artifact corrections.
-- Selecting a model and effort suitable for task complexity.
+- Selecting or revising a task capability tier and deliberation profile within approved scope.
 
 ### 6.2 Mandatory user escalation
 
@@ -221,7 +221,7 @@ The model judges semantics. The extension enforces mechanics:
 | Choose artifact dimensions | Create deterministic paths and indexes |
 | Decompose and prioritize tasks | Validate dependency references and cycles |
 | Recommend concurrency | Enforce worktrees, resource locks, and limits |
-| Assign model and effort | Resolve live model availability and minimum rank |
+| Assign capability tier and deliberation | Resolve a same-tier concrete model and model-specific effort |
 | Judge whether a finding is critical | Keep affected work paused while waiting |
 | Choose repair strategy | Enforce retry bounds and lineage |
 | Judge context impact | Require designated rereads and acknowledgements |
@@ -402,17 +402,14 @@ execution:
   isolation: worktree
   parallelism: allowed
   resourceClaims: [session-schema]
-  complexity: high
   assignment:
     role: implementer
-    model: sol
-    effort: high
-    minimumCapabilityRank: 200
-    allowFallback: true
-    rationale: Cross-cutting session lifecycle and concurrency changes
+    tier: high
+    deliberation: deep
+    rationale: Bounded but cross-cutting session lifecycle and concurrency reasoning
 
 assembly:
-  integrationUnit: session-screen
+  stageId: session-screen
   intermediateState: partial
 
 verification:
@@ -515,18 +512,21 @@ Dimensions represent independently understandable concerns, not arbitrary docume
 
 Each task must be:
 
-- Bounded enough for one implementer context.
-- Grounded in explicit canonical artifact references.
+- A bounded authoritative context capsule for one implementer attempt.
+- Focused on one dominant contribution concern and primary failure boundary.
+- Grounded in explicit canonical artifact references and only its assigned acceptance criteria.
 - Clear about whether it is a complete behavior or a partial contribution.
 - Honest about dependencies and its expected intermediate state.
-- Assigned to an integration unit when several tasks must be assembled before they are meaningful.
-- Given an isolation policy.
+- Assigned to a stage when several tasks must be assembled before they are meaningful.
+- Given an intentional isolation policy.
 - Given a proportionate verification timing: task, integration-unit, work-item, or intentionally skipped.
-- Assigned a model and effort based on complexity.
+- Assigned a capability tier and deliberation profile only after decomposition.
 
-A task does not need independent acceptance criteria, evaluator runs, or E2E coverage when those checks are meaningless before assembly. It needs a clear contribution contract and a structured handoff. The planner explains where verification is deferred and what later gate covers it.
+The planner splits independently understandable feature areas, unrelated reasoning modes, multiple primary risks, and story-sized context. It keeps work together when splitting would duplicate most context, destabilize an interface, or divide one invariant across workers. Every split must reduce context or create a meaningful dependency, isolation, verification, or recovery boundary; neither task count nor concurrency is a goal.
 
-Parallel tasks cannot depend on one another's unintegrated code. Sequential tasks may build on an orchestrator-controlled integration-unit staging base without advancing the canonical feature branch.
+A task does not need independent acceptance criteria, evaluator runs, or E2E coverage when those checks are meaningless before assembly. It needs a clear contribution contract and a structured handoff. The planner explains where verification is deferred and what later gate covers it. A stronger tier or deep deliberation never compensates for avoidable task scope.
+
+Parallel tasks cannot depend on one another's unintegrated code. Sequential stages deliberately let later tasks build on small stable foundations; parallel stages require compatible interfaces and resource claims plus enough speed benefit to repay coordination and worktree cost.
 
 ### 9.5 Plan critic
 
@@ -560,9 +560,8 @@ roles:
     workspace: worktree
     canDelegate: false
     completionSchema: implementer-v1
-    models:
-      - { model: sol, effort: high }
-      - { model: terra, effort: high }
+    tier: medium
+    deliberation: standard
 ```
 
 Each role defines:
@@ -571,7 +570,7 @@ Each role defines:
 - Prompt and skill set.
 - Tool and capability allowlist.
 - Workspace policy.
-- Model and effort candidates.
+- Default capability tier and deliberation profile.
 - Delegation permission.
 - Context policy.
 - Structured completion schema.
@@ -611,7 +610,7 @@ A child launch has three bounded inputs:
 3. Assignment request — short user prompt
 ```
 
-For implementation tasks, the persistent packet contains the task brief, acceptance contract, explicitly referenced specifications/designs/decisions, expected contribution state, and required checks. It excludes runtime identifiers, model rationale, unreferenced artifacts, hashes, and revision tokens. Pi retains the system prompt across compaction. The packet is rebuilt from canonical files for each process attempt.
+For implementation tasks, the persistent packet contains the self-contained task brief, acceptance contract, exact assigned specification criteria, explicitly referenced decisions, expected contribution state, and required checks. Broad specifications and designs are not repeated wholesale; the brief carries the relevant interfaces and design boundary, while `task_clarify` exposes wider artifacts only for a concrete uncertainty. The packet excludes runtime identifiers, routing rationale, unreferenced story areas, hashes, and revision tokens. Pi retains the system prompt across compaction. The packet is rebuilt from canonical files for each process attempt.
 
 ### 10.5 Role performance records
 
@@ -671,75 +670,72 @@ explicit spawn override
 
 Repository configuration loads only after Pi project trust succeeds.
 
-### 12.2 Initial model family
+### 12.2 Capability tiers and model-specific effort
 
-The first version ships with ChatGPT/OpenAI Codex defaults:
-
-```text
-capability: Sol > Terra > Luna
-```
+Plans express semantic execution requirements rather than concrete provider details:
 
 ```yaml
-models:
-  sol:
-    provider: openai-codex
-    model: gpt-5.6-sol
-    capabilityRank: 300
-  terra:
-    provider: openai-codex
-    model: gpt-5.6-terra
-    capabilityRank: 200
-  luna:
-    provider: openai-codex
-    model: gpt-5.6-luna
-    capabilityRank: 100
+assignment:
+  role: implementer
+  tier: high
+  deliberation: standard
+  rationale: Complex pointer geometry with a settled contract
 ```
 
-Aliases keep policy readable while preserving exact provider/model identities.
+Capability and deliberation are separate axes:
 
-### 12.3 Complexity routing
+- `low | medium | high | max` states the minimum model capability required;
+- `standard | deep` states the remaining reasoning demand after proper task decomposition.
 
-Typical defaults are:
+`medium/standard` is the default for normal bounded engineering. Low is mechanical and low-risk; high is complex or broadly integrated; max is reserved for architecture, security, privacy, irreversible or high-blast-radius work, and exceptional ambiguity. Deep is reserved for irreducible long reasoning chains, difficult debugging, concurrency, security analysis, migration design, or consequential trade-offs. Neither a stronger tier nor deep deliberation compensates for an oversized task.
 
-```text
-low/ad-hoc    → Luna, medium effort
-medium/change → Terra, high effort
-high/story    → Sol, high effort
-critical      → Sol, high or xhigh effort
+The schema-v2 configuration maps each tier to ordered concrete routes. Effort is calibrated per model and deliberation profile:
+
+```yaml
+modelTiers:
+  high:
+    - provider: openai-codex
+      model: gpt-5.6-terra
+      effort: { standard: medium, deep: high }
+    - provider: openai-codex
+      model: gpt-5.6-sol
+      effort: { standard: low, deep: high }
+  low:
+    - provider: local-llm
+      model: qwen3.6-27b
+      effort: { standard: off }
+    - provider: openai-codex
+      model: gpt-5.6-luna
+      effort: { standard: low, deep: medium }
 ```
 
-A role may deliberately prefer a less expensive model and retain stronger fallbacks. A task may require a minimum capability rank.
-
-Each candidate is a model-and-effort pair. Supported Pi thinking levels are:
+A route without a `deep` mapping is ineligible for deep work. Supported concrete Pi levels remain:
 
 ```text
 off | minimal | low | medium | high | xhigh | max
 ```
 
-The resolver validates the pair against the live model's actual thinking-level map rather than relying on undocumented assumptions.
+The runtime validates the configured level against the live model's actual `thinkingLevelMap`; it never clamps or silently reinterprets effort.
 
-### 12.4 Resolution order
+### 12.3 Resolution order
 
 At spawn time:
 
-1. Apply an explicit user/main-session override.
-2. Apply the task assignment.
-3. Apply repository role policy.
-4. Apply user role policy.
-5. Apply built-in role defaults.
-6. Filter against Pi's live registry, auth, scoped models, and effort support.
-7. Reject candidates below the task's minimum capability rank.
-8. Record requested, attempted, and actual selection.
+1. Read the task's tier and deliberation, or the role defaults for direct/evaluation work.
+2. Apply an exceptional explicit user/main-session concrete model and effort override when present.
+3. Traverse the configured routes for the requested tier/profile in order.
+4. Filter against Pi's live registry, auth, scoped models, and exact effort support.
+5. Record requested tier/profile, every attempted route, and actual provider/model/effort.
 
-Fallback is visible; no downgrade is silent.
+Fallback is visible and remains inside the same capability tier and deliberation profile. There is no automatic capability downgrade or effort clamping. Provider/auth/capacity recovery may resume on another valid same-tier route; implementation or protocol failure does not by itself justify changing effort.
 
 A strict override can prohibit fallback:
 
 > Run the evaluator on GPT-5.6 Sol at high effort, strictly.
 
-If no acceptable candidate exists, the run enters `waiting_model` rather than pretending to execute.
+If no acceptable route exists, the run enters `waiting_model` rather than pretending to execute.
 
-### 12.5 Main-session model selection
+### 12.4 Main-session model selection
 
 The planner and orchestrator may recommend or select a stronger active model when work complexity increases:
 
@@ -750,7 +746,7 @@ orchestrator:
 
 A user-pinned model wins. Automatic selection is always visible.
 
-### 12.6 Configuration merge and versioning
+### 12.5 Configuration merge and versioning
 
 - Maps merge recursively by key.
 - Scalars replace earlier values.
@@ -1529,10 +1525,10 @@ The design is successfully implemented when:
 2. Managed planning produces indexed intent, specs, design, decisions, tasks, integration units, and proportionate verification coverage.
 3. Execution cannot begin without direct user approval of the current deliverable contract revision.
 4. The planner can explicitly skip, defer, batch, or combine task-level review and testing while declaring the later meaningful verification boundary.
-5. Partial task contributions can be assembled in an orchestrator-controlled integration unit without pretending they are independently complete.
-6. Role prompts, tools, models, effort, and fallback lists can be set globally and overridden per repository.
-7. The planner records model/effort assignments per task and the runtime resolves them against Pi availability.
-8. Missing models fall back visibly or enter a waiting state without silent downgrade.
+5. Partial task contributions can be assembled in orchestrator-controlled stages without pretending they are independently complete.
+6. Role prompts, tools, capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
+7. The planner records capability tier and deliberation per task; the runtime resolves provider/model/effort against Pi availability and exact thinking support.
+8. Missing or unsupported routes fall back visibly within the requested tier/profile or enter a waiting state without silent downgrade or effort clamping.
 9. Concurrent tasks run in deterministic isolated worktrees from a clean committed base.
 10. Workers communicate through scoped capabilities and cannot own canonical artifacts or integration.
 11. Completion requires a valid role-specific terminal handoff, with one deterministic nudge on omission.

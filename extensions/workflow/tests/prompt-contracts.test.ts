@@ -54,8 +54,12 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(shaping, /Do not define tasks, stages, model assignments/i);
 	assert.match(shaping, /Want me to turn it into an execution-ready delivery plan/i);
 	assert.match(shaping, /hand off to `plan-delivery` in the same turn/i);
-	assert.match(delivery, /coherent vertical contributions/i);
-	assert.match(delivery, /parallel only when their interfaces and resource claims are compatible/i);
+	assert.match(delivery, /context-bounded contributions/i);
+	assert.match(delivery, /task is the authoritative context capsule/i);
+	assert.match(delivery, /Do not use a stronger model or deeper deliberation to compensate for an oversized task/i);
+	assert.match(delivery, /parallel stages are valuable only when interfaces and resource claims are compatible/i);
+	assert.match(delivery, /Use `medium\/standard` by default/i);
+	assert.match(delivery, /harness—not the planner—selects provider, concrete model, and model-specific effort/i);
 	assert.match(delivery, /call `workflow_transition` with `submit`/i);
 	assert.match(delivery, /after approval the user can say “start the workflow”/i);
 	assert.match(critic, /Upstream premises/i);

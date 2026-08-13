@@ -30,10 +30,10 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): initialize economy policy");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 	const loaded = loadHarnessConfig(root, { home: join(root, "unused-home") });
-	assert.equal(loaded.config.models.sol?.model, "gpt-5.6-luna");
-	assert.equal(loaded.config.models.sol?.capabilityRank, 100);
-	assert.deepEqual(loaded.config.roles.implementer?.models, [{ model: "luna", effort: "medium" }]);
-	assert.deepEqual(loaded.config.roles["quality-reviewer"]?.models, [{ model: "luna", effort: "low" }]);
+	assert.equal(loaded.config.schemaVersion, 2);
+	assert.deepEqual(loaded.config.modelTiers.medium, [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } }]);
+	assert.equal(loaded.config.roles.implementer?.tier, "medium");
+	assert.equal(loaded.config.roles["quality-reviewer"]?.deliberation, "deep");
 	assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /Scaffold profile: economy/);
 	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.worktree/\n/.pibox/\n");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
@@ -45,7 +45,7 @@ test("prepares the worktree ignore for an existing harness policy", async (t) =>
 	const root = await emptyRepository(t);
 	await writeFile(join(root, ".gitignore"), "dist/\n");
 	await import("node:fs/promises").then(({ mkdir }) => mkdir(join(root, ".pi"), { recursive: true }));
-	await writeFile(join(root, ".pi", "harness.yaml"), "schemaVersion: 1\n");
+	await writeFile(join(root, ".pi", "harness.yaml"), "schemaVersion: 2\n");
 	await git(root, "add", ".gitignore", ".pi/harness.yaml");
 	await git(root, "commit", "--quiet", "-m", "existing policy");
 	const result = await scaffoldHarness(root, "standard");

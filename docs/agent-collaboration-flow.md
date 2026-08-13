@@ -108,12 +108,12 @@ Make the high-level story executable in technical terms and optimize delivery th
 
 - Inspect the actual repository, architecture, tests, and integration boundaries.
 - Resolve technical feasibility and compatibility unknowns.
-- Decompose work into coherent vertical contributions rather than maximizing task count.
-- Keep tightly coupled work together.
-- Run work sequentially where dependencies or overlapping resources require it.
+- Decompose work into context-bounded contributions rather than maximizing task count; each task should be a focused context capsule for one model attempt.
+- Keep implementation and tests for one concern together, while splitting independently understandable feature areas, reasoning modes, and failure boundaries.
+- Run work sequentially where dependencies or overlapping resources require it and where a small stable foundation reduces later task context.
 - Use parallel work only when independence, cost, and speed justify coordination and worktree overhead.
 - Define dependencies, resource claims, intermediate states, integration expectations, and recovery boundaries.
-- Assign roles, models, and effort according to complexity and risk.
+- Assign semantic capability tier and deliberation after decomposition; let harness configuration resolve the concrete provider, model, and model-specific effort.
 - Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
 - Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
 - Continue refining with the user when planning reveals new constraints or product questions.

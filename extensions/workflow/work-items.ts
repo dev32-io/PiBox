@@ -5,7 +5,7 @@ import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import type { DeliveryBranchMode, DeliveryBranchType, EvaluationManifest, MutationAuthority, TaskManifest, TaskStatus, WorkItemDelivery, WorkItemIndex, WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type DeliveryBranchMode, type DeliveryBranchType, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions" } as const;
@@ -175,8 +175,15 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 	if (!stageId) throw new HarnessError("INVALID_ARTIFACT", `${source} is missing an execution stage`);
 	validateId(stageId, "Execution-stage id");
 	task.assembly.stageId = stageId;
-	if (!Array.isArray(task.execution.resourceClaims) || !Array.isArray(task.verification.methods) || !Array.isArray(task.verification.taskChecks)) {
-		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid policy arrays`);
+	if (!Array.isArray(task.execution.resourceClaims) || !Array.isArray(task.verification.methods) || !Array.isArray(task.verification.taskChecks)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid policy arrays`);
+	if (!["worktree", "repository"].includes(task.execution.isolation) || !["allowed", "serial"].includes(task.execution.parallelism)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid execution isolation or parallelism`);
+	const assignment = task.execution.assignment as TaskManifest["execution"]["assignment"];
+	if (typeof assignment.role !== "string" || typeof assignment.rationale !== "string" || !assignment.rationale.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid assignment`);
+	if (isTierTaskAssignment(assignment)) {
+		if (!["low", "medium", "high", "max"].includes(assignment.tier) || !["standard", "deep"].includes(assignment.deliberation)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid tier routing`);
+		if (assignment.modelOverride && (typeof assignment.modelOverride.model !== "string" || (assignment.modelOverride.effort !== undefined && typeof assignment.modelOverride.effort !== "string") || (assignment.modelOverride.strict !== undefined && typeof assignment.modelOverride.strict !== "boolean"))) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid concrete model override`);
+	} else if (typeof assignment.model !== "string" || typeof assignment.effort !== "string" || typeof assignment.minimumCapabilityRank !== "number" || typeof assignment.allowFallback !== "boolean") {
+		throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid legacy model assignment`);
 	}
 	return task as TaskManifest;
 }

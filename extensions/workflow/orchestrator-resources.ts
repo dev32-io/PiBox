@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import type { EvaluationManifest, HarnessConfig, MutationAuthority, TaskManifest, WorkItemIndex, WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type EvaluationManifest, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
 export type CanonicalResourceType = "work-item" | "artifact" | "task" | "integration-unit" | "evaluation";
@@ -70,7 +70,14 @@ export class OrchestratorResourceService {
 		const assignment = manifest.execution.assignment;
 		const role = this.config.roles[assignment.role];
 		if (!role) throw new HarnessError("CONFIG_INVALID", `Unknown task role: ${assignment.role}. Configured roles: ${Object.keys(this.config.roles).join(", ")}`);
-		if (!this.config.models[assignment.model]) throw new HarnessError("CONFIG_INVALID", `Task model must be a configured alias. Configured aliases: ${Object.keys(this.config.models).join(", ")}`);
+		if (isTierTaskAssignment(assignment)) {
+			const routes = this.config.modelTiers[assignment.tier];
+			if (!routes?.length) throw new HarnessError("CONFIG_INVALID", `Task tier has no configured routes: ${assignment.tier}`);
+			if (!routes.some((route) => route.effort[assignment.deliberation] !== undefined)) throw new HarnessError("CONFIG_INVALID", `Task routing ${assignment.tier}/${assignment.deliberation} has no configured model effort mapping`);
+			if (assignment.modelOverride && !Object.values(this.config.modelTiers).flat().some((route) => route.model === assignment.modelOverride!.model || `${route.provider}/${route.model}` === assignment.modelOverride!.model)) {
+				throw new HarnessError("CONFIG_INVALID", `Task model override is not configured in any tier: ${assignment.modelOverride.model}`);
+			}
+		}
 		if (role.workspace === "worktree" && manifest.execution.isolation !== "worktree") throw new HarnessError("CONFIG_INVALID", `Role ${assignment.role} requires worktree isolation`);
 	}
 

@@ -13,10 +13,10 @@ test("merges maps recursively and replaces arrays", () => {
 	);
 });
 
-test("loads user then repository configuration and records a stable digest", () => {
+test("loads user then repository tier configuration and records a stable digest", () => {
 	const files: Record<string, string> = {
-		"/home/.pi/agent/harness/config.yaml": "limits:\n  maxConcurrency: 2\nroles:\n  implementer:\n    models:\n      - model: terra\n        effort: medium\n",
-		"/repo/.pi/harness.yaml": "limits:\n  maxConcurrency: 6\n",
+		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - provider: local\n      model: bounded\n      effort: { standard: off }\nroles:\n  implementer:\n    tier: medium\n    deliberation: standard\nlimits:\n  maxConcurrency: 2\n",
+		"/repo/.pi/harness.yaml": "schemaVersion: 2\nlimits:\n  maxConcurrency: 6\n",
 	};
 	const loaded = loadHarnessConfig("/repo", {
 		home: "/home",
@@ -26,27 +26,33 @@ test("loads user then repository configuration and records a stable digest", () 
 	assert.equal(loaded.config.limits.maxConcurrency, 6);
 	assert.equal(loaded.config.limits.maxActiveSubagentsPerSession, 16);
 	assert.equal(loaded.config.limits.maxSubagentDepth, 1);
-	assert.deepEqual(loaded.config.roles.implementer?.models, [{ model: "terra", effort: "medium" }]);
+	assert.deepEqual(loaded.config.modelTiers.medium, [{ provider: "local", model: "bounded", effort: { standard: "off" } }]);
+	assert.equal(loaded.config.roles.implementer?.tier, "medium");
 	assert.equal(loaded.sources.length, 3);
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
 });
 
-test("resolves explicit role inheritance while preserving array replacement", () => {
+test("resolves explicit role inheritance while preserving routing defaults", () => {
 	const config = validateHarnessConfig({
 		...structuredClone(DEFAULT_HARNESS_CONFIG),
 		roles: {
 			...structuredClone(DEFAULT_HARNESS_CONFIG.roles),
-			custom: { extends: "implementer", tools: ["read"], models: [{ model: "luna", effort: "low" }] },
+			custom: { extends: "implementer", tools: ["read"], tier: "low" },
 		},
 	});
 	assert.equal(config.roles.custom?.workspace, "worktree");
 	assert.deepEqual(config.roles.custom?.tools, ["read"]);
-	assert.deepEqual(config.roles.custom?.models, [{ model: "luna", effort: "low" }]);
+	assert.equal(config.roles.custom?.tier, "low");
+	assert.equal(config.roles.custom?.deliberation, "standard");
 });
 
-test("fails closed on unknown top-level configuration", () => {
+test("fails closed on legacy aliases and unknown top-level configuration", () => {
 	assert.throws(
 		() => validateHarnessConfig({ ...structuredClone(DEFAULT_HARNESS_CONFIG), unsafeOverride: true }),
 		(error: unknown) => error instanceof HarnessError && error.code === "CONFIG_INVALID",
+	);
+	assert.throws(
+		() => loadHarnessConfig("/repo", { home: "/home", exists: () => true, readFile: () => "schemaVersion: 1\nmodels: {}\n" }),
+		(error: unknown) => error instanceof HarnessError && error.code === "CONFIG_INVALID" && /migrate/i.test(error.message),
 	);
 });

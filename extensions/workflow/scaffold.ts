@@ -1,36 +1,28 @@
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { stringify } from "yaml";
-import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig } from "./config.js";
+import { loadHarnessConfig } from "./config.js";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit } from "./repository.js";
 
 export type HarnessScaffoldProfile = "standard" | "economy";
 
 function economyConfig() {
-	const roleNames = Object.keys(DEFAULT_HARNESS_CONFIG.roles);
 	return {
-		schemaVersion: 1,
-		models: {
-			sol: { provider: "openai-codex", model: "gpt-5.6-luna", capabilityRank: 100 },
-			terra: { provider: "openai-codex", model: "gpt-5.6-luna", capabilityRank: 100 },
-			luna: { provider: "openai-codex", model: "gpt-5.6-luna", capabilityRank: 100 },
+		schemaVersion: 2,
+		modelTiers: {
+			max: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "high", deep: "max" } }],
+			high: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } }],
+			medium: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } }],
+			low: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "low", deep: "medium" } }],
 		},
-		roles: Object.fromEntries(
-			roleNames.map((role) => [
-				role,
-				{
-					models: [{ model: "luna", effort: role === "implementer" || role === "repair-implementer" ? "medium" : "low" }],
-				},
-			]),
-		),
 		limits: { maxConcurrency: 2, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 1 },
 	};
 }
 
 function standardConfig() {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		orchestrator: { modelSwitching: "auto-visible" },
 		limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
 	};

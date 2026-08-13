@@ -65,6 +65,8 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.equal(tools.includes("planning_approve"), false);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_patch")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_apply_change")), /expectedRevision|contractDigest/);
+	assert.match(JSON.stringify(schemas.get("workflow_create")), /tier.*deliberation/);
+	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_create")), /minimumCapabilityRank|allowFallback|complexity/);
 	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);
 	assert.deepEqual(events, ["before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
 	activeTools = [...tools, "read"];

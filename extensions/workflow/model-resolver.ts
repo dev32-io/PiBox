@@ -1,43 +1,71 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { HarnessConfig, ModelCandidateConfig } from "./types.js";
+import type { CapabilityTier, Deliberation, HarnessConfig, HarnessEffort, TierModelRouteConfig } from "./types.js";
+
+export interface ExplicitModelOverride {
+	/** Configured concrete model id, optionally prefixed with provider/. */
+	model: string;
+	effort?: HarnessEffort;
+}
 
 export interface ModelResolutionRequest {
-	candidates: ModelCandidateConfig[];
-	minimumCapabilityRank?: number;
+	tier: CapabilityTier;
+	deliberation: Deliberation;
+	override?: ExplicitModelOverride;
 	strict?: boolean;
 }
 
 export interface ModelAttempt {
-	alias: string;
 	provider?: string;
-	model?: string;
-	effort: ModelThinkingLevel;
-	status: "selected" | "alias_missing" | "below_minimum_rank" | "model_missing" | "effort_unsupported";
+	model: string;
+	effort?: ModelThinkingLevel;
+	status: "profile_unsupported" | "override_not_configured" | "model_missing" | "effort_unsupported" | "selected";
 }
 
 export interface ResolvedHarnessModel {
 	status: "resolved";
-	requested: ModelCandidateConfig;
-	alias: string;
+	requested: { tier: CapabilityTier; deliberation: Deliberation; override?: ExplicitModelOverride };
+	route: TierModelRouteConfig;
 	model: Model<Api>;
 	effort: ModelThinkingLevel;
-	capabilityRank: number;
 	fallbackUsed: boolean;
 	attempts: ModelAttempt[];
 }
 
 export interface UnresolvedHarnessModel {
 	status: "waiting_model";
-	requested?: ModelCandidateConfig;
+	requested: { tier: CapabilityTier; deliberation: Deliberation; override?: ExplicitModelOverride };
 	attempts: ModelAttempt[];
 }
 
 export type HarnessModelResolution = ResolvedHarnessModel | UnresolvedHarnessModel;
 
 export function supportsEffort(model: Model<Api>, effort: ModelThinkingLevel): boolean {
-	if (effort === "off") return model.thinkingLevelMap?.off !== null;
-	if (!model.reasoning) return false;
-	return model.thinkingLevelMap?.[effort] !== null;
+	const mapped = model.thinkingLevelMap?.[effort];
+	if (effort === "off") return mapped !== null;
+	if (!model.reasoning || mapped === null) return false;
+	if (effort === "xhigh" || effort === "max") return mapped !== undefined;
+	return true;
+}
+
+function routeMatchesOverride(route: TierModelRouteConfig, model: string): boolean {
+	return route.model === model || `${route.provider}/${route.model}` === model;
+}
+
+function candidates(config: HarnessConfig, request: ModelResolutionRequest): Array<{ route: TierModelRouteConfig; effort: HarnessEffort | undefined; override: boolean }> {
+	const routes = config.modelTiers[request.tier] ?? [];
+	if (!request.override) return routes.map((route) => ({ route, effort: route.effort[request.deliberation], override: false }));
+	const matched = new Set<string>();
+	const orderedRoutes = [...routes, ...Object.entries(config.modelTiers).filter(([tier]) => tier !== request.tier).flatMap(([, tierRoutes]) => tierRoutes)];
+	const matching = orderedRoutes.filter((route) => {
+		const key = `${route.provider}/${route.model}`;
+		if (!routeMatchesOverride(route, request.override!.model) || matched.has(key)) return false;
+		matched.add(key);
+		return true;
+	});
+	const explicit = matching.map((route) => ({ route, effort: request.override!.effort ?? route.effort[request.deliberation], override: true }));
+	if (request.strict) return explicit;
+	const seen = new Set(explicit.map(({ route }) => `${route.provider}/${route.model}`));
+	return [...explicit, ...routes.filter((route) => !seen.has(`${route.provider}/${route.model}`)).map((route) => ({ route, effort: route.effort[request.deliberation], override: false }))];
 }
 
 export function resolveHarnessModel(
@@ -45,65 +73,39 @@ export function resolveHarnessModel(
 	availableModels: readonly Model<Api>[],
 	request: ModelResolutionRequest,
 ): HarnessModelResolution {
-	const candidates = request.strict ? request.candidates.slice(0, 1) : request.candidates;
 	const attempts: ModelAttempt[] = [];
-	const requested = request.candidates[0];
+	const requested = { tier: request.tier, deliberation: request.deliberation, ...(request.override ? { override: request.override } : {}) };
+	const configured = candidates(config, request);
+	const overrideConfigured = request.override ? Object.values(config.modelTiers).flat().some((route) => routeMatchesOverride(route, request.override!.model)) : true;
+	if (request.override && !overrideConfigured) attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "override_not_configured" });
 
-	for (const candidate of candidates) {
-		const alias = config.models[candidate.model];
-		if (!alias) {
-			attempts.push({ alias: candidate.model, effort: candidate.effort, status: "alias_missing" });
+	for (let index = 0; index < configured.length; index += 1) {
+		const candidate = configured[index]!;
+		const { route, effort } = candidate;
+		if (!effort) {
+			attempts.push({ provider: route.provider, model: route.model, status: "profile_unsupported" });
 			continue;
 		}
-		if (alias.capabilityRank < (request.minimumCapabilityRank ?? 0)) {
-			attempts.push({
-				alias: candidate.model,
-				provider: alias.provider,
-				model: alias.model,
-				effort: candidate.effort,
-				status: "below_minimum_rank",
-			});
-			continue;
-		}
-		const model = availableModels.find((item) => item.provider === alias.provider && item.id === alias.model);
+		const model = availableModels.find((item) => item.provider === route.provider && item.id === route.model);
 		if (!model) {
-			attempts.push({
-				alias: candidate.model,
-				provider: alias.provider,
-				model: alias.model,
-				effort: candidate.effort,
-				status: "model_missing",
-			});
+			attempts.push({ provider: route.provider, model: route.model, effort, status: "model_missing" });
 			continue;
 		}
-		if (!supportsEffort(model, candidate.effort)) {
-			attempts.push({
-				alias: candidate.model,
-				provider: alias.provider,
-				model: alias.model,
-				effort: candidate.effort,
-				status: "effort_unsupported",
-			});
+		if (!supportsEffort(model, effort)) {
+			attempts.push({ provider: route.provider, model: route.model, effort, status: "effort_unsupported" });
 			continue;
 		}
-		attempts.push({
-			alias: candidate.model,
-			provider: alias.provider,
-			model: alias.model,
-			effort: candidate.effort,
-			status: "selected",
-		});
+		attempts.push({ provider: route.provider, model: route.model, effort, status: "selected" });
 		return {
 			status: "resolved",
-			...(requested ? { requested } : { requested: candidate }),
-			alias: candidate.model,
+			requested,
+			route,
 			model,
-			effort: candidate.effort,
-			capabilityRank: alias.capabilityRank,
-			fallbackUsed: candidate !== requested,
+			effort,
+			fallbackUsed: index > 0 || Boolean(request.override && !candidate.override),
 			attempts,
 		};
 	}
 
-	return { status: "waiting_model", ...(requested ? { requested } : {}), attempts };
+	return { status: "waiting_model", requested, attempts };
 }

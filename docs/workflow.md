@@ -129,21 +129,31 @@ Maps merge recursively; arrays replace. Unknown security-sensitive fields fail c
 Example:
 
 ```yaml
-schemaVersion: 1
+schemaVersion: 2
 
-models:
-  sol:
-    provider: openai-codex
-    model: gpt-5.6-sol
-    capabilityRank: 300
-  terra:
-    provider: openai-codex
-    model: gpt-5.6-terra
-    capabilityRank: 200
-  luna:
-    provider: openai-codex
-    model: gpt-5.6-luna
-    capabilityRank: 100
+modelTiers:
+  max:
+    - provider: openai-codex
+      model: gpt-5.6-sol
+      effort: { standard: high, deep: max }
+  high:
+    - provider: openai-codex
+      model: gpt-5.6-terra
+      effort: { standard: medium, deep: high }
+    - provider: openai-codex
+      model: gpt-5.6-sol
+      effort: { standard: medium, deep: high }
+  medium:
+    - provider: openai-codex
+      model: gpt-5.6-luna
+      effort: { standard: medium, deep: high }
+  low:
+    - provider: local-llm
+      model: qwen3.6-27b
+      effort: { standard: off }
+    - provider: openai-codex
+      model: gpt-5.6-luna
+      effort: { standard: low, deep: medium }
 
 roles:
   implementer:
@@ -153,21 +163,20 @@ roles:
     workspace: worktree
     canDelegate: false
     completionSchema: implementer-v1
-    models:
-      - { model: sol, effort: high }
-      - { model: terra, effort: high }
+    tier: medium
+    deliberation: standard
 
-  fast-reviewer:
+  deep-reviewer:
     extends: quality-reviewer
     tools: [read, grep, find]
-    models:
-      - { model: terra, effort: medium }
+    tier: high
+    deliberation: deep
 
 orchestrator:
   modelSwitching: auto-visible
 
 limits:
-  maxConcurrency: 4 # legacy schema-v1 process preference
+  maxConcurrency: 4
   maxActiveSubagentsPerSession: 16
   maxSubagentDepth: 1
   protocolNudges: 1
@@ -176,7 +185,7 @@ limits:
 
 Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`.
 
-Fallback is always visible. Strict unavailable selections enter `waiting_model`; the workflow never silently lowers capability rank or effort.
+Task plans select `low | medium | high | max` capability and `standard | deep` deliberation. Each configured route maps that semantic request to an effort calibrated for its concrete model. Fallback is always visible and stays inside the requested tier/profile; unsupported effort mappings or unavailable strict selections enter `waiting_model` rather than silently lowering capability or clamping effort.
 
 ## Durable state
 

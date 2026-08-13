@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
 import { RepositoryMutex } from "../idempotency.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
-import { WorkItemStore } from "../work-items.js";
+import { parseTaskManifest, WorkItemStore } from "../work-items.js";
 
 const exec = promisify(execFile);
 
@@ -58,13 +58,10 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 			isolation: "worktree",
 			parallelism: "allowed",
 			resourceClaims: [],
-			complexity: "high",
 			assignment: {
 				role: "implementer",
-				model: "sol",
-				effort: "high",
-				minimumCapabilityRank: 200,
-				allowFallback: true,
+				tier: "max",
+				deliberation: "deep",
 				rationale: "Security-sensitive identity contract",
 			},
 		},
@@ -79,7 +76,7 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	});
 	assert.equal(planned.planning.revision, 4);
 	assert.deepEqual(planned.executionStages, [{ id: "session-runtime", tasks: ["implement-identity"] }]);
-	assert.equal((await store.readTask("session-model", "implement-identity")).execution.assignment.model, "sol");
+	assert.deepEqual((await store.readTask("session-model", "implement-identity")).execution.assignment, { role: "implementer", tier: "max", deliberation: "deep", rationale: "Security-sensitive identity contract" });
 
 	const submitted = await store.submitPlanning("session-model");
 	assert.equal(submitted.planning.status, "awaiting_approval");
@@ -97,7 +94,7 @@ test("approval activates draft tasks according to dependencies", async (t) => {
 	const manifest = (id: string, dependsOn: string[]): TaskManifest => ({
 		schemaVersion: 1, id, title: id, status: "draft", dependsOn,
 		references: { specs: [], designs: [], decisions: [] },
-		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [id], complexity: "low", assignment: { role: "implementer", model: "luna", effort: "low", minimumCapabilityRank: 0, allowFallback: false, rationale: "Fixture" } },
+		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [id], assignment: { role: "implementer", tier: "low", deliberation: "standard", rationale: "Fixture" } },
 		assembly: { integrationUnit: "delivery", intermediateState: "complete" },
 		verification: { timing: "integration-unit", methods: [], taskChecks: [], rationale: "Fixture" },
 	});
@@ -126,7 +123,7 @@ test("renders schema-v2 intent, artifacts, and task contracts from semantic valu
 	});
 	const manifest: TaskManifest = {
 		schemaVersion: 1, id: "render-contract", title: "Render contract", status: "ready", dependsOn: [], references: { specs: ["contract"], designs: [], decisions: [] },
-		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [], complexity: "low", assignment: { role: "implementer", model: "luna", effort: "low", minimumCapabilityRank: 0, allowFallback: true, rationale: "bounded" } },
+		execution: { isolation: "worktree", parallelism: "allowed", resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } },
 		assembly: { integrationUnit: "contract-unit", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: [], rationale: "assembled proof" },
 	};
 	await store.defineTask({
@@ -170,6 +167,31 @@ test("fails loudly instead of hiding a dirty canonical branch", async (t) => {
 		(error: unknown) => error instanceof HarnessError && error.code === "DIRTY_CANONICAL_BRANCH",
 	);
 	assert.equal(await readFile(join(root, "dirty.txt"), "utf8"), "dirty\n");
+});
+
+test("keeps legacy model assignments readable for replanning", () => {
+	const manifest = parseTaskManifest(`schemaVersion: 1
+id: legacy-task
+title: Legacy task
+status: ready
+dependsOn: []
+references: { specs: [], designs: [], decisions: [] }
+execution:
+  isolation: worktree
+  parallelism: serial
+  resourceClaims: []
+  complexity: high
+  assignment:
+    role: implementer
+    model: luna
+    effort: low
+    minimumCapabilityRank: 0
+    allowFallback: false
+    rationale: Historical plan
+assembly: { stageId: legacy-stage, intermediateState: complete }
+verification: { timing: task, methods: [], taskChecks: [], rationale: Historical proof }
+`);
+	assert.equal("model" in manifest.execution.assignment ? manifest.execution.assignment.model : undefined, "luna");
 });
 
 test("approval uses explicit planning status without contract hash gates", async (t) => {

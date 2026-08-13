@@ -35,16 +35,14 @@ export interface MutationAuthority {
 }
 export type Complexity = "low" | "medium" | "high" | "critical";
 export type HarnessEffort = ModelThinkingLevel;
+export type CapabilityTier = "low" | "medium" | "high" | "max";
+export type Deliberation = "standard" | "deep";
 
-export interface ModelAliasConfig {
+/** One concrete provider route inside a capability tier. Effort is calibrated per model. */
+export interface TierModelRouteConfig {
 	provider: string;
 	model: string;
-	capabilityRank: number;
-}
-
-export interface ModelCandidateConfig {
-	model: string;
-	effort: HarnessEffort;
+	effort: { standard: HarnessEffort; deep?: HarnessEffort };
 }
 
 export interface RoleConfig {
@@ -55,12 +53,13 @@ export interface RoleConfig {
 	workspace?: "repository" | "worktree" | "none";
 	canDelegate?: boolean;
 	completionSchema?: string;
-	models?: ModelCandidateConfig[];
+	tier?: CapabilityTier;
+	deliberation?: Deliberation;
 }
 
 export interface HarnessConfig {
-	schemaVersion: 1;
-	models: Record<string, ModelAliasConfig>;
+	schemaVersion: 2;
+	modelTiers: Record<CapabilityTier, TierModelRouteConfig[]>;
 	roles: Record<string, RoleConfig>;
 	orchestrator: {
 		modelSwitching: "off" | "suggest" | "auto-visible";
@@ -134,15 +133,26 @@ export interface TaskManifest {
 		isolation: "worktree" | "repository";
 		parallelism: "allowed" | "serial";
 		resourceClaims: string[];
-		complexity: Complexity;
-		assignment: {
-			role: string;
-			model: string;
-			effort: HarnessEffort;
-			minimumCapabilityRank: number;
-			allowFallback: boolean;
-			rationale: string;
-		};
+		/** Legacy schema-v1 planning field. New task plans express capability through assignment.tier. */
+		complexity?: Complexity;
+		assignment:
+			| {
+				role: string;
+				tier: CapabilityTier;
+				deliberation: Deliberation;
+				/** Exceptional concrete route pin, used only for an explicit user constraint. */
+				modelOverride?: { model: string; effort?: HarnessEffort; strict?: boolean };
+				rationale: string;
+			}
+			| {
+				/** Legacy assignment retained only so existing plans remain readable and replannable. */
+				role: string;
+				model: string;
+				effort: HarnessEffort;
+				minimumCapabilityRank: number;
+				allowFallback: boolean;
+				rationale: string;
+			};
 	};
 	assembly: {
 		stageId?: string;
@@ -164,6 +174,12 @@ export interface TaskManifest {
 		mergedCommit?: string;
 		lastRunId?: string;
 	};
+}
+
+export function isTierTaskAssignment(
+	assignment: TaskManifest["execution"]["assignment"],
+): assignment is Extract<TaskManifest["execution"]["assignment"], { tier: CapabilityTier }> {
+	return "tier" in assignment;
 }
 
 export interface EvaluationFinding {

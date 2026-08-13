@@ -20,7 +20,7 @@ import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildTaskPersistentContext } from "./implementation-context.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType } from "./orchestrator-resources.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
-import type { EvaluationManifest, HarnessEffort, HarnessStatusSnapshot, MutationAuthority, TaskManifest, WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type CapabilityTier, type Deliberation, type EvaluationManifest, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest, type WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
@@ -97,14 +97,26 @@ const MUTATION_AUTHORITY = Type.Object({
 	sources: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
 const EFFORT = Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]);
+const CAPABILITY_TIER = Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("max")]);
+const DELIBERATION = Type.Union([Type.Literal("standard"), Type.Literal("deep")]);
 const TASK_MANIFEST_RESOURCE = Type.Object({
 	schemaVersion: Type.Literal(1), id: Type.String({ description: "Bare kebab-case task id" }), title: Type.String(),
 	status: Type.Union([Type.Literal("draft"), Type.Literal("blocked"), Type.Literal("ready")]),
 	dependsOn: Type.Array(Type.String()),
 	references: Type.Object({ specs: Type.Array(Type.String()), designs: Type.Array(Type.String()), decisions: Type.Array(Type.String()) }, { additionalProperties: false }),
 	execution: Type.Object({
-		isolation: Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for the normal implementer role" }), parallelism: Type.Union([Type.Literal("allowed"), Type.Literal("serial")]), resourceClaims: Type.Array(Type.String()), complexity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
-		assignment: Type.Object({ role: Type.String({ description: "Configured role name, normally implementer" }), model: Type.String({ description: "Configured model alias such as luna, never a raw model id" }), effort: EFFORT, minimumCapabilityRank: Type.Integer({ minimum: 0 }), allowFallback: Type.Boolean(), rationale: Type.String() }, { additionalProperties: false }),
+		isolation: Type.Union([Type.Literal("worktree"), Type.Literal("repository")], { description: "Use worktree for the normal implementer role" }), parallelism: Type.Union([Type.Literal("allowed"), Type.Literal("serial")]), resourceClaims: Type.Array(Type.String()),
+		assignment: Type.Object({
+			role: Type.String({ description: "Configured role name, normally implementer" }),
+			tier: CAPABILITY_TIER,
+			deliberation: DELIBERATION,
+			modelOverride: Type.Optional(Type.Object({
+				model: Type.String({ description: "Exceptional configured concrete model pin required by the user" }),
+				effort: Type.Optional(EFFORT),
+				strict: Type.Optional(Type.Boolean()),
+			}, { additionalProperties: false })),
+			rationale: Type.String({ description: "Why this task needs the selected capability tier and deliberation profile after decomposition" }),
+		}, { additionalProperties: false }),
 	}, { additionalProperties: false }),
 	assembly: Type.Object({ stageId: Type.Optional(Type.String()), integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId" })), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
 	verification: Type.Object({ timing: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]), methods: Type.Array(Type.String()), taskChecks: Type.Array(Type.String()), rationale: Type.String() }, { additionalProperties: false }),
@@ -365,15 +377,15 @@ export default function workflow(pi: ExtensionAPI): void {
 			}
 			const rolePolicy = runtime.config.roles[task.execution.assignment.role];
 			if (!rolePolicy) throw new HarnessError("INVALID_ARTIFACT", `Unknown task role: ${task.execution.assignment.role}`);
-			const roleCandidates = rolePolicy.models ?? [];
-			const plannedCandidate = { model: task.execution.assignment.model, effort: task.execution.assignment.effort };
-			const candidates = [plannedCandidate, ...roleCandidates.filter((candidate) => candidate.model !== plannedCandidate.model || candidate.effort !== plannedCandidate.effort)];
+			if (!isTierTaskAssignment(task.execution.assignment)) throw new HarnessError("CONFIG_INVALID", `Task ${task.id} uses a legacy model assignment. Replan it with tier and deliberation before execution.`);
+			const modelOverride = task.execution.assignment.modelOverride;
+			const plannedRouting = {
+				tier: task.execution.assignment.tier,
+				deliberation: task.execution.assignment.deliberation,
+				...(modelOverride ? { override: { model: modelOverride.model, ...(modelOverride.effort ? { effort: modelOverride.effort } : {}) }, strict: modelOverride.strict ?? false } : {}),
+			};
 			const allAvailable = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-			const resolution = resolveHarnessModel(runtime.config, allAvailable, {
-				candidates,
-				minimumCapabilityRank: task.execution.assignment.minimumCapabilityRank,
-				strict: !task.execution.assignment.allowFallback,
-			});
+			const resolution = resolveHarnessModel(runtime.config, allAvailable, plannedRouting);
 			if (resolution.status === "waiting_model") {
 				await runtime.events.append("task.waiting_model", { workItemId: item.id, taskId: task.id, attempts: resolution.attempts });
 				return textResult(`MODEL_UNAVAILABLE: No acceptable model is currently available for ${task.id}.`, resolution);
@@ -392,7 +404,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				branch: allocation.branch,
 				baseCommit: allocation.baseCommit,
 				planningRevision: item.planning.revision,
-				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: `${plannedCandidate.model}:${plannedCandidate.effort}` },
+				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: `${plannedRouting.tier}:${plannedRouting.deliberation}${modelOverride ? `:${modelOverride.model}${modelOverride.effort ? `:${modelOverride.effort}` : ""}` : ""}` },
 				...(rolePolicy.prompt && resolveConfiguredPath(runtime.identity.root, rolePolicy.prompt)
 					? { rolePrompt: readFileSync(resolveConfiguredPath(runtime.identity.root, rolePolicy.prompt) as string, "utf8") }
 					: {}),
@@ -407,7 +419,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			});
 			await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
 			return textResult(
-				`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}:${resolution.effort}${resolution.fallbackUsed ? " (visible fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
+				`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}:${resolution.effort} for ${plannedRouting.tier}/${plannedRouting.deliberation}${resolution.fallbackUsed ? " (visible same-tier fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
 				launched,
 			);
 		} catch (error) {
@@ -426,9 +438,9 @@ export default function workflow(pi: ExtensionAPI): void {
 		const roleName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
 		const role = runtime.config.roles[roleName];
 		if (!role) throw new HarnessError("CONFIG_INVALID", `Missing evaluator role: ${roleName}`);
-		const candidates = role.models ?? [];
+		const routing = { tier: role.tier!, deliberation: role.deliberation! };
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-		const resolution = resolveHarnessModel(runtime.config, available, { candidates, strict: false });
+		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
 		await runtime.mutex.run(`evaluation-preflight:${item.id}:${evaluation.id}`, () => assertCleanRepository(runtime.identity.root));
 		const runs = new HarnessRunStore(runtime.identity.privateRoot, item.id);
@@ -436,7 +448,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			repositoryId: runtime.identity.id, workItemId: item.id, evaluationId: evaluation.id, role: roleName,
 			attempt: evaluation.attempt + 1, state: "running", workspace: runtime.identity.root,
 			baseCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), planningRevision: item.planning.revision,
-			...(candidates[0]?.model ? { requestedModel: candidates[0].model } : {}), resolvedProvider: resolution.model.provider,
+			requestedModel: `${routing.tier}:${routing.deliberation}`, resolvedProvider: resolution.model.provider,
 			resolvedModel: resolution.model.id, resolvedEffort: resolution.effort,
 		});
 		const prompt = [
@@ -724,7 +736,8 @@ export default function workflow(pi: ExtensionAPI): void {
 			scope: Type.Object({ start: Type.Array(Type.String()), exclude: Type.Optional(Type.Array(Type.String())) }),
 			depth: Type.Union([Type.Literal("quick"), Type.Literal("standard"), Type.Literal("thorough")]),
 			stopConditions: Type.Array(Type.String()), requiredOutput: Type.Array(Type.String()),
-			model: Type.Optional(Type.String()), effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
+			tier: Type.Optional(CAPABILITY_TIER), deliberation: Type.Optional(DELIBERATION),
+			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override" })), effort: Type.Optional(EFFORT),
 		}, { additionalProperties: false }),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
 			try {
@@ -734,10 +747,14 @@ export default function workflow(pi: ExtensionAPI): void {
 				validateExplorationAssignment(assignment);
 				const role = runtime.config.roles.explorer;
 				if (!role) throw new HarnessError("CONFIG_INVALID", "Missing explorer role");
-				const roleCandidates = role.models ?? [];
-				const requested = params.model ? [{ model: params.model, effort: (params.effort ?? "low") as HarnessEffort }] : roleCandidates;
+				if (params.effort && !params.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
+				const routing = {
+					tier: (params.tier ?? role.tier!) as CapabilityTier,
+					deliberation: (params.deliberation ?? role.deliberation!) as Deliberation,
+					...(params.model ? { override: { model: params.model, ...(params.effort ? { effort: params.effort as HarnessEffort } : {}) } } : {}),
+				};
 				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-				const resolution = resolveHarnessModel(runtime.config, available, { candidates: requested, strict: false });
+				const resolution = resolveHarnessModel(runtime.config, available, routing);
 				if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No explorer candidate is available.", resolution);
 				const launch = (nudge: boolean) => runtime.coordinator.launch({
 					operationId: toolCallId, role: "explorer", task: ["Call exploration_context before investigating.", `Complete the ${assignment.mode} assignment at ${assignment.depth} depth.`, "Use exploration_checkpoint for material recoverable progress.", nudge ? "No valid exploration_complete handoff was found. Complete the required structured handoff now." : "Finish by calling exploration_complete with mode-required cited evidence."].join("\n"),
@@ -776,8 +793,10 @@ export default function workflow(pi: ExtensionAPI): void {
 		parameters: Type.Object({
 			role: Type.String(),
 			task: Type.String(),
-			model: Type.Optional(Type.String()),
-			effort: Type.Optional(Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")])),
+			tier: Type.Optional(CAPABILITY_TIER),
+			deliberation: Type.Optional(DELIBERATION),
+			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override" })),
+			effort: Type.Optional(EFFORT),
 			strict: Type.Optional(Type.Boolean()),
 		}),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -786,11 +805,15 @@ export default function workflow(pi: ExtensionAPI): void {
 				const runtime = await runtimeFor(ctx);
 				const role = runtime.config.roles[params.role];
 				if (!role) throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow role: ${params.role}`);
-				const roleCandidates = role.models ?? [];
-				const requested = params.model ? [{ model: params.model, effort: (params.effort ?? "high") as HarnessEffort }] : roleCandidates;
-				const candidates = [...requested, ...roleCandidates.filter((candidate) => !requested.some((item) => item.model === candidate.model && item.effort === candidate.effort))];
+				if (params.effort && !params.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
+				const routing = {
+					tier: (params.tier ?? role.tier!) as CapabilityTier,
+					deliberation: (params.deliberation ?? role.deliberation!) as Deliberation,
+					...(params.model ? { override: { model: params.model, ...(params.effort ? { effort: params.effort as HarnessEffort } : {}) } } : {}),
+					strict: params.strict ?? false,
+				};
 				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-				const resolution = resolveHarnessModel(runtime.config, available, { candidates, strict: params.strict ?? false });
+				const resolution = resolveHarnessModel(runtime.config, available, routing);
 				if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No configured candidate is available.", resolution);
 				await assertCleanRepository(runtime.identity.root);
 				const defaultTools: Record<string, string[]> = {
