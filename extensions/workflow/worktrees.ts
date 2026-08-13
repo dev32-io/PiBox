@@ -139,7 +139,9 @@ export class WorktreeManager {
 		}
 
 		if (currentBranch !== baseBranch) throw new HarnessError("CAPABILITY_DENIED", `New workflow ${workItemId} must start from ${baseBranch}; current branch is ${currentBranch}. Switch intentionally after preserving any branch-local planning work.`);
-		await runGit(this.identity.root, ["pull", "--ff-only", "origin", baseBranch]);
+		// Local-only repositories have no upstream to synchronize. If origin is configured,
+		// keep failing closed on an inaccessible remote rather than silently using stale state.
+		if (await this.remoteExists("origin")) await runGit(this.identity.root, ["pull", "--ff-only", "origin", baseBranch]);
 		if (await this.branchExists(featureBranch)) throw new HarnessError("GIT_OPERATION_FAILED", `New delivery branch already exists: ${featureBranch}; use branchMode continue to add work to it`);
 		await runGit(this.identity.root, ["switch", "-c", featureBranch]);
 		const path = join(this.workItems.workItemRoot(workItemId), "index.yaml");
@@ -152,6 +154,10 @@ export class WorktreeManager {
 
 	private async branchExists(branch: string): Promise<boolean> {
 		return execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: this.identity.root }).then(() => true, () => false);
+	}
+
+	private async remoteExists(remote: string): Promise<boolean> {
+		return execFileAsync("git", ["remote", "get-url", remote], { cwd: this.identity.root }).then(() => true, () => false);
 	}
 
 	private stageBaseRef(workItemId: string, stageId: string): string {

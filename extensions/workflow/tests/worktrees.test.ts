@@ -15,7 +15,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
 	return (await exec("git", args, { cwd, encoding: "utf8" })).stdout.trim();
 }
 
-async function fixture(t: test.TestContext) {
+async function fixture(t: test.TestContext, options: { remote?: boolean } = {}) {
 	const parent = await mkdtemp(join(tmpdir(), "pibox-integration-"));
 	t.after(() => rm(parent, { recursive: true, force: true }));
 	const root = join(parent, "repo");
@@ -27,10 +27,12 @@ async function fixture(t: test.TestContext) {
 	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
 	await git(root, "branch", "-M", "develop");
-	const remote = join(parent, "remote.git");
-	await git(parent, "init", "--bare", "--quiet", remote);
-	await git(root, "remote", "add", "origin", remote);
-	await git(root, "push", "--quiet", "-u", "origin", "develop");
+	if (options.remote !== false) {
+		const remote = join(parent, "remote.git");
+		await git(parent, "init", "--bare", "--quiet", remote);
+		await git(root, "remote", "add", "origin", remote);
+		await git(root, "push", "--quiet", "-u", "origin", "develop");
+	}
 	return { parent, root, identity: await discoverRepository(root, join(parent, "home")) };
 }
 
@@ -103,6 +105,26 @@ test("derives singleton stages as direct feature-branch execution", async (t) =>
 	const manager = new WorktreeManager(identity); await manager.prepareFeatureBranch("serial");
 	const allocation = await manager.allocate("serial", await store.readTask("serial", "add-feature"));
 	assert.equal(allocation.path, identity.root); assert.equal(allocation.isolation, "repository"); assert.equal(allocation.branch, "fix/serial");
+});
+
+test("starts a new delivery from local develop when no origin is configured", async (t) => {
+	const { root, identity } = await fixture(t, { remote: false });
+	const store = new WorkItemStore(root);
+	await store.create({ id: "local-only", title: "Local only", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Support a repository without a remote" });
+	await store.submitPlanning("local-only");
+	const prepared = await new WorktreeManager(identity).prepareFeatureBranch("local-only");
+	assert.deepEqual(prepared, { baseBranch: "develop", featureBranch: "feature/local-only", created: true });
+	assert.equal(await git(root, "branch", "--show-current"), "feature/local-only");
+});
+
+test("still rejects an inaccessible configured origin", async (t) => {
+	const { parent, root, identity } = await fixture(t, { remote: false });
+	await git(root, "remote", "add", "origin", join(parent, "missing.git"));
+	const store = new WorkItemStore(root);
+	await store.create({ id: "broken-origin", title: "Broken origin", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Fail closed when configured synchronization fails" });
+	await store.submitPlanning("broken-origin");
+	await assert.rejects(new WorktreeManager(identity).prepareFeatureBranch("broken-origin"), /does not appear to be a git repository|Could not read from remote repository/);
+	assert.equal(await git(root, "branch", "--show-current"), "develop");
 });
 
 test("continues an explicitly recorded current feature branch without syncing develop", async (t) => {
