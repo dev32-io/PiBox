@@ -49,15 +49,15 @@ const ORCHESTRATOR_CONTRACT = `PiBox workflow routing:
 
 Act as a constructive product and technical partner. Seek the outcome behind requested solutions, inspect available facts, distinguish stated/observed/inferred/recommended/delegated/unresolved information, challenge a materially risky premise once, and preserve user authority.
 
-Keep clear, local, reversible work ad hoc. Treat collaboration as phases with retained conversational momentum: use product-discussion for free exploration without workflow pressure; shape-story when the user chooses to make the outcome, scope, specification, or design boundary durable; plan-delivery when a coherent story should become an execution-ready technical plan; and workflow-run only for approved execution, evaluation, recovery, completion, and outcome briefing. Each active phase owns one deliverable and naturally offers the next phase in user-friendly words. If the user already requested end-to-end planning, continue from shape-story into plan-delivery without asking them to repeat permission unless a material checkpoint needs their decision. An acknowledgement can confirm progress within an already authorized shaping or planning phase, but never initiates planning or execution by itself. When a turn mixes a concrete change with questions, alternatives, or “what next,” stay in product discussion until that frontier is settled. A problem report, suggested fix/feature label, or request to “address” something is not by itself permission to start, stop, resume, or amend a workflow.
+Keep clear, local, reversible work ad hoc. Treat collaboration as phases with retained conversational momentum: use product-discussion for free exploration without workflow pressure; shape-story when the user chooses to make the outcome, scope, specification, or design boundary durable; plan-delivery when a coherent story should become an execution-ready technical plan; and workflow-run only for explicitly requested execution, evaluation, recovery, completion, and outcome briefing. Each active phase owns one deliverable and naturally offers the next phase in user-friendly words. If the user already requested end-to-end planning, continue from shape-story into plan-delivery without asking them to repeat permission unless a material checkpoint needs their decision. An acknowledgement can confirm progress within an already authorized shaping or planning phase, but never initiates planning or execution by itself. When a turn mixes a concrete change with questions, alternatives, or “what next,” stay in product discussion until that frontier is settled. A problem report, suggested fix/feature label, or request to “address” something is not by itself permission to start, stop, resume, or amend a workflow.
 
 Write plans with workflow_plan_write. Choose its identity mode from the user's words: create for a new, fresh, separate, or ignore-previous plan; update only when the user explicitly asks to replace that exact existing plan; edit for revision-pinned surgical corrections after reading a written plan. A create source is read-only background and never authorizes mutation of that source. If create versus update remains genuinely ambiguous, ask one identity question before mutation. Supply the complete plan bundle for create or replacement so the initial write is atomic; use edit rather than resending unchanged plan content for self-review corrections. Raw resource tools are compatibility and repair surfaces. Never edit agent-artifacts directly.
 
 Use subagent_spawn for dynamic role-and-prompt delegation; it defaults to background. Managed workflow tasks and evaluations are scheduled internally by workflow_start or workflow resume and use the same child coordinator—do not ask the model to launch each planned task separately.
 
-Initial approval is user-only through /workflow approve <work-item-id>. Routine approved amendments may retain approval only after the user has chosen execution rather than discussion and the change is within delegated intent; ask when outcome, explicit constraints, consequential policy, privacy/security, irreversible effects, or a retained decision materially changes.
+Execution has one user-authority gate: a clear request to start or run the reviewed workflow. There is no separate approval command or planning-status gate. Do not infer execution from planning, review, acknowledgement, a problem report, or a suggested fix; when the user explicitly asks to run, call workflow_start directly.
 
-Start approved delivery with workflow_start. Let the runtime advance routine stages, merges, and evaluations. Esc controls only the current chat turn. Preserve dirty or conflicting work, pause once on failure, and never resolve destructive recovery invisibly. Claim completion only from fresh evidence and brief the user from outcome.md plus observed workflow results.`;
+Let the runtime advance routine stages, merges, and evaluations. Esc controls only the current chat turn. Preserve dirty or conflicting work, pause once on failure, and never resolve destructive recovery invisibly. Claim completion only from fresh evidence and brief the user from outcome.md plus observed workflow results.`;
 
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_status",
@@ -97,7 +97,6 @@ const textResult = (text: string, details: unknown = null) => ({
 const CANONICAL_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("evaluation")]);
 const LISTABLE_RESOURCE_TYPE = Type.Union([CANONICAL_RESOURCE_TYPE, Type.Literal("agent"), Type.Literal("message"), Type.Literal("run")]);
 const MUTATION_AUTHORITY = Type.Object({
-	disposition: Type.Union([Type.Literal("retain-approval"), Type.Literal("request-user")]),
 	rationale: Type.String(),
 	sources: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
@@ -318,7 +317,7 @@ async function mutationReceipt(runtime: HarnessRuntime, commit: string | undefin
 	const affected = [];
 	for (const id of affectedIds) {
 		const item = await runtime.workItems.read(id).catch((error) => error instanceof HarnessError && error.code === "WORK_ITEM_NOT_FOUND" ? undefined : Promise.reject(error));
-		if (item) affected.push({ ref: `work-item:${id}`, revision: item.planning.revision, planningStatus: item.planning.status, state: item.state });
+		if (item) affected.push({ ref: `work-item:${id}`, revision: item.planning.revision, state: item.state });
 	}
 	return { ok: true, ...(commit ? { commit } : {}), changes, affected, ...extra };
 }
@@ -475,7 +474,7 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 	const lines = status.workItems.map((item) => {
 		const counts = status.taskCounts[item.id] ?? {};
 		const tasks = Object.entries(counts).map(([state, count]) => `${count} ${state}`).join(" · ");
-		return `${item.id} · ${item.kind} · ${item.phase}/${item.state} · planning ${item.planning.status} r${item.planning.revision}${tasks ? ` · ${tasks}` : ""}`;
+		return `${item.id} · ${item.kind} · ${item.phase}/${item.state} · plan r${item.planning.revision}${tasks ? ` · ${tasks}` : ""}`;
 	});
 	const activeAgents = status.agents.filter((agent) => agent.processActive);
 	const attentionAgents = status.agents.filter((agent) => !agent.processActive && !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state));
@@ -520,7 +519,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		try {
 			requireTrusted(ctx);
 			const runtime = await runtimeFor(ctx);
-			const item = await runtime.workItems.assertCurrentApproval(workItemId);
+			const item = await runtime.workItems.read(workItemId);
 			const task = await runtime.workItems.readTask(workItemId, taskId);
 			if (task.status !== "ready" && task.status !== "failed" && task.status !== "protocol_failed" && task.status !== "running" && task.status !== "paused") {
 				throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not launchable from status ${task.status}`);
@@ -583,7 +582,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	const launchManagedEvaluation = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
 		requireTrusted(ctx);
 		const runtime = await runtimeFor(ctx);
-		const item = await runtime.workItems.assertCurrentApproval(workItemId);
+		const item = await runtime.workItems.read(workItemId);
 		const evaluation = await runtime.workItems.readEvaluation(item.id, evaluationId);
 		if (evaluation.attempt >= runtime.config.limits.repairRounds + 1) throw new HarnessError("INVALID_HANDOFF", `Evaluation repair budget exhausted for ${evaluation.id}`);
 		const roleName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
@@ -722,8 +721,8 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_status",
 		label: "Workflow Status",
-		description: "Inspect managed PiBox workflow work items and planning state for the current repository.",
-		promptSnippet: "Inspect managed work-item, planning, and execution status",
+		description: "Inspect managed PiBox workflow work items and execution state for the current repository.",
+		promptSnippet: "Inspect managed work-item revisions and execution status",
 		parameters: Type.Object({}),
 		async execute(_id, _params, _signal, _onUpdate, ctx) {
 			try {
@@ -835,7 +834,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					if (exact.mode === "update" && normalizedPlan!.workItem.id !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Update target ${exact.target} must match plan id ${String(normalizedPlan!.workItem.id)}`);
 					if (normalizedPlan) assertExactSchema(CANONICAL_PLAN_BUNDLE, normalizedPlan, "normalized workflow plan");
 					const ref = `work-item:${workItemId}`;
-					const authority: MutationAuthority = { disposition: "request-user", rationale: exact.mode === "create" ? "Write the new complete plan for user review" : exact.mode === "update" ? "Replace the explicitly selected plan for user review" : "Apply revision-pinned self-review corrections for user review", ...(exact.basedOn ? { sources: [exact.basedOn] } : {}) };
+					const authority: MutationAuthority = { rationale: exact.mode === "create" ? "Write the new complete plan for user review" : exact.mode === "update" ? "Replace the explicitly selected plan for user review" : "Apply revision-pinned self-review corrections for user review", ...(exact.basedOn ? { sources: [exact.basedOn] } : {}) };
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
 					let changes: Array<{ action: "create" | "patch" | "delete"; ref: string }>;
 					let result;
@@ -899,7 +898,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					const result = await service.transaction(`harness: patch ${exact.ref}`, () => service.patch(exact.ref, exact.patch, { authority: exact.authority }));
 					await runtime.events.append("resource.patched", { ref: exact.ref, authority: exact.authority, commit: result.commit });
 					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "patch", ref: exact.ref }]);
-					return textResult(`Patched ${exact.ref}${exact.authority.disposition === "retain-approval" ? " with approval continuity" : " and requested user review"}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+					return textResult(`Patched ${exact.ref}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},
@@ -987,7 +986,10 @@ export default function workflow(pi: ExtensionAPI): void {
 					else if (ref.type === "task") await runtime.workItems.updateTask(ref.workItemId, ref.id, { status: params.action as TaskManifest["status"] });
 					else throw new HarnessError("CAPABILITY_DENIED", `Unsupported transition ${params.action} for ${ref.type}`);
 					const receipt = await mutationReceipt(runtime, await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), [{ action: "transition", ref: params.ref }], { transition: params.action });
-					return textResult(`${params.ref} transitioned to ${params.action}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+					const handoff = ref.type === "work-item" && params.action === "submit"
+						? `\nPlan review is complete. Ask the user to review or request changes; if they want execution, they can simply say “start the workflow.” No separate approval command is required.`
+						: "";
+					return textResult(`${params.ref} transitioned to ${params.action}.${handoff}\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},
@@ -1180,7 +1182,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("workflow", {
-		description: "Control PiBox workflows: init | status | approve | pause | resume | stop | recover",
+		description: "Control PiBox workflows: init | status | pause | resume | stop | recover",
 		handler: async (args, ctx) => {
 			const [command = "status", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 			try {
@@ -1197,13 +1199,6 @@ export default function workflow(pi: ExtensionAPI): void {
 					runtime.config = loaded.config;
 					await runtime.events.append("repository.scaffolded", scaffold);
 					ctx.ui.notify(scaffold.created ? `Initialized ${profile} workflow policy and committed it.` : "Workflow policy already exists and is valid.", "info");
-					return;
-				}
-				if (command === "approve" && target && extra.length === 0) {
-					requireTrusted(ctx);
-					const item = await runtime.mutex.run(`approve:${target}`, () => runtime.workItems.approve(target));
-					await runtime.events.append("planning.approved", { id: item.id, revision: item.planning.approvedRevision });
-					ctx.ui.notify(`Approved ${item.id} planning revision ${item.planning.approvedRevision}.`, "info");
 					return;
 				}
 				if (command === "recover" && !target) {
@@ -1241,7 +1236,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Unknown task: ${target}`, "error");
 					return;
 				}
-				ctx.ui.notify("Usage: /workflow init [standard|economy] | status | approve <work-item> | pause <task> | resume <task> | stop <task> | recover", "warning");
+				ctx.ui.notify("Usage: /workflow init [standard|economy] | status | pause <task> | resume <task> | stop <task> | recover", "warning");
 			} catch (error) {
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}

@@ -18,13 +18,28 @@ test("exposes dynamic role delegation through the workflow adapter", async () =>
 	assert.deepEqual(captured, request);
 });
 
+test("workflow preparation begins execution without a separate approval state", async () => {
+	let began = 0;
+	const runtime: any = {
+		identity: { root: "/repo" },
+		workItems: { async submitPlanning() {}, async beginExecution(id: string) { began++; return { id, phase: "execution", planning: { revision: 1 } }; } },
+		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { return operation(); } },
+		agents: { async list() { return []; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), prepareFeatureBranch: async () => {} });
+	await adapter.prepareWorkflow?.("work-item:example", {} as any);
+	assert.equal(began, 1);
+});
+
 test("resume prepares stopped tasks from current dependency state", async () => {
 	const tasks: any[] = [task("first", "integrated"), task("second", "cancelled", ["first"]), task("third", "failed", ["second"])];
-	const item: any = { id: "example", planning: { status: "approved" }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
+	const item: any = { id: "example", planning: { revision: 1 }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
 	const updates: Array<[string, string]> = [];
 	const runtime: any = {
 		identity: { root: "/repo" },
 		workItems: {
+			async submitPlanning() {},
+			async beginExecution() { return item; },
 			async read() { return item; },
 			async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); },
 			async updateTask(_workItemId: string, id: string, update: any) { updates.push([id, update.status]); tasks.find((entry) => entry.id === id).status = update.status; },
@@ -42,7 +57,7 @@ test("stop ignores reported agents whose process already exited", async () => {
 	let reads = 0;
 	const runtime: any = {
 		identity: { root: "/repo" },
-		workItems: { async read() { return { id: "example", planning: { status: "approved" }, tasks: [], evaluations: [] }; } },
+		workItems: { async read() { return { id: "example", planning: { revision: 1 }, tasks: [], evaluations: [] }; } },
 		agents: { async list() { return [reported]; }, async get() { reads++; return reported; } },
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
@@ -56,7 +71,7 @@ test("derives and refreshes task, integration, and evaluation steps without copy
 	let tasks: any[] = [task("first", "ready"), task("second", "blocked", ["first"])];
 	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };
 	let agents: any[] = [];
-	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
 	const runtime: any = {
 		identity: { root: "/repo" },
 		workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } },
@@ -86,7 +101,7 @@ test("derives and refreshes task, integration, and evaluation steps without copy
 
 test("derives singleton repository execution and parallel stage merge barriers", async () => {
 	const tasks: any[] = [task("first", "ready", [], "serial"), task("left", "ready", ["first"], "parallel"), task("right", "ready", ["first"], "parallel")];
-	const item: any = { id: "topology", title: "Topology", planning: { status: "approved" }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "serial", tasks: ["first"] }, { id: "parallel", tasks: ["left", "right"] }], integrationUnits: [], evaluations: [] };
+	const item: any = { id: "topology", title: "Topology", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "serial", tasks: ["first"] }, { id: "parallel", tasks: ["left", "right"] }], integrationUnits: [], evaluations: [] };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); } }, agents: { async list() { return []; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:topology", {} as any);
@@ -107,7 +122,7 @@ test("derives singleton repository execution and parallel stage merge barriers",
 
 test("does not render exited or reported evaluation agents as running", async () => {
 	const tasks: any[] = [task("first", "merged")];
-	const item: any = { id: "example", title: "Example", planning: { status: "approved" }, tasks: [{ id: "first" }], executionStages: [{ id: "delivery", tasks: ["first"] }], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: "first" }], executionStages: [{ id: "delivery", tasks: ["first"] }], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", status: "planned", scope: { workItem: "example" } };
 	let agent: any = { id: "reviewer", state: "running", evaluationId: "review", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running" }] };
 	const runtime: any = {

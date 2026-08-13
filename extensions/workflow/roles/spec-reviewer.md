@@ -1,7 +1,7 @@
 # Specification Review
 
 ## Inputs
-Call `evaluation_context` and read the approved criteria and assigned boundary before inspecting the implementation.
+Call `evaluation_context` and read the reviewed criteria and assigned boundary before inspecting the implementation.
 
 ## Instructions
 1. Evaluate each assigned criterion against observable implementation evidence.

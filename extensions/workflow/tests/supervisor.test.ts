@@ -56,7 +56,6 @@ test("supervises a child contribution through a validated terminal handoff", asy
 	await store.create({ id: "supervised", title: "Supervised", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Exercise supervision" });
 	await store.defineTask({ workItemId: "supervised", manifest: manifest(), brief: "Create child.txt", acceptance: "child.txt is committed" });
 	await store.submitPlanning("supervised");
-	await store.approve("supervised");
 	const task = await store.readTask("supervised", "supervised-task");
 	const manager = new WorktreeManager(identity);
 	await manager.prepareFeatureBranch("supervised");
@@ -79,7 +78,7 @@ test("supervises a child contribution through a validated terminal handoff", asy
 		branch: allocation.branch,
 		baseCommit: allocation.baseCommit,
 		executionMode: allocation.isolation,
-		planningRevision: 2,
+		planningRevision: (await store.read("supervised")).planning.revision,
 		persistentContext: "# Persistent Implementation Context\n\nBuild the supervised fixture.\n",
 		model: { provider: "fake", model: "fake", effort: "medium", requested: "luna:medium" },
 		coordinator,

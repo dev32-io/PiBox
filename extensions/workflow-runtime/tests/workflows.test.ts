@@ -40,6 +40,7 @@ test("registers the generalized workflow and subagent surface", () => {
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
 	assert.match(f.tools.get("subagent_spawn").description, /read-only subagent.*configured specialist role and task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /role.*task.*background.*foreground/);
+	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*No separate approval command/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 });
 
@@ -47,13 +48,13 @@ test("failed workflow start returns an error and leaves no dashboard", async () 
 	const f = fixture();
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async snapshot() { throw new Error("Workflow plan example is not approved. Use /workflow approve example to approve the workflow plan first."); },
+		async snapshot() { throw new Error("Workflow plan example has invalid execution topology."); },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
 		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	await assert.rejects(f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx), /\/workflow approve example/);
+	await assert.rejects(f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx), /invalid execution topology/);
 	assert.equal(f.widget(), undefined);
 	assert.equal(f.entries.length, 0);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);

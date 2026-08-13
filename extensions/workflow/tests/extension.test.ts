@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflow from "../index.js";
@@ -65,7 +66,10 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"work_item_complete",
 	]);
 	assert.deepEqual(commands, ["workflow", "harness"]);
+	assert.doesNotMatch(await readFile(new URL("../index.ts", import.meta.url), "utf8"), /command === "approve"/);
 	assert.equal(tools.includes("planning_approve"), false);
+	assert.doesNotMatch(descriptions.get("workflow_transition") ?? "", /approval/i);
+	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_patch")), /retain-approval|request-user/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_patch")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_apply_change")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_create")), /tier|deliberation|isolation|parallelism/);

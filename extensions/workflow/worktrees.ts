@@ -115,7 +115,7 @@ export class WorktreeManager {
 
 	async prepareFeatureBranch(workItemId: string): Promise<PreparedFeatureBranch> {
 		await assertCleanRepository(this.identity.root);
-		const item = await this.workItems.assertCurrentApproval(workItemId);
+		const item = await this.workItems.read(workItemId);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);
 		if (!currentBranch) throw new HarnessError("GIT_OPERATION_FAILED", "Workflow start requires a named branch checkout");
 
@@ -169,7 +169,7 @@ export class WorktreeManager {
 
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
 		await assertCleanRepository(this.identity.root);
-		const item = await this.workItems.assertCurrentApproval(workItemId);
+		const item = await this.workItems.read(workItemId);
 		for (const dependency of task.dependsOn) {
 			const dependencyTask = await this.workItems.readTask(workItemId, dependency);
 			if (!["merged", "integrated"].includes(dependencyTask.status)) throw new HarnessError("INVALID_ARTIFACT", `Dependency is not merged: ${dependency}`);
@@ -251,7 +251,7 @@ export class WorktreeManager {
 
 	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
-		const item = await this.workItems.assertCurrentApproval(workItemId);
+		const item = await this.workItems.read(workItemId);
 		const featureBranch = item.delivery?.featureBranch;
 		if (!featureBranch) throw new HarnessError("INVALID_ARTIFACT", `Workflow ${workItemId} has no prepared delivery branch`);
 		const currentBranch = await runGit(this.identity.root, ["branch", "--show-current"]);

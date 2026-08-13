@@ -22,7 +22,7 @@ async function repository(t: test.TestContext): Promise<string> {
 function task(id = "build-app"): TaskManifest {
 	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
 }
-const retain = { disposition: "retain-approval" as const, rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
+const mutation = { rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
 
 test("builds a focused persistent implementation packet", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
@@ -56,21 +56,20 @@ test("lists compact resource summaries without embedding complete task contracts
 	assert.deepEqual((await service.summary("work-item:summary-flow/task:build-app")).availableViews, ["summary", "full"]);
 });
 
-test("revises an approved task in place while retaining approval continuity", async (t) => {
+test("revises a reviewed task in place without an approval lifecycle", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "resource-flow", title: "Resource flow", kind: "change", intent: "Deliver one app." });
 	await store.defineTask({ workItemId: "resource-flow", manifest: task(), brief: "Build it.", acceptance: "It works." });
-	await store.submitPlanning("resource-flow"); await store.approve("resource-flow");
-	await service.transaction("harness: revise task", () => service.patch("work-item:resource-flow/task:build-app", { manifest: { title: "Build the revised app", assembly: { integrationUnit: "delivery" } } }, { authority: retain }));
+	await store.submitPlanning("resource-flow");
+	await service.transaction("harness: revise task", () => service.patch("work-item:resource-flow/task:build-app", { manifest: { title: "Build the revised app", assembly: { integrationUnit: "delivery" } } }, { authority: mutation }));
 	const after = await store.read("resource-flow");
 	assert.equal(after.tasks.length, 1);
 	assert.deepEqual(after.executionStages, [{ id: "delivery", tasks: ["build-app"] }]);
 	assert.equal((await store.readTask("resource-flow", "build-app")).title, "Build the revised app");
 	assert.match((await store.readTaskContract("resource-flow", "build-app")).brief, /Build it/);
-	await service.transaction("harness: patch task verification", () => service.patch("work-item:resource-flow/task:build-app", { verification: { taskChecks: ["printf hello"] } }, { authority: retain }));
+	await service.transaction("harness: patch task verification", () => service.patch("work-item:resource-flow/task:build-app", { verification: { taskChecks: ["printf hello"] } }, { authority: mutation }));
 	assert.deepEqual((await store.readTask("resource-flow", "build-app")).verification.taskChecks, ["printf hello"]);
-	assert.equal(after.planning.status, "approved");
-	assert.equal(after.planning.approvalAmendments?.at(-1)?.revision, after.planning.revision);
+	assert.deepEqual(Object.keys((await store.read("resource-flow")).planning), ["revision"]);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
@@ -80,7 +79,7 @@ test("single-resource patches do not require a redundant coalescing commit", asy
 	await store.defineTask({ workItemId: "single-patch", manifest: task(), brief: "Build it.", acceptance: "It works." });
 	await store.submitPlanning("single-patch");
 	const before = await store.read("single-patch");
-	await service.transaction("harness: patch one task", () => service.patch("work-item:single-patch/task:build-app", { execution: { assignment: { tier: "high", deliberation: "deep" } } }, { authority: retain }));
+	await service.transaction("harness: patch one task", () => service.patch("work-item:single-patch/task:build-app", { execution: { assignment: { tier: "high", deliberation: "deep" } } }, { authority: mutation }));
 	const after = await store.read("single-patch");
 	assert.equal(after.planning.revision, before.planning.revision + 1);
 	const assignment = (await store.readTask("single-patch", "build-app")).execution.assignment;
@@ -93,7 +92,7 @@ test("patches schema-v2 artifact metadata without downgrading its representation
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "artifact-change", title: "Artifact", kind: "change", intent: "Exercise artifact patching." });
 	await store.putArtifact({ workItemId: "artifact-change", id: "contract", type: "spec", narrativeSchemaVersion: 2, title: "Original", sections: { context: "One contract.", requiredBehaviors: ["Remain editable."], acceptanceCriteria: [{ id: "AC-001", statement: "Title changes preserve schema metadata." }] }, operation: "create" });
-	await service.transaction("harness: patch artifact", () => service.patch("work-item:artifact-change/artifact:contract", { title: "Revised" }, { authority: retain }));
+	await service.transaction("harness: patch artifact", () => service.patch("work-item:artifact-change/artifact:contract", { title: "Revised" }, { authority: mutation }));
 	const artifact = await store.readArtifact("artifact-change", "contract");
 	assert.equal(artifact.metadata.narrativeSchemaVersion, 2);
 	assert.match(artifact.content, /^# Revised/m);
@@ -103,7 +102,7 @@ test("deletes an undelivered task and repairs integration membership", async (t)
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "remove-task", title: "Remove task", kind: "change", intent: "Exercise deletion." });
 	await store.defineTask({ workItemId: "remove-task", manifest: task(), brief: "Build it.", acceptance: "It works." });
-	await service.transaction("harness: delete task", () => service.delete("work-item:remove-task/task:build-app", { authority: retain }));
+	await service.transaction("harness: delete task", () => service.delete("work-item:remove-task/task:build-app", { authority: mutation }));
 	const item = await store.read("remove-task");
 	assert.deepEqual(item.tasks, []); assert.deepEqual(item.integrationUnits, []);
 	assert.equal((await store.reconcile("remove-task")).planning.revision, item.planning.revision);
@@ -114,17 +113,17 @@ test("squashes a coherent multi-resource change into one canonical commit", asyn
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "batch-change", title: "Batch", kind: "change", intent: "Original intent." });
 	await store.defineTask({ workItemId: "batch-change", manifest: task(), brief: "Build it.", acceptance: "It works." });
-	await store.submitPlanning("batch-change"); await store.approve("batch-change");
+	await store.submitPlanning("batch-change");
 	const beforeCount = Number(await git(root, "rev-list", "--count", "HEAD"));
 	const baseline = await store.read("batch-change");
 	await service.transaction("harness: coherent batch", async () => {
-		await service.patch("work-item:batch-change", { title: "Revised batch" }, { authority: retain });
-		await service.patch("work-item:batch-change/task:build-app", { manifest: { title: "Revised task" } }, { authority: retain });
-		await service.coalesceRevision("batch-change", baseline, retain);
+		await service.patch("work-item:batch-change", { title: "Revised batch" }, { authority: mutation });
+		await service.patch("work-item:batch-change/task:build-app", { manifest: { title: "Revised task" } }, { authority: mutation });
+		await service.coalesceRevision("batch-change", baseline, mutation);
 	});
 	assert.equal(Number(await git(root, "rev-list", "--count", "HEAD")), beforeCount + 1);
 	assert.equal((await store.read("batch-change")).planning.revision, baseline.planning.revision + 1);
-	assert.equal((await store.read("batch-change")).planning.approvalAmendments?.length, 1);
+	assert.deepEqual(Object.keys((await store.read("batch-change")).planning), ["revision"]);
 	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "harness(resource-api): coherent batch");
 });
 
@@ -133,9 +132,9 @@ test("revises and removes planned evaluations without supplemental duplicates", 
 	await store.create({ id: "evaluation-change", title: "Evaluation", kind: "change", intent: "Exercise evaluation CRUD." });
 	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "browser-proof", type: "e2e", scope: { workItem: "evaluation-change" }, status: "planned", required: true, attempt: 0, methods: ["basic browser check"], criteria: [] };
 	await store.defineEvaluation("evaluation-change", evaluation);
-	await service.transaction("harness: revise evaluation", () => service.patch("work-item:evaluation-change/evaluation:browser-proof", { methods: ["keyboard", "reduced motion"] }, { authority: retain }));
+	await service.transaction("harness: revise evaluation", () => service.patch("work-item:evaluation-change/evaluation:browser-proof", { methods: ["keyboard", "reduced motion"] }, { authority: mutation }));
 	assert.deepEqual((await store.readEvaluation("evaluation-change", "browser-proof")).methods, ["keyboard", "reduced motion"]);
-	await service.transaction("harness: remove evaluation", () => service.delete("work-item:evaluation-change/evaluation:browser-proof", { authority: retain }));
+	await service.transaction("harness: remove evaluation", () => service.delete("work-item:evaluation-change/evaluation:browser-proof", { authority: mutation }));
 	const item = await store.read("evaluation-change");
 	assert.deepEqual(item.evaluations, []);
 	assert.equal((await store.reconcile("evaluation-change")).planning.revision, item.planning.revision);
@@ -146,7 +145,7 @@ test("rolls back every canonical commit when a batch operation fails", async (t)
 	await store.create({ id: "atomic-change", title: "Atomic", kind: "change", intent: "Original intent." });
 	const base = await git(root, "rev-parse", "HEAD");
 	await assert.rejects(service.transaction("harness: failing batch", async () => {
-		await service.patch("work-item:atomic-change", { title: "Changed" }, { authority: retain });
+		await service.patch("work-item:atomic-change", { title: "Changed" }, { authority: mutation });
 		throw new Error("second operation failed");
 	}), /second operation failed/);
 	assert.equal(await git(root, "rev-parse", "HEAD"), base);
@@ -164,22 +163,22 @@ test("writes complete plans with explicit create and revision-pinned update iden
 		artifacts: [spec], tasks: [firstTask], integrationUnits: [{ id: "delivery", tasks: ["first-task"], intermediatePolicy: "coherent" }], evaluations: [],
 	};
 	const createBase = await git(root, "rev-parse", "HEAD");
-	await assert.rejects(service.transaction("harness: reject invalid complete plan", () => service.writePlan({ mode: "create", plan: { ...createPlan, workItem: { ...createPlan.workItem, id: "broken-plan" }, tasks: [{ ...firstTask, manifest: { ...firstTask.manifest, references: { specs: ["missing-spec"], designs: [], decisions: [] } } }] } }, retain)), /Unknown spec reference/);
+	await assert.rejects(service.transaction("harness: reject invalid complete plan", () => service.writePlan({ mode: "create", plan: { ...createPlan, workItem: { ...createPlan.workItem, id: "broken-plan" }, tasks: [{ ...firstTask, manifest: { ...firstTask.manifest, references: { specs: ["missing-spec"], designs: [], decisions: [] } } }] } }, mutation)), /Unknown spec reference/);
 	assert.equal(await git(root, "rev-parse", "HEAD"), createBase);
 	await assert.rejects(store.read("broken-plan"), /does not exist/);
-	await service.transaction("harness: create complete plan", () => service.writePlan({ mode: "create", plan: createPlan }, retain));
+	await service.transaction("harness: create complete plan", () => service.writePlan({ mode: "create", plan: createPlan }, mutation));
 	const created = await store.read("fresh-plan");
 	assert.deepEqual(created.tasks.map((entry) => entry.id), ["first-task"]);
 	const staleRevision = created.planning.revision;
 	const secondTask = { manifest: task("second-task"), brief: "Build the replacement behavior.", acceptance: "It works better." };
 	secondTask.manifest.assembly = { stageId: "second-stage", intermediateState: "complete" };
 	const updatePlan = { ...createPlan, workItem: { ...createPlan.workItem, title: "Replaced plan" }, tasks: [secondTask], integrationUnits: [{ id: "delivery-v2", tasks: ["second-task"], intermediatePolicy: "coherent" }] };
-	await service.transaction("harness: update complete plan", () => service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, retain));
+	await service.transaction("harness: update complete plan", () => service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, mutation));
 	const updated = await store.read("fresh-plan");
 	assert.equal(updated.title, "Replaced plan");
 	assert.deepEqual(updated.tasks.map((entry) => entry.id), ["second-task"]);
 	assert.deepEqual(updated.integrationUnits.map((entry) => entry.id), ["delivery-v2"]);
-	await assert.rejects(service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, retain), /advanced from requested revision/);
+	await assert.rejects(service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, mutation), /advanced from requested revision/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
@@ -204,13 +203,13 @@ test("applies surgical plan edits in one revision and rejects stale edits", asyn
 	await service.transaction("harness: edit plan", () => service.editPlan("work-item:surgical-plan", baseline.planning.revision, [
 		{ action: "update", ref: "work-item:surgical-plan", value: { title: "Corrected plan" } },
 		{ action: "update", ref: "work-item:surgical-plan/task:build-app", value: { manifest: revisedManifest, brief: "Corrected structured boundary.", acceptance: "Corrected observable proof." } },
-	], retain));
+	], mutation));
 	const revised = await store.read("surgical-plan");
 	assert.equal(revised.planning.revision, baseline.planning.revision + 1);
 	assert.equal(revised.title, "Corrected plan");
 	assert.equal((await store.readTask("surgical-plan", "build-app")).title, "Build corrected app");
 	assert.match((await store.readTaskContract("surgical-plan", "build-app")).brief, /Corrected structured boundary/);
-	await assert.rejects(service.editPlan("work-item:surgical-plan", baseline.planning.revision, [{ action: "update", ref: "work-item:surgical-plan", value: { title: "Stale" } }], retain), /advanced from requested revision/);
+	await assert.rejects(service.editPlan("work-item:surgical-plan", baseline.planning.revision, [{ action: "update", ref: "work-item:surgical-plan", value: { title: "Stale" } }], mutation), /advanced from requested revision/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
@@ -221,7 +220,7 @@ test("requires surgical create ids to match their exact refs", async (t) => {
 	await assert.rejects(service.transaction("harness: reject mismatched edit", () => service.editPlan("work-item:edit-identity", revision, [
 		{ action: "update", ref: "work-item:edit-identity", value: { title: "Must roll back" } },
 		{ action: "create", ref: "work-item:edit-identity/task:expected", value: { manifest: task("different"), brief: "Brief", acceptance: "Proof" } },
-	], retain)), /must match edit ref/);
+	], mutation)), /must match edit ref/);
 	const unchanged = await store.read("edit-identity");
 	assert.equal(unchanged.title, "Edit identity");
 	assert.equal(unchanged.planning.revision, revision);
@@ -232,9 +231,9 @@ test("postponement stays mutable while archive requires explicit reopen", async 
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "lifecycle", title: "Lifecycle", kind: "story", intent: "Exercise lifecycle." });
 	await store.transitionWorkItem("lifecycle", "postpone", "Not scheduled yet");
-	await service.transaction("harness: edit postponed", () => service.patch("work-item:lifecycle", { title: "Still mutable" }, { authority: retain }));
+	await service.transaction("harness: edit postponed", () => service.patch("work-item:lifecycle", { title: "Still mutable" }, { authority: mutation }));
 	await store.transitionWorkItem("lifecycle", "archive", "Explicitly finalized");
-	await assert.rejects(service.patch("work-item:lifecycle", { title: "Rejected" }, { authority: retain }), /finalized/);
+	await assert.rejects(service.patch("work-item:lifecycle", { title: "Rejected" }, { authority: mutation }), /finalized/);
 	await store.transitionWorkItem("lifecycle", "reopen", "New evidence warrants reopening");
 	assert.equal((await store.read("lifecycle")).state, "active");
 });

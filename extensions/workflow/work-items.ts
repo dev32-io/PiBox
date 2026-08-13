@@ -24,18 +24,8 @@ function assertContractMutable(index: WorkItemIndex): void {
 	if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${index.id} is finalized; reopen it before mutation`);
 }
 
-function advanceContractRevision(index: WorkItemIndex, authority?: MutationAuthority): void {
+function advanceContractRevision(index: WorkItemIndex, _authority?: MutationAuthority): void {
 	index.planning.revision += 1;
-	if (index.planning.status === "approved" && authority?.disposition === "retain-approval") {
-		index.planning.approvalAmendments = [
-			...(index.planning.approvalAmendments ?? []),
-			{ revision: index.planning.revision, at: new Date().toISOString(), decidedBy: "orchestrator", disposition: "retain-approval", rationale: authority.rationale, sources: authority.sources ?? [] },
-		];
-		return;
-	}
-	const hasPriorApproval = index.planning.status === "approved" || index.planning.approvedAt !== undefined;
-	index.planning.status = index.planning.status === "approved" || (hasPriorApproval && authority?.disposition === "request-user") ? "stale" : "draft";
-	if (hasPriorApproval && authority?.disposition === "request-user") index.state = "waiting_user";
 }
 
 function validateId(id: string, label: string): void {
@@ -84,17 +74,13 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	if (!index.state || !["active", "waiting_user", "paused", "postponed", "blocked", "failed", "complete", "archived"].includes(index.state)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid state`);
 	}
-	if (
-		!index.planning ||
-		!Number.isInteger(index.planning.revision) ||
-		index.planning.revision < 1 ||
-		!["draft", "awaiting_approval", "approved", "stale"].includes(index.planning.status)
-	) {
+	if (!index.planning || !Number.isInteger(index.planning.revision) || index.planning.revision < 1) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid planning metadata`);
 	}
-	if (index.planning.approvalAmendments !== undefined && (!Array.isArray(index.planning.approvalAmendments) || index.planning.approvalAmendments.some((amendment) => !amendment.rationale?.trim() || !Array.isArray(amendment.sources)))) {
-		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid approval amendments`);
-	}
+	// Approval metadata was removed as an execution gate. Strip legacy fields
+	// when an older work item is next persisted.
+	const legacyPlanning = index.planning as unknown as Record<string, unknown>;
+	for (const key of ["status", "approvedRevision", "approvedAt", "contractDigest", "approvalAmendments"]) delete legacyPlanning[key];
 	if (!Array.isArray(index.artifacts) || !Array.isArray(index.tasks) || !Array.isArray(index.evaluations)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid catalogs`);
 	}
@@ -224,12 +210,6 @@ export class WorkItemStore {
 		return parseWorkItemIndex(await readFile(path, "utf8"), path);
 	}
 
-	async assertCurrentApproval(id: string): Promise<WorkItemIndex> {
-		const item = await this.read(id);
-		if (item.planning.status !== "approved") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is not approved`);
-		return item;
-	}
-
 	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
 		validateId(input.id, "Work-item id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
@@ -257,7 +237,7 @@ export class WorkItemStore {
 				title: input.title.trim(),
 				phase: "planning",
 				state: "active",
-				planning: { revision: 1, status: "draft" },
+				planning: { revision: 1 },
 				artifacts: [{ id: "intent", type: "intent", path: "intent.md", status: "draft", narrativeSchemaVersion }],
 				tasks: [],
 				integrationUnits: [],
@@ -626,7 +606,6 @@ export class WorkItemStore {
 	async activateDraftTasks(workItemId: string): Promise<TaskManifest[]> {
 		await assertCleanRepository(this.repositoryRoot);
 		const item = await this.read(workItemId);
-		if (item.planning.status !== "approved") throw new HarnessError("CAPABILITY_DENIED", `Workflow plan ${workItemId} is not approved. Use /workflow approve ${workItemId} to approve the workflow plan first.`);
 		const drafts = (await Promise.all(item.tasks.map((catalog) => this.readTask(workItemId, catalog.id)))).filter((task) => task.status === "draft");
 		if (drafts.length === 0) return [];
 		const files = drafts.map((task) => ({
@@ -636,7 +615,7 @@ export class WorkItemStore {
 		const previous = await Promise.all(files.map(async (file) => ({ path: file.path, content: await readFile(file.path, "utf8") })));
 		try {
 			for (const file of files) await atomicWriteFile(file.path, file.content);
-			await this.commit(files.map((file) => file.path), `harness(${workItemId}): activate approved tasks`);
+			await this.commit(files.map((file) => file.path), `harness(${workItemId}): activate workflow tasks`);
 			return Promise.all(drafts.map((task) => this.readTask(workItemId, task.id)));
 		} catch (error) {
 			await this.restore(previous);
@@ -901,7 +880,7 @@ export class WorkItemStore {
 		if (!outcome?.trim() && !outcomeSections) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
-		const index = await this.assertCurrentApproval(workItemId);
+		const index = await this.read(workItemId);
 		for (const task of index.tasks) {
 			if (!["merged", "integrated"].includes((await this.readTask(workItemId, task.id)).status)) {
 				throw new HarnessError("INVALID_HANDOFF", `Task is not merged: ${task.id}`);
@@ -978,7 +957,6 @@ export class WorkItemStore {
 			delete index.finalization;
 			index.state = "active";
 			if (index.phase === "complete") index.phase = "planning";
-			if (index.planning.status === "approved") index.planning.status = "stale";
 		}
 		try {
 			await atomicWriteFile(indexPath, stringify(index));
@@ -991,52 +969,41 @@ export class WorkItemStore {
 	}
 
 	async submitPlanning(id: string): Promise<WorkItemIndex> {
-		return this.updatePlanning(id, "submit");
+		await assertCleanRepository(this.repositoryRoot);
+		const index = await this.read(id);
+		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before planning or execution`);
+		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
+		validateExecutionTopology(index, tasks);
+		return index;
 	}
 
-	async approve(id: string): Promise<WorkItemIndex> {
-		return this.updatePlanning(id, "approve");
-	}
-
-	private async updatePlanning(id: string, operation: "submit" | "approve"): Promise<WorkItemIndex> {
+	async beginExecution(id: string): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(id);
 		const indexPath = join(root, "index.yaml");
 		const previous = await readFile(indexPath, "utf8").catch(() => {
 			throw new HarnessError("WORK_ITEM_NOT_FOUND", `Work item does not exist: ${id}`);
 		});
+		const rawIndex = parse(previous) as { planning?: Record<string, unknown> };
+		const hadLegacyApprovalMetadata = ["status", "approvedRevision", "approvedAt", "contractDigest", "approvalAmendments"].some((key) => rawIndex.planning?.[key] !== undefined);
 		const index = parseWorkItemIndex(previous, indexPath);
+		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before execution`);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
 		validateExecutionTopology(index, tasks);
-		if (operation === "submit") {
-			if (index.planning.status === "approved") return index;
-			index.planning.status = "awaiting_approval";
-			index.state = "waiting_user";
-		} else {
-			if (index.planning.status === "approved") {
-				await this.activateDraftTasks(id);
-				return index;
-			}
-			if (index.planning.status !== "awaiting_approval") {
-				throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is not awaiting approval`);
-			}
-			index.planning.status = "approved";
-			index.phase = "execution";
-			index.planning.approvedRevision = index.planning.revision;
-			index.planning.approvedAt = new Date().toISOString();
-			index.planning.approvalAmendments = [];
-			index.state = "active";
-			for (const artifact of index.artifacts) artifact.status = artifact.status === "draft" ? "approved" : artifact.status;
-		}
-		try {
+		const needsPhase = index.phase === "planning";
+		const needsActiveState = index.state !== "active";
+		if (needsPhase) index.phase = "execution";
+		if (needsActiveState) index.state = "active";
+		if (needsPhase || needsActiveState || hadLegacyApprovalMetadata) {
 			await atomicWriteFile(indexPath, stringify(index));
-			await this.commit([indexPath], `harness(${id}): ${operation === "approve" ? "approve planning" : "submit planning"}`);
-			if (operation === "approve") await this.activateDraftTasks(id);
-			return index;
-		} catch (error) {
-			await this.restore([{ path: indexPath, content: previous }]);
-			throw error;
+			try {
+				await this.commit([indexPath], `harness(${id}): begin execution`);
+			} catch (error) {
+				await this.restore([{ path: indexPath, content: previous }]);
+				throw error;
+			}
 		}
+		return index;
 	}
 
 	private async validateCriterionReferences(index: WorkItemIndex, references: string[]): Promise<void> {

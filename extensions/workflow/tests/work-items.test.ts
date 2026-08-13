@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
 import { RepositoryMutex } from "../idempotency.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
-import { parseTaskManifest, WorkItemStore } from "../work-items.js";
+import { parseTaskManifest, parseWorkItemIndex, WorkItemStore } from "../work-items.js";
 
 const exec = promisify(execFile);
 
@@ -28,11 +28,11 @@ async function repository(t: test.TestContext): Promise<string> {
 	return root;
 }
 
-test("creates, catalogs, submits, and approves canonical work-item artifacts", async (t) => {
+test("creates, catalogs, and submits canonical work-item artifacts for review", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);
 	const created = await store.create({ id: "session-model", title: "Session Model", kind: "story", intent: "# Intent\nReplace sessions." });
-	assert.equal(created.planning.status, "draft");
+	assert.deepEqual(created.planning, { revision: 1 });
 	assert.equal((await git(root, "log", "-1", "--pretty=%s")), "harness(session-model): create work item");
 
 	const amended = await store.putArtifact({
@@ -77,18 +77,15 @@ test("creates, catalogs, submits, and approves canonical work-item artifacts", a
 	assert.deepEqual((await store.readTask("session-model", "implement-identity")).execution.assignment, { role: "implementer", tier: "max", deliberation: "deep", rationale: "Security-sensitive identity contract" });
 
 	const submitted = await store.submitPlanning("session-model");
-	assert.equal(submitted.planning.status, "awaiting_approval");
-	assert.equal(submitted.state, "waiting_user");
-	const approved = await store.approve("session-model");
-	assert.equal(approved.planning.status, "approved");
-	assert.equal(approved.planning.approvedRevision, 4);
+	assert.deepEqual(submitted.planning, { revision: 4 });
+	assert.equal(submitted.state, "active");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
-test("approval activates draft tasks according to dependencies", async (t) => {
+test("workflow start begins execution and activates draft tasks according to dependencies", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);
-	await store.create({ id: "activation", title: "Activation", kind: "change", intent: "Activate approved work." });
+	await store.create({ id: "activation", title: "Activation", kind: "change", intent: "Activate reviewed work." });
 	const manifest = (id: string, dependsOn: string[], stageId: string): TaskManifest => ({
 		schemaVersion: 1, id, title: id, status: "draft", dependsOn,
 		references: { specs: [], designs: [], decisions: [] },
@@ -99,7 +96,9 @@ test("approval activates draft tasks according to dependencies", async (t) => {
 	await store.defineTask({ workItemId: "activation", manifest: manifest("first", [], "foundation"), brief: "First task", acceptance: "First accepted" });
 	await store.defineTask({ workItemId: "activation", manifest: manifest("second", ["first"], "delivery"), brief: "Second task", acceptance: "Second accepted" });
 	await store.submitPlanning("activation");
-	await store.approve("activation");
+	await store.beginExecution("activation");
+	await store.activateDraftTasks("activation");
+	assert.equal((await store.read("activation")).phase, "execution");
 	assert.equal((await store.readTask("activation", "first")).status, "ready");
 	assert.equal((await store.readTask("activation", "second")).status, "blocked");
 	assert.equal(await git(root, "status", "--porcelain"), "");
@@ -200,16 +199,22 @@ test("rejects same-stage blockers and conflicting parallel resource claims on su
 	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("second", ["first"], "other"), brief: "Second", acceptance: "Second accepted" });
 	await assert.rejects(store.submitPlanning("bad-topology"), /blockers must be placed in an earlier execution stage/);
 	const second = await store.readTaskContract("bad-topology", "second"); second.manifest.dependsOn = []; second.manifest.execution.resourceClaims = ["shared"];
-	await store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { disposition: "request-user", rationale: "repair fixture" } });
+	await store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { rationale: "repair fixture" } });
 	await assert.rejects(store.submitPlanning("bad-topology"), /conflicting resource claim shared/);
 });
 
-test("approval uses explicit planning status without contract hash gates", async (t) => {
-	const root = await repository(t);
-	const store = new WorkItemStore(root);
-	await store.create({ id: "approval-status", title: "Approval Status", kind: "change", intent: "Original intent" });
-	await store.submitPlanning("approval-status");
-	const approved = await store.approve("approval-status");
-	assert.equal(approved.planning.status, "approved");
-	assert.equal((await store.reconcile("approval-status")).planning.status, "approved");
+test("legacy approval metadata is readable and normalized away", async (t) => {
+	const legacy = `schemaVersion: 1\nid: legacy-approval\nkind: change\ntitle: Legacy approval\nphase: planning\nstate: waiting_user\nplanning:\n  revision: 3\n  status: approved\n  approvedRevision: 3\n  approvedAt: 2026-01-01T00:00:00Z\nartifacts: []\ntasks: []\nintegrationUnits: []\nevaluations: []\n`;
+	assert.deepEqual(parseWorkItemIndex(legacy).planning, { revision: 3 });
+	const root = await repository(t); const store = new WorkItemStore(root);
+	const itemRoot = store.workItemRoot("legacy-approval");
+	await mkdir(itemRoot, { recursive: true });
+	await writeFile(join(itemRoot, "index.yaml"), legacy);
+	await git(root, "add", "agent-artifacts/legacy-approval/index.yaml");
+	await git(root, "commit", "--quiet", "-m", "legacy fixture");
+	await store.beginExecution("legacy-approval");
+	const persisted = await readFile(join(itemRoot, "index.yaml"), "utf8");
+	assert.doesNotMatch(persisted, /approvedRevision|approvedAt|status: approved/);
+	assert.equal((await store.read("legacy-approval")).phase, "execution");
+	assert.equal((await store.read("legacy-approval")).state, "active");
 });

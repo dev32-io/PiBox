@@ -64,9 +64,9 @@ test("derives parallel worktrees and merges the stage through one atomic barrier
 	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "feature-check", type: "deterministic", scope: { workItem: "feature" }, status: "planned", required: true, attempt: 0, methods: ["files exist"] };
 	await store.defineEvaluation("feature", evaluation);
 	await store.submitPlanning("feature");
-	await store.approve("feature");
 	const manager = new WorktreeManager(identity);
 	await manager.prepareFeatureBranch("feature");
+	assert.equal((await store.read("feature")).planning.revision > 0, true, "workflow start needs no approval status");
 	const allocations = [];
 	for (const id of ["add-feature", "sibling"]) {
 		const allocation = await manager.allocate("feature", await store.readTask("feature", id));
@@ -99,7 +99,7 @@ test("derives singleton stages as direct feature-branch execution", async (t) =>
 	const store = new WorkItemStore(root);
 	await store.create({ id: "serial", title: "Serial", kind: "change", delivery: { branchType: "fix", branchMode: "create", baseBranch: "develop" }, intent: "Run serially" });
 	await store.defineTask({ workItemId: "serial", manifest: task(), brief: "Direct work", acceptance: "Direct accepted" });
-	await store.submitPlanning("serial"); await store.approve("serial");
+	await store.submitPlanning("serial");
 	const manager = new WorktreeManager(identity); await manager.prepareFeatureBranch("serial");
 	const allocation = await manager.allocate("serial", await store.readTask("serial", "add-feature"));
 	assert.equal(allocation.path, identity.root); assert.equal(allocation.isolation, "repository"); assert.equal(allocation.branch, "fix/serial");
@@ -111,7 +111,6 @@ test("continues an explicitly recorded current feature branch without syncing de
 	const store = new WorkItemStore(root);
 	await store.create({ id: "follow-up", title: "Follow-up", kind: "change", delivery: { branchType: "feature", branchMode: "continue", baseBranch: "develop", featureBranch: "feature/large-refactor" }, intent: "Continue the larger refactor" });
 	await store.submitPlanning("follow-up");
-	await store.approve("follow-up");
 	const prepared = await new WorktreeManager(identity).prepareFeatureBranch("follow-up");
 	assert.deepEqual(prepared, { baseBranch: "develop", featureBranch: "feature/large-refactor", created: false });
 	assert.equal(await git(root, "branch", "--show-current"), "feature/large-refactor");
@@ -123,7 +122,6 @@ test("new delivery refuses to leave another branch implicitly", async (t) => {
 	const store = new WorkItemStore(root);
 	await store.create({ id: "separate", title: "Separate", kind: "story", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Create separate work" });
 	await store.submitPlanning("separate");
-	await store.approve("separate");
 	await assert.rejects(new WorktreeManager(identity).prepareFeatureBranch("separate"), /must start from develop.*feature\/existing-work/);
 });
 
@@ -135,7 +133,6 @@ test("resumes a dirty worktree recorded for the same task assignment", async (t)
 	await store.defineTask({ workItemId: "resume", manifest, brief: "Create a file", acceptance: "File exists" });
 	await addParallelSibling(store, "resume", "feature-unit");
 	await store.submitPlanning("resume");
-	await store.approve("resume");
 	const manager = new WorktreeManager(identity);
 	await manager.prepareFeatureBranch("resume");
 	const allocation = await manager.allocate("resume", await store.readTask("resume", manifest.id));
@@ -156,7 +153,6 @@ test("lists and safely cleans only inactive clean PiBox worktrees", async (t) =>
 	await store.defineTask({ workItemId: "cleanup", manifest, brief: "No-op", acceptance: "No-op" });
 	await addParallelSibling(store, "cleanup", "feature-unit");
 	await store.submitPlanning("cleanup");
-	await store.approve("cleanup");
 	const manager = new WorktreeManager(identity);
 	await manager.prepareFeatureBranch("cleanup");
 	const allocation = await manager.allocate("cleanup", await store.readTask("cleanup", manifest.id));
@@ -179,7 +175,6 @@ test("refuses allocation when the repository-local worktree root is not ignored"
 	await store.defineTask({ workItemId: "unignored", manifest, brief: "Create a file", acceptance: "File exists" });
 	await addParallelSibling(store, "unignored", "feature-unit");
 	await store.submitPlanning("unignored");
-	await store.approve("unignored");
 	const manager = new WorktreeManager(identity);
 	await manager.prepareFeatureBranch("unignored");
 	await assert.rejects(

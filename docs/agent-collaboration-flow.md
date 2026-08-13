@@ -25,7 +25,7 @@ freeform product discussion
 high-level story shaping
         ↓ when the product contract is coherent
 technical delivery planning
-        ↓ user review and explicit approval
+        ↓ user review, then an explicit request to run
 managed workflow execution
         ↓
 evidence-backed outcome briefing
@@ -138,20 +138,20 @@ The goal is common ground with the user, not merely a syntactically complete man
 
 ### Natural promotion
 
-Submit the coherent plan for user review and present the exact approval action. Offer refinement as an equal option. Approval remains user-only.
+Submit the coherent plan for user review and offer refinement as an equal option. No separate approval command is required.
 
-Approval does not itself start delivery. After approval, the user explicitly asks the main session to execute or resume the workflow.
+The user’s explicit request to execute or resume the reviewed workflow is the sole execution gate.
 
 ## Phase 4: Managed Workflow Execution
 
 ### Purpose
 
-Deliver the approved plan while the harness manages routine scheduling, isolation, merging, evaluation, and lifecycle state.
+Deliver the reviewed plan after the user asks to run it, while the harness manages routine scheduling, isolation, merging, evaluation, and lifecycle state.
 
 ### Expected collaboration
 
 - The main session starts and supervises the workflow rather than manually reproducing the scheduler.
-- Subagents execute bounded contributions under the approved contract.
+- Subagents execute bounded contributions under the reviewed contract revision.
 - The harness advances dependencies, worktrees, merges, and evaluations.
 - The main session resolves material questions, amendments, and recovery decisions while preserving user authority.
 - Dirty or conflicting work is preserved rather than silently discarded.
@@ -169,8 +169,8 @@ Authorization belongs to phases, not isolated assistant messages.
 - “Good” or a similar acknowledgement can confirm progress inside an already active phase.
 - An acknowledgement does not independently initiate planning or execution.
 - Creating an intermediate artifact must not reset prior planning authorization.
-- Initial workflow approval is explicitly user-only.
-- Execution requires both an approved plan and a clear user request to run it.
+- There is no separate workflow approval status or command.
+- Execution requires a clear user request to run the reviewed workflow.
 - Material changes to outcome, consequential policy, privacy, security, irreversible behavior, or explicit constraints return authority to the user.
 
 The agent should not strand the conversation with “I can do the next step” when the user has already asked it to complete that process. Conversely, it should not silently cross into a phase the user has not chosen.

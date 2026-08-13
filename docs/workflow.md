@@ -32,7 +32,7 @@ You can then speak naturally:
 
 ```text
 Research and plan a story for replacing the session model.
-Execute the approved session-model story.
+Start the reviewed session-model story.
 Run the planned combined review for the session-runtime unit.
 Recover the interrupted persistence task.
 ```
@@ -43,7 +43,7 @@ The main session selects ad-hoc work when ceremony is unnecessary. Managed work 
 
 Managed planning begins as a product and technical conversation, not an artifact write. The orchestrator recovers the outcome behind a proposed solution, inspects discoverable facts, and treats inherited product rules, UX/UI flows, schemas, APIs, and architecture as revisitable decisions when they manufacture contradictory guarantees or disproportionate complexity. It distinguishes symptoms, technical causes, and upstream enabling conditions for bug work; probes only materially consequential hidden cases; and stops discovery when another answer would not change the contract. Clear local reversible work remains ad hoc even when the user asks for a plan.
 
-The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator writes the complete draft atomically, reads the whole plan at that exact revision back, and performs one lightweight self-review for requirement coverage, vague placeholders, and cross-task consistency. If needed, it applies one revision-pinned surgical edit without resending unchanged plan content, then submits and hands the plan to the user. It offers two natural next steps: refine it conversationally, or approve it with `/workflow approve <work-item-id>`. No magic readiness phrase is required.
+The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator writes the complete draft atomically, reads the whole plan at that exact revision back, and performs one lightweight self-review for requirement coverage, vague placeholders, and cross-task consistency. If needed, it applies one revision-pinned surgical edit without resending unchanged plan content, then submits and hands the plan to the user. It offers two natural next steps: refine it conversationally, or say “start the workflow.” The explicit start request is the sole execution gate.
 
 - `workflow_plan_write` atomically creates or completely replaces a plan, and applies revision-pinned resource-level edits for post-write corrections. `create` always uses a new ID and treats `basedOn` as read-only context; complete `update` and surgical `edit` require the exact target and expected revision. Harness-owned lifecycle/schema boilerplate is defaulted, while structured task briefs and acceptance contracts remain mandatory because they become worker context.
 - `subagent_spawn` invokes any configured read-only specialist role with a task prompt and defaults to background execution. `plan-critic` remains optional when the user asks for an independent critique; ordinary plans do not wait for it.
@@ -56,17 +56,11 @@ The user settles or delegates consequential choices. Once both sides share an un
 Legacy resource-specific planning tools remain registered for compatibility but are hidden from the normal main-session tool surface.
 Schema-v2 narrative capabilities accept typed semantic sections and render stable Markdown for intent, specifications, designs, decisions, task briefs, and task acceptance. Required values fail when empty or placeholder-only; optional sections may be omitted. Evaluation reports and outcomes are rendered from structured evidence, findings, verification, and residual risk. Schema-v1 artifacts remain readable for compatibility.
 
-Initial planning submission records the plan as awaiting approval. Only the user can grant initial approval:
-
-```text
-/workflow approve <work-item-id>
-```
-
-Approval is continuity rather than a blanket mutation freeze. The main orchestrator may revise approved specs, designs, tasks, integration units, and evaluations with an audited `retain-approval` amendment when the change remains within delegated intent. It uses `request-user` only for a material user-owned decision. Each amendment records rationale, provenance, and impact; immutable run, evidence, handoff, and integration history is never rewritten. Task boundaries, integration grouping, and evaluator timing remain under orchestrator authority unless the user explicitly makes them binding.
+Planning submission validates the execution topology and marks the review handoff; it does not create an approval status. The plan stores only its revision. A clear user request to start or run that reviewed workflow authorizes `workflow_start`; planning, review, acknowledgement, or a problem report alone does not. Resource mutations retain rationale and provenance, while immutable run, evidence, handoff, and integration history is never rewritten.
 
 ### Exploration and execution
 
-The independent workflow extension owns the generic background execution surface. Each work item separates planning kind (`story | change`) from delivery intent (`feature | fix`, `create | continue`, base `develop`). For new delivery, `workflow_start` requires a clean checkout, switches to `develop`, pulls with `--ff-only`, and creates `feature/<work-item-id>` or `fix/<work-item-id>`. For continued delivery, it requires a clean checkout already on the recorded ongoing feature/fix branch and does not sync `develop`. It then asks the registered managed-work adapter to derive current task, task-merge, and evaluation steps directly from the approved work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
+The independent workflow extension owns the generic background execution surface. Each work item separates planning kind (`story | change`) from delivery intent (`feature | fix`, `create | continue`, base `develop`). For new delivery, `workflow_start` requires a clean checkout, switches to `develop`, pulls with `--ff-only`, and creates `feature/<work-item-id>` or `fix/<work-item-id>`. For continued delivery, it requires a clean checkout already on the recorded ongoing feature/fix branch and does not sync `develop`. It then asks the registered managed-work adapter to derive current task, task-merge, and evaluation steps directly from the reviewed work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
 
 - `subagent_spawn` dynamically launches a configured read-only specialist role with a task prompt in background mode by default; foreground mode remains available for explicit waiting.
 - `subagent_status`, `subagent_control`, and `subagent_respond` monitor and steer logical children.
@@ -75,7 +69,7 @@ The independent workflow extension owns the generic background execution surface
 - Managed task and evaluation spawning is internal to `workflow_start`/resume and uses the same launch coordinator and lifecycle registry as dynamic `subagent_spawn` calls.
 - Workers receive a focused task packet in their persistent system context. `task_clarify` provides optional, targeted access to broader story/change context when a concrete uncertainty remains; `task_complete` records completion.
 
-The managed-work adapter continues to own feature-branch preparation, runtime-derived isolation, stage merge barriers, checks, evaluator contracts, and canonical state transitions. Work-item `executionStages` are the complete execution topology: stages advance sequentially, while tasks inside one stage are one parallel frontier. A singleton stage commits directly to the feature branch. A multi-task stage allocates one worktree per task from a pinned common base, waits for every contribution, merges the batch in declared order, runs stage checks, and publishes it atomically before the next stage advances. Planners do not encode `isolation` or `parallelism`. The generic runtime contains no canonical artifact or approval logic.
+The managed-work adapter continues to own feature-branch preparation, runtime-derived isolation, stage merge barriers, checks, evaluator contracts, and canonical state transitions. Work-item `executionStages` are the complete execution topology: stages advance sequentially, while tasks inside one stage are one parallel frontier. A singleton stage commits directly to the feature branch. A multi-task stage allocates one worktree per task from a pinned common base, waits for every contribution, merges the batch in declared order, runs stage checks, and publishes it atomically before the next stage advances. Planners do not encode `isolation` or `parallelism`. The generic runtime contains no canonical artifact or plan-approval logic.
 
 New task worktrees live inside the canonical repository under an ignored root:
 
@@ -93,7 +87,7 @@ A task can intentionally be partial. Task-level review/repair may happen before 
 - `evaluation_record` records an orchestrator-curated/manual evaluation.
 - Evidence files are copied into the work item and checksummed.
 - Findings retain stable IDs and blocking status.
-- `work_item_complete` rejects incomplete tasks, missing required evaluation verdicts, stale approval, and unresolved blocking findings.
+- `work_item_complete` rejects incomplete tasks, missing required evaluation verdicts, and unresolved blocking findings.
 
 ### Control and recovery
 
@@ -113,7 +107,7 @@ Every model-backed direct child is registered under the stable main Pi session i
 
 Child stdout, stderr, transcript, heartbeat, checkpoint, messages, and handoff are file-backed under private session state. Exiting the main Pi process does not stop children. On resume, the registry checks durable handoffs before liveness, preserves positively identified live work, marks dead children without handoff interrupted, and treats stale-heartbeat PID ambiguity as recovery-required rather than launching a duplicate writer.
 
-Decision reports are asynchronous and non-blocking. Change requests and blockers checkpoint safe work and retain their logical slot while the main orchestrator judges materiality. Routine requests can be accepted or rejected, applied through an atomic `workflow_apply_change`, answered durably, and resumed without asking the user or discarding approval continuity. No live main-process RPC is required. Capacity failures remain explicit and require manual resume. Recovery never resets branches, deletes worktrees, or discards uncommitted worker changes.
+Decision reports are asynchronous and non-blocking. Change requests and blockers checkpoint safe work and retain their logical slot while the main orchestrator judges materiality. Routine requests can be accepted or rejected, applied through an atomic `workflow_apply_change`, answered durably, and resumed without asking the user. No live main-process RPC is required. Capacity failures remain explicit and require manual resume. Recovery never resets branches, deletes worktrees, or discards uncommitted worker changes.
 
 ## Configuration
 

@@ -67,7 +67,7 @@ scenarios:
       - answers the requested what-next product discussion with recommendations
       - determines the current conversational outcome and recommends whether the repair and next feature form one new increment or separate new work
       - does not stop start resume patch or add to the previous workflow
-      - does not treat related approved criteria as delegated execution authority
+      - does not treat related reviewed criteria as delegated execution authority
     fixture: a previous feature workflow is delivered and in final evaluation; the user starts a new discussion about one small drag defect and asks what would be good to add next while mentioning fix and feature
     model:
       provider: openai-codex
@@ -118,7 +118,7 @@ scenarios:
     requiredProperties:
       - submits the coherent draft without requiring a magic phrase
       - offers conversational refinement
-      - provides the direct /workflow approve command
+      - explains that “start the workflow” is the sole execution gate and no approval command is required
     model:
       provider: openai-codex
       id: gpt-5.6-luna
@@ -157,9 +157,9 @@ scenarios:
       - creates only high-level story artifacts during shape-story
       - continues into delivery planning when the user already requested end-to-end planning
       - does not stop at a draft with an offer to plan later
-      - submits an execution-ready plan and provides the direct approval command
-      - never treats acknowledgement or approval as permission to execute
-    fixture: after a long product discussion the user asks to make this a story and plan it; during shaping the user says good, then expects planning to continue to an approval-ready handoff
+      - submits an execution-ready plan and explains that a clear request to run is the sole execution gate
+      - never treats acknowledgement or review as permission to execute
+    fixture: after a long product discussion the user asks to make this a story and plan it; during shaping the user says good, then expects planning to continue to a review-ready handoff
     model:
       provider: openai-codex
       id: gpt-5.6-luna
@@ -212,7 +212,7 @@ scenarios:
       provider: openai-codex
       id: gpt-5.6-luna
       effort: low
-  - id: resource-api-planning-and-approved-amendment
+  - id: resource-api-planning-and-reviewed-amendment
     surface: assembled-harness
     repetitions: 1
     result: pass
@@ -222,7 +222,7 @@ scenarios:
       - one work item rather than replacement duplicates
       - coherent multi-resource creation in one commit and revision
       - typed resource representations visible in tool text
-      - approved task revision with audited retain-approval continuity
+      - reviewed task revision with audited mutation rationale and provenance
       - no automatic user escalation for routine implementation clarification
       - blocking request response and same-slot resume through workflow_apply_change
     model:
@@ -280,7 +280,7 @@ scenarios:
     repetitions: 1
     requiredProperties:
       - natural-language schema-v2 planning
-      - direct command approval
+      - explicit natural-language request to start execution
       - Luna supervised task completion
       - repository-local .worktree/pibox allocation
       - integration-unit checks

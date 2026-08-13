@@ -1,7 +1,7 @@
 # Workflow E2E Exercise: local todo
 
 **Repository:** `~/Development/todoTest`  
-**Scenario:** scaffold an empty Git repository with the economy profile, plan a small pure-local HTML todo list, require direct approval, execute it in a task worktree, assemble it, run a fresh combined evaluation, and complete the work item.
+**Scenario:** scaffold an empty Git repository with the economy profile, plan a small pure-local HTML todo list, require an explicit request to run, execute it in a task worktree, assemble it, run a fresh combined evaluation, and complete the work item.
 
 ## Session-registry and background-child regression
 
@@ -25,15 +25,15 @@ A fresh Luna task received its brief, acceptance contract, referenced specificat
 
 ## Resource-oriented planning and amendment regression
 
-A real `todoTest` session exposed an unnecessary single-resource coalescing commit: a valid task-model patch committed its change, then attempted a second no-op revision commit and failed. Single-resource mutations now commit directly. Model-supplied revision tokens, contract hashes, and runtime revision-equality gates were removed; approval status, scoped tools, schema validation, serialization, clean Git state, and immutable delivery history remain the enforcement boundary.
+A real `todoTest` session exposed an unnecessary single-resource coalescing commit: a valid task-model patch committed its change, then attempted a second no-op revision commit and failed. Single-resource mutations now commit directly. Model-supplied contract hashes and approval status were removed; revision-pinned edits, scoped tools, schema validation, serialization, clean Git state, and immutable delivery history remain the enforcement boundary.
 
 A fresh Luna planning session exercised the preferred stateless resource surface against an empty repository:
 
 1. `workflow_list` established that no matching work item existed.
 2. One `workflow_apply_change` created the work item, specification, implementation task, integration unit, and deterministic evaluation as one canonical Git commit and one planning revision.
-3. `workflow_transition` submitted that revision for direct user approval.
-4. After approval, a separate session used `workflow_list` and `workflow_get` to retrieve the exact task reference, complete representation, and current revision.
-5. It patched the existing task in place with `retain-approval` and an `agent-message` source. The work item remained approved, gained an audited approval amendment, and no duplicate work item, task, or evaluation was created.
+3. `workflow_transition` submitted that revision for user review.
+4. A separate session used `workflow_list` and `workflow_get` to retrieve the exact task reference, complete representation, and current revision.
+5. It patched the existing task in place with an `agent-message` source; no duplicate work item, task, or evaluation was created.
 
 The regression also exposed and fixed an important model-facing signal issue: resource bodies previously existed only in tool `details`, while the model saw a terse text summary. List/get/mutation tools now render the full JSON resource envelope in model-visible content, including references and revisions.
 
@@ -89,4 +89,4 @@ This pre-migration exercise used the legacy task-worktree path:
 
 New allocations use `<repository>/.worktree/pibox/<work-item>/<task>/`; legacy recorded paths remain recoverable.
 
-The exercise intentionally used the small economy profile to reduce model cost while still covering configuration merge, approval, child capability loading, task completion, integration, independent evaluation, evidence, and final completion.
+The exercise intentionally used the small economy profile to reduce model cost while still covering configuration merge, execution authorization, child capability loading, task completion, integration, independent evaluation, evidence, and final completion.

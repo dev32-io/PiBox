@@ -1,13 +1,13 @@
 ---
 name: workflow-run
-description: Use when an approved workflow should start, resume, recover, verify, complete, or brief the user on its outcome.
+description: Use when the user asks to start or resume a reviewed workflow, or when execution needs recovery, verification, completion, or outcome briefing.
 ---
 
 # Workflow Run
 
 ## Run
 
-1. Confirm direct approval and a clear user request to execute this workflow, then call `workflow_start`; do not manually sequence routine tasks. A new bug report, “address this,” feature/fix discussion, or related prior approval does not authorize starting, stopping, resuming, or amending an existing workflow.
+1. A clear user request to execute the reviewed workflow is the sole execution gate; call `workflow_start` directly and do not ask for a separate approval command or manually sequence routine tasks. A new bug report, “address this,” feature/fix discussion, planning acknowledgement, or review comment does not authorize starting, stopping, resuming, or amending an existing workflow.
 2. For new delivery, require a clean `develop`, fast-forward pull, and create the planned feature/fix branch. For continuation, require the clean recorded current branch and never sync `develop` automatically.
 3. Let the runtime enforce stages, dependencies, resource claims, isolation, task merges, and planned evaluations. Monitor routine events without narrating every transition.
 4. Resolve worker questions from canonical context. Apply delegated amendments with `workflow_apply_change`, respond durably, and resume. Ask the user only for material outcome, policy, privacy/security, irreversible, destructive, or explicitly retained decisions.

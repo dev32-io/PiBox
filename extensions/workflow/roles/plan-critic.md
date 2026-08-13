@@ -28,4 +28,4 @@ Return:
 - planning-readiness verdict
 - residual risks
 
-Planning readiness means the contract is aligned with the real outcome, sufficiently evidenced, coherent, proportionate, and verifiable enough to begin execution—not that implementation already exists. Keep planning read-only; synthesis and approval remain with the main session and user.
+Planning readiness means the contract is aligned with the real outcome, sufficiently evidenced, coherent, proportionate, and verifiable enough to begin execution—not that implementation already exists. Keep planning read-only; synthesis remains with the main session and execution authorization remains with the user.

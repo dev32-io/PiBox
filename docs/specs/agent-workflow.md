@@ -6,7 +6,7 @@
 
 ## 1. Purpose
 
-PiBox will provide a capability-backed managed development workflow for Pi. It will help a persistent main Pi session research work, turn approved intent into durable specifications and designs, plan an executable task graph, delegate isolated work to specialized agents, evaluate the results, integrate approved changes, and recover from interruptions.
+PiBox will provide a capability-backed managed development workflow for Pi. It will help a persistent main Pi session research work, turn understood intent into durable specifications and designs, plan an executable task graph, delegate isolated work to specialized agents, evaluate the results, integrate reviewed changes, and recover from interruptions.
 
 The harness is not intended to replace a capable model with a rigid workflow engine. Its central design principle is:
 
@@ -14,9 +14,9 @@ The harness is not intended to replace a capable model with a rigid workflow eng
 
 The main Pi session remains the user's conversational and orchestration authority because it is where user intent, corrections, and decisions enter the system. Child agents advise or contribute bounded work; they do not own process decisions. The extension provides reliable artifacts, lifecycle state, model routing, worktree isolation, role contracts, completion protocols, evaluation gates, and recovery controls.
 
-The workflow scales with the work. A small text or color edit can remain ordinary ad-hoc Pi work. A bounded change can use lightweight artifacts and selective delegation. A complex story can use the complete planning, approval, execution, and evaluation workflow.
+The workflow scales with the work. A small text or color edit can remain ordinary ad-hoc Pi work. A bounded change can use lightweight artifacts and selective delegation. A complex story can use the complete planning, review, execution, and evaluation workflow.
 
-The workflow defines phase-level obligations, not a mandatory per-task ceremony. Planning must establish an approved contract; implementation must produce an assembled result; completion must have proportionate evidence. The orchestrator decides whether review and testing happen per task, once for an integration unit, once for the completed work item, or are unnecessary for a low-risk contribution. This explicitly avoids forcing every task through the same implement-review-test-fix loop.
+The workflow defines phase-level obligations, not a mandatory per-task ceremony. Planning must establish a reviewed contract; implementation must produce an assembled result; completion must have proportionate evidence. The orchestrator decides whether review and testing happen per task, once for an integration unit, once for the completed work item, or are unnecessary for a low-risk contribution. This explicitly avoids forcing every task through the same implement-review-test-fix loop.
 
 ## 2. Design goals
 
@@ -64,7 +64,7 @@ The main session may:
 - Create and amend canonical artifacts through capabilities.
 - Schedule, steer, pause, restart, and stop child agents.
 - Judge context impact, task complexity, concurrency, findings, and repair strategy.
-- Integrate approved task work.
+- Integrate reviewed task work.
 - Escalate only critical decisions that exceed its authority.
 
 ### 4.2 Work levels
@@ -83,7 +83,7 @@ change
 
 story
   Multiple concerns, dependencies, risks, or concurrent tasks.
-  Full planning, approval, orchestration, and evaluation.
+  Full planning, review, orchestration, and evaluation.
 ```
 
 Relevant complexity signals include ambiguity, reversibility, cross-cutting contracts, security or data impact, dependency structure, concurrency opportunity, and verification burden.
@@ -183,7 +183,7 @@ Children run in independent process groups and write stdout, stderr, transcript 
 
 ### 6.1 Orchestrator authority
 
-The orchestrator may act autonomously while preserving the approved contract. This includes:
+The orchestrator may act autonomously while preserving the reviewed contract. This includes:
 
 - Strengthening task isolation.
 - Reordering eligible tasks.
@@ -194,7 +194,7 @@ The orchestrator may act autonomously while preserving the approved contract. Th
 - Rejecting incomplete handoffs.
 - Requesting additional evaluation.
 - Applying non-semantic artifact corrections.
-- Selecting or revising a task capability tier and deliberation profile within approved scope.
+- Selecting or revising a task capability tier and deliberation profile within reviewed scope.
 
 ### 6.2 Mandatory user escalation
 
@@ -203,7 +203,7 @@ The orchestrator pauses affected work and asks the user before it:
 - Changes the work-item intent or desired outcome.
 - Materially expands scope.
 - Removes or weakens acceptance criteria.
-- Contradicts an approved decision.
+- Contradicts an explicit user decision.
 - Changes a security or privacy boundary.
 - Performs destructive Git operations.
 - Abandons a load-bearing task.
@@ -242,7 +242,7 @@ Generate task graph and evaluation plan
         ↓
 Independent plan critique
         ↓
-Explicit user approval
+Explicit user request to run
         ↓
 Execute eligible tasks
         ↓
@@ -266,26 +266,18 @@ phase: planning       # planning | execution | evaluation | complete
 state: active         # active | waiting_user | paused | blocked | failed | complete
 
 planning:
-  status: approved    # draft | awaiting_approval | approved | stale
+  revision: 3
 ```
 
 This avoids encoding combinations such as `execution-paused-for-user` into one unmaintainable enum.
 
-### 7.3 Approval gate
+### 7.3 Execution authorization
 
-Research can flow naturally into planning. Execution cannot begin until the user explicitly approves the plan.
-
-Approval is recorded through a deterministic command, not a model-callable tool:
-
-```text
-/workflow approve <work-item-id>
-```
-
-Approval is represented by the work item's planning status. The orchestrator cannot grant initial approval to its own plan.
+Research can flow naturally into planning and review. A clear user request to start or run the reviewed workflow is the sole execution gate. Planning, review, acknowledgement, a problem report, or a proposed fix does not itself authorize execution. No separate approval command or planning-status transition exists.
 
 The deliverable contract covers intent, requirements, acceptance criteria, and binding user/architecture decisions. Execution mechanics—task boundaries, integration grouping, evaluator placement, and check timing—remain under orchestrator authority unless the user explicitly made one of them binding.
 
-The orchestrator decides whether an amendment retains approval or requires the user. Revisions remain an informational audit counter, not an optimistic-concurrency or execution gate. The harness relies on scoped tools, schema validation, serialization, clean Git state, and immutable delivery history rather than contract hashes.
+Revisions identify the exact planning context used by workers and evaluators. The harness relies on scoped tools, schema validation, serialization, revision checks, clean Git state, and immutable delivery history rather than approval metadata or contract hashes.
 
 ## 8. Canonical artifact model
 
@@ -345,26 +337,23 @@ state: active
 
 planning:
   revision: 3
-  status: approved
-  approvedRevision: 3
-  approvedAt: 2026-08-10T10:30:00Z
 
 artifacts:
   - id: intent
     type: intent
     path: intent.md
-    status: approved
+    status: draft
 
   - id: session-identity
     type: spec
     path: specs/session-identity.md
-    status: approved
+    status: draft
     tags: [sessions, security]
 
   - id: runtime-architecture
     type: design
     path: design/runtime-architecture.md
-    status: approved
+    status: draft
     tags: [runtime]
 
   - id: server-minted-session-ids
@@ -466,10 +455,10 @@ The orchestrator uses focused skills rather than one giant workflow prompt:
 product-discussion  → freeform exploration without canonical workflow pressure
 shape-story         → high-level intent, specification, design, and decisions
 plan-delivery       → technical tasks, stages, assignments, and verification
-workflow-run        → approved execution, recovery, completion, and briefing
+workflow-run        → explicitly requested execution, recovery, completion, and briefing
 ```
 
-Each phase owns one primary deliverable and naturally offers the next phase. Prior authorization to plan carries across story shaping into delivery planning unless a material decision requires the user; execution still requires explicit approval and a clear request to run. These skills describe judgment and behavior. The extension provides the mechanical capabilities.
+Each phase owns one primary deliverable and naturally offers the next phase. Prior authorization to plan carries across story shaping into delivery planning unless a material decision requires the user; execution requires a clear user request to run the reviewed workflow. These skills describe judgment and behavior. The extension provides the mechanical capabilities.
 
 ### 9.2 Research and brainstorming
 
@@ -501,7 +490,7 @@ evaluation and evidence plan
    ↓
 plan critique
    ↓
-user approval
+user request to run
 ```
 
 Dimensions represent independently understandable concerns, not arbitrary document-size splits.
@@ -541,7 +530,7 @@ When the user explicitly requests an independent critique, a fresh plan-critic a
 - Model assignments.
 - Security, privacy, migration, and operational risks.
 
-The critic reports findings to the orchestrator. It cannot edit canonical artifacts or approve the plan for the user, and ordinary planning does not wait for a critic run.
+The critic reports findings to the orchestrator. It cannot edit canonical artifacts or authorize execution for the user, and ordinary planning does not wait for a critic run.
 
 ## 10. Role system
 
@@ -582,7 +571,7 @@ Each role defines:
 | Explorer | Repository investigation and dependency mapping | None |
 | Plan critic | Challenge planning artifacts and verification coverage | Findings only |
 | Implementer | Implement one bounded task and its tests | Assigned worktree |
-| Spec reviewer | Compare implementation with approved requirements | None |
+| Spec reviewer | Compare implementation with reviewed requirements | None |
 | Quality reviewer | Review correctness, maintainability, regressions, and tests | None |
 | Test implementer | Build explicitly tasked automated test infrastructure | Assigned worktree |
 | E2E tester | Exercise integrated behavior and collect evidence | Runtime/test environment only |
@@ -754,7 +743,7 @@ A user-pinned model wins. Automatic selection is always visible.
 - Diagnostics identify source file and property path.
 - Every run records the effective configuration digest.
 
-Model preference changes do not invalidate semantic approval. The orchestrator may revise evaluator placement and check timing while preserving the deliverable contract and required final confidence. Broadening role authority, removing a user-mandated control, or weakening a binding security or acceptance obligation requires review.
+Model preference changes do not invalidate the reviewed semantic contract. The orchestrator may revise evaluator placement and check timing while preserving the deliverable contract and required final confidence. Broadening role authority, removing a user-mandated control, or weakening a binding security or acceptance obligation requires review.
 
 ## 13. Task scheduling and isolation
 
@@ -817,10 +806,9 @@ Resource claims protect shared external or generated resources that separate Git
 
 ### 13.4 Scheduling
 
-The approved stage graph determines concurrency and isolation. The extension launches one singleton-stage task at a time on the canonical feature branch, or all compatible ready tasks in a multi-task stage in isolated worktrees. The extension rejects launches when:
+The reviewed stage graph determines concurrency and isolation. The extension launches one singleton-stage task at a time on the canonical feature branch, or all compatible ready tasks in a multi-task stage in isolated worktrees. The extension rejects launches when:
 
 - The declared base or dependencies are not available.
-- Planning is unapproved or stale.
 - A required resource is locked.
 - The main session already owns sixteen nonterminal logical subagents.
 - The feature branch is dirty when a clean canonical operation is required.
@@ -855,7 +843,7 @@ An implementation task must finish with:
 - No changes under `agent-artifacts/`.
 - No unacknowledged context amendments.
 
-A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the approved execution strategy defers those obligations. The extension validates actual Git state and the declared handoff rather than imposing a universal test checklist.
+A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the reviewed execution strategy defers those obligations. The extension validates actual Git state and the declared handoff rather than imposing a universal test checklist.
 
 ## 14. Assembly and integration
 
@@ -910,7 +898,7 @@ The extension preserves the last clean canonical state and all task branches.
 
 ### 15.1 Phase-level obligation
 
-Evaluation is required at the level necessary to establish confidence in the approved deliverable, not once per task. The planner and main orchestrator decide the cheapest meaningful verification boundary.
+Evaluation is required at the level necessary to establish confidence in the reviewed deliverable, not once per task. The planner and main orchestrator decide the cheapest meaningful verification boundary.
 
 Possible boundaries are:
 
@@ -968,7 +956,7 @@ The orchestrator may:
 - Omit E2E when there is no meaningful user journey or the risk does not justify it.
 - Add stronger checks when implementation findings increase risk.
 
-These changes do not require renewed user approval unless they weaken a user-mandated control, leave a binding acceptance criterion without credible proof, or alter a security/quality boundary the user approved.
+These changes do not require another user decision unless they weaken a user-mandated control, leave a binding acceptance criterion without credible proof, or alter a security/quality boundary the user explicitly required.
 
 Child reviewers and evaluators can recommend additional checks, but the main orchestrator decides whether those checks become workflow requirements.
 
@@ -977,7 +965,7 @@ Child reviewers and evaluators can recommend additional checks, but the main orc
 Methods are composable tools, not mandatory stages:
 
 1. **Deterministic checks:** build, types, targeted or full tests, lint, formatting, path restrictions, clean worktree, generated outputs, and repository commands.
-2. **Specification review:** compare an assembled result against approved intent, requirements, design constraints, and acceptance criteria.
+2. **Specification review:** compare an assembled result against reviewed intent, requirements, design constraints, and acceptance criteria.
 3. **Quality review:** assess correctness, edge cases, maintainability, regressions, security, error handling, and test quality.
 4. **Integrated regression:** check interaction with the latest canonical base.
 5. **E2E evaluation:** exercise a meaningful assembled user journey and collect evidence.
@@ -986,7 +974,7 @@ A planner may combine specification and quality review into one run. Independent
 
 ### 15.5 Evaluator independence
 
-When an evaluator is used, it runs in a fresh session and receives approved artifacts, the assigned task/unit/work-item diff, structured handoffs, and evidence manifests. It does not receive implementer raw transcripts or private reasoning.
+When an evaluator is used, it runs in a fresh session and receives the reviewed artifacts, the assigned task/unit/work-item diff, structured handoffs, and evidence manifests. It does not receive implementer raw transcripts or private reasoning.
 
 ### 15.6 Findings
 
@@ -1003,7 +991,7 @@ evidence:
 blocking: true
 ```
 
-The orchestrator triages findings as `accepted`, `rejected`, `duplicate`, `deferred`, or `needs_user`. Rejection requires rationale. Deferring a blocking approved criterion normally requires user approval.
+The orchestrator triages findings as `accepted`, `rejected`, `duplicate`, `deferred`, or `needs_user`. Rejection requires rationale. Deferring a blocking binding criterion requires an explicit user decision.
 
 ### 15.7 Repair loop
 
@@ -1041,11 +1029,11 @@ A passing verdict cannot reference absent evidence. The extension validates evid
 
 A managed work item completes only when:
 
-- Every required contribution is assembled or removed through an approved contract revision.
+- Every required contribution is assembled or removed through a reviewed contract revision.
 - The orchestrator has run the current verification plan at its declared boundaries.
 - Binding acceptance criteria have proportionate final evidence or an explicit justified disposition.
 - No accepted blocking finding remains.
-- Canonical artifacts match the approved deliverable contract.
+- Canonical artifacts match the reviewed deliverable contract.
 - The feature branch is clean.
 - `outcome.md` records delivery, deviations, evidence, skipped/deferred checks, and remaining non-blocking risks.
 
@@ -1079,7 +1067,7 @@ subagent_control
 subagent_respond
 ```
 
-The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates approved tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
+The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates reviewed tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
 
 `subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured read-only specialist role and task prompt, defaults to background execution, and can wait in foreground mode when explicitly requested. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. `exploration_launch` remains a typed exploration capability. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
 
@@ -1301,7 +1289,7 @@ The intended interface is ordinary conversation:
 
 > Research and plan a story for replacing the session model.
 
-> Execute the approved session-model story.
+> Start the reviewed session-model story.
 
 > Run a quality reviewer on my current changes using Sol at high effort.
 
@@ -1317,7 +1305,6 @@ Commands remain available when a model is unavailable or exact control is prefer
 /workflow init [standard|economy]
 /workflow status
 /workflow agents
-/workflow approve <work-item>
 /workflow pause [task]
 /workflow resume [task]
 /workflow stop [task]
@@ -1341,7 +1328,7 @@ A full sidebar or dashboard is not required. The execution architecture remains 
 
 The harness interrupts the user for:
 
-- Plan ready for approval.
+- Plan ready for review.
 - Critical decision required.
 - Subscription/provider capacity wait.
 - No acceptable model fallback.
@@ -1364,7 +1351,7 @@ The first version can deterministically enforce:
 - Git/worktree allocation and validation.
 - Branch/path diff checks.
 - Model rank and effort policy.
-- Approval status and canonical context refresh.
+- Planning revision and canonical context refresh.
 - Locks, idempotency, and recovery records.
 
 ### 20.2 V1 limitation
@@ -1388,7 +1375,7 @@ The harness itself requires deterministic and model-assisted testing.
 - Model and effort resolution.
 - Capability authorization.
 - State-machine transitions.
-- Planning status and explicit approval disposition.
+- Planning revision and explicit execution request.
 - Idempotent mutation handling.
 - Failure classification.
 - Lock ownership and stale-lock diagnosis.
@@ -1471,7 +1458,7 @@ Useful references:
 - `src/tui/fleet-status.ts`
 - `src/tui/fleet.ts`
 
-Relevant lessons include role files, model overrides, run observability, background/fleet concepts, and nested transcript presentation. Background execution, nested delegation, and a fleet UI remain deferred unless needed by the approved first implementation.
+Relevant lessons include role files, model overrides, run observability, background/fleet concepts, and nested transcript presentation. Background execution, nested delegation, and a fleet UI remain deferred unless needed by the reviewed first implementation.
 
 ### 22.4 Agentic Dev Harness
 
@@ -1521,7 +1508,7 @@ The design is successfully implemented when:
 
 1. The main session remains the user-facing authority and can stay ad-hoc or create a managed change/story.
 2. Managed planning produces indexed intent, specs, design, decisions, tasks, integration units, and proportionate verification coverage.
-3. Execution cannot begin without direct user approval of the current deliverable contract revision.
+3. Execution begins only after a clear user request to run the reviewed workflow.
 4. The planner can explicitly skip, defer, batch, or combine task-level review and testing while declaring the later meaningful verification boundary.
 5. Partial task contributions can be assembled in orchestrator-controlled stages without pretending they are independently complete.
 6. Role prompts, tools, capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
@@ -1547,7 +1534,7 @@ PiBox's harness is a hybrid between a flexible skill-driven agent and a determin
 - Canonical files preserve semantic truth.
 - Private event logs preserve operational truth.
 - The planner applies proportional ceremony, groups partial work into meaningful integration units, and assigns task-specific model capability.
-- The extension enforces approval, identity, paths, lifecycle, Git isolation, handoffs, and the orchestrator-declared verification plan.
+- The extension enforces execution authorization, identity, paths, lifecycle, Git isolation, handoffs, and the orchestrator-declared verification plan.
 - Evaluation is selectively applied at meaningful boundaries, evidence-backed when used, and repair-bounded.
 - Failures pause recoverably rather than being hidden or treated as success.
 - Normal Pi freedom remains available whenever the full workflow would be excessive.
@@ -1558,7 +1545,7 @@ This architecture provides strong execution guarantees without making the harnes
 
 The main-session capability surface is a stateless, progressively disclosed resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, typed validation, and explicit relationships. `workflow_list` exposes compact filterable pages; `workflow_get` exposes summaries and, for a full work-item read, the complete artifact/task/unit/evaluation graph in bounded revision-pinned slices; `workflow_schema` exposes exact mutation contracts on demand. `workflow_plan_write` is the ordinary planning surface: complete create/replacement writes are atomic and revision-pinned surgical edits change only selected resources. `workflow_create`, `workflow_patch`, `workflow_delete`, and `workflow_apply_change` remain compatibility and repair surfaces; successful mutations return receipts rather than full resources.
 
-The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend approved planning in response to repository evidence, evaluator findings, or subagent requests. A `retain-approval` amendment records rationale, sources, and orchestrator decision while preserving the user's approval lineage. A `request-user` disposition is a semantic judgment reserved for materially consequential or explicitly user-owned decisions, not an automatic consequence of changing a digest.
+The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend reviewed planning in response to repository evidence, evaluator findings, or subagent requests. Mutations record rationale and sources. Materially consequential or explicitly user-owned decisions still return to the user, but no approval disposition or status is stored.
 
 `workflow_apply_change` serializes and applies its canonical operations as one Git commit. It does not ask the model to supply revision tokens or contract hashes. Resource errors identify the code, resource reference, retryability, and valid recovery actions so a model does not need to inspect extension source or create a duplicate work item to escape a correctable plan.
 

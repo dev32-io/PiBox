@@ -172,7 +172,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					if (agent.state !== "running") throw new HarnessError("INVALID_HANDOFF", `Task cannot complete while its logical agent is ${agent.state}`);
 				}
 				const item = await auth.workItems.read(auth.scope.workItemId);
-				if (item.planning.status !== "approved") throw new HarnessError("CONTEXT_REFRESH_REQUIRED", "Task planning is no longer approved");
+				if (auth.run.planningRevision !== undefined && item.planning.revision !== auth.run.planningRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Task planning advanced from revision ${auth.run.planningRevision} to ${item.planning.revision}`);
 				const status = await runGit(ctx.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
 				if (status) throw new HarnessError("INVALID_HANDOFF", "Task worktree must be clean before completion", { status });
 				const head = await runGit(ctx.cwd, ["rev-parse", "HEAD"]);

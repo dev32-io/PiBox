@@ -1,6 +1,6 @@
 ---
 name: plan-delivery
-description: Use when converting a coherent high-level story into an execution-ready technical delivery plan for user review and approval.
+description: Use when converting a coherent high-level story into an execution-ready technical delivery plan for user review.
 ---
 
 # Plan Delivery
@@ -32,7 +32,7 @@ If a new finding changes the product outcome, user-visible behavior, consequenti
    - **Vagueness:** find placeholders and instructions such as “handle edge cases,” “add validation,” or “write tests” that lack an observable contract.
    - **Consistency:** ensure task dependencies, stage IDs, artifact/criterion references, interface names, and produced/consumed contracts agree across the graph.
    If the review finds issues, fix only the affected resources in one revision-pinned `workflow_plan_write` `edit`; do not resend the unchanged plan. Use complete `update` only for an explicitly requested replacement. Do not repeat the self-review.
-12. Submit the reviewed plan and hand it to the user. A separate planning critique is optional and runs only when the user explicitly requests it; spawn `plan-critic` through `subagent_spawn` without delaying ordinary plans.
+12. Submit the reviewed plan and hand it to the user. A separate planning critique is optional and runs only when the user explicitly requests it; spawn `plan-critic` through `subagent_spawn` without delaying ordinary plans. Submission is a review handoff, not an execution authorization.
 
 ## Capability and Deliberation Protocol
 
@@ -69,19 +69,17 @@ Use the read-after-write self-review above as the single pre-submission gate. Ve
 
 Refine the story plan with the user whenever new constraints surface. Do not submit while a material decision remains unresolved.
 
-## Approval Handoff
+## Review Handoff
 
-When execution-ready, call `workflow_transition` with `submit`. Present the work-item ID, outcome and scope, technical approach, contribution stages, parallelism choices, assignments, verification, residual risks, and the exact command:
+When execution-ready, call `workflow_transition` with `submit`. Present the work-item ID, outcome and scope, technical approach, contribution stages, parallelism choices, assignments, verification, and residual risks.
 
-> `/workflow approve <work-item-id>`
-
-Offer natural next steps: conversational refinement, targeted changes, or approval. Make clear that approval does not itself start delivery; after approval the user can say “start the workflow” or otherwise explicitly request execution, which hands off to `workflow-run`.
+Offer natural next steps: conversational refinement, targeted changes, or execution. Make clear that the user can say “start the workflow” or otherwise explicitly request execution, which is the sole execution gate and hands off to `workflow-run`; no separate approval command is required.
 
 ## Deliverable
 
 End with exactly one result:
 
-1. a submitted execution-ready story plan and approval handoff;
+1. a submitted execution-ready story plan and review handoff;
 2. one material technical or product decision blocking submission; or
 3. an explicit return to `shape-story` with the contract issue that must be resolved.
 

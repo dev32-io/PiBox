@@ -35,13 +35,13 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "evaluation_context",
 		label: "Evaluation Context",
-		description: "Read approved canonical context and the assigned evaluation boundary.",
+		description: "Read canonical context and the assigned evaluation boundary.",
 		parameters: Type.Object({ artifactId: Type.Optional(Type.String()) }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const auth = await authorized(ctx);
 				const item = await auth.workItems.read(auth.scope.workItemId);
-				if (item.planning.status !== "approved") throw new HarnessError("CONTEXT_REFRESH_REQUIRED", "Evaluation planning is no longer approved");
+				if (auth.run.planningRevision !== undefined && item.planning.revision !== auth.run.planningRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Evaluation planning advanced from revision ${auth.run.planningRevision} to ${item.planning.revision}`);
 				const evaluation = await auth.workItems.readEvaluation(item.id, auth.scope.evaluationId);
 				if (!params.artifactId) return response(`Evaluation ${evaluation.id} (${evaluation.type})\nScope: ${JSON.stringify(evaluation.scope)}\nPlanning r${item.planning.revision}\n${item.artifacts.map((artifact) => `- ${artifact.id} (${artifact.type})`).join("\n")}`, { item, evaluation });
 				const artifact = item.artifacts.find((candidate) => candidate.id === params.artifactId);

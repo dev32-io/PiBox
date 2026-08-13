@@ -15,21 +15,10 @@ export interface WorkItemDelivery {
 }
 export type WorkItemPhase = "planning" | "execution" | "evaluation" | "complete";
 export type WorkItemState = "active" | "waiting_user" | "paused" | "postponed" | "blocked" | "failed" | "complete" | "archived";
-export type PlanningStatus = "draft" | "awaiting_approval" | "approved" | "stale";
-export type ApprovalDisposition = "retain-approval" | "request-user";
 export type ExecutionDisposition = "continue" | "resume-requesting-agent" | "restart-affected" | "pause-affected";
 
-export interface ApprovalAmendment {
-	revision: number;
-	at: string;
-	decidedBy: "orchestrator";
-	disposition: "retain-approval";
-	rationale: string;
-	sources: string[];
-}
-
+/** Mutation rationale and provenance retained for audit; this is not an execution gate. */
 export interface MutationAuthority {
-	disposition: ApprovalDisposition;
 	rationale: string;
 	sources?: string[];
 }
@@ -218,12 +207,6 @@ export interface WorkItemIndex {
 	state: WorkItemState;
 	planning: {
 		revision: number;
-		status: PlanningStatus;
-		approvedRevision?: number;
-		approvedAt?: string;
-		/** Legacy schema-v1 field; retained for reading older repositories but no longer used as a gate. */
-		contractDigest?: string;
-		approvalAmendments?: ApprovalAmendment[];
 	};
 	artifacts: ArtifactIndexEntry[];
 	tasks: Array<{ id: string; path: string }>;

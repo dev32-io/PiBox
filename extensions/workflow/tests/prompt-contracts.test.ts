@@ -32,6 +32,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	const shaping = await readFile(join(root, "skills/shape-story/SKILL.md"), "utf8");
 	const delivery = await readFile(join(root, "skills/plan-delivery/SKILL.md"), "utf8");
 	const critic = await readFile(join(root, "extensions/workflow/roles/plan-critic.md"), "utf8");
+	const run = await readFile(join(root, "skills/workflow-run/SKILL.md"), "utf8");
 	assert.match(orchestrator, /constructive product and technical partner/i);
 	assert.match(orchestrator, /Seek the outcome behind requested solutions/i);
 	assert.match(orchestrator, /product-discussion[\s\S]+shape-story[\s\S]+plan-delivery[\s\S]+workflow-run/i);
@@ -41,7 +42,8 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(orchestrator, /Write plans with workflow_plan_write/i);
 	assert.match(orchestrator, /create for a new, fresh, separate, or ignore-previous plan/i);
 	assert.match(orchestrator, /update only when the user explicitly asks/i);
-	assert.match(orchestrator, /Initial approval is user-only through \/workflow approve/i);
+	assert.match(orchestrator, /Execution has one user-authority gate: a clear request to start or run the reviewed workflow/i);
+	assert.match(orchestrator, /There is no separate approval command or planning-status gate/i);
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /A create source is read-only background/i);
 	assert.match(orchestrator, /initial write is atomic[\s\S]+use edit rather than resending unchanged plan content/i);
@@ -71,7 +73,10 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /Use `medium\/standard` by default/i);
 	assert.match(delivery, /harness selects provider, concrete model, and model-specific effort/i);
 	assert.match(delivery, /call `workflow_transition` with `submit`/i);
-	assert.match(delivery, /after approval the user can say “start the workflow”/i);
+	assert.match(delivery, /user can say “start the workflow”[\s\S]+sole execution gate/i);
+	assert.match(delivery, /no separate approval command is required/i);
+	assert.match(run, /clear user request to execute the reviewed workflow is the sole execution gate/i);
+	assert.match(run, /call `workflow_start` directly/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /Do not reward task count or concurrency/i);
 	assert.match(critic, /Judge the graph without accepting the caller's preferred task count/i);

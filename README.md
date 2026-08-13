@@ -51,7 +51,8 @@ Use `/effort` to select a compatible level interactively, or `/effort high` dire
 ```text
 /workflow init [standard|economy]
 /workflow status
-/workflow approve <work-item-id>
+
+After reviewing a plan, say “start the workflow” to execute it.
 ```
 
 See [docs/workflow.md](docs/workflow.md) for setup and behavior, and [docs/specs/visual-tui.md](docs/specs/visual-tui.md) for visual contracts.

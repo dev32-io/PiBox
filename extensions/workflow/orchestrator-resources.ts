@@ -121,22 +121,11 @@ export class OrchestratorResourceService {
 		}
 	}
 
-	async coalesceRevision(workItemId: string, baseline: WorkItemIndex | undefined, authority: MutationAuthority): Promise<WorkItemIndex> {
+	async coalesceRevision(workItemId: string, baseline: WorkItemIndex | undefined, _authority: MutationAuthority): Promise<WorkItemIndex> {
 		const current = await this.store.read(workItemId);
 		const revision = (baseline?.planning.revision ?? 0) + 1;
 		if (current.planning.revision === revision) return current;
 		current.planning.revision = revision;
-		if (baseline?.planning.status === "approved" && authority.disposition === "retain-approval") {
-			current.planning.status = "approved";
-			if (baseline.planning.approvedRevision !== undefined) current.planning.approvedRevision = baseline.planning.approvedRevision;
-			else delete current.planning.approvedRevision;
-			if (baseline.planning.approvedAt) current.planning.approvedAt = baseline.planning.approvedAt;
-			else delete current.planning.approvedAt;
-			current.planning.approvalAmendments = [
-				...(baseline.planning.approvalAmendments ?? []),
-				{ revision, at: new Date().toISOString(), decidedBy: "orchestrator", disposition: "retain-approval", rationale: authority.rationale, sources: authority.sources ?? [] },
-			];
-		}
 		const indexPath = join(this.store.workItemRoot(workItemId), "index.yaml");
 		await atomicWriteFile(indexPath, stringify(current));
 		await runGit(this.repositoryRoot, ["add", "--", relative(this.repositoryRoot, indexPath)]);
@@ -158,7 +147,6 @@ export class OrchestratorResourceService {
 					kind: item.kind,
 					phase: item.phase,
 					state: item.state,
-					planningStatus: item.planning.status,
 					counts: { artifacts: item.artifacts.length, tasks: item.tasks.length, stages: item.executionStages?.length ?? 0, evaluations: item.evaluations.length },
 					allowedActions: allowed(type, finalized),
 				});
@@ -214,7 +202,7 @@ export class OrchestratorResourceService {
 		const parsedRef = parseResourceRef(ref);
 		const startHead = parsedRef.type === "work-item" ? await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]) : undefined;
 		const item = await this.store.read(parsedRef.workItemId);
-		const envelope = (resource: unknown) => ({ resource, ref, revision: item.planning.revision, approval: item.planning, allowedActions: allowed(parsedRef.type, Boolean(item.finalization?.locked || item.phase === "complete")) });
+		const envelope = (resource: unknown) => ({ resource, ref, revision: item.planning.revision, allowedActions: allowed(parsedRef.type, Boolean(item.finalization?.locked || item.phase === "complete")) });
 		if (parsedRef.type === "work-item") {
 			const artifactContracts = await Promise.all(item.artifacts.map((artifact) => this.store.readArtifact(item.id, artifact.id)));
 			const taskContracts = await Promise.all(item.tasks.map((task) => this.store.readTaskContract(item.id, task.id)));

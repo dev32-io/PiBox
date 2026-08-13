@@ -24,7 +24,7 @@ function retainedRuntimeIsolation(item: WorkItemIndex, task: TaskManifest): Task
 	return undefined;
 }
 
-/** Runtime execution mechanics are derived from the approved stage graph, never selected by the planner. */
+/** Runtime execution mechanics are derived from the reviewed stage graph, never selected by the planner. */
 export function taskExecutionTopology(item: WorkItemIndex, task: TaskManifest): TaskExecutionTopology {
 	const stages = orderedExecutionStages(item);
 	const stageIndex = stages.findIndex((stage) => stage.tasks.includes(task.id));

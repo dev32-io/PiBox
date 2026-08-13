@@ -193,7 +193,7 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "workflow_start", label: "Start Workflow",
-		description: "Start deterministic background execution for an approved workflow reference. The registered adapter refreshes current steps and the workflow runner advances routine ready work.",
+		description: "Start deterministic background execution for a reviewed workflow reference after the user explicitly asks to run it. No separate approval command is required. The registered adapter refreshes current steps and advances routine ready work.",
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
@@ -212,7 +212,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "workflow_control", label: "Control Workflow", description: "Pause, resume, or stop workflow execution. Stop terminates active attempts but preserves adapter-owned work; resume prepares incomplete stopped work and starts fresh attempts when the workflow remains approved.",
+		name: "workflow_control", label: "Control Workflow", description: "Pause, resume, or stop workflow execution. Stop terminates active attempts but preserves adapter-owned work; resume prepares incomplete stopped work and starts fresh attempts.",
 		parameters: Type.Object({ ref: Type.String(), action: StringEnum(["pause", "resume", "stop"] as const) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const adapter = adapterFor(params.ref); await adapter.controlWorkflow(params.ref, params.action, ctx);
