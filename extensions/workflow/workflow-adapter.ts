@@ -66,10 +66,13 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 		async prepareWorkflow(ref, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
-			await runtime.workItems.submitPlanning(match[1]!);
-			if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, match[1]!);
-			else await new WorktreeManager(runtime.identity).prepareFeatureBranch(match[1]!);
-			await runtime.mutex.run(`workflow-begin:${match[1]}`, () => runtime.workItems.beginExecution(match[1]!));
+			await runtime.mutex.run(`workflow-begin:${match[1]}`, async () => {
+				await runtime.workItems.submitPlanning(match[1]!);
+				if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, match[1]!);
+				else await new WorktreeManager(runtime.identity).prepareFeatureBranch(match[1]!);
+				await runtime.workItems.beginExecution(match[1]!);
+				await runtime.workItems.activateDraftTasks(match[1]!);
+			});
 		},
 		async completionPrompt(ref, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
@@ -94,7 +97,6 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
 			const item = await runtime.workItems.read(match[1]!);
-			await runtime.workItems.activateDraftTasks(item.id);
 			let agents = await runtime.agents.list();
 			const staleReport = agents.some((agent) => agent.state === "reported" && Date.now() - Date.parse(agent.updatedAt) >= REPORT_RECONCILIATION_GRACE_MS);
 			if (staleReport && options.reconcileReported) {
@@ -172,10 +174,14 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const runtime = await options.runtimeFor(ctx);
 			const workItemId = workflow[1]!;
 			if (action === "resume") {
-				await runtime.workItems.submitPlanning(workItemId);
-				if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, workItemId);
-				else await new WorktreeManager(runtime.identity).prepareFeatureBranch(workItemId);
-				const item = await runtime.mutex.run(`workflow-begin:${workItemId}`, () => runtime.workItems.beginExecution(workItemId));
+				const item = await runtime.mutex.run(`workflow-begin:${workItemId}`, async () => {
+					await runtime.workItems.submitPlanning(workItemId);
+					if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, workItemId);
+					else await new WorktreeManager(runtime.identity).prepareFeatureBranch(workItemId);
+					const begun = await runtime.workItems.beginExecution(workItemId);
+					await runtime.workItems.activateDraftTasks(workItemId);
+					return begun;
+				});
 				const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 				const taskById = new Map(tasks.map((task) => [task.id, task]));
 				for (const task of tasks) {
