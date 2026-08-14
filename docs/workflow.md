@@ -22,11 +22,12 @@ When PiBox is installed as a package, the workflow extensions and three workflow
 Initialize a repository deterministically or through natural language:
 
 ```text
-/workflow init [standard|economy]
-Scaffold this project for managed workflows using the economy profile.
+/harness init [standard|economy]
+/workflow init [standard|economy]   # compatibility alias
+Initialize this project for managed workflows using the economy profile.
 ```
 
-Initialization validates and commits `.pi/harness.yaml`. It never overwrites an existing policy or hides unrelated dirty work unless explicitly directed.
+The model can invoke the same operation through `workflow_init`. Initialization creates Git only for an empty directory, ensures and checks out `develop`, appends `/.worktree/` and `/.pibox/` to an existing `.gitignore`, writes an explicit `.pi/harness.yaml` (including model-effort tier routes), initializes ignored `.pibox/` runtime metadata, and commits only harness-owned files. It refuses to wrap or stage files from an existing non-Git project; establish and commit that baseline first. Existing policies are validated and are not overwritten unless explicitly requested.
 
 You can then speak naturally:
 
@@ -78,7 +79,7 @@ New task worktrees live inside the canonical repository under an ignored root:
 <repository>/.worktree/pibox/<work-item>/<task>/
 ```
 
-`/workflow init` ensures `/.worktree/` and `/.pibox/` are ignored. Repository-local runtime records—including transcripts, logs, handoffs, locks, and receipts—live under `/.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
+`/harness init` ensures `/.worktree/` and `/.pibox/` are ignored. Repository-local runtime records—including transcripts, logs, handoffs, locks, and receipts—live under `/.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable through their recorded runtime paths.
 
 A task can intentionally be partial. Task-level review/repair may happen before merge, while whole-feature E2E and final review run on the assembled delivery branch. Completion leaves the branch checked out. A newly created branch is reported ready to merge into `develop`; completion on a continued branch reports only the delivered increment and does not imply the larger branch is finished.
 
@@ -93,7 +94,7 @@ A task can intentionally be partial. Task-level review/repair may happen before 
 ### Control and recovery
 
 ```text
-/workflow init [standard|economy]
+/harness init [standard|economy]
 /workflow status
 /workflow pause <task-id>
 /workflow resume <task-id>

@@ -14,7 +14,7 @@ import { validateExplorationAssignment, validateExplorationHandoff, type Explora
 import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { HarnessRunStore } from "./run-store.js";
-import { scaffoldHarness, type HarnessScaffoldProfile } from "./scaffold.js";
+import { initializeHarnessRepository, type HarnessScaffoldProfile, type HarnessScaffoldResult } from "./scaffold.js";
 import { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
@@ -486,6 +486,17 @@ export default function workflow(pi: ExtensionAPI): void {
 			return sessionRuntime;
 		}
 		return createRuntime(ctx);
+	};
+
+	const initializeRepository = async (ctx: ExtensionContext, profile: HarnessScaffoldProfile, overwrite = false): Promise<{ runtime: HarnessRuntime; scaffold: HarnessScaffoldResult }> => {
+		requireTrusted(ctx);
+		const initialize = () => initializeHarnessRepository(ctx.cwd, profile, overwrite);
+		const scaffold = sessionRuntime
+			? await sessionRuntime.mutex.run(`init:${profile}`, initialize)
+			: await initialize();
+		sessionRuntime = await createRuntime(ctx);
+		await sessionRuntime.events.append("repository.scaffolded", scaffold);
+		return { runtime: sessionRuntime, scaffold };
 	};
 
 	const launchManagedTask = async (
@@ -1001,30 +1012,23 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_init",
 		label: "Initialize Workflow Repository",
-		description: "Scaffold and commit trusted repository-local PiBox workflow policy. Use when asked to prepare a project for managed workflows.",
-		promptSnippet: "Scaffold repository-local workflow policy before creating managed work",
+		description: "Initialize a safe Git/develop boundary, scaffold explicit repository-local PiBox policy and runtime ignores, and commit harness-owned setup. Refuses to stage pre-existing project files.",
+		promptSnippet: "Initialize Git, develop, and repository-local workflow policy before creating managed work",
 		parameters: Type.Object({
 			profile: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("economy")])),
 			overwrite: Type.Optional(Type.Boolean()),
 		}),
-		async execute(toolCallId, params, _signal, _update, ctx) {
+		async execute(_toolCallId, params, _signal, _update, ctx) {
 			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const scaffold = await scaffoldHarness(runtime.identity.root, params.profile ?? "standard", params.overwrite ?? false);
-					const loaded = loadHarnessConfig(runtime.identity.root);
-					runtime.config = loaded.config;
-					await runtime.events.append("repository.scaffolded", scaffold);
-					return textResult(
-						scaffold.created
-							? `Initialized ${scaffold.profile} workflow policy and repository-local worktree ignore at ${scaffold.commit?.slice(0, 12)}.`
-							: scaffold.worktreeIgnoreAdded
-								? `Workflow policy already exists; committed repository-local worktree ignore at ${scaffold.commit?.slice(0, 12)}.`
-								: "Workflow policy and repository-local worktree ignore already exist; validated without overwriting them.",
-						scaffold,
-					);
-				});
+				const { scaffold } = await initializeRepository(ctx, params.profile ?? "standard", params.overwrite ?? false);
+				return textResult(
+					scaffold.created
+						? `Initialized ${scaffold.profile} workflow policy on develop at ${scaffold.commit?.slice(0, 12)}${scaffold.gitInitialized ? "; Git was initialized" : ""}.`
+						: scaffold.worktreeIgnoreAdded
+							? `Workflow policy already exists; committed repository-local runtime ignores on develop at ${scaffold.commit?.slice(0, 12)}.`
+							: "Workflow policy, develop branch, and repository-local runtime ignores already exist and are valid.",
+					scaffold,
+				);
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}
@@ -1188,19 +1192,15 @@ export default function workflow(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => {
 			const [command = "status", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
 			try {
+				if (command === "init" && extra.length === 0 && (!target || target === "standard" || target === "economy")) {
+					const profile = (target ?? "standard") as HarnessScaffoldProfile;
+					const { scaffold } = await initializeRepository(ctx, profile);
+					ctx.ui.notify(scaffold.created ? `Initialized ${profile} workflow policy on develop and committed it.` : "Workflow policy, develop branch, and runtime ignores already exist and are valid.", "info");
+					return;
+				}
 				const runtime = await runtimeFor(ctx);
 				if (command === "status" && !target) {
 					ctx.ui.notify(formatStatus(await snapshot(runtime)), "info");
-					return;
-				}
-				if (command === "init" && extra.length === 0 && (!target || target === "standard" || target === "economy")) {
-					requireTrusted(ctx);
-					const profile = (target ?? "standard") as HarnessScaffoldProfile;
-					const scaffold = await runtime.mutex.run(`init:${profile}`, () => scaffoldHarness(runtime.identity.root, profile));
-					const loaded = loadHarnessConfig(runtime.identity.root);
-					runtime.config = loaded.config;
-					await runtime.events.append("repository.scaffolded", scaffold);
-					ctx.ui.notify(scaffold.created ? `Initialized ${profile} workflow policy and committed it.` : "Workflow policy already exists and is valid.", "info");
 					return;
 				}
 				if (command === "recover" && !target) {
@@ -1246,14 +1246,20 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("harness", {
-		description: "Manage PiBox operational state: worktrees [cleanupAll | remove <work-item/task> [--force]]",
+		description: "Initialize PiBox or manage operational state: init [standard|economy] | worktrees [...]",
 		handler: async (args, ctx) => {
 			const [command, action = "list", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
-			if (command !== "worktrees") {
-				ctx.ui.notify("Usage: /harness worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
-				return;
-			}
 			try {
+				if (command === "init" && !target && extra.length === 0 && (action === "list" || action === "standard" || action === "economy")) {
+					const profile = (action === "list" ? "standard" : action) as HarnessScaffoldProfile;
+					const { scaffold } = await initializeRepository(ctx, profile);
+					ctx.ui.notify(scaffold.created ? `Initialized ${profile} harness policy on develop and committed it.` : "Harness policy, develop branch, and runtime ignores already exist and are valid.", "info");
+					return;
+				}
+				if (command !== "worktrees") {
+					ctx.ui.notify("Usage: /harness init [standard|economy] | worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
+					return;
+				}
 				const runtime = await runtimeFor(ctx);
 				const manager = new WorktreeManager(runtime.identity);
 				if (action === "list" && !target) {
@@ -1276,7 +1282,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					ctx.ui.notify(`Removed PiBox worktree ${removed.name}. Its branch ${removed.branch ?? "(detached)"} was retained.`, "info");
 					return;
 				}
-				ctx.ui.notify("Usage: /harness worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
+				ctx.ui.notify("Usage: /harness init [standard|economy] | worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
 			} catch (error) {
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}

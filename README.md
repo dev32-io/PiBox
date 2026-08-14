@@ -49,7 +49,7 @@ Use `/effort` to select a compatible level interactively, or `/effort high` dire
 ## Workflow
 
 ```text
-/workflow init [standard|economy]
+/harness init [standard|economy]
 /workflow status
 
 After reviewing a plan, say “start the workflow” to execute it.

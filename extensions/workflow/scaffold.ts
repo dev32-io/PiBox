@@ -1,31 +1,20 @@
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { stringify } from "yaml";
-import { loadHarnessConfig } from "./config.js";
+import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig } from "./config.js";
 import { HarnessError } from "./errors.js";
-import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit } from "./repository.js";
+import { atomicWriteFile, isGitPathIgnored, runGit } from "./repository.js";
 
 export type HarnessScaffoldProfile = "standard" | "economy";
 
 function economyConfig() {
-	return {
-		schemaVersion: 2,
-		modelTiers: {
-			max: ["openai-codex/gpt-5.6-sol#high"],
-			high: ["openai-codex/gpt-5.6-sol#medium"],
-			medium: ["openai-codex/gpt-5.6-luna#max"],
-			low: ["openai-codex/gpt-5.6-luna#medium"],
-		},
-		limits: { maxConcurrency: 2, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 1 },
-	};
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.limits = { ...config.limits, maxConcurrency: 2, repairRounds: 1 };
+	return config;
 }
 
 function standardConfig() {
-	return {
-		schemaVersion: 2,
-		orchestrator: { modelSwitching: "auto-visible" },
-		limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
-	};
+	return structuredClone(DEFAULT_HARNESS_CONFIG);
 }
 
 export interface HarnessScaffoldResult {
@@ -33,6 +22,9 @@ export interface HarnessScaffoldResult {
 	profile: HarnessScaffoldProfile;
 	configPath: string;
 	worktreeIgnoreAdded: boolean;
+	gitInitialized?: boolean;
+	developCreated?: boolean;
+	branch?: string;
 	commit?: string;
 }
 
@@ -64,8 +56,79 @@ async function ensureHarnessIgnores(repositoryRoot: string, ignorePath: string):
 	return true;
 }
 
+async function assertInitializationClean(repositoryRoot: string): Promise<void> {
+	const status = await runGit(repositoryRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
+	const unrelated = status.split("\n").filter(Boolean).filter((line) => !line.startsWith("?? .pibox/"));
+	if (unrelated.length > 0) throw new HarnessError("DIRTY_CANONICAL_BRANCH", "Repository has uncommitted work unrelated to PiBox initialization", { status: unrelated.join("\n") });
+}
+
+async function gitRefExists(repositoryRoot: string, ref: string): Promise<boolean> {
+	try {
+		await runGit(repositoryRoot, ["show-ref", "--verify", "--quiet", ref]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function gitHeadExists(repositoryRoot: string): Promise<boolean> {
+	try {
+		await runGit(repositoryRoot, ["rev-parse", "--verify", "HEAD"]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function gitRepositoryRoot(cwd: string): Promise<string | undefined> {
+	try {
+		return await runGit(cwd, ["rev-parse", "--show-toplevel"]);
+	} catch {
+		return undefined;
+	}
+}
+
+/** Prepare the repository boundary before runtime state is created. Existing project files are never staged implicitly. */
+export async function initializeHarnessRepository(cwd: string, profile: HarnessScaffoldProfile, overwrite = false): Promise<HarnessScaffoldResult> {
+	let repositoryRoot = await gitRepositoryRoot(cwd);
+	let gitInitialized = false;
+	if (!repositoryRoot) {
+		const entries = await readdir(cwd);
+		if (entries.length > 0) {
+			throw new HarnessError("DIRTY_CANONICAL_BRANCH", "Refusing to initialize Git around existing files. Establish and commit the project baseline first, then run harness init again.", { entries });
+		}
+		await runGit(cwd, ["init", "--quiet"]);
+		gitInitialized = true;
+		repositoryRoot = cwd;
+	}
+
+	try {
+		await assertInitializationClean(repositoryRoot);
+		const hasHead = await gitHeadExists(repositoryRoot);
+		const hasDevelop = await gitRefExists(repositoryRoot, "refs/heads/develop");
+		let developCreated = false;
+		if (!hasHead) {
+			await runGit(repositoryRoot, ["symbolic-ref", "HEAD", "refs/heads/develop"]);
+			developCreated = true;
+		} else {
+			const currentBranch = await runGit(repositoryRoot, ["branch", "--show-current"]);
+			if (currentBranch !== "develop") {
+				if (hasDevelop) await runGit(repositoryRoot, ["switch", "develop"]);
+				else if (await gitRefExists(repositoryRoot, "refs/remotes/origin/develop")) await runGit(repositoryRoot, ["switch", "--track", "-c", "develop", "origin/develop"]);
+				else await runGit(repositoryRoot, ["switch", "-c", "develop"]);
+				developCreated = !hasDevelop;
+			}
+		}
+		const scaffold = await scaffoldHarness(repositoryRoot, profile, overwrite);
+		return { ...scaffold, gitInitialized, developCreated, branch: "develop" };
+	} catch (error) {
+		if (gitInitialized) await rm(join(repositoryRoot, ".git"), { recursive: true, force: true });
+		throw error;
+	}
+}
+
 export async function scaffoldHarness(repositoryRoot: string, profile: HarnessScaffoldProfile, overwrite = false): Promise<HarnessScaffoldResult> {
-	await assertCleanRepository(repositoryRoot);
+	await assertInitializationClean(repositoryRoot);
 	const configPath = join(repositoryRoot, ".pi", "harness.yaml");
 	const ignorePath = join(repositoryRoot, ".gitignore");
 	const previousConfig = await readOptional(configPath);

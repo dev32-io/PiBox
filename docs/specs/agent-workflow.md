@@ -809,7 +809,7 @@ worktree:
     <work-item-id>/<task-id>
 ```
 
-Allocation acquires a lock, verifies the selected base, records its exact commit, proves the repository-local target is ignored, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`. Workflow initialization idempotently ensures effective `/.worktree/` and `/.pibox/` ignore rules. Repository-local operational state lives under `.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable at their recorded runtime paths.
+Allocation acquires a lock, verifies the selected base, records its exact commit, proves the repository-local target is ignored, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`. Harness initialization creates Git only in an empty directory, ensures and checks out `develop`, idempotently appends effective `/.worktree/` and `/.pibox/` ignore rules, writes explicit repository policy including model-effort tier routes, and commits only harness-owned files. It refuses to stage an existing non-Git project implicitly. Repository-local operational state lives under `.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable at their recorded runtime paths.
 
 The harness never auto-stashes or auto-commits a dirty feature branch.
 
@@ -1284,7 +1284,7 @@ The orchestrator translates user intent into capabilities.
 Commands remain available when a model is unavailable or exact control is preferred:
 
 ```text
-/workflow init [standard|economy]
+/harness init [standard|economy]
 /workflow status
 /workflow agents
 /workflow pause [task]
