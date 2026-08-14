@@ -1,0 +1,36 @@
+schemaVersion: 1
+id: build-visualizer-skill
+title: Build the reusable visualizer skill and live renderer
+status: draft
+dependsOn: []
+references:
+  specs:
+    - visualizer-spec
+  designs:
+    - visualizer-design
+  decisions:
+    - renderer-ownership
+execution:
+  resourceClaims: []
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: A bounded vertical implementation across a new skill package, local
+      server, browser assets, and focused tests.
+assembly:
+  stageId: build-visualizer-skill
+  intermediateState: complete
+verification:
+  timing: task
+  methods:
+    - Run TypeScript/package checks and focused automated tests for document
+      validation, deterministic normalization, server safety, and refresh
+      behavior.
+    - Exercise the browser manually or through the repository's available
+      browser testing capability with representative fixtures.
+  taskChecks:
+    - npm run check
+    - npm test
+    - git diff --check
+  rationale: One tracer bullet owns the new isolated skill package, so its
+    behavior can be verified before integration.

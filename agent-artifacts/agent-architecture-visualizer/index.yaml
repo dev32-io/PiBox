@@ -1,0 +1,48 @@
+schemaVersion: 1
+id: agent-architecture-visualizer
+kind: story
+title: Agent-driven interactive architecture visualizer
+phase: planning
+state: active
+planning:
+  revision: 1
+artifacts:
+  - id: intent
+    type: intent
+    path: intent.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: visualizer-spec
+    type: spec
+    path: specs/visualizer-spec.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: visualizer-design
+    type: design
+    path: design/visualizer-design.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: renderer-ownership
+    type: decision
+    path: decisions/renderer-ownership.md
+    status: draft
+    narrativeSchemaVersion: 2
+tasks:
+  - id: build-visualizer-skill
+    path: tasks/build-visualizer-skill/task.yaml
+integrationUnits:
+  - id: visualizer-delivery
+    tasks:
+      - build-visualizer-skill
+    intermediatePolicy: coherent
+delivery:
+  branchType: feature
+  branchMode: create
+  baseBranch: develop
+evaluations:
+  - id: visualizer-contract-review
+    path: evaluations/visualizer-contract-review/evaluation.yaml
+executionStages:
+  - id: build-visualizer-skill
+    tasks:
+      - build-visualizer-skill

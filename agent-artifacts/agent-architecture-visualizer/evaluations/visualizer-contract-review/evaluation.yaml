@@ -1,0 +1,28 @@
+schemaVersion: 1
+id: visualizer-contract-review
+type: combined-review
+scope:
+  workItem: agent-architecture-visualizer
+status: planned
+required: true
+attempt: 0
+methods:
+  - Review the delivered skill, JSON contract, renderer, tests, and browser
+    behavior against all acceptance criteria with special attention to
+    flexibility and lack of model-authored geometry.
+criteria:
+  - visualizer-spec#AC-001
+  - visualizer-spec#AC-002
+  - visualizer-spec#AC-003
+  - visualizer-spec#AC-004
+  - visualizer-spec#AC-005
+  - visualizer-spec#AC-006
+  - visualizer-spec#AC-007
+  - visualizer-spec#AC-008
+  - visualizer-spec#AC-009
+  - visualizer-spec#AC-010
+checkpoint: planned
+loop:
+  state: planned
+  iteration: 0
+  maxIterations: 2
