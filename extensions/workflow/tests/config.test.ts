@@ -46,6 +46,7 @@ test("resolves explicit agent inheritance while preserving routing defaults", ()
 	assert.equal(config.agents.custom?.deliberation, "standard");
 	assert.equal(config.agents["plan-critic"]?.tier, "medium");
 	assert.equal(config.agents["plan-critic"]?.deliberation, "standard");
+	assert.ok(config.agents.implementer?.tools?.includes("edit"));
 });
 
 test("fails closed on legacy aliases and unknown top-level configuration", () => {

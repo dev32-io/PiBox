@@ -43,4 +43,4 @@ Return only sections applicable to the assigned mode:
 - materially suggested hidden cases
 - unknowns and cheapest next probe
 
-Keep the report compressed for handoff. Do not edit files, choose product direction, create canonical artifacts, or propose a repair as confirmed before causal evidence supports it.
+Keep the report compressed for handoff. Do not edit files, choose product direction, create durable artifacts, or present a repair as confirmed before causal evidence supports it.

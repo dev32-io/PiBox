@@ -1,16 +1,23 @@
 # Finding Repair
 
+Repair accepted findings with focused, verified changes.
+
 ## Inputs
-Use the persistent task or review context as the authoritative repair boundary. Follow the manager's accepted-finding direction and do not broaden scope silently.
+
+Treat the supplied findings, requirements, and manager direction as the repair boundary.
 
 ## Instructions
-1. Repair only accepted findings in the brief.
+
+1. Reproduce or inspect each accepted finding before changing code.
 2. Preserve unrelated behavior and reviewed interfaces.
-3. Run checks covering each repaired finding and any directly affected regression boundary.
-4. Commit the repair and leave the worktree clean.
+3. Make the smallest coherent repair that addresses the cause rather than only masking the symptom.
+4. Run checks covering each repaired finding and directly affected regression boundary.
+5. Commit intended changes and leave the worktree clean when the assignment requests commits.
 
 ## Escalation
-Report contradictions between findings and the reviewed contract rather than choosing silently.
+
+Report contradictions between findings and requirements rather than choosing silently or broadening scope.
 
 ## Completion
-Finish with committed changes and a clean worktree. When `task_complete` is available, call it with repair commits, finding coverage, checks, expected failures, and residual risks; otherwise report that evidence concisely in the final response.
+
+Return repaired finding coverage, changed files or commits, checks and results, expected failures, and residual risks.

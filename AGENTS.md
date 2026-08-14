@@ -10,6 +10,6 @@ Work moves through free-form discussion → durable story/spec/design → execut
 
 Tasks are bounded context capsules. Each implementer receives its task brief, acceptance contract, relevant plan boundary, checks, and durable orchestrator responses in persistent system context so compaction and resumed attempts do not erase the assignment. Reviewers receive the scoped task contracts plus full specification/design context and evaluate the checked-out implementation against that durable plan. Reviewer and fixer sessions persist across bounded iterations.
 
-Reusable agent definitions live in `agent-definitions/`; harness prompt fragments live in `prompt/`; on-demand workflows live in `skills/`. Keep agent behavior and prompt prose in those Markdown files rather than inline TypeScript. Configuration selects an agent definition, capability tier, and deliberation profile; the runtime resolves a concrete model and tools.
+Reusable generic agent definitions live in `agent-definitions/`; workflow-only protocol and harness prompt fragments live in `prompt/`; on-demand workflows live in `skills/`. Managed launches append protocol prompts to the selected generic definition. Keep prompt prose in Markdown rather than inline TypeScript. Configuration selects an agent definition, capability tier, and deliberation profile; the runtime resolves a concrete model and tools.
 
 Run `npm run check`, `npm test`, and `git diff --check` before committing.

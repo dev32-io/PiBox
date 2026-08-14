@@ -588,7 +588,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }),
 			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
 			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: agentDefinition.tools ?? ["read", "grep", "find", "bash", "edit", "write"],
-			workItemId, evaluationId, workspace: runtime.identity.root, persistentContext, deferCompletion: true, ...(signal ? { signal } : {}),
+			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true, ...(signal ? { signal } : {}),
 			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
 		});
 		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
@@ -603,7 +603,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const item = await runtime.workItems.read(workItemId);
 		const evaluation = await runtime.workItems.readEvaluation(item.id, evaluationId);
 		if (evaluation.attempt >= runtime.config.limits.repairRounds + 1) throw new HarnessError("INVALID_HANDOFF", `Evaluation repair budget exhausted for ${evaluation.id}`);
-		const agentName = evaluation.type === "spec-review" ? "spec-reviewer" : evaluation.type === "quality-review" ? "quality-reviewer" : evaluation.type === "e2e" ? "e2e-tester" : "quality-reviewer";
+		const agentName = evaluation.type === "e2e" ? "e2e-tester" : "code-reviewer";
 		const agentDefinition = runtime.config.agents[agentName];
 		if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", `Missing evaluator agent definition: ${agentName}`);
 		const routing = { tier: agentDefinition.tier!, deliberation: agentDefinition.deliberation! };
@@ -633,7 +633,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
 				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
 				tools: [...new Set([...(agentDefinition.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]), "evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"])],
-				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root, persistentContext,
+				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-review-agent"), persistentContext,
 				env: { PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
 				promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, `${agentName}.md`),
 				onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
@@ -688,13 +688,10 @@ export default function workflow(pi: ExtensionAPI): void {
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 			const resolution = resolveHarnessModel(runtime.config, availableModels, routing);
 			if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No configured candidate is available", { attempts: resolution.attempts });
-			if (["implementer", "test-implementer", "repair-implementer"].includes(request.agent)) throw new HarnessError("CAPABILITY_DENIED", `Agent ${request.agent} is managed-work execution and must be scheduled by workflow_start or workflow resume`);
 			const defaultTools: Record<string, string[]> = {
-				researcher: ["web_search", "source_check", "fetch_content", "get_search_content"],
 				explorer: ["read", "grep", "find", "bash"],
 				"plan-critic": ["read", "grep", "find"],
-				"spec-reviewer": ["read", "grep", "find", "bash"],
-				"quality-reviewer": ["read", "grep", "find", "bash"],
+				"code-reviewer": ["read", "grep", "find", "bash"],
 				"e2e-tester": ["read", "grep", "find", "bash"],
 			};
 			const launched = await runtime.coordinator.launch({
@@ -1082,7 +1079,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				const launch = (nudge: boolean) => runtime.coordinator.launch({
 					operationId: toolCallId, role: "explorer", task: `${renderBuiltInPrompt("managed-exploration", { mode: assignment.mode, depth: assignment.depth })}${nudge ? `\n\n${readBuiltInPrompt("exploration-protocol-nudge")}` : ""}`,
 					assignment, cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
-					tools: [...(agentDefinition.tools ?? ["read", "grep", "find", "bash"]), ...EXPLORATION_TOOL_NAMES], deferCompletion: true,
+					tools: [...(agentDefinition.tools ?? ["read", "grep", "find", "bash"]), ...EXPLORATION_TOOL_NAMES], additionalPrompt: readBuiltInPrompt("workflow-explorer-agent"), deferCompletion: true,
 					...(signal ? { signal } : {}), ...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: "explorer", state: "running" })) } : {}),
 				});
 				let launched = await launch(false);

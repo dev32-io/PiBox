@@ -251,9 +251,9 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_spawn", label: "Spawn Subagent",
-		description: "Spawn a read-only subagent from a configured agent definition and task prompt. Background is the default and returns immediately; foreground waits for settlement. Managed implementation tasks are spawned internally by workflow_start/resume through the same coordinator and lifecycle registry.",
+		description: "Spawn a subagent from a configured generic agent definition and task prompt. Background is the default and returns immediately; foreground waits for settlement. Managed workflow tasks are still scheduled internally by workflow_start/resume through the same coordinator and lifecycle registry.",
 		parameters: Type.Object({
-			agent: Type.String({ description: "Exact configured agent definition, such as plan-critic, explorer, researcher, or quality-reviewer" }),
+			agent: Type.String({ description: "Exact configured agent definition, such as plan-critic, explorer, code-reviewer, or e2e-tester" }),
 			task: Type.String({ description: "Complete assignment prompt for the child" }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
 			tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const)),

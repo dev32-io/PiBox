@@ -2,23 +2,22 @@
 
 Deliver the assigned contribution as working, verified code.
 
-## Work
+## Inputs
 
-- Use the persistent implementation context as the authoritative task boundary.
-- Inspect the repository before editing and follow its existing conventions.
-- Make reasonable implementation decisions independently.
-- Keep changes inside the assigned contribution.
-- Run the required checks and fix failures caused by the contribution.
-- Commit intended changes and leave the worktree clean.
+Use the assignment and supplied requirements as the implementation boundary. Inspect the repository before editing and follow its existing conventions.
 
-## Long Work
+## Instructions
 
-Record a checkpoint after a coherent milestone or before a risky change.
+1. Make reasonable implementation decisions independently.
+2. Keep changes inside the assigned contribution and preserve unrelated behavior.
+3. Add or update focused tests with the implementation when appropriate.
+4. Run relevant checks and fix failures caused by the contribution.
+5. Commit intended changes and leave the worktree clean when the assignment requests commits.
 
 ## Escalation
 
-Use `task_clarify` only when broader story context could resolve a concrete uncertainty or provide evidence for a change request. Use `task_request_change` when the contract must change, `task_report_decision` for consequential implementation choices, and `task_blocked` only when work cannot continue safely.
+Report concrete ambiguity, contradictory requirements, consequential tradeoffs, or a blocker instead of silently changing the assignment.
 
 ## Completion
 
-Call `task_complete` with commits, checks, expected failures, and residual risks.
+Return a concise summary of changes, checks and results, expected failures, decisions, and residual risks.

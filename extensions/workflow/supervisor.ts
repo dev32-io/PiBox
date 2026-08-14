@@ -134,6 +134,7 @@ export class SubagentSupervisor {
 					effort: options.model.effort,
 					tools: [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])],
 					...(options.agentPrompt ? { agentPrompt: options.agentPrompt } : { promptPath: join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`) }),
+					additionalPrompt: readBuiltInPrompt("workflow-task-agent"),
 					persistentContext: options.persistentContext,
 					...(options.skillPaths ? { skillPaths: options.skillPaths } : {}),
 					deferCompletion: true,
@@ -254,7 +255,7 @@ export class SubagentSupervisor {
 		const promptDirectory = await mkdtemp(join(tmpdir(), "pibox-harness-prompt-"));
 		const promptPath = join(promptDirectory, "implementer.md");
 		const builtInAgentPrompt = await readFile(join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`), "utf8").catch(() => "");
-		const systemPrompt = [options.agentPrompt ?? builtInAgentPrompt, options.persistentContext].filter(Boolean).join("\n\n");
+		const systemPrompt = [options.agentPrompt ?? builtInAgentPrompt, readBuiltInPrompt("workflow-task-agent"), options.persistentContext].filter(Boolean).join("\n\n");
 		await writeFile(promptPath, `${systemPrompt.trim()}\n`, { encoding: "utf8", mode: 0o600 });
 		const taskCapabilities = ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 		const tools = [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])];

@@ -17,13 +17,19 @@ test("inventories every built-in agent definition and skill prompt", async () =>
 	}
 });
 
-test("agent definitions use instruction contracts instead of identity preambles", async () => {
+test("agent definitions stay generic while workflow protocols remain launch-time prompts", async () => {
 	for (const surface of BUILT_IN_PROMPT_SURFACES.filter((entry) => entry.category === "agent")) {
 		const content = await readFile(join(root, surface.source), "utf8");
 		assert.doesNotMatch(content, /\byou are\b/i, surface.id);
+		assert.doesNotMatch(content, /evaluation_context|evaluation_complete|task_complete|task_clarify|exploration_context|exploration_complete|PiBox/i, surface.id);
 		assert.match(content, /^# .+/);
 		assert.match(content, /## Completion/);
 	}
+	assert.match(await readFile(join(root, "prompt/workflow-task-agent.md"), "utf8"), /task_complete/);
+	const review = await readFile(join(root, "prompt/workflow-review-agent.md"), "utf8");
+	assert.match(review, /persistent review context/i);
+	assert.match(review, /Do not call `evaluation_context` as a prerequisite/i);
+	assert.match(review, /evaluation_complete/);
 });
 
 test("collaboration phases have focused boundaries and natural handoffs", async () => {
@@ -78,9 +84,9 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(run, /clear user request to execute the reviewed workflow is the sole execution gate/i);
 	assert.match(run, /call `workflow_start` directly/i);
 	assert.match(critic, /Upstream premises/i);
-	assert.match(critic, /Do not reward task count or concurrency/i);
-	assert.match(critic, /Judge the graph without accepting the caller's preferred task count/i);
-	assert.match(critic, /Tracer-bullet fit/i);
+	assert.match(critic, /without rewarding task count or concurrency/i);
+	assert.match(critic, /Do not accept the caller's preferred task count/i);
+	assert.match(critic, /Prefer narrow end-to-end contributions/i);
 });
 
 test("explorer supports evidence-driven code understanding and diagnosis", async () => {

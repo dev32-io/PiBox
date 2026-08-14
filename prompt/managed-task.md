@@ -4,5 +4,3 @@ Inspect the current repository, then deliver the contribution described in your 
 
 Required checks:
 {{checks}}
-
-Finish with committed changes, a clean worktree, and task_complete.

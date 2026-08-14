@@ -18,6 +18,7 @@ export interface DirectAgentOptions {
 	onEvent?: (event: unknown) => void;
 	promptPath?: string;
 	agentPrompt?: string;
+	additionalPrompt?: string;
 	extensionPaths?: string[];
 	/** Stable assignment context appended to the system prompt and preserved across Pi compaction. */
 	persistentContext?: string;
@@ -64,7 +65,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	} catch {
 		agentPrompt = renderBuiltInPrompt("default-agent", { agent: options.agent });
 	}
-	const systemPrompt = [agentPrompt.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
+	const systemPrompt = [agentPrompt.trim(), options.additionalPrompt?.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
 	await writeFile(promptFile, `${systemPrompt}\n`, { encoding: "utf8", mode: 0o600 });
 	const args = [
 		...(options.extensionPaths ?? []).flatMap((path) => ["-e", path]),

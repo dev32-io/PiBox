@@ -124,7 +124,6 @@ The orchestrator feature branch is the canonical project source. Private state i
 MAIN PI SESSION — ORCHESTRATOR
 │
 ├── Research and clarification
-│   ├── researcher agents
 │   └── explorer agents
 │
 ├── Planning
@@ -140,8 +139,7 @@ MAIN PI SESSION — ORCHESTRATOR
 │
 └── Evaluation
     ├── deterministic gates
-    ├── specification reviewers
-    ├── quality reviewers
+    ├── code reviewers
     ├── repair implementers
     └── E2E testers and evidence collectors
 ```
@@ -465,7 +463,7 @@ Each phase owns one primary deliverable and naturally offers the next phase. Pri
 Planning follows Superpowers-style behavior:
 
 - Investigate the repository before proposing changes.
-- Spawn researchers or explorers where they improve understanding.
+- Spawn explorers where they improve understanding.
 - Ask one material question at a time.
 - Compare meaningful approaches and trade-offs.
 - Keep the user involved in product and architectural decisions.
@@ -536,7 +534,7 @@ The critic reports findings to the orchestrator. It cannot edit canonical artifa
 
 ### 10.1 Agent-definition contract
 
-A role is a configurable execution contract rather than a persona:
+An agent definition is a generic configurable execution contract rather than a workflow-specific persona:
 
 ```yaml
 agents:
@@ -551,7 +549,7 @@ agents:
     deliberation: standard
 ```
 
-Each role defines:
+Each agent definition configures:
 
 - Purpose and behavioral constraints.
 - Prompt and skill set.
@@ -567,13 +565,10 @@ Each role defines:
 
 | Agent definition | Responsibility | Mutation authority |
 |---|---|---|
-| Researcher | External research and source synthesis | None |
 | Explorer | Repository investigation and dependency mapping | None |
 | Plan critic | Challenge planning artifacts and verification coverage | Findings only |
 | Implementer | Implement one bounded task and its tests | Assigned worktree |
-| Spec reviewer | Compare implementation with reviewed requirements | None |
-| Quality reviewer | Review correctness, maintainability, regressions, and tests | None |
-| Test implementer | Build explicitly tasked automated test infrastructure | Assigned worktree |
+| Code reviewer | Compare implementation with requirements and review correctness, maintainability, regressions, and tests | None |
 | E2E tester | Exercise integrated behavior and collect evidence | Runtime/test environment only |
 | Repair implementer | Address accepted evaluator findings | Assigned repair worktree |
 
@@ -583,21 +578,22 @@ Reviewers do not silently fix the work they review. Product or test-infrastructu
 
 Agent definitions remain callable outside a managed workflow. For example:
 
-> Run a quality evaluator on my current edits with GPT-5.6 Sol at high effort.
+> Run a code reviewer on my current edits with GPT-5.6 Sol at high effort.
 
 Direct invocation does not require creating a work item. If the work later becomes managed, relevant findings may be promoted into canonical artifacts.
 
 ### 10.4 Prompt composition
 
-A child launch has three bounded inputs:
+A managed child launch has four bounded inputs:
 
 ```text
-1. Agent-definition instructions — persistent system prompt
-2. Selected authoritative context — persistent system prompt
-3. Assignment request — short user prompt
+1. Generic agent-definition instructions — persistent system prompt
+2. Workflow-only protocol prompt — persistent system prompt
+3. Selected authoritative context — persistent system prompt
+4. Assignment request — short user prompt
 ```
 
-For implementation tasks, the persistent packet contains the self-contained task brief, acceptance contract, exact assigned specification criteria, explicitly referenced decisions, expected contribution state, and required checks. Broad specifications and designs are not repeated wholesale; the brief carries the relevant interfaces and design boundary, while `task_clarify` exposes wider artifacts only for a concrete uncertainty. The packet excludes runtime identifiers, routing rationale, unreferenced story areas, hashes, and revision tokens. Pi retains the system prompt across compaction. The packet is rebuilt from canonical files for each process attempt.
+Direct user invocation omits the workflow protocol and canonical context. For implementation tasks, the persistent packet contains the self-contained task brief, acceptance contract, exact assigned specification criteria, explicitly referenced decisions, expected contribution state, and required checks. Reviewers receive scoped task manifests and contracts plus the full specification and design. Pi retains system prompts across compaction, and packets are rebuilt from canonical files for each process attempt.
 
 ### 10.5 Agent performance records
 
@@ -1069,7 +1065,7 @@ subagent_respond
 
 The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates reviewed tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
 
-`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured read-only specialist agent definition and task prompt, defaults to background execution, and can wait in foreground mode when explicitly requested. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. `exploration_launch` remains a typed exploration capability. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
+`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured generic agent definition and task prompt, defaults to background execution, and can wait in foreground mode when explicitly requested. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. `exploration_launch` remains a typed exploration capability. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
 
 ### 16.3 Worker capabilities
 
@@ -1291,7 +1287,7 @@ The intended interface is ordinary conversation:
 
 > Start the reviewed session-model story.
 
-> Run a quality reviewer on my current changes using Sol at high effort.
+> Run a code reviewer on my current changes using Sol at high effort.
 
 > Pause the persistence task.
 
