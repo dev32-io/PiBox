@@ -12,12 +12,4 @@ Tasks are bounded context capsules. Each implementer receives its task brief, ac
 
 Reusable agent definitions live in `agent-definitions/`; harness prompt fragments live in `prompt/`; on-demand workflows live in `skills/`. Keep agent behavior and prompt prose in those Markdown files rather than inline TypeScript. Configuration selects an agent definition, capability tier, and deliberation profile; the runtime resolves a concrete model and tools.
 
-## Engineering Rules
-
-- Preserve dirty or conflicting user work; fail closed rather than stash, reset, or discard.
-- Canonical reads are bounded and revision-aware; canonical mutations are serialized and audited.
-- Prefer coherent tracer-bullet tasks that fit one fresh context and carry behavior, tests, interfaces, and risks together.
-- Treat runtime snapshots as observational and lifecycle transitions as harness-owned.
-- Claim completion only from fresh recorded evidence.
-
 Run `npm run check`, `npm test`, and `git diff --check` before committing.
