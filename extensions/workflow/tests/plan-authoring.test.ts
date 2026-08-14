@@ -22,6 +22,8 @@ test("expands compact plan fields while preserving structured task contracts", (
 	const task = plan.tasks[0] as any;
 	assert.equal(task.narrativeSchemaVersion, 2);
 	assert.equal(task.manifest.status, "draft");
+	assert.equal(task.manifest.execution.assignment.agent, "implementer");
+	assert.equal(task.manifest.execution.assignment.role, undefined);
 	assert.equal(task.manifest.assembly.stageId, "implement-behavior");
 	assert.deepEqual(task.manifest.references.specs, ["behavior"]);
 	assert.deepEqual(task.briefSections.requiredWork, ["One vertical slice"]);

@@ -27,25 +27,25 @@ test("loads user then repository tier configuration and records a stable digest"
 	assert.equal(loaded.config.limits.maxActiveSubagentsPerSession, 16);
 	assert.equal(loaded.config.limits.maxSubagentDepth, 1);
 	assert.deepEqual(loaded.config.modelTiers.medium, [{ provider: "local", model: "bounded", effort: { standard: "off" } }]);
-	assert.equal(loaded.config.roles.implementer?.tier, "medium");
+	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.sources.length, 3);
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
 });
 
-test("resolves explicit role inheritance while preserving routing defaults", () => {
+test("resolves explicit agent inheritance while preserving routing defaults", () => {
 	const config = validateHarnessConfig({
 		...structuredClone(DEFAULT_HARNESS_CONFIG),
-		roles: {
-			...structuredClone(DEFAULT_HARNESS_CONFIG.roles),
+		agents: {
+			...structuredClone(DEFAULT_HARNESS_CONFIG.agents),
 			custom: { extends: "implementer", tools: ["read"], tier: "low" },
 		},
 	});
-	assert.equal(config.roles.custom?.workspace, "repository");
-	assert.deepEqual(config.roles.custom?.tools, ["read"]);
-	assert.equal(config.roles.custom?.tier, "low");
-	assert.equal(config.roles.custom?.deliberation, "standard");
-	assert.equal(config.roles["plan-critic"]?.tier, "medium");
-	assert.equal(config.roles["plan-critic"]?.deliberation, "standard");
+	assert.equal(config.agents.custom?.workspace, "repository");
+	assert.deepEqual(config.agents.custom?.tools, ["read"]);
+	assert.equal(config.agents.custom?.tier, "low");
+	assert.equal(config.agents.custom?.deliberation, "standard");
+	assert.equal(config.agents["plan-critic"]?.tier, "medium");
+	assert.equal(config.agents["plan-critic"]?.deliberation, "standard");
 });
 
 test("fails closed on legacy aliases and unknown top-level configuration", () => {

@@ -26,7 +26,7 @@ The workflow defines phase-level obligations, not a mandatory per-task ceremony.
 4. Let the orchestrator skip, defer, batch, or combine ceremony according to risk and when the result becomes meaningfully testable.
 5. Make filesystem artifacts the durable source of intent, design, task context, decisions, evidence, and outcomes.
 6. Keep raw operational history private and outside Git and all worktrees.
-7. Make subagent roles independently configurable, measurable, and improvable.
+7. Make subagent definitions independently configurable, measurable, and improvable.
 8. Use deterministic capabilities for state transitions, paths, Git operations, model resolution, completion handoffs, and integration.
 9. Support safe concurrent work in isolated Git worktrees.
 10. Fail loudly rather than hide dirty branches, stale plans, missing handoffs, invalid evidence, or integration conflicts.
@@ -43,7 +43,7 @@ The first version will not provide:
 - Automatic delayed resumption after subscription limits reset.
 - Seamless migration of an active streaming provider request.
 - A full-screen subagent sidebar or web dashboard.
-- Nested delegation by ordinary worker roles.
+- Nested delegation by ordinary worker agents.
 - Cross-repository stories or distributed workers.
 - Automatic deletion of private history, branches, or worktrees.
 - A replacement for normal ad-hoc Pi usage.
@@ -59,7 +59,7 @@ The user's normal Pi session is the persistent orchestrator. Research, chat, pla
 The main session may:
 
 - Edit directly for small work.
-- Call any specialist role directly.
+- Call any specialist agent definition directly.
 - Start or promote a managed change or story.
 - Create and amend canonical artifacts through capabilities.
 - Schedule, steer, pause, restart, and stop child agents.
@@ -153,7 +153,7 @@ Harness extension
 ├── Configuration and model resolver
 ├── Artifact registry
 ├── Work-item state machine
-├── Role and prompt registry
+├── Agent-definition and prompt registry
 ├── Subagent supervisor
 ├── Scheduler and control inbox
 ├── Git/worktree manager
@@ -390,7 +390,7 @@ references:
 execution:
   resourceClaims: [session-schema]
   assignment:
-    role: implementer
+    agent: implementer
     tier: high
     deliberation: deep
     rationale: Bounded but cross-cutting session lifecycle and concurrency reasoning
@@ -532,16 +532,16 @@ When the user explicitly requests an independent critique, a fresh plan-critic a
 
 The critic reports findings to the orchestrator. It cannot edit canonical artifacts or authorize execution for the user, and ordinary planning does not wait for a critic run.
 
-## 10. Role system
+## 10. Agent-definition system
 
-### 10.1 Role contract
+### 10.1 Agent-definition contract
 
 A role is a configurable execution contract rather than a persona:
 
 ```yaml
-roles:
+agents:
   implementer:
-    prompt: roles/implementer.md
+    prompt: ../agent-definitions/implementer.md
     skills: [testing, implementation]
     tools: [read, grep, find, bash, edit, write]
     workspace: worktree
@@ -563,9 +563,9 @@ Each role defines:
 - Structured completion schema.
 - Canonical artifact identity.
 
-### 10.2 Initial roles
+### 10.2 Initial agent definitions
 
-| Role | Responsibility | Mutation authority |
+| Agent definition | Responsibility | Mutation authority |
 |---|---|---|
 | Researcher | External research and source synthesis | None |
 | Explorer | Repository investigation and dependency mapping | None |
@@ -581,7 +581,7 @@ Reviewers do not silently fix the work they review. Product or test-infrastructu
 
 ### 10.3 Direct invocation
 
-Roles remain callable outside a managed workflow. For example:
+Agent definitions remain callable outside a managed workflow. For example:
 
 > Run a quality evaluator on my current edits with GPT-5.6 Sol at high effort.
 
@@ -592,14 +592,14 @@ Direct invocation does not require creating a work item. If the work later becom
 A child launch has three bounded inputs:
 
 ```text
-1. Role instructions — persistent system prompt
+1. Agent-definition instructions — persistent system prompt
 2. Selected authoritative context — persistent system prompt
 3. Assignment request — short user prompt
 ```
 
 For implementation tasks, the persistent packet contains the self-contained task brief, acceptance contract, exact assigned specification criteria, explicitly referenced decisions, expected contribution state, and required checks. Broad specifications and designs are not repeated wholesale; the brief carries the relevant interfaces and design boundary, while `task_clarify` exposes wider artifacts only for a concrete uncertainty. The packet excludes runtime identifiers, routing rationale, unreferenced story areas, hashes, and revision tokens. Pi retains the system prompt across compaction. The packet is rebuilt from canonical files for each process attempt.
 
-### 10.5 Role performance records
+### 10.5 Agent performance records
 
 Private run records capture role and prompt versions, skills, requested and resolved model/effort, event traces, completion validation, evaluator outcomes, and repair lineage. This permits later empirical comparison without committing raw transcripts.
 
@@ -663,7 +663,7 @@ Plans express semantic execution requirements rather than concrete provider deta
 
 ```yaml
 assignment:
-  role: implementer
+  agent: implementer
   tier: high
   deliberation: standard
   rationale: Complex pointer geometry with a settled contract
@@ -738,7 +738,7 @@ A user-pinned model wins. Automatic selection is always visible.
 - Maps merge recursively by key.
 - Scalars replace earlier values.
 - Arrays replace rather than concatenate.
-- Roles may explicitly extend other roles.
+- Agent definitions may explicitly extend other agent definitions.
 - Unknown security-critical fields fail closed.
 - Diagnostics identify source file and property path.
 - Every run records the effective configuration digest.
@@ -970,7 +970,7 @@ Methods are composable tools, not mandatory stages:
 4. **Integrated regression:** check interaction with the latest canonical base.
 5. **E2E evaluation:** exercise a meaningful assembled user journey and collect evidence.
 
-A planner may combine specification and quality review into one run. Independent roles remain available when risk warrants separation.
+A planner may combine specification and quality review into one run. Independent agent definitions remain available when risk warrants separation.
 
 ### 15.5 Evaluator independence
 
@@ -1069,7 +1069,7 @@ subagent_respond
 
 The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates reviewed tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
 
-`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured read-only specialist role and task prompt, defaults to background execution, and can wait in foreground mode when explicitly requested. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. `exploration_launch` remains a typed exploration capability. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
+`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured read-only specialist agent definition and task prompt, defaults to background execution, and can wait in foreground mode when explicitly requested. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. `exploration_launch` remains a typed exploration capability. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
 
 ### 16.3 Worker capabilities
 
@@ -1408,9 +1408,9 @@ Recorded or synthetic event streams should cover:
 - Missing completion handoff.
 - Duplicate capability calls after timeout.
 
-### 21.4 Role and prompt evaluations
+### 21.4 Agent-definition and prompt evaluations
 
-Role behavior is evaluated separately from deterministic extension correctness. Versioned datasets should compare planner coverage, implementer protocol compliance, reviewer precision, false-positive rate, E2E drivability, model selection, and repair success.
+Agent behavior is evaluated separately from deterministic extension correctness. Versioned datasets should compare planner coverage, implementer protocol compliance, reviewer precision, false-positive rate, E2E drivability, model selection, and repair success.
 
 Prompt scaffolding should be retained only when empirical results show it is load-bearing.
 
@@ -1511,7 +1511,7 @@ The design is successfully implemented when:
 3. Execution begins only after a clear user request to run the reviewed workflow.
 4. The planner can explicitly skip, defer, batch, or combine task-level review and testing while declaring the later meaningful verification boundary.
 5. Partial task contributions can be assembled in orchestrator-controlled stages without pretending they are independently complete.
-6. Role prompts, tools, capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
+6. Agent definitions, tools, capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
 7. The planner records capability tier and deliberation per task; the runtime resolves provider/model/effort against Pi availability and exact thinking support.
 8. Missing or unsupported routes fall back visibly within the requested tier/profile or enter a waiting state without silent downgrade or effort clamping.
 9. Concurrent tasks run in deterministic isolated worktrees from a clean committed base.
@@ -1530,7 +1530,7 @@ The design is successfully implemented when:
 PiBox's harness is a hybrid between a flexible skill-driven agent and a deterministic workflow engine:
 
 - The main Pi session remains the persistent, user-facing authority.
-- Specialized roles are independent, configurable contributors with explicit contracts.
+- Specialized agent definitions are independent, configurable contributors with explicit contracts.
 - Canonical files preserve semantic truth.
 - Private event logs preserve operational truth.
 - The planner applies proportional ceremony, groups partial work into meaningful integration units, and assigns task-specific model capability.

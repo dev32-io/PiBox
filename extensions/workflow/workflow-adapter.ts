@@ -8,6 +8,7 @@ import type { WorkItemStore } from "./work-items.js";
 import { orderedExecutionStages, taskExecutionTopology } from "./execution-topology.js";
 import { WorktreeManager } from "./worktrees.js";
 import type { RepositoryMutex } from "./idempotency.js";
+import { readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 
 export interface HarnessWorkflowRuntime {
 	identity: RepositoryIdentity;
@@ -83,17 +84,18 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const item = await runtime.workItems.read(match[1]!);
 			const worktrees = await new WorktreeManager(runtime.identity).listManaged();
 			const modifiedWorktrees = worktrees.filter((worktree) => worktree.status === "modified").length;
-			return [
-				`Workflow ${item.id} has completed. Give the user a concise but informative delivery briefing; do not reply silently.`,
-				`First read ${runtime.workItems.workItemRoot(item.id)}/outcome.md when it exists, then reconcile it with the task/evaluation results and workflow events you observed.`,
-				"Report what was delivered, verification and review outcomes, deviations, residual risks or follow-up, and the checked-out working branch.",
-				worktrees.length
-					? `PiBox retained ${worktrees.length} task worktree(s)${modifiedWorktrees ? ` (${modifiedWorktrees} modified)` : ""}. Include this inventory in the briefing and remind the user they can inspect or safely clean inactive worktrees with /harness worktrees.`
-					: "No PiBox task worktrees are retained.",
-				item.delivery?.branchMode === "continue"
-					? `This work item delivered onto the ongoing branch ${item.delivery.featureBranch}; describe this increment without implying the larger branch is finished or ready to merge.`
-					: item.delivery?.featureBranch ? `The working branch is ${item.delivery.featureBranch}; tell the user it remains checked out and is ready for them to merge into ${item.delivery.baseBranch}.` : "Inspect Git and report the checked-out delivery branch and intended base.",
-			].join("\n");
+			return renderBuiltInPrompt("workflow-completion", {
+				workflowId: item.id,
+				outcomePath: `${runtime.workItems.workItemRoot(item.id)}/outcome.md`,
+				worktreeGuidance: worktrees.length
+					? renderBuiltInPrompt("workflow-completion-worktrees-retained", { count: worktrees.length, modified: modifiedWorktrees ? ` (${modifiedWorktrees} modified)` : "" })
+					: readBuiltInPrompt("workflow-completion-worktrees-none"),
+				branchGuidance: item.delivery?.branchMode === "continue"
+					? renderBuiltInPrompt("workflow-completion-continued-branch", { branch: item.delivery.featureBranch ?? "the recorded ongoing branch" })
+					: item.delivery?.featureBranch
+						? renderBuiltInPrompt("workflow-completion-created-branch", { branch: item.delivery.featureBranch, baseBranch: item.delivery.baseBranch })
+						: readBuiltInPrompt("workflow-completion-unknown-branch"),
+			});
 		},
 		async snapshot(ref, ctx): Promise<WorkflowSnapshot> {
 			const match = WORK_ITEM.exec(ref);

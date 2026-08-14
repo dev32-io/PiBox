@@ -166,7 +166,8 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 	if (task.execution.isolation !== undefined && !["worktree", "repository"].includes(task.execution.isolation)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid legacy execution isolation`);
 	if (task.execution.parallelism !== undefined && !["allowed", "serial"].includes(task.execution.parallelism)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid legacy execution parallelism`);
 	const assignment = task.execution.assignment as TaskManifest["execution"]["assignment"];
-	if (typeof assignment.role !== "string" || typeof assignment.rationale !== "string" || !assignment.rationale.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid assignment`);
+	const agent = "agent" in assignment ? assignment.agent : assignment.role;
+	if (typeof agent !== "string" || typeof assignment.rationale !== "string" || !assignment.rationale.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid assignment`);
 	if (isTierTaskAssignment(assignment)) {
 		if (!["low", "medium", "high", "max"].includes(assignment.tier) || !["standard", "deep"].includes(assignment.deliberation)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid tier routing`);
 		if (assignment.modelOverride && (typeof assignment.modelOverride.model !== "string" || (assignment.modelOverride.effort !== undefined && typeof assignment.modelOverride.effort !== "string") || (assignment.modelOverride.strict !== undefined && typeof assignment.modelOverride.strict !== "boolean"))) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid concrete model override`);

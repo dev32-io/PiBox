@@ -1,0 +1,1 @@
+The task brief contains the assigned design boundary. Use `task_clarify` to read this broader design only when a concrete uncertainty remains.

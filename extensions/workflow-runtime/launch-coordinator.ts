@@ -14,7 +14,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	effort: string;
 	tools: string[];
 	promptPath?: string;
-	rolePrompt?: string;
+	agentPrompt?: string;
 	extensionPaths?: string[];
 	persistentContext?: string;
 	skillPaths?: string[];
@@ -65,7 +65,7 @@ export class LaunchCoordinator {
 		const invocationResolver = input.invocationResolver ?? this.invocationResolver;
 		try {
 			const result = await runDirectAgent({
-				role: input.role,
+				agent: input.role,
 				task: input.task,
 				cwd: input.cwd,
 				provider: input.provider,
@@ -84,11 +84,12 @@ export class LaunchCoordinator {
 					PIBOX_SUBAGENT_ROOT: join(this.registry.root, "agents", reserved.id),
 					PIBOX_SUBAGENT_STORE_ROOT: dirname(dirname(this.registry.root)),
 					PIBOX_SUBAGENT_ASSIGNMENT_PATH: join(this.registry.root, reserved.assignmentPath),
+					PIBOX_SUBAGENT_AGENT: reserved.role,
 					PIBOX_SUBAGENT_ROLE: reserved.role,
 				},
 				extensionPaths: input.extensionPaths ?? this.extensionPaths,
 				...(input.promptPath ? { promptPath: input.promptPath } : {}),
-				...(input.rolePrompt ? { rolePrompt: input.rolePrompt } : {}),
+				...(input.agentPrompt ? { agentPrompt: input.agentPrompt } : {}),
 				...(input.persistentContext ? { persistentContext: input.persistentContext } : {}),
 				...(input.skillPaths ? { skillPaths: input.skillPaths } : {}),
 				...(input.signal ? { signal: input.signal } : {}),

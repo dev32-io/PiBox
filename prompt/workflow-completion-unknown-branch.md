@@ -1,0 +1,1 @@
+Inspect Git and report the checked-out delivery branch and intended base.

@@ -55,7 +55,7 @@ The harness completed `local-todo` with:
 ## Issues discovered and fixed
 
 1. **Provider-native tool-call IDs were rejected.** OpenAI Codex IDs contain `|`, but idempotency initially used a path-safe regex. Operation records now hash arbitrary bounded provider IDs into safe filenames.
-2. **Task planning accepted unknown roles and raw model IDs.** `task_define` now validates configured role names, model aliases, and role workspace requirements before committing planning.
+2. **Task planning accepted unknown agents and raw model IDs.** `task_define` now validates configured agent names, model aliases, and agent workspace requirements before committing planning.
 3. **Economy routing could be bypassed by an explicit planned alias.** The economy scaffold now maps all built-in aliases to Luna at capability rank 100, so task-level `sol` or `terra` choices still resolve to the explicitly configured economy model.
 4. **Task checks could be prose or silently omitted during integration.** Tool descriptions now require shell commands, and integration defaults to the checks declared by all tasks in the unit.
 5. **Filename-like resource claims failed path validation.** Resource claims are now bounded opaque strings stored under hashed lock paths, so values such as `index.html` are valid without permitting path traversal.

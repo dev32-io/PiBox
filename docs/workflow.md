@@ -46,7 +46,7 @@ Managed planning begins as a product and technical conversation, not an artifact
 The user settles or delegates consequential choices. Once both sides share an understanding, the orchestrator writes the complete draft atomically, reads the whole plan at that exact revision back, and performs one lightweight self-review for requirement coverage, vague placeholders, and cross-task consistency. If needed, it applies one revision-pinned surgical edit without resending unchanged plan content, then submits and hands the plan to the user. It offers two natural next steps: refine it conversationally, or say “start the workflow.” The explicit start request is the sole execution gate.
 
 - `workflow_plan_write` atomically creates or completely replaces a plan, and applies revision-pinned resource-level edits for post-write corrections. `create` always uses a new ID and treats `basedOn` as read-only context; complete `update` and surgical `edit` require the exact target and expected revision. Harness-owned lifecycle/schema boilerplate is defaulted, while structured task briefs and acceptance contracts remain mandatory because they become worker context.
-- `subagent_spawn` invokes any configured read-only specialist role with a task prompt and defaults to background execution. `plan-critic` remains optional when the user asks for an independent critique; ordinary plans do not wait for it.
+- `subagent_spawn` invokes any configured read-only specialist agent definition with a task prompt and defaults to background execution. `plan-critic` remains optional when the user asks for an independent critique; ordinary plans do not wait for it.
 - `workflow_list` returns compact filtered catalog pages with snapshot-pinned cursors.
 - `workflow_get` returns a compact summary by default. For work items, `view=full` returns the complete plan graph—including artifact contents, task briefs and acceptance contracts, integration units, and evaluations—in bounded revision-pinned ranges.
 - `workflow_schema` progressively discloses exact mutation contracts only when a model needs them, keeping always-visible tool schemas small.
@@ -62,12 +62,12 @@ Planning submission validates the execution topology and marks the review handof
 
 The independent workflow extension owns the generic background execution surface. Each work item separates planning kind (`story | change`) from delivery intent (`feature | fix`, `create | continue`, base `develop`). For new delivery, `workflow_start` requires a clean checkout, switches to `develop`, pulls with `--ff-only`, and creates `feature/<work-item-id>` or `fix/<work-item-id>`. For continued delivery, it requires a clean checkout already on the recorded ongoing feature/fix branch and does not sync `develop`. It then asks the registered managed-work adapter to derive current task, task-merge, and evaluation steps directly from the reviewed work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
 
-- `subagent_spawn` dynamically launches a configured read-only specialist role with a task prompt in background mode by default; foreground mode remains available for explicit waiting.
+- `subagent_spawn` dynamically launches a configured read-only specialist agent definition with a task prompt in background mode by default; foreground mode remains available for explicit waiting.
 - `subagent_status`, `subagent_control`, and `subagent_respond` monitor and steer logical children.
 - `workflow_control` pauses scheduling, resumes it, or stops active children.
 - `exploration_launch` retains its typed read-only evidence assignment outside managed workflow execution.
 - Managed task and evaluation spawning is internal to `workflow_start`/resume and uses the same launch coordinator and lifecycle registry as dynamic `subagent_spawn` calls.
-- Workers receive a focused task packet in their persistent system context. `task_clarify` provides optional, targeted access to broader story/change context when a concrete uncertainty remains; `task_complete` records completion.
+- Workers receive a focused task packet in persistent system context. Reviewers receive their scoped task contracts plus full specification and design context through the same compaction-resistant mechanism. `task_clarify` provides optional targeted context; structured completion tools record durable handoffs.
 
 The managed-work adapter continues to own feature-branch preparation, runtime-derived isolation, stage merge barriers, checks, evaluator contracts, and canonical state transitions. Work-item `executionStages` are the complete execution topology: stages advance sequentially, while tasks inside one stage are one parallel frontier. A singleton stage commits directly to the feature branch. A multi-task stage allocates one worktree per task from a pinned common base, waits for every contribution, merges the batch in declared order, runs stage checks, and publishes it atomically before the next stage advances. Planners do not encode `isolation` or `parallelism`. The generic runtime contains no canonical artifact or plan-approval logic.
 
@@ -152,9 +152,9 @@ modelTiers:
       model: gpt-5.6-luna
       effort: { standard: low, deep: medium }
 
-roles:
+agents:
   implementer:
-    prompt: roles/implementer.md
+    prompt: ../agent-definitions/implementer.md
     skills: [skills/repository-testing/SKILL.md]
     tools: [read, grep, find, bash, edit, write]
     workspace: worktree
@@ -180,7 +180,7 @@ limits:
   repairRounds: 2
 ```
 
-Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`.
+Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`. Built-in reusable agent definitions live in `agent-definitions/`; editable harness prompt fragments live in `prompt/`.
 
 Task plans select `low | medium | high | max` capability and `standard | deep` deliberation. Each configured route maps that semantic request to an effort calibrated for its concrete model. Fallback is always visible and stays inside the requested tier/profile; unsupported effort mappings or unavailable strict selections enter `waiting_model` rather than silently lowering capability or clamping effort.
 

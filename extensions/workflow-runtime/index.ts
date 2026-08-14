@@ -3,6 +3,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -187,7 +188,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
 					active.delete(ref); persist(ref, "stopped"); sendEvent(`${snapshot.title} · complete`, "Finished all workflow steps.");
-					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? `Workflow ${ref} completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.`;
+					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? renderBuiltInPrompt("default-workflow-completion", { workflowRef: ref });
 					try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* session recovery can inspect canonical completion state */ }
 					continue;
 				}
@@ -250,14 +251,14 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "subagent_spawn", label: "Spawn Subagent",
-		description: "Spawn a read-only subagent from a configured specialist role and task prompt. Background is the default and returns immediately; foreground waits for settlement. Managed implementation tasks are spawned internally by workflow_start/resume through the same coordinator and lifecycle registry.",
+		description: "Spawn a read-only subagent from a configured agent definition and task prompt. Background is the default and returns immediately; foreground waits for settlement. Managed implementation tasks are spawned internally by workflow_start/resume through the same coordinator and lifecycle registry.",
 		parameters: Type.Object({
-			role: Type.String({ description: "Exact configured role name, such as plan-critic, explorer, researcher, or quality-reviewer" }),
+			agent: Type.String({ description: "Exact configured agent definition, such as plan-critic, explorer, researcher, or quality-reviewer" }),
 			task: Type.String({ description: "Complete assignment prompt for the child" }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
 			tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const)),
 			deliberation: Type.Optional(StringEnum(["standard", "deep"] as const)),
-			model: Type.Optional(Type.String({ description: "Exceptional configured concrete model override; normally omit to use role policy" })),
+			model: Type.Optional(Type.String({ description: "Exceptional configured concrete model override; normally omit to use agent policy" })),
 			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
 			strict: Type.Optional(Type.Boolean()),
 		}, { additionalProperties: false }),
@@ -265,20 +266,20 @@ export default function workflows(pi: ExtensionAPI): void {
 			const adapter = dynamicAdapter();
 			const mode = params.mode ?? "background";
 			const request: DynamicSubagentRequest = {
-				operationId: toolCallId, role: params.role, task: params.task,
+				operationId: toolCallId, agent: params.agent, task: params.task,
 				...(params.tier ? { tier: params.tier } : {}), ...(params.deliberation ? { deliberation: params.deliberation } : {}),
 				...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}), ...(params.strict !== undefined ? { strict: params.strict } : {}),
 			};
 			// Esc cancels only an explicitly foreground child. Background children are
 			// controlled through subagent_control and survive the launching turn.
-			const promise = adapter.spawnSubagent!(request, ctx, mode === "foreground" ? signal : undefined, mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, { role: params.role, state: "running" })) : undefined);
+			const promise = adapter.spawnSubagent!(request, ctx, mode === "foreground" ? signal : undefined, mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, { agent: params.agent, state: "running" })) : undefined);
 			if (mode === "foreground") {
 				const settled = await promise;
 				if (settled.state === "failed") throw new Error(settled.summary);
 				return result(settled.summary, settled);
 			}
-			void promise.then((settled) => sendEvent(`${params.role} · ${settled.state}`, settled.summary, Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed"))).catch((error) => sendEvent(`${params.role} · failed`, error instanceof Error ? error.message : String(error), true));
-			return result(`Spawned ${params.role} in background. Lifecycle and attention updates will be delivered to this session.`, { role: params.role, state: "starting" });
+			void promise.then((settled) => sendEvent(`${params.agent} · ${settled.state}`, settled.summary, Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed"))).catch((error) => sendEvent(`${params.agent} · failed`, error instanceof Error ? error.message : String(error), true));
+			return result(`Spawned ${params.agent} in background. Lifecycle and attention updates will be delivered to this session.`, { agent: params.agent, state: "starting" });
 		},
 	});
 

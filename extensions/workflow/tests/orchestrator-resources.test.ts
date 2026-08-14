@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { buildTaskPersistentContext } from "../implementation-context.js";
+import { buildReviewPersistentContext, buildTaskPersistentContext } from "../implementation-context.js";
 import { OrchestratorResourceService } from "../orchestrator-resources.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
@@ -20,7 +20,7 @@ async function repository(t: test.TestContext): Promise<string> {
 	return root;
 }
 function task(id = "build-app"): TaskManifest {
-	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
+	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
 }
 const mutation = { rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
 
@@ -41,6 +41,23 @@ test("builds a focused persistent implementation packet", async (t) => {
 	assert.match(packet, /task_clarify.*broader design/i);
 	assert.match(packet, /test -f app\.txt/);
 	assert.doesNotMatch(packet, /Broad intent|planning revision|sha256|assignment rationale/i);
+});
+
+test("builds durable reviewer context from scoped tasks and full plan artifacts", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "review-context", title: "Review context", kind: "change", intent: "Ship plan-conformant behavior." });
+	await store.putArtifact({ workItemId: "review-context", id: "behavior", type: "spec", content: "# Behavior\n\n- **AC-001:** Render the durable result.", operation: "create" });
+	await store.putArtifact({ workItemId: "review-context", id: "architecture", type: "design", content: "# Architecture\n\nUse the durable boundary design.", operation: "create" });
+	const manifest = task(); manifest.references.specs = ["behavior"]; manifest.references.designs = ["architecture"];
+	await store.defineTask({ workItemId: "review-context", manifest, brief: "# Brief\n\nImplement the durable result.", acceptance: "# Acceptance\n\nDeliver behavior#AC-001." });
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "review", type: "combined-review", scope: { task: manifest.id }, status: "planned", required: true, attempt: 0, methods: ["review"] };
+	const packet = await buildReviewPersistentContext(store, "review-context", evaluation);
+	assert.match(packet, /Persistent Review Context/);
+	assert.match(packet, /build-app — Build app/);
+	assert.match(packet, /Implement the durable result/);
+	assert.match(packet, /Render the durable result/);
+	assert.match(packet, /durable boundary design/);
+	assert.match(packet, /across compaction and resumed attempts/i);
 });
 
 test("lists compact resource summaries without embedding complete task contracts", async (t) => {

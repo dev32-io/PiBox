@@ -3,7 +3,7 @@ import { join, relative } from "node:path";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import { isTierTaskAssignment, type EvaluationManifest, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, taskAgentName, type EvaluationManifest, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
 export type CanonicalResourceType = "work-item" | "artifact" | "task" | "integration-unit" | "evaluation";
@@ -82,8 +82,9 @@ export class OrchestratorResourceService {
 	private validateTaskAssignment(manifest: TaskManifest): void {
 		if (!this.config) return;
 		const assignment = manifest.execution.assignment;
-		const role = this.config.roles[assignment.role];
-		if (!role) throw new HarnessError("CONFIG_INVALID", `Unknown task role: ${assignment.role}. Configured roles: ${Object.keys(this.config.roles).join(", ")}`);
+		const agentName = taskAgentName(manifest);
+		const agent = this.config.agents[agentName];
+		if (!agent) throw new HarnessError("CONFIG_INVALID", `Unknown task agent: ${agentName}. Configured agents: ${Object.keys(this.config.agents).join(", ")}`);
 		if (isTierTaskAssignment(assignment)) {
 			const routes = this.config.modelTiers[assignment.tier];
 			if (!routes?.length) throw new HarnessError("CONFIG_INVALID", `Task tier has no configured routes: ${assignment.tier}`);
@@ -163,7 +164,7 @@ export class OrchestratorResourceService {
 					status: task.status,
 					stageId: task.assembly.stageId ?? task.assembly.integrationUnit,
 					blockedBy: task.dependsOn,
-					assignment: isTierTaskAssignment(assignment) ? { role: assignment.role, tier: assignment.tier, deliberation: assignment.deliberation } : { role: assignment.role, legacyModel: assignment.model },
+					assignment: isTierTaskAssignment(assignment) ? { agent: taskAgentName(task), tier: assignment.tier, deliberation: assignment.deliberation } : { agent: taskAgentName(task), legacyModel: assignment.model },
 					allowedActions: allowed(type, finalized),
 				});
 			}

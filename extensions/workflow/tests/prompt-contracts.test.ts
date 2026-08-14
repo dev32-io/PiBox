@@ -6,7 +6,7 @@ import { BUILT_IN_PROMPT_SURFACES } from "../prompt-contracts.js";
 
 const root = join(import.meta.dirname, "..", "..", "..");
 
-test("inventories every built-in role and skill prompt", async () => {
+test("inventories every built-in agent definition and skill prompt", async () => {
 	const ids = new Set(BUILT_IN_PROMPT_SURFACES.map((surface) => surface.id));
 	assert.equal(ids.size, BUILT_IN_PROMPT_SURFACES.length);
 	for (const surface of BUILT_IN_PROMPT_SURFACES) {
@@ -17,8 +17,8 @@ test("inventories every built-in role and skill prompt", async () => {
 	}
 });
 
-test("role prompts use instruction contracts instead of identity preambles", async () => {
-	for (const surface of BUILT_IN_PROMPT_SURFACES.filter((entry) => entry.category === "role")) {
+test("agent definitions use instruction contracts instead of identity preambles", async () => {
+	for (const surface of BUILT_IN_PROMPT_SURFACES.filter((entry) => entry.category === "agent")) {
 		const content = await readFile(join(root, surface.source), "utf8");
 		assert.doesNotMatch(content, /\byou are\b/i, surface.id);
 		assert.match(content, /^# .+/);
@@ -27,11 +27,11 @@ test("role prompts use instruction contracts instead of identity preambles", asy
 });
 
 test("collaboration phases have focused boundaries and natural handoffs", async () => {
-	const orchestrator = await readFile(join(root, "extensions/workflow/index.ts"), "utf8");
+	const orchestrator = await readFile(join(root, "prompt/orchestrator-routing.md"), "utf8");
 	const discussion = await readFile(join(root, "skills/product-discussion/SKILL.md"), "utf8");
 	const shaping = await readFile(join(root, "skills/shape-story/SKILL.md"), "utf8");
 	const delivery = await readFile(join(root, "skills/plan-delivery/SKILL.md"), "utf8");
-	const critic = await readFile(join(root, "extensions/workflow/roles/plan-critic.md"), "utf8");
+	const critic = await readFile(join(root, "agent-definitions/plan-critic.md"), "utf8");
 	const run = await readFile(join(root, "skills/workflow-run/SKILL.md"), "utf8");
 	assert.match(orchestrator, /constructive product and technical partner/i);
 	assert.match(orchestrator, /Seek the outcome behind requested solutions/i);
@@ -47,7 +47,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /A create source is read-only background/i);
 	assert.match(orchestrator, /initial write is atomic[\s\S]+use edit rather than resending unchanged plan content/i);
-	assert.match(orchestrator, /Use subagent_spawn for dynamic role-and-prompt delegation[\s\S]+Managed workflow tasks and evaluations are scheduled internally/i);
+	assert.match(orchestrator, /Use subagent_spawn for dynamic agent-and-prompt delegation[\s\S]+Managed workflow tasks and evaluations are scheduled internally/i);
 	assert.match(orchestrator, /do not ask the model to launch each planned task separately/i);
 	assert.match(orchestrator, /Preserve dirty or conflicting work/i);
 	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
@@ -84,7 +84,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 });
 
 test("explorer supports evidence-driven code understanding and diagnosis", async () => {
-	const explorer = await readFile(join(root, "extensions/workflow/roles/explorer.md"), "utf8");
+	const explorer = await readFile(join(root, "agent-definitions/explorer.md"), "utf8");
 	for (const mode of ["lookup", "map", "trace", "impact", "diagnose", "explain"]) assert.ok(explorer.includes(`\`${mode}\``), mode);
 	assert.match(explorer, /Separate proximate technical cause from an upstream enabling product/i);
 	assert.match(explorer, /do not treat correlation as causation/i);

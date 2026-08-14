@@ -1,0 +1,1 @@
+The working branch is {{branch}}; tell the user it remains checked out and is ready for them to merge into {{baseBranch}}.

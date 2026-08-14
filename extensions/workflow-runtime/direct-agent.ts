@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 
 export interface DirectAgentOptions {
-	role: string;
+	agent: string;
 	task: string;
 	cwd: string;
 	provider: string;
@@ -16,7 +17,7 @@ export interface DirectAgentOptions {
 	onSpawn?: (pid: number | undefined) => void;
 	onEvent?: (event: unknown) => void;
 	promptPath?: string;
-	rolePrompt?: string;
+	agentPrompt?: string;
 	extensionPaths?: string[];
 	/** Stable assignment context appended to the system prompt and preserved across Pi compaction. */
 	persistentContext?: string;
@@ -31,7 +32,7 @@ export interface DirectAgentOptions {
 
 export interface DirectAgentResult {
 	exitCode: number;
-	role: string;
+	agent: string;
 	provider: string;
 	model: string;
 	effort: string;
@@ -54,16 +55,16 @@ function extractText(event: unknown): string {
 }
 
 export async function runDirectAgent(options: DirectAgentOptions): Promise<DirectAgentResult> {
-	const directory = await mkdtemp(join(tmpdir(), "pibox-role-"));
-	const promptFile = join(directory, `${options.role}.md`);
-	let rolePrompt: string;
+	const directory = await mkdtemp(join(tmpdir(), "pibox-agent-"));
+	const promptFile = join(directory, `${options.agent}.md`);
+	let agentPrompt: string;
 	try {
-		if (!options.rolePrompt && !options.promptPath) throw new Error("No role prompt supplied");
-		rolePrompt = options.rolePrompt ?? await readFile(options.promptPath!, "utf8");
+		if (!options.agentPrompt && !options.promptPath) throw new Error("No agent definition supplied");
+		agentPrompt = options.agentPrompt ?? await readFile(options.promptPath!, "utf8");
 	} catch {
-		rolePrompt = `Execute the assigned ${options.role} boundary. Inspect authoritative inputs, return concise evidence and uncertainty, and leave user intent and workflow decisions to the main session.`;
+		agentPrompt = renderBuiltInPrompt("default-agent", { agent: options.agent });
 	}
-	const systemPrompt = [rolePrompt.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
+	const systemPrompt = [agentPrompt.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
 	await writeFile(promptFile, `${systemPrompt}\n`, { encoding: "utf8", mode: 0o600 });
 	const args = [
 		...(options.extensionPaths ?? []).flatMap((path) => ["-e", path]),
@@ -127,7 +128,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				text = extractText(events[index]);
 				if (text) break;
 			}
-			return { exitCode, role: options.role, provider: options.provider, model: options.model, effort: options.effort, text, stderr, events };
+			return { exitCode, agent: options.agent, provider: options.provider, model: options.model, effort: options.effort, text, stderr, events };
 		}
 		const exitCode = await new Promise<number>((resolveExit) => {
 			const child = spawn(selected.command, selected.args, {
@@ -175,7 +176,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 			text = extractText(events[index]);
 			if (text) break;
 		}
-		return { exitCode, role: options.role, provider: options.provider, model: options.model, effort: options.effort, text, stderr, events };
+		return { exitCode, agent: options.agent, provider: options.provider, model: options.model, effort: options.effort, text, stderr, events };
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

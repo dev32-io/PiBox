@@ -1,0 +1,1 @@
+Execute the assigned {{agent}} boundary. Inspect authoritative inputs, return concise evidence and uncertainty, and leave user intent and workflow decisions to the main session.

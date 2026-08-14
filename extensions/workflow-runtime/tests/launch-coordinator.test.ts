@@ -27,7 +27,7 @@ test("launches a direct child through the registry with file-backed process outp
 		model: "fake",
 		effort: "low",
 		tools: [],
-		rolePrompt: "Role instructions.",
+		agentPrompt: "Agent instructions.",
 		persistentContext: "Persistent canonical context.",
 		invocationResolver: (args) => {
 			const promptIndex = args.indexOf("--append-system-prompt");
@@ -37,7 +37,7 @@ test("launches a direct child through the registry with file-backed process outp
 	});
 
 	assert.equal(launched.result.text, "mapped repository");
-	assert.match(effectiveSystemPrompt, /Role instructions\.[\s\S]+Persistent canonical context\./);
+	assert.match(effectiveSystemPrompt, /Agent instructions\.[\s\S]+Persistent canonical context\./);
 	assert.equal(launched.agent.state, "completed");
 	assert.equal(await registry.activeCount(), 0);
 	const record = await registry.get(launched.agent.id);

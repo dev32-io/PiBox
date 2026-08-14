@@ -13,7 +13,7 @@ function scope() {
 	const assignmentPath = process.env.PIBOX_SUBAGENT_ASSIGNMENT_PATH;
 	const agentId = process.env.PIBOX_SUBAGENT_ID;
 	const attemptId = process.env.PIBOX_SUBAGENT_ATTEMPT_ID;
-	if (process.env.PIBOX_SUBAGENT_ROLE !== "explorer" || !root || !assignmentPath || !agentId || !attemptId) throw new HarnessError("CAPABILITY_DENIED", "Exploration capability requires an authorized explorer attempt");
+	if ((process.env.PIBOX_SUBAGENT_AGENT ?? process.env.PIBOX_SUBAGENT_ROLE) !== "explorer" || !root || !assignmentPath || !agentId || !attemptId) throw new HarnessError("CAPABILITY_DENIED", "Exploration capability requires an authorized explorer attempt");
 	return { root, assignmentPath, agentId, attemptId };
 }
 
@@ -24,7 +24,7 @@ async function context(_ctx: ExtensionContext): Promise<{ scope: ReturnType<type
 	return { scope: authorized, assignment };
 }
 
-export const isExplorationProcess = () => process.env.PIBOX_SUBAGENT_ROLE === "explorer" && Boolean(process.env.PIBOX_SUBAGENT_ID);
+export const isExplorationProcess = () => (process.env.PIBOX_SUBAGENT_AGENT ?? process.env.PIBOX_SUBAGENT_ROLE) === "explorer" && Boolean(process.env.PIBOX_SUBAGENT_ID);
 
 export function registerExplorationCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({

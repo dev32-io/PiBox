@@ -8,8 +8,9 @@ import type { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.j
 import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.js";
-import type { TaskManifest } from "./types.js";
+import { taskAgentName, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
+import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 
 export interface LaunchModel {
 	provider: string;
@@ -19,7 +20,6 @@ export interface LaunchModel {
 }
 
 const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
-const ROLE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "roles");
 
 export interface LaunchTaskOptions {
 	identity: RepositoryIdentity;
@@ -31,7 +31,7 @@ export interface LaunchTaskOptions {
 	executionMode: "repository" | "worktree";
 	planningRevision: number;
 	model: LaunchModel;
-	rolePrompt?: string;
+	agentPrompt?: string;
 	persistentContext: string;
 	tools?: string[];
 	skillPaths?: string[];
@@ -67,19 +67,8 @@ function finalAssistantText(events: unknown[]): string {
 
 function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean): string {
 	const checks = options.task.verification.taskChecks.length ? options.task.verification.taskChecks.map((check) => `- ${check}`).join("\n") : "- None assigned at this boundary.";
-	return [
-		`Implement: ${options.task.id} — ${options.task.title}`,
-		"",
-		"Inspect the current repository, then deliver the contribution described in your persistent implementation context.",
-		"",
-		"Required checks:",
-		checks,
-		"",
-		"Finish with committed changes, a clean worktree, and task_complete.",
-		...(protocolNudge
-			? ["", "No valid task_complete handoff was recorded. Inspect the retained work, finish what is missing, and call task_complete."]
-			: []),
-	].join("\n");
+	const prompt = renderBuiltInPrompt("managed-task", { taskId: options.task.id, taskTitle: options.task.title, checks });
+	return `${prompt}${protocolNudge ? `\n\n${readBuiltInPrompt("task-protocol-nudge")}` : ""}`;
 }
 
 export class SubagentSupervisor {
@@ -100,7 +89,7 @@ export class SubagentSupervisor {
 			repositoryId: options.identity.id,
 			workItemId: options.workItemId,
 			taskId: options.task.id,
-			role: options.task.execution.assignment.role,
+			role: taskAgentName(options.task),
 			attempt: 1,
 			state: "launching",
 			workspace: options.workspace,
@@ -128,7 +117,7 @@ export class SubagentSupervisor {
 			? (await options.coordinator.registry.list()).find((agent) => agent.workItemId === options.workItemId && agent.taskId === options.task.id && !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state))?.id
 			: undefined;
 		const answeredMessages = logicalAgentId && options.coordinator ? (await options.coordinator.registry.listMessages(logicalAgentId)).filter((message) => message.status === "answered") : [];
-		const responseContext = answeredMessages.length ? `\n\nAuthoritative orchestrator responses:\n${answeredMessages.map((message) => `- ${message.summary}: ${message.response}`).join("\n")}` : "";
+		const responseContext = answeredMessages.length ? `\n\n${renderBuiltInPrompt("orchestrator-responses", { responses: answeredMessages.map((message) => `- ${message.summary}: ${message.response}`).join("\n") })}` : "";
 		for (let protocolAttempt = 0; protocolAttempt < 2; protocolAttempt++) {
 			let execution: { exitCode: number; stderr: string; finalText: string };
 			if (options.coordinator) {
@@ -136,7 +125,7 @@ export class SubagentSupervisor {
 				const coordinated = await options.coordinator.launch({
 					operationId: created.record.id,
 					...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}),
-					role: options.task.execution.assignment.role,
+					role: taskAgentName(options.task),
 					task: `${taskPrompt(options, protocolAttempt === 1)}${responseContext}`,
 					assignment: { schemaVersion: 1, workItemId: options.workItemId, taskId: options.task.id, planningRevision: options.planningRevision },
 					cwd: options.workspace,
@@ -144,7 +133,7 @@ export class SubagentSupervisor {
 					model: options.model.model,
 					effort: options.model.effort,
 					tools: [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])],
-					...(options.rolePrompt ? { rolePrompt: options.rolePrompt } : {}),
+					...(options.agentPrompt ? { agentPrompt: options.agentPrompt } : { promptPath: join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`) }),
 					persistentContext: options.persistentContext,
 					...(options.skillPaths ? { skillPaths: options.skillPaths } : {}),
 					deferCompletion: true,
@@ -264,8 +253,8 @@ export class SubagentSupervisor {
 	): Promise<{ exitCode: number; stderr: string; finalText: string }> {
 		const promptDirectory = await mkdtemp(join(tmpdir(), "pibox-harness-prompt-"));
 		const promptPath = join(promptDirectory, "implementer.md");
-		const builtInRolePrompt = await readFile(join(ROLE_ROOT, `${options.task.execution.assignment.role}.md`), "utf8").catch(() => "");
-		const systemPrompt = [options.rolePrompt ?? builtInRolePrompt, options.persistentContext].filter(Boolean).join("\n\n");
+		const builtInAgentPrompt = await readFile(join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`), "utf8").catch(() => "");
+		const systemPrompt = [options.agentPrompt ?? builtInAgentPrompt, options.persistentContext].filter(Boolean).join("\n\n");
 		await writeFile(promptPath, `${systemPrompt.trim()}\n`, { encoding: "utf8", mode: 0o600 });
 		const taskCapabilities = ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 		const tools = [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])];

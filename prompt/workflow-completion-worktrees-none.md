@@ -1,0 +1,1 @@
+No PiBox task worktrees are retained.

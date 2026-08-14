@@ -1,7 +1,7 @@
 # Finding Repair
 
 ## Inputs
-Use the persistent implementation context as the authoritative repair boundary. Use `task_clarify` only when a concrete uncertainty requires broader context from the current work item.
+Use the persistent task or review context as the authoritative repair boundary. Follow the manager's accepted-finding direction and do not broaden scope silently.
 
 ## Instructions
 1. Repair only accepted findings in the brief.
@@ -13,4 +13,4 @@ Use the persistent implementation context as the authoritative repair boundary. 
 Report contradictions between findings and the reviewed contract rather than choosing silently.
 
 ## Completion
-Call `task_complete` with repair commits, finding coverage, checks, expected failures, and residual risks.
+Finish with committed changes and a clean worktree. When `task_complete` is available, call it with repair commits, finding coverage, checks, expected failures, and residual risks; otherwise report that evidence concisely in the final response.

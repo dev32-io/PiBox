@@ -34,7 +34,7 @@ export interface TierModelRouteConfig {
 	effort: { standard: HarnessEffort; deep?: HarnessEffort };
 }
 
-export interface RoleConfig {
+export interface AgentConfig {
 	extends?: string;
 	prompt?: string;
 	skills?: string[];
@@ -49,7 +49,7 @@ export interface RoleConfig {
 export interface HarnessConfig {
 	schemaVersion: 2;
 	modelTiers: Record<CapabilityTier, TierModelRouteConfig[]>;
-	roles: Record<string, RoleConfig>;
+	agents: Record<string, AgentConfig>;
 	orchestrator: {
 		modelSwitching: "off" | "suggest" | "auto-visible";
 	};
@@ -127,7 +127,7 @@ export interface TaskManifest {
 		complexity?: Complexity;
 		assignment:
 			| {
-				role: string;
+				agent: string;
 				tier: CapabilityTier;
 				deliberation: Deliberation;
 				/** Exceptional concrete route pin, used only for an explicit user constraint. */
@@ -136,6 +136,14 @@ export interface TaskManifest {
 			}
 			| {
 				/** Legacy assignment retained only so existing plans remain readable and replannable. */
+				role: string;
+				tier: CapabilityTier;
+				deliberation: Deliberation;
+				modelOverride?: { model: string; effort?: HarnessEffort; strict?: boolean };
+				rationale: string;
+			}
+			| {
+				/** Legacy model assignment retained only so existing plans remain readable and replannable. */
 				role: string;
 				model: string;
 				effort: HarnessEffort;
@@ -172,6 +180,11 @@ export function isTierTaskAssignment(
 	assignment: TaskManifest["execution"]["assignment"],
 ): assignment is Extract<TaskManifest["execution"]["assignment"], { tier: CapabilityTier }> {
 	return "tier" in assignment;
+}
+
+export function taskAgentName(task: TaskManifest): string {
+	const assignment = task.execution.assignment;
+	return "agent" in assignment ? assignment.agent : assignment.role;
 }
 
 export interface EvaluationFinding {

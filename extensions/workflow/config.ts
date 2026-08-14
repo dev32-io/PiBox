@@ -11,17 +11,17 @@ import type {
 	HarnessConfig,
 	HarnessEffort,
 	LoadedHarnessConfig,
-	RoleConfig,
+	AgentConfig,
 	TierModelRouteConfig,
 } from "./types.js";
 
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
 const DELIBERATIONS = new Set<Deliberation>(["standard", "deep"]);
-const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTiers", "roles", "orchestrator", "limits"]);
+const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTiers", "agents", "roles", "orchestrator", "limits"]);
 const ROUTE_KEYS = new Set(["provider", "model", "effort"]);
 const EFFORT_KEYS = new Set(["standard", "deep"]);
-const ROLE_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]);
+const AGENT_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]);
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
 
@@ -43,7 +43,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 			{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "low", deep: "medium" } },
 		],
 	},
-	roles: {
+	agents: {
 		researcher: { workspace: "none", canDelegate: false, tier: "high", deliberation: "standard" },
 		explorer: { workspace: "repository", canDelegate: false, tier: "medium", deliberation: "standard" },
 		"plan-critic": { workspace: "repository", canDelegate: false, tier: "medium", deliberation: "standard" },
@@ -106,48 +106,49 @@ function parseRoute(value: unknown, path: string): TierModelRouteConfig {
 	};
 }
 
-function parseRole(value: unknown, path: string): RoleConfig {
+function parseAgent(value: unknown, path: string): AgentConfig {
 	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must be a mapping`);
-	rejectUnknownKeys(value, ROLE_KEYS, path);
-	const role: RoleConfig = {};
-	if (value.extends !== undefined) role.extends = expectString(value.extends, `${path}.extends`);
-	if (value.prompt !== undefined) role.prompt = expectString(value.prompt, `${path}.prompt`);
+	rejectUnknownKeys(value, AGENT_KEYS, path);
+	const agent: AgentConfig = {};
+	if (value.extends !== undefined) agent.extends = expectString(value.extends, `${path}.extends`);
+	if (value.prompt !== undefined) agent.prompt = expectString(value.prompt, `${path}.prompt`);
 	if (value.skills !== undefined) {
 		if (!Array.isArray(value.skills)) throw new HarnessError("CONFIG_INVALID", `${path}.skills must be an array`);
-		role.skills = value.skills.map((item, index) => expectString(item, `${path}.skills[${index}]`));
+		agent.skills = value.skills.map((item, index) => expectString(item, `${path}.skills[${index}]`));
 	}
 	if (value.tools !== undefined) {
 		if (!Array.isArray(value.tools)) throw new HarnessError("CONFIG_INVALID", `${path}.tools must be an array`);
-		role.tools = value.tools.map((item, index) => expectString(item, `${path}.tools[${index}]`));
+		agent.tools = value.tools.map((item, index) => expectString(item, `${path}.tools[${index}]`));
 	}
 	if (value.workspace !== undefined) {
 		const workspace = expectString(value.workspace, `${path}.workspace`);
 		if (workspace !== "repository" && workspace !== "worktree" && workspace !== "none") throw new HarnessError("CONFIG_INVALID", `${path}.workspace is unsupported`);
-		role.workspace = workspace;
+		agent.workspace = workspace;
 	}
 	if (value.canDelegate !== undefined) {
 		if (typeof value.canDelegate !== "boolean") throw new HarnessError("CONFIG_INVALID", `${path}.canDelegate must be boolean`);
-		role.canDelegate = value.canDelegate;
+		agent.canDelegate = value.canDelegate;
 	}
-	if (value.completionSchema !== undefined) role.completionSchema = expectString(value.completionSchema, `${path}.completionSchema`);
+	if (value.completionSchema !== undefined) agent.completionSchema = expectString(value.completionSchema, `${path}.completionSchema`);
 	if (value.tier !== undefined) {
 		const tier = expectString(value.tier, `${path}.tier`) as CapabilityTier;
 		if (!TIERS.includes(tier)) throw new HarnessError("CONFIG_INVALID", `${path}.tier is unsupported`);
-		role.tier = tier;
+		agent.tier = tier;
 	}
 	if (value.deliberation !== undefined) {
 		const deliberation = expectString(value.deliberation, `${path}.deliberation`) as Deliberation;
 		if (!DELIBERATIONS.has(deliberation)) throw new HarnessError("CONFIG_INVALID", `${path}.deliberation is unsupported`);
-		role.deliberation = deliberation;
+		agent.deliberation = deliberation;
 	}
-	return role;
+	return agent;
 }
 
 export function validateHarnessConfig(value: unknown): HarnessConfig {
 	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", "Workflow configuration must be a mapping");
 	for (const key of Object.keys(value)) if (!TOP_LEVEL_KEYS.has(key)) throw new HarnessError("CONFIG_INVALID", `Unknown top-level configuration field: ${key}`);
-	if (value.schemaVersion !== 2) throw new HarnessError("CONFIG_INVALID", "schemaVersion must be 2; migrate model aliases and role candidates to modelTiers");
-	if (!isRecord(value.modelTiers) || !isRecord(value.roles) || !isRecord(value.orchestrator) || !isRecord(value.limits)) throw new HarnessError("CONFIG_INVALID", "modelTiers, roles, orchestrator, and limits must be mappings");
+	if (value.schemaVersion !== 2) throw new HarnessError("CONFIG_INVALID", "schemaVersion must be 2; migrate model aliases to modelTiers and roles to agents");
+	const rawAgents = isRecord(value.agents) ? value.agents : value.roles;
+	if (!isRecord(value.modelTiers) || !isRecord(rawAgents) || !isRecord(value.orchestrator) || !isRecord(value.limits)) throw new HarnessError("CONFIG_INVALID", "modelTiers, agents, orchestrator, and limits must be mappings");
 
 	const modelTiers = {} as Record<CapabilityTier, TierModelRouteConfig[]>;
 	for (const tier of TIERS) {
@@ -157,22 +158,22 @@ export function validateHarnessConfig(value: unknown): HarnessConfig {
 	}
 	for (const tier of Object.keys(value.modelTiers)) if (!TIERS.includes(tier as CapabilityTier)) throw new HarnessError("CONFIG_INVALID", `Unknown model tier: ${tier}`);
 
-	const parsedRoles: Record<string, RoleConfig> = {};
-	for (const [name, raw] of Object.entries(value.roles)) parsedRoles[name] = parseRole(raw, `roles.${name}`);
-	const roles: Record<string, RoleConfig> = {};
-	const resolveRole = (name: string, stack: string[] = []): RoleConfig => {
-		if (roles[name]) return roles[name];
-		const role = parsedRoles[name];
-		if (!role) throw new HarnessError("CONFIG_INVALID", `Unknown extended role: ${name}`);
-		if (stack.includes(name)) throw new HarnessError("CONFIG_INVALID", `Role inheritance cycle: ${[...stack, name].join(" -> ")}`);
-		const parent = role.extends ? resolveRole(role.extends, [...stack, name]) : {};
-		const resolved = mergeConfigValues(parent, role) as RoleConfig;
+	const parsedAgents: Record<string, AgentConfig> = {};
+	for (const [name, raw] of Object.entries(rawAgents)) parsedAgents[name] = parseAgent(raw, `agents.${name}`);
+	const agents: Record<string, AgentConfig> = {};
+	const resolveAgent = (name: string, stack: string[] = []): AgentConfig => {
+		if (agents[name]) return agents[name];
+		const agent = parsedAgents[name];
+		if (!agent) throw new HarnessError("CONFIG_INVALID", `Unknown extended agent: ${name}`);
+		if (stack.includes(name)) throw new HarnessError("CONFIG_INVALID", `Agent inheritance cycle: ${[...stack, name].join(" -> ")}`);
+		const parent = agent.extends ? resolveAgent(agent.extends, [...stack, name]) : {};
+		const resolved = mergeConfigValues(parent, agent) as AgentConfig;
 		delete resolved.extends;
-		if (!resolved.tier || !resolved.deliberation) throw new HarnessError("CONFIG_INVALID", `Role ${name} must resolve tier and deliberation defaults`);
-		roles[name] = resolved;
+		if (!resolved.tier || !resolved.deliberation) throw new HarnessError("CONFIG_INVALID", `Agent ${name} must resolve tier and deliberation defaults`);
+		agents[name] = resolved;
 		return resolved;
 	};
-	for (const name of Object.keys(parsedRoles)) resolveRole(name);
+	for (const name of Object.keys(parsedAgents)) resolveAgent(name);
 
 	rejectUnknownKeys(value.orchestrator, ORCHESTRATOR_KEYS, "orchestrator");
 	rejectUnknownKeys(value.limits, LIMIT_KEYS, "limits");
@@ -182,7 +183,7 @@ export function validateHarnessConfig(value: unknown): HarnessConfig {
 	return {
 		schemaVersion: 2,
 		modelTiers,
-		roles,
+		agents,
 		orchestrator: { modelSwitching: switching },
 		limits: {
 			maxConcurrency: expectInteger(value.limits.maxConcurrency, "limits.maxConcurrency", 1),
@@ -216,6 +217,8 @@ export function loadHarnessConfig(
 			const parsed = parse(readFile(source));
 			if (!isRecord(parsed)) throw new HarnessError("CONFIG_INVALID", "Configuration file must contain a mapping");
 			if (parsed.schemaVersion === 1 || "models" in parsed) throw new HarnessError("CONFIG_INVALID", "Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTiers");
+			if (isRecord(parsed.roles) && !isRecord(parsed.agents)) parsed.agents = parsed.roles;
+			delete parsed.roles;
 			merged = mergeConfigValues(merged, parsed);
 			sources.push(source);
 		} catch (error) {

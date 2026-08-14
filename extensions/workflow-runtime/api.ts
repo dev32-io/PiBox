@@ -34,7 +34,7 @@ export interface WorkflowRunResult {
 /** Free-form main-session delegation. Managed workflow steps keep their canonical adapter-owned refs. */
 export interface DynamicSubagentRequest {
 	operationId: string;
-	role: string;
+	agent: string;
 	task: string;
 	tier?: "low" | "medium" | "high" | "max";
 	deliberation?: "standard" | "deep";
@@ -50,7 +50,7 @@ export interface WorkflowAdapter {
 	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
-	/** Optional dynamic role/task launcher used by the main-session subagent_spawn tool. */
+	/** Optional dynamic agent/task launcher used by the main-session subagent_spawn tool. */
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;
 	controlCheckpoint?(ref: string, action: "continue" | "retry" | "request_changes" | "skip" | "accept_risk", prompt: string | undefined, ctx: ExtensionContext): Promise<unknown>;

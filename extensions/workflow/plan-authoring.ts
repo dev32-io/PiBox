@@ -75,7 +75,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 			execution: {
 				resourceClaims: strings(task.resourceClaims),
 				assignment: {
-					role: assignment.role ?? "implementer",
+					agent: assignment.agent ?? assignment.role ?? "implementer",
 					tier,
 					deliberation,
 					...(assignment.modelOverride !== undefined ? { modelOverride: assignment.modelOverride } : {}),
@@ -174,7 +174,7 @@ function assertEditFields(type: CanonicalResourceType, action: "create" | "updat
 		if (unknownReferences.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for task has unknown reference field(s): ${unknownReferences.join(", ")}`);
 	}
 	if (type === "task" && input.assignment !== undefined) {
-		const unknownAssignment = Object.keys(record(input.assignment)).filter((key) => !["role", "tier", "deliberation", "modelOverride", "rationale"].includes(key));
+		const unknownAssignment = Object.keys(record(input.assignment)).filter((key) => !["agent", "role", "tier", "deliberation", "modelOverride", "rationale"].includes(key));
 		if (unknownAssignment.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for task has unknown assignment field(s): ${unknownAssignment.join(", ")}`);
 	}
 	if (type === "task" && input.verification !== undefined) {
