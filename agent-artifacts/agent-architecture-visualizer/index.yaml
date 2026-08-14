@@ -3,7 +3,7 @@ id: agent-architecture-visualizer
 kind: story
 title: Agent-driven interactive architecture visualizer
 phase: planning
-state: active
+state: archived
 planning:
   revision: 1
 artifacts:
@@ -46,3 +46,8 @@ executionStages:
   - id: build-visualizer-skill
     tasks:
       - build-visualizer-skill
+finalization:
+  locked: true
+  reason: User explicitly requested ad hoc implementation without a managed
+    workflow; retain the unused draft only for audit.
+  lockedAt: 2026-08-14T19:18:35.002Z
