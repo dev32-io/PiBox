@@ -26,26 +26,32 @@ function criterionExcerpt(markdown: string, ids: Set<string>): string {
 export async function buildTaskPersistentContext(store: WorkItemStore, workItemId: string, task: TaskManifest): Promise<string> {
 	const item = await store.read(workItemId);
 	const contract = await store.readTaskContract(workItemId, task.id);
-	const referenced = [...new Set([...task.references.specs, ...task.references.designs, ...task.references.decisions])];
+	const legacyReferences = task.references;
+	const referenced = legacyReferences ? [...new Set([...legacyReferences.specs, ...legacyReferences.designs, ...legacyReferences.decisions])] : [];
 	const criteria = qualifiedCriteria(contract.acceptance);
 	const planSections: string[] = [];
 
-	if (referenced.length === 0) {
-		const intent = await store.readArtifact(workItemId, "intent");
-		planSections.push("## Work-Item Intent", "", body(intent.content));
-	} else {
-		for (const id of referenced) {
-			const artifact = await store.readArtifact(workItemId, id);
-			if (artifact.metadata.type === "spec" && criteria.has(id)) {
-				const excerpt = criterionExcerpt(artifact.content, criteria.get(id)!);
-				if (excerpt) planSections.push(`## Assigned acceptance criteria: ${id}`, "", excerpt);
-				continue;
+	// New task contracts are complete assignment packets and deliberately omit
+	// references. Preserve the old extraction behavior only for stored legacy
+	// tasks; task_clarify remains the explicit escape hatch for extra story context.
+	if (legacyReferences) {
+		if (referenced.length === 0) {
+			const intent = await store.readArtifact(workItemId, "intent");
+			planSections.push("## Work-Item Intent", "", body(intent.content));
+		} else {
+			for (const id of referenced) {
+				const artifact = await store.readArtifact(workItemId, id);
+				if (artifact.metadata.type === "spec" && criteria.has(id)) {
+					const excerpt = criterionExcerpt(artifact.content, criteria.get(id)!);
+					if (excerpt) planSections.push(`## Assigned acceptance criteria: ${id}`, "", excerpt);
+					continue;
+				}
+				if (artifact.metadata.type === "design") {
+					planSections.push(`## Referenced design: ${id}`, "", readBuiltInPrompt("design-context-pointer"));
+					continue;
+				}
+				planSections.push(`## Referenced ${artifact.metadata.type}: ${id}`, "", body(artifact.content));
 			}
-			if (artifact.metadata.type === "design") {
-				planSections.push(`## Referenced design: ${id}`, "", readBuiltInPrompt("design-context-pointer"));
-				continue;
-			}
-			planSections.push(`## Referenced ${artifact.metadata.type}: ${id}`, "", body(artifact.content));
 		}
 	}
 

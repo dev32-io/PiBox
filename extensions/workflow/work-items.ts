@@ -152,8 +152,8 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 		"draft", "blocked", "ready", "running", "paused", "contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
 	];
 	if (!task.status || !statuses.includes(task.status) || !Array.isArray(task.dependsOn)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid lifecycle fields`);
-	if (!task.references || !Array.isArray(task.references.specs) || !Array.isArray(task.references.designs) || !Array.isArray(task.references.decisions)) {
-		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid references`);
+	if (task.references && (!Array.isArray(task.references.specs) || !Array.isArray(task.references.designs) || !Array.isArray(task.references.decisions))) {
+		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid legacy references`);
 	}
 	if (!task.execution || !task.execution.assignment || !task.assembly || !task.verification) {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} is missing execution, assembly, or verification policy`);
@@ -366,7 +366,7 @@ export class WorkItemStore {
 		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
 		for (const task of index.tasks) {
 			const manifest = await this.readTask(workItemId, task.id);
-			if ([...manifest.references.specs, ...manifest.references.designs, ...manifest.references.decisions].includes(artifactId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} still references ${artifactId}`);
+			if (manifest.references && [...manifest.references.specs, ...manifest.references.designs, ...manifest.references.decisions].includes(artifactId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} still references ${artifactId}`);
 		}
 		for (const candidate of index.artifacts) if (candidate.links?.includes(artifactId)) throw new HarnessError("INVALID_ARTIFACT", `Artifact ${candidate.id} still links to ${artifactId}`);
 		const path = join(root, artifact.path);
@@ -440,7 +440,7 @@ export class WorkItemStore {
 		for (const dependency of input.manifest.dependsOn) {
 			if (!index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
 		}
-		for (const [kind, ids] of Object.entries(input.manifest.references)) {
+		for (const [kind, ids] of Object.entries(input.manifest.references ?? {})) {
 			const expectedType = kind === "specs" ? "spec" : kind === "designs" ? "design" : "decision";
 			for (const id of ids) {
 				if (!index.artifacts.some((artifact) => artifact.id === id && artifact.type === expectedType)) {
@@ -489,7 +489,7 @@ export class WorkItemStore {
 		const catalog = index.tasks.find((task) => task.id === input.manifest.id);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Task does not exist: ${input.manifest.id}`);
 		for (const dependency of input.manifest.dependsOn) if (!index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
-		for (const [kind, ids] of Object.entries(input.manifest.references)) {
+		for (const [kind, ids] of Object.entries(input.manifest.references ?? {})) {
 			const expectedType = kind === "specs" ? "spec" : kind === "designs" ? "design" : "decision";
 			for (const id of ids) if (!index.artifacts.some((artifact) => artifact.id === id && artifact.type === expectedType)) throw new HarnessError("INVALID_ARTIFACT", `Unknown ${expectedType} reference: ${id}`);
 		}

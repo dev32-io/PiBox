@@ -29,7 +29,7 @@ test("builds a focused persistent implementation packet", async (t) => {
 	await store.create({ id: "context-packet", title: "Context packet", kind: "change", intent: "Broad intent that referenced context makes unnecessary." });
 	await store.putArtifact({ workItemId: "context-packet", id: "behavior", type: "spec", content: "# Behavior\n\n## Acceptance Criteria\n\n- **AC-001:** The app writes hello.\n- **AC-002:** The app deletes every record.\n", operation: "create" });
 	await store.putArtifact({ workItemId: "context-packet", id: "architecture", type: "design", content: "# Architecture\n\nBroad design details that this bounded task does not need.", operation: "create" });
-	const manifest = task(); manifest.references.specs = ["behavior"]; manifest.references.designs = ["architecture"];
+	const manifest = task(); manifest.references!.specs = ["behavior"]; manifest.references!.designs = ["architecture"];
 	await store.defineTask({ workItemId: "context-packet", manifest, brief: "# Brief\n\nCreate the app using the assigned design boundary.", acceptance: "# Acceptance\n\nDeliver behavior#AC-001." });
 	const packet = await buildTaskPersistentContext(store, "context-packet", manifest);
 	assert.match(packet, /Persistent Implementation Context/);
@@ -43,12 +43,31 @@ test("builds a focused persistent implementation packet", async (t) => {
 	assert.doesNotMatch(packet, /Broad intent|planning revision|sha256|assignment rationale/i);
 });
 
+test("uses a self-contained task contract without eagerly loading story artifacts", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "self-contained", title: "Self-contained task", kind: "change", intent: "Broad story intent available through task_clarify." });
+	await store.putArtifact({ workItemId: "self-contained", id: "architecture", type: "design", content: "# Architecture\n\nOptional broader design.", operation: "create" });
+	const manifest = task("implement-slice");
+	delete manifest.references;
+	await store.defineTask({
+		workItemId: "self-contained", manifest, narrativeSchemaVersion: 2,
+		briefSections: { contributionGoal: "Deliver one complete slice.", context: ["The existing command owns this behavior."], boundaryIncluded: ["Update the command"], requiredWork: ["Implement and test the command"], integrationExpectation: "Ready for direct integration." },
+		acceptanceSections: { deliverables: ["Working command"], acceptance: ["The command produces the required result."], boundaryProof: ["Focused command test passes"] },
+	});
+	const packet = await buildTaskPersistentContext(store, "self-contained", manifest);
+	assert.match(packet, /authoritative, self-contained assignment/i);
+	assert.match(packet, /The existing command owns this behavior/);
+	assert.match(packet, /The command produces the required result/);
+	assert.match(packet, /task_clarify.*additional intent/i);
+	assert.doesNotMatch(packet, /Broad story intent|Optional broader design/);
+});
+
 test("builds durable reviewer context from scoped tasks and full plan artifacts", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "review-context", title: "Review context", kind: "change", intent: "Ship plan-conformant behavior." });
 	await store.putArtifact({ workItemId: "review-context", id: "behavior", type: "spec", content: "# Behavior\n\n- **AC-001:** Render the durable result.", operation: "create" });
 	await store.putArtifact({ workItemId: "review-context", id: "architecture", type: "design", content: "# Architecture\n\nUse the durable boundary design.", operation: "create" });
-	const manifest = task(); manifest.references.specs = ["behavior"]; manifest.references.designs = ["architecture"];
+	const manifest = task(); manifest.references!.specs = ["behavior"]; manifest.references!.designs = ["architecture"];
 	await store.defineTask({ workItemId: "review-context", manifest, brief: "# Brief\n\nImplement the durable result.", acceptance: "# Acceptance\n\nDeliver behavior#AC-001." });
 	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "review", type: "combined-review", scope: { task: manifest.id }, status: "planned", required: true, attempt: 0, methods: ["review"] };
 	const packet = await buildReviewPersistentContext(store, "review-context", evaluation);

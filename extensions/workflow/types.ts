@@ -109,7 +109,8 @@ export interface TaskManifest {
 	title: string;
 	status: TaskStatus;
 	dependsOn: string[];
-	references: {
+	/** Legacy artifact-driven context selection. New task contracts are self-contained and omit this field. */
+	references?: {
 		specs: string[];
 		designs: string[];
 		decisions: string[];

@@ -1,8 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizePlanBundle, normalizePlanEdit } from "../plan-authoring.js";
+import { normalizePlanBundle, normalizePlanEdit, normalizeResourceArtifact, normalizeResourceEvaluation } from "../plan-authoring.js";
 
-test("expands compact plan fields while preserving structured task contracts", () => {
+test("accepts concise author-facing specification artifacts", () => {
+	const artifact = normalizeResourceArtifact({
+		id: "todo-contract", artifactType: "specification", title: "Todo contract",
+		content: {
+			actors: ["Personal user"],
+			requirements: ["A non-empty todo can be created.", "Completed todos can be cleared."],
+			domainLanguage: ["Todo is one persisted task; filter is a view, not stored state."],
+			edgeCases: ["Whitespace-only input is rejected."],
+			constraints: ["Todo content remains local."],
+		},
+	}) as any;
+	assert.equal(artifact.type, "spec");
+	assert.deepEqual(artifact.sections.requiredBehaviors, ["A non-empty todo can be created.", "Completed todos can be cleared."]);
+	assert.deepEqual(artifact.sections.acceptanceCriteria, [
+		{ id: "AC-001", statement: "A non-empty todo can be created." },
+		{ id: "AC-002", statement: "Completed todos can be cleared." },
+	]);
+	assert.deepEqual(artifact.sections.domainLanguage, ["Todo is one persisted task; filter is a view, not stored state."]);
+});
+
+test("accepts concise author-facing design artifacts", () => {
+	const artifact = normalizeResourceArtifact({ id: "todo-design", kind: "design", content: { goal: "Keep state transitions testable.", approach: ["Use one reducer."], components: ["App composes reducer-backed controls."], flow: ["Action updates state and persistence."], verification: ["Reducer and component tests cover transitions."] } }) as any;
+	assert.equal(artifact.type, "design");
+	assert.deepEqual(artifact.sections.chosenApproach, ["Use one reducer."]);
+});
+
+test("accepts ticket-like evaluation resources", () => {
+	const evaluation = normalizeResourceEvaluation({ id: "checkout-e2e", kind: "e2e", context: ["Run after integration."], criteria: ["Valid checkout succeeds."], checks: ["npm test", "npm run e2e"] }, "checkout") as any;
+	assert.equal(evaluation.type, "e2e");
+	assert.deepEqual(evaluation.scope, { workItem: "checkout" });
+	assert.deepEqual(evaluation.methods, ["Context: Run after integration.", "Verify: Valid checkout succeeds.", "Run: npm test", "Run: npm run e2e"]);
+	assert.equal(evaluation.criteria, undefined);
+});
+
+test("expands concise self-contained task contracts", () => {
 	const plan = normalizePlanBundle({
 		workItem: {
 			id: "compact-plan", title: "Compact plan",
@@ -12,8 +46,11 @@ test("expands compact plan fields while preserving structured task contracts", (
 		artifacts: [{ id: "behavior", type: "spec", sections: { context: "One behavior.", requiredBehaviors: ["Stay structured."], acceptanceCriteria: [{ id: "AC-001", statement: "The worker receives structured context." }] } }],
 		tasks: [{
 			id: "implement-behavior",
-			briefSections: { contributionGoal: "Implement behavior.", boundaryIncluded: ["One vertical slice"] },
-			acceptanceSections: { criterionContributions: [{ criteria: ["behavior#AC-001"], contribution: "Implement the criterion." }], boundaryProof: ["Focused test passes"] },
+			goal: "Implement behavior.",
+			context: ["The worker must receive a complete assignment without dereferencing story artifacts."],
+			included: ["One vertical slice"],
+			acceptance: ["The worker receives the complete task contract."],
+			checks: ["npm test -- behavior"],
 		}],
 	});
 	assert.equal(plan.workItem.kind, "story");
@@ -25,28 +62,47 @@ test("expands compact plan fields while preserving structured task contracts", (
 	assert.equal(task.manifest.execution.assignment.agent, "implementer");
 	assert.equal(task.manifest.execution.assignment.role, undefined);
 	assert.equal(task.manifest.assembly.stageId, "implement-behavior");
-	assert.deepEqual(task.manifest.references.specs, ["behavior"]);
+	assert.equal(task.manifest.references, undefined);
+	assert.deepEqual(task.manifest.verification.taskChecks, ["npm test -- behavior"]);
 	assert.deepEqual(task.briefSections.requiredWork, ["One vertical slice"]);
 	assert.match(task.briefSections.integrationExpectation, /implement-behavior/);
 	assert.deepEqual(task.acceptanceSections.deliverables, ["Implement behavior."]);
+	assert.deepEqual(task.acceptanceSections.acceptance, ["The worker receives the complete task contract."]);
 	assert.deepEqual(plan.integrationUnits, []);
 	assert.deepEqual(plan.evaluations, []);
 });
 
-test("normalizes a surgical task edit without requiring a complete-plan rewrite", () => {
+test("keeps legacy artifact-referenced task plans readable", () => {
+	const plan = normalizePlanBundle({
+		workItem: { id: "legacy-plan", title: "Legacy plan", delivery: { branchType: "feature" }, intentSections: { problem: "Legacy task.", desiredOutcome: "Remain readable.", scopeIncluded: ["Compatibility"], successSignals: ["Normalization succeeds"] } },
+		artifacts: [{ id: "behavior", type: "spec", sections: { context: "Legacy behavior.", requiredBehaviors: ["Remain compatible."], acceptanceCriteria: [{ id: "AC-001", statement: "The task remains readable." }] } }],
+		tasks: [{ id: "legacy-task", briefSections: { contributionGoal: "Keep compatibility.", boundaryIncluded: ["Legacy task"] }, acceptanceSections: { criterionContributions: [{ criteria: ["behavior#AC-001"], contribution: "Preserve behavior." }], boundaryProof: ["Compatibility test passes"] } }],
+	});
+	const task = plan.tasks[0] as any;
+	assert.deepEqual(task.manifest.references.specs, ["behavior"]);
+	assert.match(task.briefSections.integrationExpectation, /legacy-task/);
+});
+
+test("normalizes a surgical self-contained task edit", () => {
 	const edit = normalizePlanEdit("task", "update", "work-item:compact-plan/task:implement-behavior", {
-		briefSections: { contributionGoal: "Corrected goal.", boundaryIncluded: ["Corrected slice"], requiredWork: ["Implement correction"], integrationExpectation: "Ready for the next stage." },
-		acceptanceSections: { deliverables: ["Correction"], criterionContributions: [{ criteria: ["behavior#AC-001"], contribution: "Correct behavior." }], boundaryProof: ["Regression passes"] },
+		goal: "Corrected goal.",
+		context: ["Correct the existing behavior without consulting an artifact pointer."],
+		included: ["Corrected slice"],
+		work: ["Implement correction"],
+		acceptance: ["The corrected behavior is observable."],
+		proof: ["Regression passes"],
+		integrationExpectation: "Ready for the next stage.",
 	}, "compact-plan");
 	assert.equal(edit.action, "update");
 	assert.equal((edit.value as any).narrativeSchemaVersion, 2);
 	assert.equal((edit.value as any).briefSections.contributionGoal, "Corrected goal.");
+	assert.deepEqual((edit.value as any).acceptanceSections.acceptance, ["The corrected behavior is observable."]);
 	assert.equal((edit.value as any).manifest, undefined);
 });
 
 test("rejects silent or malformed surgical edits", () => {
 	assert.throws(() => normalizePlanEdit("task", "update", "work-item:compact-plan/task:one", { typoField: "lost" }, "compact-plan"), /unknown field/i);
-	assert.throws(() => normalizePlanEdit("task", "update", "work-item:compact-plan/task:one", { briefSections: { contributionGoal: "Half" } }, "compact-plan"), /briefSections and acceptanceSections together/i);
+	assert.throws(() => normalizePlanEdit("task", "update", "work-item:compact-plan/task:one", { goal: "Half" }, "compact-plan"), /requires included/i);
 	assert.throws(() => normalizePlanEdit("task", "update", "work-item:compact-plan/task:one", {}, "compact-plan"), /no changed fields/i);
 	assert.throws(() => normalizePlanEdit("task", "delete", "work-item:compact-plan/task:one", {}, "compact-plan"), /does not accept value/i);
 });

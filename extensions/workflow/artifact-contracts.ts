@@ -7,20 +7,22 @@ const PLACEHOLDER = /^(?:n\/?a|none|tbd|todo|placeholder|coming soon)[.!]?$/i;
 
 const PROFILES: Record<NarrativeArtifactType, { required: string[]; optional: string[] }> = {
 	intent: { required: ["problem", "desiredOutcome", "scopeIncluded", "successSignals"], optional: ["scopeExcluded", "constraints", "assumptions", "openQuestions"] },
-	spec: { required: ["context", "requiredBehaviors", "acceptanceCriteria"], optional: ["actors", "constraints", "edgeCases", "assumptions", "outOfScope", "openQuestions"] },
+	spec: { required: ["context", "requiredBehaviors", "acceptanceCriteria"], optional: ["domainLanguage", "actors", "scenarios", "constraints", "edgeCases", "assumptions", "outOfScope", "openQuestions"] },
 	design: { required: ["designGoal", "chosenApproach", "verificationBoundaries"], optional: ["componentsAndInterfaces", "dataAndControlFlow", "failureAndRecovery", "securityAndPrivacy", "compatibilityAndMigration", "alternativesConsidered", "openQuestions"] },
 	decision: { required: ["decision", "context", "rationale", "consequences"], optional: ["alternativesConsidered", "revisitWhen"] },
-	taskBrief: { required: ["contributionGoal", "boundaryIncluded", "requiredWork", "integrationExpectation"], optional: ["boundaryExcluded", "interfacesAndDependencies", "constraints", "risksAndUncertainties"] },
-	taskAcceptance: { required: ["deliverables", "criterionContributions", "boundaryProof"], optional: ["expectedIntermediateState", "integrationProof"] },
+	taskBrief: { required: ["contributionGoal", "boundaryIncluded", "requiredWork", "integrationExpectation"], optional: ["context", "boundaryExcluded", "interfacesAndDependencies", "constraints", "risksAndUncertainties"] },
+	// Legacy contracts use criterionContributions; new contracts carry direct,
+	// self-contained acceptance statements. Deliverables is the common anchor.
+	taskAcceptance: { required: ["deliverables"], optional: ["acceptance", "criterionContributions", "boundaryProof", "expectedIntermediateState", "integrationProof"] },
 };
 
 const HEADINGS: Record<string, string> = {
 	problem: "Problem", desiredOutcome: "Desired Outcome", scopeIncluded: "Scope — Included", scopeExcluded: "Scope — Excluded", successSignals: "Success Signals",
-	context: "Context", actors: "Actors", requiredBehaviors: "Required Behaviors", acceptanceCriteria: "Acceptance Criteria", constraints: "Constraints", edgeCases: "Edge Cases", assumptions: "Assumptions", outOfScope: "Out of Scope", openQuestions: "Open Questions",
+	context: "Context", domainLanguage: "Domain Language", actors: "Actors", requiredBehaviors: "Required Behaviors", acceptanceCriteria: "Acceptance Criteria", scenarios: "Scenarios", constraints: "Constraints", edgeCases: "Edge Cases", assumptions: "Assumptions", outOfScope: "Out of Scope", openQuestions: "Open Questions",
 	designGoal: "Design Goal", chosenApproach: "Chosen Approach", componentsAndInterfaces: "Components and Interfaces", dataAndControlFlow: "Data and Control Flow", failureAndRecovery: "Failure and Recovery", securityAndPrivacy: "Security and Privacy", compatibilityAndMigration: "Compatibility and Migration", verificationBoundaries: "Verification Boundaries", alternativesConsidered: "Alternatives Considered",
 	decision: "Decision", rationale: "Rationale", consequences: "Consequences", revisitWhen: "Revisit When",
 	contributionGoal: "Contribution Goal", boundaryIncluded: "Boundary — Included", boundaryExcluded: "Boundary — Excluded", requiredWork: "Required Work", interfacesAndDependencies: "Interfaces and Dependencies", integrationExpectation: "Integration Expectation", risksAndUncertainties: "Risks and Uncertainties",
-	deliverables: "Deliverables", criterionContributions: "Criterion Contributions", boundaryProof: "Boundary Proof", expectedIntermediateState: "Expected Intermediate State", integrationProof: "Integration Proof",
+	deliverables: "Deliverables", acceptance: "Acceptance", criterionContributions: "Criterion Contributions", boundaryProof: "Boundary Proof", expectedIntermediateState: "Expected Intermediate State", integrationProof: "Integration Proof",
 };
 
 export function isSubstantive(value: unknown): boolean {

@@ -18,7 +18,7 @@ import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildReviewPersistentContext, buildTaskPersistentContext } from "./implementation-context.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType, type PlanEdit } from "./orchestrator-resources.js";
-import { normalizePlanBundle, normalizePlanEdit } from "./plan-authoring.js";
+import { normalizePlanArtifact, normalizePlanBundle, normalizePlanEdit, normalizePlanEvaluation, normalizePlanIntegrationUnit, normalizePlanTask, normalizeResourceArtifact, normalizeResourceEvaluation } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
 import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
@@ -40,19 +40,20 @@ const ORCHESTRATOR_CONTRACT = readBuiltInPrompt("orchestrator-routing");
 
 const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_status",
-	"workflow_list",
-	"workflow_get",
-	"workflow_schema",
-	"workflow_plan_write",
-	"workflow_create",
-	"workflow_patch",
-	"workflow_delete",
+	"resource_list",
+	"resource_read",
+	"resource_write",
+	"resource_delete",
 	"workflow_apply_change",
 	"workflow_transition",
 	"workflow_init",
 	"task_integrate",
 	"evaluation_record",
 	"work_item_complete",
+]);
+const COMPATIBILITY_RESOURCE_TOOL_NAMES = new Set([
+	"workflow_list", "workflow_get", "workflow_schema", "workflow_plan_write",
+	"workflow_create", "workflow_patch", "workflow_delete",
 ]);
 
 interface HarnessRuntime {
@@ -72,6 +73,11 @@ const textResult = (text: string, details: unknown = null) => ({
 	content: [{ type: "text" as const, text }],
 	details,
 });
+const boundedStructuredResult = (value: unknown, label: string) => {
+	const serialized = JSON.stringify(value, null, 2);
+	const slice = sliceText(serialized, { limit: 12_000 });
+	return textResult(`${slice.text}${slice.page.hasMore ? `\n[${label} truncated at 12,000 characters; list and read individual child resources for the remainder.]` : ""}`, { label, page: slice.page });
+};
 const CANONICAL_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("evaluation")]);
 const LISTABLE_RESOURCE_TYPE = Type.Union([CANONICAL_RESOURCE_TYPE, Type.Literal("agent"), Type.Literal("message"), Type.Literal("run")]);
 const MUTATION_AUTHORITY = Type.Object({
@@ -84,7 +90,7 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 	schemaVersion: Type.Literal(1), id: Type.String({ description: "Bare kebab-case task id" }), title: Type.String(),
 	status: Type.Union([Type.Literal("draft"), Type.Literal("blocked"), Type.Literal("ready")]),
 	dependsOn: Type.Array(Type.String()),
-	references: Type.Object({ specs: Type.Array(Type.String()), designs: Type.Array(Type.String()), decisions: Type.Array(Type.String()) }, { additionalProperties: false }),
+	references: Type.Optional(Type.Object({ specs: Type.Array(Type.String()), designs: Type.Array(Type.String()), decisions: Type.Array(Type.String()) }, { additionalProperties: false })),
 	execution: Type.Object({
 		resourceClaims: Type.Array(Type.String({ description: "Shared files or external resources used to validate parallel-stage compatibility" })),
 		assignment: Type.Object({
@@ -103,11 +109,13 @@ const EVALUATION_MANIFEST_RESOURCE = Type.Object({
 }, { additionalProperties: false });
 const INTENT_SECTIONS = Type.Object({ problem: Type.String(), desiredOutcome: Type.String(), scopeIncluded: Type.Array(Type.String()), successSignals: Type.Array(Type.String()), scopeExcluded: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
 const DELIVERY_CONTRACT = Type.Object({ branchType: Type.Union([Type.Literal("feature"), Type.Literal("fix")]), branchMode: Type.Union([Type.Literal("create"), Type.Literal("continue")]), baseBranch: Type.Literal("develop"), featureBranch: Type.Optional(Type.String({ description: "Required for continue; optional for create, which defaults to <branchType>/<work-item-id>" })) }, { additionalProperties: false });
-const SPEC_SECTIONS = Type.Object({ context: Type.String(), actors: Type.Optional(Type.Array(Type.String())), requiredBehaviors: Type.Array(Type.String()), acceptanceCriteria: Type.Array(Type.Object({ id: Type.String({ description: "AC-NNN" }), statement: Type.String() }, { additionalProperties: false })), constraints: Type.Optional(Type.Array(Type.String())), edgeCases: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), outOfScope: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
+const SPEC_SECTIONS = Type.Object({ context: Type.String(), domainLanguage: Type.Optional(Type.Array(Type.String())), actors: Type.Optional(Type.Array(Type.String())), requiredBehaviors: Type.Array(Type.String()), acceptanceCriteria: Type.Array(Type.Object({ id: Type.String({ description: "AC-NNN" }), statement: Type.String() }, { additionalProperties: false })), scenarios: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), edgeCases: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), outOfScope: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
 const DESIGN_SECTIONS = Type.Object({ designGoal: Type.String(), chosenApproach: Type.Array(Type.String()), verificationBoundaries: Type.Array(Type.String()), componentsAndInterfaces: Type.Optional(Type.Array(Type.String())), dataAndControlFlow: Type.Optional(Type.Array(Type.String())), failureAndRecovery: Type.Optional(Type.Array(Type.String())), securityAndPrivacy: Type.Optional(Type.Array(Type.String())), compatibilityAndMigration: Type.Optional(Type.Array(Type.String())), alternativesConsidered: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
 const DECISION_SECTIONS = Type.Object({ decision: Type.String(), context: Type.String(), rationale: Type.String(), consequences: Type.Array(Type.String()), alternativesConsidered: Type.Optional(Type.Array(Type.String())), revisitWhen: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
-const TASK_BRIEF_SECTIONS = Type.Object({ contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()), requiredWork: Type.Array(Type.String()), integrationExpectation: Type.String(), boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
-const TASK_ACCEPTANCE_SECTIONS = Type.Object({ deliverables: Type.Array(Type.String()), criterionContributions: Type.Array(Type.Union([Type.String(), Type.Object({ criteria: Type.Array(Type.String({ description: "Qualified artifact#AC-NNN references" })), contribution: Type.String() }, { additionalProperties: false })])), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const TASK_BRIEF_SECTIONS = Type.Object({ contributionGoal: Type.String(), context: Type.Optional(Type.Array(Type.String())), boundaryIncluded: Type.Array(Type.String()), requiredWork: Type.Array(Type.String()), integrationExpectation: Type.String(), boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const LEGACY_TASK_ACCEPTANCE_SECTIONS = Type.Object({ deliverables: Type.Array(Type.String()), criterionContributions: Type.Array(Type.Union([Type.String(), Type.Object({ criteria: Type.Array(Type.String({ description: "Qualified artifact#AC-NNN references" })), contribution: Type.String() }, { additionalProperties: false })])), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const SELF_CONTAINED_TASK_ACCEPTANCE_SECTIONS = Type.Object({ deliverables: Type.Array(Type.String()), acceptance: Type.Array(Type.String()), boundaryProof: Type.Optional(Type.Array(Type.String())), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
+const TASK_ACCEPTANCE_SECTIONS = Type.Union([SELF_CONTAINED_TASK_ACCEPTANCE_SECTIONS, LEGACY_TASK_ACCEPTANCE_SECTIONS]);
 const WORK_ITEM_RESOURCE_BODY = Type.Union([
 	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, narrativeSchemaVersion: Type.Literal(2), intentSections: INTENT_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, intent: Type.String() }, { additionalProperties: false }),
@@ -134,6 +142,12 @@ const CANONICAL_PLAN_BUNDLE = Type.Object({
 
 // Planner-facing authoring contracts omit harness-owned lifecycle and schema
 // boilerplate. Normalization restores the complete canonical shape before write.
+const RESOURCE_WORK_ITEM = Type.Object({
+	id: Type.String({ description: "Bare kebab-case work-item id" }),
+	title: Type.String(),
+	kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])),
+	intentSections: INTENT_SECTIONS,
+}, { additionalProperties: false });
 const PLAN_WORK_ITEM = Type.Object({
 	id: Type.String({ description: "Bare kebab-case work-item id" }),
 	title: Type.String(),
@@ -150,13 +164,24 @@ const PLAN_ARTIFACT = Type.Union([
 	Type.Object({ id: Type.String(), type: Type.Literal("design"), title: Type.Optional(Type.String()), sections: DESIGN_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String(), type: Type.Literal("decision"), title: Type.Optional(Type.String()), sections: DECISION_SECTIONS }, { additionalProperties: false }),
 ]);
-const PLAN_TASK = Type.Object({
+const SELF_CONTAINED_PLAN_TASK = Type.Object({
 	id: Type.String({ description: "Bare kebab-case task id" }),
 	title: Type.Optional(Type.String()),
+	goal: Type.String({ description: "The independently useful contribution this task delivers" }),
+	context: Type.Optional(Type.Array(Type.String({ description: "Only story or technical context the executor needs to understand this task" }))),
+	included: Type.Array(Type.String({ description: "Concrete behavior and implementation boundary owned by this task" })),
+	work: Type.Optional(Type.Array(Type.String({ description: "Required implementation work when it is not obvious from the included boundary" }))),
+	excluded: Type.Optional(Type.Array(Type.String())),
+	interfaces: Type.Optional(Type.Array(Type.String({ description: "Interfaces, dependencies, or handoffs that constrain this task" }))),
+	constraints: Type.Optional(Type.Array(Type.String())),
+	acceptance: Type.Array(Type.String({ description: "Observable, self-contained completion conditions; do not use artifact references" })),
+	proof: Type.Optional(Type.Array(Type.String({ description: "Evidence that demonstrates the acceptance conditions" }))),
+	checks: Type.Optional(Type.Array(Type.String({ description: "Deterministic commands assigned at this task boundary" }))),
+	risks: Type.Optional(Type.Array(Type.String())),
 	dependsOn: Type.Optional(Type.Array(Type.String())),
-	references: Type.Optional(Type.Object({ specs: Type.Optional(Type.Array(Type.String())), designs: Type.Optional(Type.Array(Type.String())), decisions: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false })),
 	stageId: Type.Optional(Type.String({ description: "Defaults to the task id, producing a safe singleton stage" })),
 	intermediateState: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("partial")])),
+	integrationExpectation: Type.Optional(Type.String()),
 	resourceClaims: Type.Optional(Type.Array(Type.String())),
 	assignment: Type.Optional(Type.Object({
 		agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER),
@@ -164,19 +189,19 @@ const PLAN_TASK = Type.Object({
 	}, { additionalProperties: false })),
 	verification: Type.Optional(Type.Object({
 		timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])),
-		methods: Type.Optional(Type.Array(Type.String())), taskChecks: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()),
+		methods: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()),
 	}, { additionalProperties: false })),
-	briefSections: Type.Object({
-		contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()),
-		requiredWork: Type.Optional(Type.Array(Type.String())), integrationExpectation: Type.Optional(Type.String()),
-		boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())),
-	}, { additionalProperties: false }),
-	acceptanceSections: Type.Object({
-		deliverables: Type.Optional(Type.Array(Type.String())),
-		criterionContributions: Type.Array(Type.Object({ criteria: Type.Array(Type.String({ description: "Qualified artifact#AC-NNN references" })), contribution: Type.String() }, { additionalProperties: false })),
-		boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())),
-	}, { additionalProperties: false }),
 }, { additionalProperties: false });
+const LEGACY_PLAN_TASK = Type.Object({
+	id: Type.String(), title: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())),
+	references: Type.Optional(Type.Object({ specs: Type.Optional(Type.Array(Type.String())), designs: Type.Optional(Type.Array(Type.String())), decisions: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false })),
+	stageId: Type.Optional(Type.String()), intermediateState: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("partial")])), resourceClaims: Type.Optional(Type.Array(Type.String())),
+	assignment: Type.Optional(Type.Object({ agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })),
+	verification: Type.Optional(Type.Object({ timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])), methods: Type.Optional(Type.Array(Type.String())), taskChecks: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })),
+	briefSections: Type.Object({ contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()), requiredWork: Type.Optional(Type.Array(Type.String())), integrationExpectation: Type.Optional(Type.String()), boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
+	acceptanceSections: Type.Object({ deliverables: Type.Optional(Type.Array(Type.String())), criterionContributions: Type.Array(Type.Object({ criteria: Type.Array(Type.String()), contribution: Type.String() }, { additionalProperties: false })), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
+}, { additionalProperties: false });
+const PLAN_TASK = Type.Union([SELF_CONTAINED_PLAN_TASK, LEGACY_PLAN_TASK]);
 const PLAN_INTEGRATION_UNIT = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String()), intermediatePolicy: Type.Optional(Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")])) }, { additionalProperties: false });
 const PLAN_EVALUATION = Type.Object({
 	id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
@@ -270,7 +295,34 @@ const COMPACT_APPLY_CHANGE_PARAMETERS = Type.Object({
 function assertExactSchema(schema: any, value: unknown, label: string): void {
 	if (Check(schema, value)) return;
 	const problems = [...Errors(schema, value)].slice(0, 4).map((error) => `${error.instancePath || "/"} ${error.message}`);
-	throw new HarnessError("INVALID_ARTIFACT", `${label} does not match its exact resource schema: ${problems.join("; ")}. Call workflow_schema for the bounded contract.`);
+	throw new HarnessError("INVALID_ARTIFACT", `${label} has invalid structured fields: ${problems.join("; ")}. Use the concise resource example from the active skill and omit fields that add no information.`);
+}
+
+function idFromTitle(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const id = value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+	return id || undefined;
+}
+
+function compactResourceBody(resource: CanonicalResourceType, value: Record<string, unknown>, parent?: string): Record<string, unknown> {
+	const withId = value.id === undefined && (resource === "artifact" || resource === "task" || resource === "evaluation")
+		? { ...value, id: idFromTitle(value.title) }
+		: value;
+	if (resource === "artifact") {
+		const authored = normalizeResourceArtifact(withId);
+		assertExactSchema(PLAN_ARTIFACT, authored, "artifact");
+		return normalizePlanArtifact(authored);
+	}
+	if (resource === "task") { assertExactSchema(PLAN_TASK, withId, "task"); return normalizePlanTask(withId); }
+	if (resource === "integration-unit") { assertExactSchema(PLAN_INTEGRATION_UNIT, withId, "integration unit"); return normalizePlanIntegrationUnit(withId); }
+	if (resource === "evaluation") {
+		if (!parent) throw new HarnessError("INVALID_ARTIFACT", "Evaluation creation requires a work-item parent");
+		const authored = normalizeResourceEvaluation(withId, parseResourceRef(parent).workItemId);
+		assertExactSchema(PLAN_EVALUATION, authored, "evaluation");
+		return normalizePlanEvaluation(authored, parseResourceRef(parent).workItemId);
+	}
+	assertExactSchema(RESOURCE_WORK_ITEM, withId, "work item");
+	return { id: withId.id, title: withId.title, kind: withId.kind ?? "story", narrativeSchemaVersion: 2, intentSections: withId.intentSections };
 }
 
 function createdResourceRef(resource: CanonicalResourceType, parent: string | undefined, body: Record<string, any>): string {
@@ -727,6 +779,108 @@ export default function workflow(pi: ExtensionAPI): void {
 				await reconcileReportedAgents({ identity: runtime.identity, registry: runtime.agents, workItems: runtime.workItems, mutex: runtime.mutex });
 			},
 		}));
+	});
+
+	pi.registerTool({
+		name: "resource_list",
+		label: "List Resources",
+		description: "List concise canonical resource summaries. Filter by type or parent work item, then use resource_read for one complete resource.",
+		promptSnippet: "List structured story, task, integration-unit, or evaluation resources",
+		parameters: Type.Object({ type: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String({ description: "Work-item ref whose children should be listed" })), query: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		async execute(_id, params, _signal, _update, ctx) {
+			try {
+				const runtime = await runtimeFor(ctx);
+				const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+				const workItemId = params.parent ? parseResourceRef(params.parent).workItemId : undefined;
+				const types: CanonicalResourceType[] = params.type ? [params.type as CanonicalResourceType] : ["work-item", "artifact", "task", "integration-unit", "evaluation"];
+				const resources = (await Promise.all(types.map((type) => service.listSummaries(type, workItemId)))).flat();
+				const filtered = params.query ? resources.filter((resource) => JSON.stringify(resource).toLowerCase().includes(params.query!.toLowerCase())) : resources;
+				return boundedStructuredResult({ count: filtered.length, resources: filtered }, "resource list");
+			} catch (error) { throw structuredCapabilityError(error, params.parent); }
+		},
+	});
+
+	pi.registerTool({
+		name: "resource_read",
+		label: "Read Resource",
+		description: "Read one structured canonical resource. A work-item ref returns its compact manifest and child refs; read each artifact, task, integration unit, or evaluation ref for complete content.",
+		promptSnippet: "Read one complete structured workflow resource",
+		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
+		async execute(_id, params, _signal, _update, ctx) {
+			try {
+				const runtime = await runtimeFor(ctx);
+				const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+				const parsed = parseResourceRef(params.ref);
+				if (parsed.type === "work-item") {
+					const resource = await service.summary(params.ref);
+					const childTypes: CanonicalResourceType[] = ["artifact", "task", "integration-unit", "evaluation"];
+					const children = (await Promise.all(childTypes.map((type) => service.listSummaries(type, parsed.workItemId)))).flat();
+					return boundedStructuredResult({ resource, children }, params.ref);
+				}
+				return boundedStructuredResult(await service.get(params.ref), params.ref);
+			} catch (error) { throw structuredCapabilityError(error, params.ref); }
+		},
+	});
+
+	pi.registerTool({
+		name: "resource_write",
+		label: "Write Resource",
+		description: "Create or update one structured canonical resource. Create with type, optional parent, and value; update with ref and value. Tasks and evaluations accept self-contained ticket-like values. Artifacts use kind spec/design/decision plus content; specification aliases spec. IDs may be omitted for titled child resources.",
+		promptSnippet: "Create or update one structured story, task, integration-unit, or evaluation resource",
+		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					if (params.ref && (params.type || params.parent)) throw new HarnessError("INVALID_ARTIFACT", "Resource update uses ref and value only");
+					if (!params.ref && !params.type) throw new HarnessError("INVALID_ARTIFACT", "Resource creation requires type");
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const authority: MutationAuthority = { rationale: params.ref ? "Update the selected canonical resource" : "Create the authored canonical resource" };
+					let ref: string;
+					let result;
+					if (params.ref) {
+						const parsed = parseResourceRef(params.ref);
+						const authoredValue = parsed.type === "artifact"
+							? (() => { const normalized = normalizeResourceArtifact({ ...params.value, id: parsed.id }); return { type: normalized.type, title: normalized.title, sections: normalized.sections }; })()
+							: parsed.type === "evaluation"
+								? normalizeResourceEvaluation({ ...params.value, id: parsed.id }, parsed.workItemId)
+								: params.value;
+						const edit = normalizePlanEdit(parsed.type, "update", params.ref, authoredValue, parsed.workItemId);
+						result = await service.transaction(`harness: write ${params.ref}`, () => service.patch(params.ref!, edit.value, { authority }));
+						ref = params.ref;
+					} else {
+						const type = params.type as CanonicalResourceType;
+						if (type !== "work-item" && !params.parent) throw new HarnessError("INVALID_ARTIFACT", `${type} creation requires parent`);
+						const body = compactResourceBody(type, params.value, params.parent);
+						ref = createdResourceRef(type, params.parent, body);
+						result = await service.transaction(`harness: write ${ref}`, () => service.create(type, params.parent, body, authority));
+					}
+					await runtime.events.append("resource.written", { ref, commit: result.commit });
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: params.ref ? "patch" : "create", ref }]);
+					return textResult(`Wrote ${ref}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+				});
+			} catch (error) { throw structuredCapabilityError(error, params.ref ?? params.parent); }
+		},
+	});
+
+	pi.registerTool({
+		name: "resource_delete",
+		label: "Delete Resource",
+		description: "Delete one undelivered child resource by ref. Work items and delivered history remain protected.",
+		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			try {
+				requireTrusted(ctx);
+				const runtime = await runtimeFor(ctx);
+				return idempotentMutation(runtime, toolCallId, params, async () => {
+					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { authority: { rationale: "Delete the selected undelivered resource" } }));
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "delete", ref: params.ref }]);
+					return textResult(`Deleted ${params.ref}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+				});
+			} catch (error) { throw structuredCapabilityError(error, params.ref); }
+		},
 	});
 
 	pi.registerTool({
@@ -1233,10 +1387,10 @@ export default function workflow(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		const disallowed = new Set<string>();
-		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else [...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
 		if (isSubagentProcess()) {
 			const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;
