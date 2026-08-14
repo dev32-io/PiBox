@@ -14,6 +14,7 @@ export interface StatusRenderData {
 	metrics: SessionMetrics;
 	git: GitSnapshot;
 	config: StatusBarConfig;
+	visualCompanionStatus?: string;
 }
 
 export function layoutMode(width: number, config: StatusBarConfig): LayoutMode {
@@ -163,5 +164,7 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const row1 = buildRow(row1Left, [contextSegment(data, mode)], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
 	const row2 = buildRow([thinkingSegment(data)], row2Right, width);
-	return ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
+	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
+	if (data.visualCompanionStatus) rows.push(buildRow([data.visualCompanionStatus], [], width));
+	return rows;
 }

@@ -24,13 +24,14 @@
   ],
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "find extensions -name '*.test.ts' -print0 | xargs -0 tsx --test",
+    "test": "find extensions skills -name '*.test.ts' -print0 | xargs -0 tsx --test",
     "verify": "npm run check && npm test"
   },
   "pi": {
     "extensions": [
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
+      "./extensions/visual-companion/index.ts",
       "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",
       "./extensions/providers/local-llm/index.ts",
@@ -64,6 +65,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "cytoscape": "^3.33.1",
     "yaml": "^2.9.0"
   }
 }

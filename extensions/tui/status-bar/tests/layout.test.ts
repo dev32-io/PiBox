@@ -50,6 +50,14 @@ test("wide layout distinguishes context and session metrics", () => {
 	assert.match(text, /\$0\.04/);
 });
 
+test("visual companion status appears on an optional row below thinking", () => {
+	const lines = renderStatusBar(120, { ...data, visualCompanionStatus: "● Visual companion · localhost:4318" });
+	assert.equal(lines.length, 5);
+	assert.match(lines[3] ?? "", /Thinking: MEDIUM/);
+	assert.match(lines[4] ?? "", /Visual companion/);
+	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
+});
+
 test("medium layout preserves the higher-priority context segment", () => {
 	const longModelContext = {
 		...ctx,

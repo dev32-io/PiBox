@@ -1,6 +1,6 @@
 # PiBox status bar
 
-A Pikit-spaced two-row footer adapted to `rattle`, with an upper model/project/Git/context row, full-width divider, and lower thinking/token/cache/cost row.
+A Pikit-spaced footer adapted to `rattle`, with an upper model/project/Git/context row, full-width divider, and lower thinking/token/cache/cost row. When the session-scoped visual-companion backend is active, an additional state row appears below Thinking.
 
 Formatting intentionally includes:
 

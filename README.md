@@ -10,6 +10,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.
 - **Sound hooks** — optional completion feedback.
 - **Workflow** — capability-backed planning, delegated worktrees, verification, and recovery. See [docs/workflow.md](docs/workflow.md).
+- **Architecture visualizer skill** — agent-authored JSON rendered as a live, interactive local browser diagram with deterministic automatic layouts.
 
 ## Install and verify
 
@@ -45,6 +46,10 @@ models:
 ```
 
 Use `/effort` to select a compatible level interactively, or `/effort high` directly.
+
+## Architecture visualizer
+
+Invoke `/skill:architecture-visualizer` to explore a codebase and create a live visual explanation. The skill writes a flexible JSON document while its local renderer owns layout, grouping, arrows, and interaction. The `visual_companion` tool starts or stops one random-port loopback backend per Pi session; updating the JSON during later conversation automatically refreshes the open page. Future visualizers can register with the same backend.
 
 ## Workflow
 

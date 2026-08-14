@@ -32,6 +32,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 			const unsubscribeBranch = footerData.onBranchChange(() => poller?.requestRefresh());
 			return {
 				render(width: number): string[] {
+					const visualCompanionStatus = footerData.getExtensionStatuses().get("visual-companion");
 					return renderStatusBar(width, {
 						ctx,
 						theme,
@@ -46,6 +47,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 							behind: 0,
 						},
 						config,
+						...(visualCompanionStatus ? { visualCompanionStatus } : {}),
 					});
 				},
 				invalidate(): void {},

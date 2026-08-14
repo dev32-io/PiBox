@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "title": "Example system",
+  "description": "A small example of an agent-authored visual document.",
+  "views": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "groups": [
+        { "id": "people", "label": "People" },
+        { "id": "system", "label": "System" }
+      ],
+      "nodes": [
+        {
+          "id": "user",
+          "label": "User",
+          "kind": "actor",
+          "group": "people",
+          "description": "Asks a question and refines the desired explanation."
+        },
+        {
+          "id": "agent",
+          "label": "Main agent",
+          "kind": "component",
+          "group": "system",
+          "description": "Explores evidence and authors meaning."
+        },
+        {
+          "id": "renderer",
+          "label": "Visual renderer",
+          "kind": "component",
+          "group": "system",
+          "description": "Owns deterministic layout and browser interaction."
+        }
+      ],
+      "annotations": [
+        {
+          "id": "principle",
+          "kind": "note",
+          "text": "The JSON describes meaning, not geometry."
+        }
+      ],
+      "edges": [
+        {
+          "source": "user",
+          "target": "agent",
+          "label": "questions"
+        },
+        {
+          "source": "agent",
+          "target": "renderer",
+          "label": "updates JSON"
+        },
+        {
+          "source": "principle",
+          "target": "renderer",
+          "label": "guides"
+        }
+      ]
+    },
+    {
+      "id": "conversation",
+      "title": "Evolving conversation",
+      "nodes": [
+        { "id": "explore", "label": "Explore repository" },
+        { "id": "write", "label": "Write JSON" },
+        { "id": "show", "label": "Render in browser" },
+        { "id": "clarify", "label": "User asks follow-up", "kind": "decision" },
+        { "id": "update", "label": "Update same JSON" }
+      ],
+      "edges": [
+        { "source": "explore", "target": "write" },
+        { "source": "write", "target": "show" },
+        { "source": "show", "target": "clarify" },
+        { "source": "clarify", "target": "update", "label": "more visual detail" },
+        { "source": "update", "target": "show", "label": "automatic refresh" }
+      ]
+    }
+  ]
+}
