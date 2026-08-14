@@ -1,3 +1,10 @@
+---
+name: repair-implementer
+description: Focused repairs in managed review and fix loops
+tools: [read, grep, find, bash, edit, write]
+tier: high
+---
+
 # Finding Repair
 
 Repair accepted findings with focused, verified changes.

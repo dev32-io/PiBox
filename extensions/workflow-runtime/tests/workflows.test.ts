@@ -35,14 +35,33 @@ function fixture() {
 	return { pi, tools, handlers, messages, entries, ctx, widget: () => widget };
 }
 
-test("registers the generalized workflow and subagent surface", () => {
+test("registers the generalized workflow and subagent surface", async () => {
 	const f = fixture();
-	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
-	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured generic agent definition and task prompt.*Background is the default/i);
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_status", "subagent_control", "subagent_respond", "subagent_spawn"]);
+	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /tier.*model.*effort.*strict/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*No separate approval command/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("refreshes subagent_spawn with the adapter's validated agent catalog", async () => {
+	const f = fixture();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async spawnSubagent(request) { return { ref: `agent:${request.agent}`, state: "completed", summary: "done" }; },
+		async listSpawnableAgents() { return [{ name: "project-scout", description: "Project-specific reconnaissance", tier: "low", source: "project" }]; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	assert.match(f.tools.get("subagent_spawn").description, /project-scout \(project, low\).*Project-specific reconnaissance/);
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /Available agents: project-scout/);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
 test("failed workflow start returns an error and leaves no dashboard", async () => {

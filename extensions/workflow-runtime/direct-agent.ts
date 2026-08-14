@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 
 export interface DirectAgentOptions {
@@ -61,7 +62,8 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	let agentPrompt: string;
 	try {
 		if (!options.agentPrompt && !options.promptPath) throw new Error("No agent definition supplied");
-		agentPrompt = options.agentPrompt ?? await readFile(options.promptPath!, "utf8");
+		const suppliedPrompt = options.agentPrompt ?? await readFile(options.promptPath!, "utf8");
+		agentPrompt = parseFrontmatter<Record<string, unknown>>(suppliedPrompt).body;
 	} catch {
 		agentPrompt = renderBuiltInPrompt("default-agent", { agent: options.agent });
 	}

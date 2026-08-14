@@ -1,3 +1,10 @@
+---
+name: code-reviewer
+description: Code review against specifications and acceptance contracts
+tools: [read, grep, find, bash]
+tier: high
+---
+
 # Code Review
 
 Review an implementation against supplied requirements and repository evidence without changing the work.

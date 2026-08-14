@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { BUILT_IN_PROMPT_SURFACES } from "../prompt-contracts.js";
 
 const root = join(import.meta.dirname, "..", "..", "..");
@@ -20,10 +21,15 @@ test("inventories every built-in agent definition and skill prompt", async () =>
 test("agent definitions stay generic while workflow protocols remain launch-time prompts", async () => {
 	for (const surface of BUILT_IN_PROMPT_SURFACES.filter((entry) => entry.category === "agent")) {
 		const content = await readFile(join(root, surface.source), "utf8");
-		assert.doesNotMatch(content, /\byou are\b/i, surface.id);
-		assert.doesNotMatch(content, /evaluation_context|evaluation_complete|task_complete|task_clarify|exploration_context|exploration_complete|PiBox/i, surface.id);
-		assert.match(content, /^# .+/);
-		assert.match(content, /## Completion/);
+		const { frontmatter, body } = parseFrontmatter<{ name?: unknown; description?: unknown; tools?: unknown; tier?: unknown }>(content);
+		assert.equal(frontmatter.name, surface.id);
+		assert.equal(typeof frontmatter.description, "string");
+		assert.ok(Array.isArray(frontmatter.tools));
+		assert.match(String(frontmatter.tier), /^(low|medium|high|max)$/);
+		assert.doesNotMatch(body, /\byou are\b/i, surface.id);
+		assert.doesNotMatch(body, /evaluation_context|evaluation_complete|task_complete|task_clarify|PiBox/i, surface.id);
+		assert.match(body, /^# .+/);
+		assert.match(body, /## Completion/);
 	}
 	assert.match(await readFile(join(root, "prompt/workflow-task-agent.md"), "utf8"), /task_complete/);
 	const review = await readFile(join(root, "prompt/workflow-review-agent.md"), "utf8");

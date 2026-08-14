@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -11,6 +12,7 @@ import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.j
 import { taskAgentName, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
+import { DEFAULT_SUBAGENT_TOOLS, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } from "./tool-groups.js";
 
 export interface LaunchModel {
 	provider: string;
@@ -121,7 +123,6 @@ export class SubagentSupervisor {
 		for (let protocolAttempt = 0; protocolAttempt < 2; protocolAttempt++) {
 			let execution: { exitCode: number; stderr: string; finalText: string };
 			if (options.coordinator) {
-				const taskCapabilities = ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
 				const coordinated = await options.coordinator.launch({
 					operationId: created.record.id,
 					...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}),
@@ -132,7 +133,7 @@ export class SubagentSupervisor {
 					provider: options.model.provider,
 					model: options.model.model,
 					effort: options.model.effort,
-					tools: [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])],
+					tools: resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]),
 					...(options.agentPrompt ? { agentPrompt: options.agentPrompt } : { promptPath: join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`) }),
 					additionalPrompt: readBuiltInPrompt("workflow-task-agent"),
 					persistentContext: options.persistentContext,
@@ -255,10 +256,10 @@ export class SubagentSupervisor {
 		const promptDirectory = await mkdtemp(join(tmpdir(), "pibox-harness-prompt-"));
 		const promptPath = join(promptDirectory, "implementer.md");
 		const builtInAgentPrompt = await readFile(join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`), "utf8").catch(() => "");
-		const systemPrompt = [options.agentPrompt ?? builtInAgentPrompt, readBuiltInPrompt("workflow-task-agent"), options.persistentContext].filter(Boolean).join("\n\n");
+		const agentPrompt = parseFrontmatter<Record<string, unknown>>(options.agentPrompt ?? builtInAgentPrompt).body;
+		const systemPrompt = [agentPrompt, readBuiltInPrompt("workflow-task-agent"), options.persistentContext].filter(Boolean).join("\n\n");
 		await writeFile(promptPath, `${systemPrompt.trim()}\n`, { encoding: "utf8", mode: 0o600 });
-		const taskCapabilities = ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"];
-		const tools = [...new Set([...(options.tools ?? ["read", "grep", "find", "bash", "edit", "write"]), ...taskCapabilities])];
+		const tools = resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]);
 		const args = [
 			"-e", HARNESS_EXTENSION_PATH,
 			"--mode", "json", "-p", "--no-session",

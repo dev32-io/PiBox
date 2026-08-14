@@ -1,1 +1,0 @@
-No valid exploration_complete handoff was found. Complete the required structured handoff now.

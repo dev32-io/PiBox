@@ -9,8 +9,6 @@ import { reconcileReportedAgents } from "./agent-reconciliation.js";
 import { isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
-import { registerExplorationCapabilities } from "./exploration-capabilities.js";
-import { validateExplorationAssignment, validateExplorationHandoff, type ExplorationAssignment, type ExplorationHandoff } from "./exploration-contracts.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { HarnessRunStore } from "./run-store.js";
@@ -28,22 +26,15 @@ import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
+import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors } from "./tool-groups.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 
-const WORKER_TOOL_NAMES = new Set([
-	"task_clarify",
-	"task_checkpoint",
-	"task_request_change",
-	"task_report_decision",
-	"task_blocked",
-	"task_complete",
-]);
-const EVALUATOR_TOOL_NAMES = new Set(["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"]);
-const EXPLORATION_TOOL_NAMES = new Set(["exploration_context", "exploration_checkpoint", "exploration_blocked", "exploration_complete"]);
+const WORKER_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_TASK_TOOL_GROUP]);
+const EVALUATOR_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_EVALUATION_TOOL_GROUP]);
 const isSubagentProcess = () => Boolean(process.env.PIBOX_SUBAGENT_ID);
 const ORCHESTRATOR_CONTRACT = readBuiltInPrompt("orchestrator-routing");
 
@@ -59,7 +50,6 @@ const ORCHESTRATOR_TOOL_NAMES = new Set([
 	"workflow_apply_change",
 	"workflow_transition",
 	"workflow_init",
-	"exploration_launch",
 	"task_integrate",
 	"evaluation_record",
 	"work_item_complete",
@@ -423,7 +413,7 @@ async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ report
 		const attemptRoot = join(agentRoot, "attempts", attempt.id);
 		const processExit = await readTextIfExists(join(attemptRoot, "process-exit.json"));
 		const finalResult = await readTextIfExists(join(attemptRoot, "result.json"));
-		if (processExit && finalResult && !agent.taskId && !agent.evaluationId && agent.role !== "explorer") {
+		if (processExit && finalResult && !agent.taskId && !agent.evaluationId) {
 			const summary = (JSON.parse(finalResult) as { text?: string }).text ?? "Background specialist completed";
 			await runtime.agents.transition(agent.id, "reported", { summary }).catch(() => undefined);
 			await runtime.agents.transition(agent.id, "completed", { summary }).catch(() => undefined);
@@ -479,7 +469,6 @@ export default function workflow(pi: ExtensionAPI): void {
 	const supervisor = new SubagentSupervisor();
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
-	registerExplorationCapabilities(pi);
 
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
 		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
@@ -585,7 +574,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			operationId: `repair:${workItemId}:${evaluationId}:${loop.iteration}`, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
 			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }),
 			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
-			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: agentDefinition.tools ?? ["read", "grep", "find", "bash", "edit", "write"],
+			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true, ...(signal ? { signal } : {}),
 			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
 		});
@@ -630,7 +619,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				operationId: created.record.id, ...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}), role: agentName, task: taskPrompt,
 				assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
 				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
-				tools: [...new Set([...(agentDefinition.tools ?? ["read", "grep", "find", ...(evaluation.type === "e2e" || evaluation.type === "deterministic" || evaluation.type === "regression" ? ["bash"] : [])]), "evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"])],
+				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_EVALUATION_TOOL_GROUP]),
 				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-review-agent"), persistentContext,
 				env: { PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
 				promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, `${agentName}.md`),
@@ -677,25 +666,20 @@ export default function workflow(pi: ExtensionAPI): void {
 				throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow agent: ${request.agent}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Available agents: ${availableAgents.join(", ")}`);
 			}
 			if (request.effort && !request.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
+			const selectedModel = request.model ?? agentDefinition.model;
 			const routing = {
 				tier: (request.tier ?? agentDefinition.tier!) as CapabilityTier,
-				...(request.model ? { override: { model: request.model, ...(request.effort ? { effort: request.effort as HarnessEffort } : {}) } } : {}),
+				...(selectedModel ? { override: { model: selectedModel, ...(request.effort ? { effort: request.effort as HarnessEffort } : {}) } } : {}),
 				strict: request.strict ?? false,
 			};
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 			const resolution = resolveHarnessModel(runtime.config, availableModels, routing);
 			if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No configured candidate is available", { attempts: resolution.attempts });
-			const defaultTools: Record<string, string[]> = {
-				explorer: ["read", "grep", "find", "bash"],
-				"plan-critic": ["read", "grep", "find"],
-				"code-reviewer": ["read", "grep", "find", "bash"],
-				"e2e-tester": ["read", "grep", "find", "bash"],
-			};
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
 				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}), ...(request.strict !== undefined ? { strict: request.strict } : {}) }, cwd: runtime.identity.root,
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
-				tools: agentDefinition.tools ?? defaultTools[request.agent] ?? ["read", "grep", "find"],
+				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workspace: runtime.identity.root,
 				...(agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt)
 					? { promptPath: resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string }
@@ -718,6 +702,18 @@ export default function workflow(pi: ExtensionAPI): void {
 		}
 	};
 
+	const listSpawnableAgents = async (ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]> => {
+		if (!ctx.isProjectTrusted()) return [];
+		const runtime = await runtimeFor(ctx);
+		const projectAgentRoot = join(runtime.identity.root, ".pi", "agents");
+		return Object.entries(runtime.config.agents).sort(([left], [right]) => left.localeCompare(right)).map(([name, definition]) => ({
+			name,
+			description: definition.description ?? `Configured ${name} agent`,
+			tier: definition.tier!,
+			source: definition.prompt?.startsWith(projectAgentRoot) ? "project" : definition.prompt?.startsWith(BUILT_IN_AGENT_ROOT) ? "built-in" : "configured",
+		}));
+	};
+
 	pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: unknown) => {
 		const discovery = event as WorkflowAdapterDiscovery;
 		discovery.register(createHarnessWorkflowAdapter({
@@ -726,6 +722,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			launchEvaluation: launchManagedEvaluation,
 			launchRepair: launchManagedRepair,
 			spawnSubagent: spawnDynamicSubagent,
+			listSpawnableAgents,
 			async reconcileReported(runtime) {
 				await reconcileReportedAgents({ identity: runtime.identity, registry: runtime.agents, workItems: runtime.workItems, mutex: runtime.mutex });
 			},
@@ -1036,66 +1033,6 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "exploration_launch",
-		label: "Launch Repository Exploration",
-		description: "Launch a read-only explorer with a typed question, decision boundary, depth, stop conditions, and structured evidence handoff.",
-		parameters: Type.Object({
-			mode: Type.Union([Type.Literal("lookup"), Type.Literal("map"), Type.Literal("trace"), Type.Literal("impact"), Type.Literal("diagnose"), Type.Literal("explain")]),
-			question: Type.String(), decisionSupported: Type.String(),
-			knownEvidence: Type.Array(Type.Object({ source: Type.String(), observation: Type.String() })),
-			scope: Type.Object({ start: Type.Array(Type.String()), exclude: Type.Optional(Type.Array(Type.String())) }),
-			depth: Type.Union([Type.Literal("quick"), Type.Literal("standard"), Type.Literal("thorough")]),
-			stopConditions: Type.Array(Type.String()), requiredOutput: Type.Array(Type.String()),
-			tier: Type.Optional(CAPABILITY_TIER),
-			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override" })), effort: Type.Optional(EFFORT),
-		}, { additionalProperties: false }),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
-			try {
-				requireTrusted(ctx);
-				const runtime = await runtimeFor(ctx);
-				const assignment: ExplorationAssignment = { schemaVersion: 1, mode: params.mode, question: params.question, decisionSupported: params.decisionSupported, knownEvidence: params.knownEvidence, scope: params.scope, depth: params.depth, stopConditions: params.stopConditions, requiredOutput: params.requiredOutput };
-				validateExplorationAssignment(assignment);
-				const agentDefinition = runtime.config.agents.explorer;
-				if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", "Missing explorer agent definition");
-				if (params.effort && !params.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
-				const routing = {
-					tier: (params.tier ?? agentDefinition.tier!) as CapabilityTier,
-					...(params.model ? { override: { model: params.model, ...(params.effort ? { effort: params.effort as HarnessEffort } : {}) } } : {}),
-				};
-				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-				const resolution = resolveHarnessModel(runtime.config, available, routing);
-				if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No explorer candidate is available.", resolution);
-				const launch = (nudge: boolean) => runtime.coordinator.launch({
-					operationId: toolCallId, role: "explorer", task: `${renderBuiltInPrompt("managed-exploration", { mode: assignment.mode, depth: assignment.depth })}${nudge ? `\n\n${readBuiltInPrompt("exploration-protocol-nudge")}` : ""}`,
-					assignment, cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
-					tools: [...(agentDefinition.tools ?? ["read", "grep", "find", "bash"]), ...EXPLORATION_TOOL_NAMES], additionalPrompt: readBuiltInPrompt("workflow-explorer-agent"), deferCompletion: true,
-					...(signal ? { signal } : {}), ...(onUpdate ? { onText: (text: string) => onUpdate(textResult(text, { role: "explorer", state: "running" })) } : {}),
-				});
-				let launched = await launch(false);
-				const agentRoot = join(runtime.agents.root, "agents", launched.agent.id);
-				let handoffText = await readTextIfExists(join(agentRoot, "handoff.json"));
-				const blocked = await readTextIfExists(join(agentRoot, "blocked.json"));
-				if (!handoffText && blocked) {
-					const agent = await runtime.agents.transition(launched.agent.id, "blocked", { summary: JSON.parse(blocked).summary });
-					return textResult(`Explorer ${agent.id} is blocked.`, { agent, blocked: JSON.parse(blocked) });
-				}
-				if (!handoffText && runtime.config.limits.protocolNudges > 0) {
-					launched = await launch(true);
-					handoffText = await readTextIfExists(join(agentRoot, "handoff.json"));
-				}
-				if (!handoffText) {
-					const agent = await runtime.agents.transition(launched.agent.id, "protocol_failed", { error: "Missing exploration_complete handoff" });
-					return textResult(`Explorer ${agent.id} failed its completion protocol.`, agent);
-				}
-				const handoff = JSON.parse(handoffText) as ExplorationHandoff;
-				validateExplorationHandoff(handoff, assignment);
-				const agent = await runtime.agents.transition(launched.agent.id, "completed", { summary: handoff.answer });
-				return textResult(handoff.answer, { agent, handoff });
-			} catch (error) { throw new Error(describeHarnessError(error)); }
-		},
-	});
-
-	pi.registerTool({
 		name: "task_integrate",
 		label: "Merge Workflow Task",
 		description: "Compatibility merge capability. Merge one accepted task contribution into the checked-out feature branch and run its declared post-merge checks.",
@@ -1296,12 +1233,10 @@ export default function workflow(pi: ExtensionAPI): void {
 
 	pi.on("session_start", async (event, ctx) => {
 		const disallowed = new Set<string>();
-		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isSubagentProcess()) {
-			[...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-			if ((process.env.PIBOX_SUBAGENT_AGENT ?? process.env.PIBOX_SUBAGENT_ROLE) !== "explorer") EXPLORATION_TOOL_NAMES.forEach((name) => disallowed.add(name));
-		} else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...EXPLORATION_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else [...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
 		if (isSubagentProcess()) {
 			const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;

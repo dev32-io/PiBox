@@ -1,3 +1,10 @@
+---
+name: implementer
+description: General implementation work for managed tasks
+tools: [read, grep, find, bash, edit, write]
+tier: medium
+---
+
 # Implementer
 
 Deliver the assigned contribution as working, verified code.

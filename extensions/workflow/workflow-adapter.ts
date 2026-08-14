@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import type { DynamicSubagentRequest, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus } from "../workflow-runtime/api.js";
+import type { DynamicSubagentRequest, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus } from "../workflow-runtime/api.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { readTextIfExists } from "./repository.js";
@@ -24,6 +24,7 @@ export interface HarnessWorkflowAdapterOptions {
 	launchEvaluation(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	launchRepair?(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
+	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	prepareFeatureBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
 }
@@ -184,6 +185,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
 		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void) { return options.spawnSubagent!(request, ctx, signal, onText); } } : {}),
+		...(options.listSpawnableAgents ? { async listSpawnableAgents(ctx: ExtensionContext) { return options.listSpawnableAgents!(ctx); } } : {}),
 		async controlCheckpoint(ref, action, prompt, ctx) {
 			const match = STEP.exec(ref);
 			if (!match || match[2] !== "evaluation") throw new Error(`Checkpoint decision requires an evaluation step ref: ${ref}`);

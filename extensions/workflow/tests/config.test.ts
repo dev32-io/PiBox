@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig, mergeConfigValues, validateHarnessConfig } from "../config.js";
 import { HarnessError } from "../errors.js";
@@ -10,6 +13,13 @@ test("uses cost-aware model-effort pairs for the four capability tiers", () => {
 		medium: ["openai-codex/gpt-5.6-luna#max"],
 		low: ["openai-codex/gpt-5.6-luna#medium"],
 	});
+});
+
+test("derives built-in agent policy from standard markdown frontmatter", () => {
+	assert.match(DEFAULT_HARNESS_CONFIG.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents.implementer?.description, "General implementation work for managed tasks");
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write"]);
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "high");
 });
 
 test("merges maps recursively and replaces arrays", () => {
@@ -39,6 +49,22 @@ test("loads user then repository tier configuration and records a stable digest"
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.sources.length, 3);
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
+});
+
+test("discovers traditional project agent markdown with optional harness tier routing", () => {
+	const root = mkdtempSync(join(tmpdir(), "pibox-agent-definitions-"));
+	mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+	writeFileSync(join(root, ".pi", "agents", "scout.md"), `---\nname: project-scout\ndescription: Fast project reconnaissance\ntools: read, grep, find\nmodel: local/scout\ntier: low\n---\n\nInvestigate the assigned question.\n`);
+	writeFileSync(join(root, ".pi", "agents", "traditional.md"), `---\nname: traditional\ndescription: Conventional Pi agent without harness fields\n---\n\nComplete the assignment.\n`);
+	writeFileSync(join(root, ".pi", "agents", "invalid.md"), `---\nname: invalid\ntier: impossible\n---\n\nMissing description.\n`);
+	const loaded = loadHarnessConfig(root, { home: join(root, "home") });
+	assert.equal(loaded.config.agents["project-scout"]?.tier, "low");
+	assert.equal(loaded.config.agents["project-scout"]?.model, "local/scout");
+	assert.deepEqual(loaded.config.agents["project-scout"]?.tools, ["read", "grep", "find"]);
+	assert.equal(loaded.config.agents.traditional?.tier, "medium");
+	assert.equal(loaded.config.agents.traditional?.prompt, join(root, ".pi", "agents", "traditional.md"));
+	assert.equal(loaded.config.agents.invalid, undefined);
+	assert.equal(loaded.diagnostics.some((diagnostic) => diagnostic.source.endsWith("invalid.md") && diagnostic.level === "warning"), true);
 });
 
 test("normalizes legacy route mappings to one model-effort pair", () => {

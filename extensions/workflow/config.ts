@@ -13,14 +13,20 @@ import type {
 	AgentConfig,
 	TierModelRouteConfig,
 } from "./types.js";
+import { discoverAgentDefinitions, discoverProjectAgents } from "./agent-definitions.js";
+import { BUILT_IN_AGENT_ROOT } from "./prompt-loader.js";
+import { validateToolSelectors } from "./tool-groups.js";
 
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTiers", "agents", "roles", "orchestrator", "limits"]);
 const ROUTE_KEYS = new Set(["provider", "model", "effort"]);
-const AGENT_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]); // deliberation is accepted only for legacy policy compatibility
+const AGENT_KEYS = new Set(["extends", "description", "prompt", "skills", "tools", "model", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]); // deliberation is accepted only for legacy policy compatibility
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
+
+const builtInAgentDefinitions = discoverAgentDefinitions(BUILT_IN_AGENT_ROOT);
+if (builtInAgentDefinitions.diagnostics.length > 0) throw new Error(`Invalid built-in agent definitions:\n${builtInAgentDefinitions.diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n")}`);
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	schemaVersion: 2,
@@ -31,12 +37,8 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 		low: ["openai-codex/gpt-5.6-luna#medium"],
 	},
 	agents: {
-		explorer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium" },
-		"plan-critic": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find"], tier: "medium" },
-		implementer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], completionSchema: "implementer-v1", tier: "medium" },
-		"code-reviewer": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "high" },
-		"e2e-tester": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium" },
-		"repair-implementer": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], tier: "high" },
+		...builtInAgentDefinitions.agents,
+		implementer: { ...builtInAgentDefinitions.agents.implementer!, completionSchema: "implementer-v1" },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
 	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
@@ -97,6 +99,7 @@ function parseAgent(value: unknown, path: string): AgentConfig {
 	rejectUnknownKeys(value, AGENT_KEYS, path);
 	const agent: AgentConfig = {};
 	if (value.extends !== undefined) agent.extends = expectString(value.extends, `${path}.extends`);
+	if (value.description !== undefined) agent.description = expectString(value.description, `${path}.description`);
 	if (value.prompt !== undefined) agent.prompt = expectString(value.prompt, `${path}.prompt`);
 	if (value.skills !== undefined) {
 		if (!Array.isArray(value.skills)) throw new HarnessError("CONFIG_INVALID", `${path}.skills must be an array`);
@@ -105,7 +108,9 @@ function parseAgent(value: unknown, path: string): AgentConfig {
 	if (value.tools !== undefined) {
 		if (!Array.isArray(value.tools)) throw new HarnessError("CONFIG_INVALID", `${path}.tools must be an array`);
 		agent.tools = value.tools.map((item, index) => expectString(item, `${path}.tools[${index}]`));
+		try { validateToolSelectors(agent.tools); } catch (error) { throw new HarnessError("CONFIG_INVALID", `${path}.tools: ${error instanceof Error ? error.message : String(error)}`); }
 	}
+	if (value.model !== undefined) agent.model = expectString(value.model, `${path}.model`);
 	if (value.workspace !== undefined) {
 		const workspace = expectString(value.workspace, `${path}.workspace`);
 		if (workspace !== "repository" && workspace !== "worktree" && workspace !== "none") throw new HarnessError("CONFIG_INVALID", `${path}.workspace is unsupported`);
@@ -210,5 +215,9 @@ export function loadHarnessConfig(
 
 	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new HarnessError("CONFIG_INVALID", diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"), { diagnostics });
 	const config = validateHarnessConfig(merged);
+	const projectAgents = discoverProjectAgents(repositoryRoot);
+	for (const [name, definition] of Object.entries(projectAgents.agents)) config.agents[name] = definition;
+	diagnostics.push(...projectAgents.diagnostics);
+	if (Object.keys(projectAgents.agents).length > 0) sources.push(join(repositoryRoot, ".pi", "agents"));
 	return { config, digest: digestConfig(config), sources, diagnostics };
 }

@@ -1,3 +1,10 @@
+---
+name: explorer
+description: Evidence-driven repository exploration and technical diagnosis
+tools: [read, grep, find, bash]
+tier: medium
+---
+
 # Repository Exploration
 
 ## Inputs

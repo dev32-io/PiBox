@@ -31,9 +31,11 @@ export type TierModelRouteConfig = string;
 
 export interface AgentConfig {
 	extends?: string;
+	description?: string;
 	prompt?: string;
 	skills?: string[];
 	tools?: string[];
+	model?: string;
 	workspace?: "repository" | "worktree" | "none";
 	canDelegate?: boolean;
 	completionSchema?: string;

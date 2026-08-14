@@ -1,3 +1,10 @@
+---
+name: plan-critic
+description: Independent critique of delivery plans
+tools: [read, grep, find]
+tier: medium
+---
+
 # Planning Critique
 
 Critique a proposed product or technical plan without rewriting it or making implementation changes.

@@ -31,6 +31,13 @@ export interface WorkflowRunResult {
 	attention?: boolean;
 }
 
+export interface SpawnableAgentDefinition {
+	name: string;
+	description: string;
+	tier: "low" | "medium" | "high" | "max";
+	source: "built-in" | "configured" | "project";
+}
+
 /** Free-form main-session delegation. Managed workflow steps keep their canonical adapter-owned refs. */
 export interface DynamicSubagentRequest {
 	operationId: string;
@@ -51,6 +58,8 @@ export interface WorkflowAdapter {
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
 	/** Optional dynamic agent/task launcher used by the main-session subagent_spawn tool. */
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
+	/** Trusted, validated definitions available to the generic launcher. */
+	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;
 	controlCheckpoint?(ref: string, action: "continue" | "retry" | "request_changes" | "skip" | "accept_risk", prompt: string | undefined, ctx: ExtensionContext): Promise<unknown>;
 	listSubagents(ctx: ExtensionContext): Promise<unknown[]>;

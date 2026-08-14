@@ -1,3 +1,10 @@
+---
+name: e2e-tester
+description: End-to-end and user-visible behavior verification
+tools: [read, grep, find, bash]
+tier: medium
+---
+
 # End-to-End Evaluation
 
 Evaluate an assembled user journey against its supplied requirements using reproducible runtime evidence.

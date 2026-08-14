@@ -1,9 +1,7 @@
-import { join } from "node:path";
 import { SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
-import { validateExplorationHandoff, type ExplorationAssignment, type ExplorationHandoff } from "./exploration-contracts.js";
 import { RepositoryMutex } from "./idempotency.js";
 import type { RepositoryIdentity } from "./repository.js";
-import { readTextIfExists, runGit } from "./repository.js";
+import { runGit } from "./repository.js";
 import { HarnessRunStore } from "./run-store.js";
 import { WorkItemStore } from "./work-items.js";
 
@@ -64,18 +62,6 @@ export async function reconcileReportedAgents(input: {
 				continue;
 			}
 
-			const root = join(input.registry.root, "agents", agent.id);
-			if (agent.role === "explorer") {
-				const assignmentText = await readTextIfExists(join(input.registry.root, agent.assignmentPath));
-				const handoffText = await readTextIfExists(join(root, "handoff.json"));
-				if (!assignmentText || !handoffText) { result.pending.push(agent.id); continue; }
-				const assignment = JSON.parse(assignmentText) as ExplorationAssignment;
-				const handoff = JSON.parse(handoffText) as ExplorationHandoff;
-				validateExplorationHandoff(handoff, assignment);
-				await input.registry.transition(agent.id, "completed", { summary: handoff.answer });
-				result.completed.push(agent.id);
-				continue;
-			}
 			result.pending.push(agent.id);
 		} catch (error) {
 			result.errors.push({ agentId: agent.id, error: error instanceof Error ? error.message : String(error) });
