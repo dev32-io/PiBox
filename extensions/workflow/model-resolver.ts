@@ -1,5 +1,5 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { CapabilityTier, Deliberation, HarnessConfig, HarnessEffort, TierModelRouteConfig } from "./types.js";
+import type { CapabilityTier, HarnessConfig, HarnessEffort, TierModelRouteConfig } from "./types.js";
 
 export interface ExplicitModelOverride {
 	/** Configured concrete model id, optionally prefixed with provider/. */
@@ -9,7 +9,6 @@ export interface ExplicitModelOverride {
 
 export interface ModelResolutionRequest {
 	tier: CapabilityTier;
-	deliberation: Deliberation;
 	override?: ExplicitModelOverride;
 	strict?: boolean;
 }
@@ -18,12 +17,19 @@ export interface ModelAttempt {
 	provider?: string;
 	model: string;
 	effort?: ModelThinkingLevel;
-	status: "profile_unsupported" | "override_not_configured" | "model_missing" | "effort_unsupported" | "selected";
+	status: "override_not_configured" | "model_missing" | "effort_unsupported" | "selected";
+}
+
+interface ParsedRoute {
+	configured: TierModelRouteConfig;
+	provider: string;
+	model: string;
+	effort: HarnessEffort;
 }
 
 export interface ResolvedHarnessModel {
 	status: "resolved";
-	requested: { tier: CapabilityTier; deliberation: Deliberation; override?: ExplicitModelOverride };
+	requested: { tier: CapabilityTier; override?: ExplicitModelOverride };
 	route: TierModelRouteConfig;
 	model: Model<Api>;
 	effort: ModelThinkingLevel;
@@ -33,7 +39,7 @@ export interface ResolvedHarnessModel {
 
 export interface UnresolvedHarnessModel {
 	status: "waiting_model";
-	requested: { tier: CapabilityTier; deliberation: Deliberation; override?: ExplicitModelOverride };
+	requested: { tier: CapabilityTier; override?: ExplicitModelOverride };
 	attempts: ModelAttempt[];
 }
 
@@ -47,25 +53,39 @@ export function supportsEffort(model: Model<Api>, effort: ModelThinkingLevel): b
 	return true;
 }
 
-function routeMatchesOverride(route: TierModelRouteConfig, model: string): boolean {
+function parseRoute(configured: TierModelRouteConfig): ParsedRoute {
+	const effortSeparator = configured.lastIndexOf("#");
+	const providerSeparator = configured.indexOf("/");
+	return {
+		configured,
+		provider: configured.slice(0, providerSeparator),
+		model: configured.slice(providerSeparator + 1, effortSeparator),
+		effort: configured.slice(effortSeparator + 1) as HarnessEffort,
+	};
+}
+
+function routeMatchesOverride(route: ParsedRoute, model: string): boolean {
 	return route.model === model || `${route.provider}/${route.model}` === model;
 }
 
-function candidates(config: HarnessConfig, request: ModelResolutionRequest): Array<{ route: TierModelRouteConfig; effort: HarnessEffort | undefined; override: boolean }> {
-	const routes = config.modelTiers[request.tier] ?? [];
-	if (!request.override) return routes.map((route) => ({ route, effort: route.effort[request.deliberation], override: false }));
+function candidates(config: HarnessConfig, request: ModelResolutionRequest): Array<{ route: ParsedRoute; effort: HarnessEffort; override: boolean }> {
+	const routes = (config.modelTiers[request.tier] ?? []).map(parseRoute);
+	if (!request.override) return routes.map((route) => ({ route, effort: route.effort, override: false }));
 	const matched = new Set<string>();
-	const orderedRoutes = [...routes, ...Object.entries(config.modelTiers).filter(([tier]) => tier !== request.tier).flatMap(([, tierRoutes]) => tierRoutes)];
+	const orderedRoutes = [
+		...routes,
+		...Object.entries(config.modelTiers).filter(([tier]) => tier !== request.tier).flatMap(([, tierRoutes]) => tierRoutes.map(parseRoute)),
+	];
 	const matching = orderedRoutes.filter((route) => {
 		const key = `${route.provider}/${route.model}`;
 		if (!routeMatchesOverride(route, request.override!.model) || matched.has(key)) return false;
 		matched.add(key);
 		return true;
 	});
-	const explicit = matching.map((route) => ({ route, effort: request.override!.effort ?? route.effort[request.deliberation], override: true }));
+	const explicit = matching.map((route) => ({ route, effort: request.override!.effort ?? route.effort, override: true }));
 	if (request.strict) return explicit;
 	const seen = new Set(explicit.map(({ route }) => `${route.provider}/${route.model}`));
-	return [...explicit, ...routes.filter((route) => !seen.has(`${route.provider}/${route.model}`)).map((route) => ({ route, effort: route.effort[request.deliberation], override: false }))];
+	return [...explicit, ...routes.filter((route) => !seen.has(`${route.provider}/${route.model}`)).map((route) => ({ route, effort: route.effort, override: false }))];
 }
 
 export function resolveHarnessModel(
@@ -74,18 +94,16 @@ export function resolveHarnessModel(
 	request: ModelResolutionRequest,
 ): HarnessModelResolution {
 	const attempts: ModelAttempt[] = [];
-	const requested = { tier: request.tier, deliberation: request.deliberation, ...(request.override ? { override: request.override } : {}) };
+	const requested = { tier: request.tier, ...(request.override ? { override: request.override } : {}) };
 	const configured = candidates(config, request);
-	const overrideConfigured = request.override ? Object.values(config.modelTiers).flat().some((route) => routeMatchesOverride(route, request.override!.model)) : true;
+	const overrideConfigured = request.override
+		? Object.values(config.modelTiers).flat().map(parseRoute).some((route) => routeMatchesOverride(route, request.override!.model))
+		: true;
 	if (request.override && !overrideConfigured) attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "override_not_configured" });
 
 	for (let index = 0; index < configured.length; index += 1) {
 		const candidate = configured[index]!;
 		const { route, effort } = candidate;
-		if (!effort) {
-			attempts.push({ provider: route.provider, model: route.model, status: "profile_unsupported" });
-			continue;
-		}
 		const model = availableModels.find((item) => item.provider === route.provider && item.id === route.model);
 		if (!model) {
 			attempts.push({ provider: route.provider, model: route.model, effort, status: "model_missing" });
@@ -99,7 +117,7 @@ export function resolveHarnessModel(
 		return {
 			status: "resolved",
 			requested,
-			route,
+			route: route.configured,
 			model,
 			effort,
 			fallbackUsed: index > 0 || Boolean(request.override && !candidate.override),

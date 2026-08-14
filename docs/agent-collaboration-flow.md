@@ -114,7 +114,7 @@ Make the high-level story executable in technical terms and optimize delivery th
 - Encode execution as ordered stages: blockers live in earlier stages, while tasks in one stage form the independent parallel frontier.
 - Let runtime derive mechanics: singleton stages execute on the feature branch; multi-task stages use per-task worktrees and an atomic merge barrier.
 - Define resource claims, intermediate states, integration expectations, and recovery boundaries only where they constrain safe execution.
-- Assign semantic capability tier and deliberation after decomposition; let harness configuration resolve the concrete provider, model, and model-specific effort.
+- Assign one semantic capability tier after decomposition; let harness configuration resolve its ordered concrete `provider/model#effort` pairs.
 - Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
 - Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
 - Write the complete draft atomically, read the whole plan at the exact written revision back, then self-review once for criterion/constraint coverage, vague placeholders, and consistency across dependencies, stages, references, and interfaces.

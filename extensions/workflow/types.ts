@@ -25,14 +25,9 @@ export interface MutationAuthority {
 export type Complexity = "low" | "medium" | "high" | "critical";
 export type HarnessEffort = ModelThinkingLevel;
 export type CapabilityTier = "low" | "medium" | "high" | "max";
-export type Deliberation = "standard" | "deep";
 
-/** One concrete provider route inside a capability tier. Effort is calibrated per model. */
-export interface TierModelRouteConfig {
-	provider: string;
-	model: string;
-	effort: { standard: HarnessEffort; deep?: HarnessEffort };
-}
+/** One concrete `provider/model#effort` route inside an ordered capability tier. */
+export type TierModelRouteConfig = string;
 
 export interface AgentConfig {
 	extends?: string;
@@ -43,7 +38,6 @@ export interface AgentConfig {
 	canDelegate?: boolean;
 	completionSchema?: string;
 	tier?: CapabilityTier;
-	deliberation?: Deliberation;
 }
 
 export interface HarnessConfig {
@@ -129,16 +123,13 @@ export interface TaskManifest {
 			| {
 				agent: string;
 				tier: CapabilityTier;
-				deliberation: Deliberation;
-				/** Exceptional concrete route pin, used only for an explicit user constraint. */
-				modelOverride?: { model: string; effort?: HarnessEffort; strict?: boolean };
 				rationale: string;
 			}
 			| {
 				/** Legacy assignment retained only so existing plans remain readable and replannable. */
 				role: string;
 				tier: CapabilityTier;
-				deliberation: Deliberation;
+				deliberation?: "standard" | "deep";
 				modelOverride?: { model: string; effort?: HarnessEffort; strict?: boolean };
 				rationale: string;
 			}

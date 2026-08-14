@@ -31,9 +31,14 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(await git(root, "status", "--porcelain"), "");
 	const loaded = loadHarnessConfig(root, { home: join(root, "unused-home") });
 	assert.equal(loaded.config.schemaVersion, 2);
-	assert.deepEqual(loaded.config.modelTiers.medium, [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } }]);
+	assert.deepEqual(loaded.config.modelTiers, {
+		max: ["openai-codex/gpt-5.6-sol#high"],
+		high: ["openai-codex/gpt-5.6-sol#medium"],
+		medium: ["openai-codex/gpt-5.6-luna#max"],
+		low: ["openai-codex/gpt-5.6-luna#medium"],
+	});
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
-	assert.equal(loaded.config.agents["code-reviewer"]?.deliberation, "deep");
+	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "high");
 	const policy = await readFile(join(root, ".pi", "harness.yaml"), "utf8");
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);

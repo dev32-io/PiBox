@@ -56,7 +56,6 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 	const assignment = record(task.assignment);
 	const verification = record(task.verification);
 	const tier = assignment.tier ?? "medium";
-	const deliberation = assignment.deliberation ?? "standard";
 	const stageId = task.stageId ?? task.id;
 	const boundaryIncluded = strings(brief.boundaryIncluded);
 	const contributionGoal = brief.contributionGoal;
@@ -77,9 +76,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 				assignment: {
 					agent: assignment.agent ?? assignment.role ?? "implementer",
 					tier,
-					deliberation,
-					...(assignment.modelOverride !== undefined ? { modelOverride: assignment.modelOverride } : {}),
-					rationale: assignment.rationale ?? `Default ${tier}/${deliberation} routing for a bounded contribution.`,
+					rationale: assignment.rationale ?? `Default ${tier} routing for a bounded contribution.`,
 				},
 			},
 			assembly: {
@@ -174,7 +171,7 @@ function assertEditFields(type: CanonicalResourceType, action: "create" | "updat
 		if (unknownReferences.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for task has unknown reference field(s): ${unknownReferences.join(", ")}`);
 	}
 	if (type === "task" && input.assignment !== undefined) {
-		const unknownAssignment = Object.keys(record(input.assignment)).filter((key) => !["agent", "role", "tier", "deliberation", "modelOverride", "rationale"].includes(key));
+		const unknownAssignment = Object.keys(record(input.assignment)).filter((key) => !["agent", "role", "tier", "rationale"].includes(key));
 		if (unknownAssignment.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for task has unknown assignment field(s): ${unknownAssignment.join(", ")}`);
 	}
 	if (type === "task" && input.verification !== undefined) {

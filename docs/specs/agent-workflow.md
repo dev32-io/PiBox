@@ -192,7 +192,7 @@ The orchestrator may act autonomously while preserving the reviewed contract. Th
 - Rejecting incomplete handoffs.
 - Requesting additional evaluation.
 - Applying non-semantic artifact corrections.
-- Selecting or revising a task capability tier and deliberation profile within reviewed scope.
+- Selecting or revising a task capability tier within reviewed scope.
 
 ### 6.2 Mandatory user escalation
 
@@ -219,7 +219,7 @@ The model judges semantics. The extension enforces mechanics:
 | Choose artifact dimensions | Create deterministic paths and indexes |
 | Decompose and prioritize tasks | Validate dependency references and cycles |
 | Recommend concurrency | Enforce worktrees, resource locks, and limits |
-| Assign capability tier and deliberation | Resolve a same-tier concrete model and model-specific effort |
+| Assign capability tier | Resolve an ordered same-tier `provider/model#effort` pair |
 | Judge whether a finding is critical | Keep affected work paused while waiting |
 | Choose repair strategy | Enforce retry bounds and lineage |
 | Judge context impact | Require designated rereads and acknowledgements |
@@ -390,7 +390,6 @@ execution:
   assignment:
     agent: implementer
     tier: high
-    deliberation: deep
     rationale: Bounded but cross-cutting session lifecycle and concurrency reasoning
 
 assembly:
@@ -505,7 +504,7 @@ Each task must be:
 - Assigned to a stage when several tasks must be assembled before they are meaningful.
 - Assigned to an ordered stage; blockers live in earlier stages and same-stage siblings are independent.
 - Given a proportionate verification timing: task, integration-unit, work-item, or intentionally skipped.
-- Assigned a capability tier and deliberation profile only after decomposition.
+- Assigned a capability tier only after decomposition.
 
 The planner drafts tracer-bullet contributions rather than horizontal implementation layers. Each task cuts a narrow but complete path through the behavior, implementation layers, and focused tests it needs; is independently demoable or verifiable; and fits one fresh worker context. Setup belongs with the behavior that needs it. Preparatory seams and expand–migrate–contract sequences are exceptions used only when vertical slices cannot remain coherent or green.
 
@@ -546,7 +545,6 @@ agents:
     canDelegate: false
     completionSchema: implementer-v1
     tier: medium
-    deliberation: standard
 ```
 
 Each agent definition configures:
@@ -555,7 +553,7 @@ Each agent definition configures:
 - Prompt and skill set.
 - Tool and capability allowlist.
 - Workspace policy.
-- Default capability tier and deliberation profile.
+- Default capability tier.
 - Delegation permission.
 - Context policy.
 - Structured completion schema.
@@ -655,44 +653,32 @@ Repository configuration loads only after Pi project trust succeeds.
 
 ### 12.2 Capability tiers and model-specific effort
 
-Plans express semantic execution requirements rather than concrete provider details:
+Plans choose one semantic capability tier rather than independently guessing model and reasoning effort:
 
 ```yaml
 assignment:
   agent: implementer
   tier: high
-  deliberation: standard
   rationale: Complex pointer geometry with a settled contract
 ```
 
-Capability and deliberation are separate axes:
+`medium` is the default for normal bounded engineering. Low is pure mechanical and low-risk; high is complex or broadly integrated; max is reserved for architecture, security, privacy, irreversible or high-blast-radius work, and exceptional ambiguity. A stronger tier never compensates for an oversized task.
 
-- `low | medium | high | max` states the minimum model capability required;
-- `standard | deep` states the remaining reasoning demand after proper task decomposition.
-
-`medium/standard` is the default for normal bounded engineering. Low is mechanical and low-risk; high is complex or broadly integrated; max is reserved for architecture, security, privacy, irreversible or high-blast-radius work, and exceptional ambiguity. Deep is reserved for irreducible long reasoning chains, difficult debugging, concurrency, security analysis, migration design, or consequential trade-offs. Neither a stronger tier nor deep deliberation compensates for an oversized task.
-
-The schema-v2 configuration maps each tier to ordered concrete routes. Effort is calibrated per model and deliberation profile:
+Each tier is an ordered list of concrete `provider/model#effort` pairs:
 
 ```yaml
 modelTiers:
+  max:
+    - openai-codex/gpt-5.6-sol#high
   high:
-    - provider: openai-codex
-      model: gpt-5.6-terra
-      effort: { standard: medium, deep: high }
-    - provider: openai-codex
-      model: gpt-5.6-sol
-      effort: { standard: low, deep: high }
+    - openai-codex/gpt-5.6-sol#medium
+  medium:
+    - openai-codex/gpt-5.6-luna#max
   low:
-    - provider: local-llm
-      model: qwen3.6-27b
-      effort: { standard: off }
-    - provider: openai-codex
-      model: gpt-5.6-luna
-      effort: { standard: low, deep: medium }
+    - openai-codex/gpt-5.6-luna#medium
 ```
 
-A route without a `deep` mapping is ineligible for deep work. Supported concrete Pi levels remain:
+Supported concrete Pi effort levels remain:
 
 ```text
 off | minimal | low | medium | high | xhigh | max
@@ -704,13 +690,13 @@ The runtime validates the configured level against the live model's actual `thin
 
 At spawn time:
 
-1. Read the task's tier and deliberation, or the role defaults for direct/evaluation work.
-2. Apply an exceptional explicit user/main-session concrete model and effort override when present.
-3. Traverse the configured routes for the requested tier/profile in order.
+1. Read the task's tier, or the agent-definition default for direct/evaluation work.
+2. Apply an explicit user/main-session model and effort override for a free-form subagent when present.
+3. Traverse the configured `provider/model#effort` pairs for the requested tier in order.
 4. Filter against Pi's live registry, auth, scoped models, and exact effort support.
-5. Record requested tier/profile, every attempted route, and actual provider/model/effort.
+5. Record the requested tier, every attempted pair, and actual provider/model/effort.
 
-Fallback is visible and remains inside the same capability tier and deliberation profile. There is no automatic capability downgrade or effort clamping. Provider/auth/capacity recovery may resume on another valid same-tier route; implementation or protocol failure does not by itself justify changing effort.
+Fallback is visible and remains inside the same capability tier. There is no automatic capability downgrade or effort clamping. Provider/auth/capacity recovery may resume on another valid same-tier pair; implementation or protocol failure does not by itself justify changing effort.
 
 A strict override can prohibit fallback:
 
@@ -1508,8 +1494,8 @@ The design is successfully implemented when:
 4. The planner can explicitly skip, defer, batch, or combine task-level review and testing while declaring the later meaningful verification boundary.
 5. Partial task contributions can be assembled in orchestrator-controlled stages without pretending they are independently complete.
 6. Agent definitions, tools, capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
-7. The planner records capability tier and deliberation per task; the runtime resolves provider/model/effort against Pi availability and exact thinking support.
-8. Missing or unsupported routes fall back visibly within the requested tier/profile or enter a waiting state without silent downgrade or effort clamping.
+7. The planner records one capability tier per task; the runtime resolves its ordered provider/model/effort pairs against Pi availability and exact thinking support.
+8. Missing or unsupported pairs fall back visibly within the requested tier or enter a waiting state without silent downgrade or effort clamping.
 9. Concurrent tasks run in deterministic isolated worktrees from a clean committed base.
 10. Workers communicate through scoped capabilities and cannot own canonical artifacts or integration.
 11. Completion requires a valid role-specific terminal handoff, with one deterministic nudge on omission.

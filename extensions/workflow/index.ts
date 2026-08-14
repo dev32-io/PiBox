@@ -23,7 +23,7 @@ import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceTy
 import { normalizePlanBundle, normalizePlanEdit } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
-import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type Deliberation, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
+import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
@@ -90,7 +90,6 @@ const MUTATION_AUTHORITY = Type.Object({
 }, { additionalProperties: false });
 const EFFORT = Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]);
 const CAPABILITY_TIER = Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("max")]);
-const DELIBERATION = Type.Union([Type.Literal("standard"), Type.Literal("deep")]);
 const TASK_MANIFEST_RESOURCE = Type.Object({
 	schemaVersion: Type.Literal(1), id: Type.String({ description: "Bare kebab-case task id" }), title: Type.String(),
 	status: Type.Union([Type.Literal("draft"), Type.Literal("blocked"), Type.Literal("ready")]),
@@ -101,13 +100,7 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 		assignment: Type.Object({
 			agent: Type.String({ description: "Configured agent definition, normally implementer" }),
 			tier: CAPABILITY_TIER,
-			deliberation: DELIBERATION,
-			modelOverride: Type.Optional(Type.Object({
-				model: Type.String({ description: "Exceptional configured concrete model pin required by the user" }),
-				effort: Type.Optional(EFFORT),
-				strict: Type.Optional(Type.Boolean()),
-			}, { additionalProperties: false })),
-			rationale: Type.String({ description: "Why this task needs the selected capability tier and deliberation profile after decomposition" }),
+			rationale: Type.String({ description: "Why this task needs the selected capability tier after decomposition" }),
 		}, { additionalProperties: false }),
 	}, { additionalProperties: false }),
 	assembly: Type.Object({ stageId: Type.Optional(Type.String()), integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId" })), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
@@ -176,8 +169,7 @@ const PLAN_TASK = Type.Object({
 	intermediateState: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("partial")])),
 	resourceClaims: Type.Optional(Type.Array(Type.String())),
 	assignment: Type.Optional(Type.Object({
-		agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER), deliberation: Type.Optional(DELIBERATION),
-		modelOverride: Type.Optional(Type.Object({ model: Type.String(), effort: Type.Optional(EFFORT), strict: Type.Optional(Type.Boolean()) }, { additionalProperties: false })),
+		agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER),
 		rationale: Type.Optional(Type.String()),
 	}, { additionalProperties: false })),
 	verification: Type.Optional(Type.Object({
@@ -515,13 +507,8 @@ export default function workflow(pi: ExtensionAPI): void {
 			const agentName = taskAgentName(task);
 			const agentPolicy = runtime.config.agents[agentName];
 			if (!agentPolicy) throw new HarnessError("INVALID_ARTIFACT", `Unknown task agent: ${agentName}`);
-			if (!isTierTaskAssignment(task.execution.assignment)) throw new HarnessError("CONFIG_INVALID", `Task ${task.id} uses a legacy model assignment. Replan it with tier and deliberation before execution.`);
-			const modelOverride = task.execution.assignment.modelOverride;
-			const plannedRouting = {
-				tier: task.execution.assignment.tier,
-				deliberation: task.execution.assignment.deliberation,
-				...(modelOverride ? { override: { model: modelOverride.model, ...(modelOverride.effort ? { effort: modelOverride.effort } : {}) }, strict: modelOverride.strict ?? false } : {}),
-			};
+			if (!isTierTaskAssignment(task.execution.assignment)) throw new HarnessError("CONFIG_INVALID", `Task ${task.id} uses a legacy model assignment. Replan it with a capability tier before execution.`);
+			const plannedRouting = { tier: task.execution.assignment.tier };
 			const allAvailable = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 			const resolution = resolveHarnessModel(runtime.config, allAvailable, plannedRouting);
 			if (resolution.status === "waiting_model") {
@@ -543,7 +530,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				baseCommit: allocation.baseCommit,
 				executionMode: allocation.isolation,
 				planningRevision: item.planning.revision,
-				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: `${plannedRouting.tier}:${plannedRouting.deliberation}${modelOverride ? `:${modelOverride.model}${modelOverride.effort ? `:${modelOverride.effort}` : ""}` : ""}` },
+				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: plannedRouting.tier },
 				...(agentPolicy.prompt && resolveConfiguredPath(runtime.identity.root, agentPolicy.prompt)
 					? { agentPrompt: readFileSync(resolveConfiguredPath(runtime.identity.root, agentPolicy.prompt) as string, "utf8") }
 					: {}),
@@ -558,7 +545,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			});
 			await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
 			return textResult(
-				`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}:${resolution.effort} for ${plannedRouting.tier}/${plannedRouting.deliberation}${resolution.fallbackUsed ? " (visible same-tier fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
+				`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}#${resolution.effort} for ${plannedRouting.tier}${resolution.fallbackUsed ? " (visible same-tier fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
 				launched,
 			);
 		} catch (error) {
@@ -577,7 +564,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		if (!loop || loop.state !== "fixing" || !loop.managerPrompt?.trim()) throw new HarnessError("INVALID_HANDOFF", `Evaluation ${evaluationId} is not awaiting a prompted repair`);
 		const agentDefinition = runtime.config.agents["repair-implementer"];
 		if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", "Missing repair-implementer agent definition");
-		const routing = { tier: agentDefinition.tier!, deliberation: agentDefinition.deliberation! };
+		const routing = { tier: agentDefinition.tier! };
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No repair model is available");
@@ -606,7 +593,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const agentName = evaluation.type === "e2e" ? "e2e-tester" : "code-reviewer";
 		const agentDefinition = runtime.config.agents[agentName];
 		if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", `Missing evaluator agent definition: ${agentName}`);
-		const routing = { tier: agentDefinition.tier!, deliberation: agentDefinition.deliberation! };
+		const routing = { tier: agentDefinition.tier! };
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
@@ -616,7 +603,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			repositoryId: runtime.identity.id, workItemId: item.id, evaluationId: evaluation.id, role: agentName,
 			attempt: evaluation.attempt + 1, state: "running", workspace: runtime.identity.root,
 			baseCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), planningRevision: item.planning.revision,
-			requestedModel: `${routing.tier}:${routing.deliberation}`, resolvedProvider: resolution.model.provider,
+			requestedModel: routing.tier, resolvedProvider: resolution.model.provider,
 			resolvedModel: resolution.model.id, resolvedEffort: resolution.effort,
 		});
 		const prompt = renderBuiltInPrompt("managed-evaluation", {
@@ -681,7 +668,6 @@ export default function workflow(pi: ExtensionAPI): void {
 			if (request.effort && !request.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
 			const routing = {
 				tier: (request.tier ?? agentDefinition.tier!) as CapabilityTier,
-				deliberation: (request.deliberation ?? agentDefinition.deliberation!) as Deliberation,
 				...(request.model ? { override: { model: request.model, ...(request.effort ? { effort: request.effort as HarnessEffort } : {}) } } : {}),
 				strict: request.strict ?? false,
 			};
@@ -696,7 +682,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			};
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
-				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(request.deliberation ? { deliberation: request.deliberation } : {}), ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}), ...(request.strict !== undefined ? { strict: request.strict } : {}) }, cwd: runtime.identity.root,
+				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}), ...(request.strict !== undefined ? { strict: request.strict } : {}) }, cwd: runtime.identity.root,
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
 				tools: agentDefinition.tools ?? defaultTools[request.agent] ?? ["read", "grep", "find"],
 				workspace: runtime.identity.root,
@@ -1056,7 +1042,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			scope: Type.Object({ start: Type.Array(Type.String()), exclude: Type.Optional(Type.Array(Type.String())) }),
 			depth: Type.Union([Type.Literal("quick"), Type.Literal("standard"), Type.Literal("thorough")]),
 			stopConditions: Type.Array(Type.String()), requiredOutput: Type.Array(Type.String()),
-			tier: Type.Optional(CAPABILITY_TIER), deliberation: Type.Optional(DELIBERATION),
+			tier: Type.Optional(CAPABILITY_TIER),
 			model: Type.Optional(Type.String({ description: "Exceptional concrete configured model override" })), effort: Type.Optional(EFFORT),
 		}, { additionalProperties: false }),
 		async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -1070,7 +1056,6 @@ export default function workflow(pi: ExtensionAPI): void {
 				if (params.effort && !params.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
 				const routing = {
 					tier: (params.tier ?? agentDefinition.tier!) as CapabilityTier,
-					deliberation: (params.deliberation ?? agentDefinition.deliberation!) as Deliberation,
 					...(params.model ? { override: { model: params.model, ...(params.effort ? { effort: params.effort as HarnessEffort } : {}) } } : {}),
 				};
 				const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();

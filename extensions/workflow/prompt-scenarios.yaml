@@ -134,8 +134,8 @@ scenarios:
       - separates filters and bulk cleanup from due-date behavior and from pointer reorder interaction when each is independently verifiable
       - places blockers in earlier sequential stages and only independent resource-compatible tasks in one parallel stage
       - does not ask the planner to select repository or worktree isolation because runtime derives it from stage size
-      - defaults clear common work to medium standard and reserves stronger routing for irreducible complexity
-      - records only capability tier and deliberation rather than raw model or effort
+      - defaults clear common work to medium and reserves stronger routing for irreducible complexity
+      - records only capability tier while policy binds each tier to ordered model and effort pairs
       - rejects one task spanning drag geometry persistence dates controls styling accessibility and most story criteria
     fixture: a small React todo app story combines filtered search controls clear completed optional persisted due dates and complex pointer-following reorder behavior across shared files; the proposed plan must remain free to choose serial tracer bullets despite shared files
     model:

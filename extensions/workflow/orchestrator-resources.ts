@@ -88,10 +88,6 @@ export class OrchestratorResourceService {
 		if (isTierTaskAssignment(assignment)) {
 			const routes = this.config.modelTiers[assignment.tier];
 			if (!routes?.length) throw new HarnessError("CONFIG_INVALID", `Task tier has no configured routes: ${assignment.tier}`);
-			if (!routes.some((route) => route.effort[assignment.deliberation] !== undefined)) throw new HarnessError("CONFIG_INVALID", `Task routing ${assignment.tier}/${assignment.deliberation} has no configured model effort mapping`);
-			if (assignment.modelOverride && !Object.values(this.config.modelTiers).flat().some((route) => route.model === assignment.modelOverride!.model || `${route.provider}/${route.model}` === assignment.modelOverride!.model)) {
-				throw new HarnessError("CONFIG_INVALID", `Task model override is not configured in any tier: ${assignment.modelOverride.model}`);
-			}
 		}
 	}
 
@@ -164,7 +160,7 @@ export class OrchestratorResourceService {
 					status: task.status,
 					stageId: task.assembly.stageId ?? task.assembly.integrationUnit,
 					blockedBy: task.dependsOn,
-					assignment: isTierTaskAssignment(assignment) ? { agent: taskAgentName(task), tier: assignment.tier, deliberation: assignment.deliberation } : { agent: taskAgentName(task), legacyModel: assignment.model },
+					assignment: isTierTaskAssignment(assignment) ? { agent: taskAgentName(task), tier: assignment.tier } : { agent: taskAgentName(task), legacyModel: assignment.model },
 					allowedActions: allowed(type, finalized),
 				});
 			}

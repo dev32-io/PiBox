@@ -11,10 +11,10 @@ function economyConfig() {
 	return {
 		schemaVersion: 2,
 		modelTiers: {
-			max: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "high", deep: "max" } }],
-			high: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } }],
-			medium: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } }],
-			low: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "low", deep: "medium" } }],
+			max: ["openai-codex/gpt-5.6-sol#high"],
+			high: ["openai-codex/gpt-5.6-sol#medium"],
+			medium: ["openai-codex/gpt-5.6-luna#max"],
+			low: ["openai-codex/gpt-5.6-luna#medium"],
 		},
 		limits: { maxConcurrency: 2, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 1 },
 	};

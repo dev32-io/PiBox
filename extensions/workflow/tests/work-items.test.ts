@@ -57,9 +57,8 @@ test("creates, catalogs, and submits canonical work-item artifacts for review", 
 		execution: {
 			resourceClaims: [],
 			assignment: {
-				role: "implementer",
+				agent: "implementer",
 				tier: "max",
-				deliberation: "deep",
 				rationale: "Security-sensitive identity contract",
 			},
 		},
@@ -74,7 +73,7 @@ test("creates, catalogs, and submits canonical work-item artifacts for review", 
 	});
 	assert.equal(planned.planning.revision, 4);
 	assert.deepEqual(planned.executionStages, [{ id: "session-runtime", tasks: ["implement-identity"] }]);
-	assert.deepEqual((await store.readTask("session-model", "implement-identity")).execution.assignment, { role: "implementer", tier: "max", deliberation: "deep", rationale: "Security-sensitive identity contract" });
+	assert.deepEqual((await store.readTask("session-model", "implement-identity")).execution.assignment, { agent: "implementer", tier: "max", rationale: "Security-sensitive identity contract" });
 
 	const submitted = await store.submitPlanning("session-model");
 	assert.deepEqual(submitted.planning, { revision: 4 });
@@ -89,7 +88,7 @@ test("workflow start begins execution and activates draft tasks according to dep
 	const manifest = (id: string, dependsOn: string[], stageId: string): TaskManifest => ({
 		schemaVersion: 1, id, title: id, status: "draft", dependsOn,
 		references: { specs: [], designs: [], decisions: [] },
-		execution: { resourceClaims: [id], assignment: { role: "implementer", tier: "low", deliberation: "standard", rationale: "Fixture" } },
+		execution: { resourceClaims: [id], assignment: { agent: "implementer", tier: "low", rationale: "Fixture" } },
 		assembly: { stageId, intermediateState: "complete" },
 		verification: { timing: "integration-unit", methods: [], taskChecks: [], rationale: "Fixture" },
 	});
@@ -120,7 +119,7 @@ test("renders schema-v2 intent, artifacts, and task contracts from semantic valu
 	});
 	const manifest: TaskManifest = {
 		schemaVersion: 1, id: "render-contract", title: "Render contract", status: "ready", dependsOn: [], references: { specs: ["contract"], designs: [], decisions: [] },
-		execution: { resourceClaims: [], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } },
+		execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "medium", rationale: "bounded" } },
 		assembly: { integrationUnit: "contract-unit", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: [], rationale: "assembled proof" },
 	};
 	await store.defineTask({
@@ -194,7 +193,7 @@ verification: { timing: task, methods: [], taskChecks: [], rationale: Historical
 test("rejects same-stage blockers and conflicting parallel resource claims on submit", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "bad-topology", title: "Bad topology", kind: "change", intent: "Reject unsafe stage topology." });
-	const manifest = (id: string, dependsOn: string[], claim: string): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn, references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [claim], assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "fixture" } }, assembly: { stageId: "parallel", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
+	const manifest = (id: string, dependsOn: string[], claim: string): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn, references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [claim], assignment: { agent: "implementer", tier: "medium", rationale: "fixture" } }, assembly: { stageId: "parallel", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
 	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("first", [], "shared"), brief: "First", acceptance: "First accepted" });
 	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("second", ["first"], "other"), brief: "Second", acceptance: "Second accepted" });
 	await assert.rejects(store.submitPlanning("bad-topology"), /blockers must be placed in an earlier execution stage/);

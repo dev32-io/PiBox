@@ -40,6 +40,7 @@ test("registers the generalized workflow and subagent surface", () => {
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"]);
 	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured generic agent definition and task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /tier.*model.*effort.*strict/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*No separate approval command/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 });
@@ -127,9 +128,9 @@ test("background spawning delegates a role and prompt and later emits a lifecycl
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it" }, undefined, undefined, f.ctx);
+	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
-	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task }, { operationId: "call", agent: "plan-critic", task: "Review it" });
+	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("completed")), false);
 	release();
 	await new Promise((resolve) => setTimeout(resolve, 20));

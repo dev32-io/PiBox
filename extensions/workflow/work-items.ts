@@ -169,8 +169,7 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 	const agent = "agent" in assignment ? assignment.agent : assignment.role;
 	if (typeof agent !== "string" || typeof assignment.rationale !== "string" || !assignment.rationale.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid assignment`);
 	if (isTierTaskAssignment(assignment)) {
-		if (!["low", "medium", "high", "max"].includes(assignment.tier) || !["standard", "deep"].includes(assignment.deliberation)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid tier routing`);
-		if (assignment.modelOverride && (typeof assignment.modelOverride.model !== "string" || (assignment.modelOverride.effort !== undefined && typeof assignment.modelOverride.effort !== "string") || (assignment.modelOverride.strict !== undefined && typeof assignment.modelOverride.strict !== "boolean"))) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid concrete model override`);
+		if (!["low", "medium", "high", "max"].includes(assignment.tier)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid tier routing`);
 	} else if (typeof assignment.model !== "string" || typeof assignment.effort !== "string" || typeof assignment.minimumCapabilityRank !== "number" || typeof assignment.allowFallback !== "boolean") {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid legacy model assignment`);
 	}

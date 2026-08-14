@@ -28,7 +28,7 @@ function manifest(): TaskManifest {
 		references: { specs: [], designs: [], decisions: [] },
 		execution: {
 			resourceClaims: [],
-			assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "test" },
+			assignment: { agent: "implementer", tier: "medium", rationale: "test" },
 		},
 		assembly: { integrationUnit: "supervised-unit", intermediateState: "complete" },
 		verification: { timing: "integration-unit", methods: [], taskChecks: [], rationale: "fake process" },

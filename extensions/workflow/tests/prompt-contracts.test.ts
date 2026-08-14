@@ -76,8 +76,8 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /spawn `plan-critic` through `subagent_spawn`/i);
 	assert.match(delivery, /Tasks in one stage are the parallel frontier/i);
 	assert.match(delivery, /runtime—not the planner—executes singleton stages on the feature branch/i);
-	assert.match(delivery, /Use `medium\/standard` by default/i);
-	assert.match(delivery, /harness selects provider, concrete model, and model-specific effort/i);
+	assert.match(delivery, /Use `medium` by default/i);
+	assert.match(delivery, /ordered list of concrete `provider\/model#effort` pairs/i);
 	assert.match(delivery, /call `workflow_transition` with `submit`/i);
 	assert.match(delivery, /user can say “start the workflow”[\s\S]+sole execution gate/i);
 	assert.match(delivery, /no separate approval command is required/i);

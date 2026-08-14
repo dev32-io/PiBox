@@ -46,7 +46,7 @@ function task(id = "add-feature", stageId = "feature-unit", claim = `${id}-files
 		references: { specs: [], designs: [], decisions: [] },
 		execution: {
 			resourceClaims: [claim],
-			assignment: { role: "implementer", tier: "medium", deliberation: "standard", rationale: "fixture" },
+			assignment: { agent: "implementer", tier: "medium", rationale: "fixture" },
 		},
 		assembly: { stageId, intermediateState: "complete" },
 		verification: { timing: "integration-unit", methods: ["test"], taskChecks: [`test -f ${id}.txt`], rationale: "assembled check" },

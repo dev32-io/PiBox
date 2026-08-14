@@ -20,7 +20,7 @@ async function repository(t: test.TestContext): Promise<string> {
 	return root;
 }
 function task(id = "build-app"): TaskManifest {
-	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "medium", deliberation: "standard", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
+	return { schemaVersion: 1, id, title: "Build app", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "medium", rationale: "bounded" } }, assembly: { integrationUnit: "app", intermediateState: "complete" }, verification: { timing: "integration-unit", methods: ["test"], taskChecks: ["test -f app.txt"], rationale: "assembled" } };
 }
 const mutation = { rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
 
@@ -96,12 +96,11 @@ test("single-resource patches do not require a redundant coalescing commit", asy
 	await store.defineTask({ workItemId: "single-patch", manifest: task(), brief: "Build it.", acceptance: "It works." });
 	await store.submitPlanning("single-patch");
 	const before = await store.read("single-patch");
-	await service.transaction("harness: patch one task", () => service.patch("work-item:single-patch/task:build-app", { execution: { assignment: { tier: "high", deliberation: "deep" } } }, { authority: mutation }));
+	await service.transaction("harness: patch one task", () => service.patch("work-item:single-patch/task:build-app", { execution: { assignment: { tier: "high" } } }, { authority: mutation }));
 	const after = await store.read("single-patch");
 	assert.equal(after.planning.revision, before.planning.revision + 1);
 	const assignment = (await store.readTask("single-patch", "build-app")).execution.assignment;
 	assert.equal("tier" in assignment ? assignment.tier : undefined, "high");
-	assert.equal("deliberation" in assignment ? assignment.deliberation : undefined, "deep");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

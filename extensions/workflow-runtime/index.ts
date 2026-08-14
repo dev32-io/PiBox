@@ -257,7 +257,6 @@ export default function workflows(pi: ExtensionAPI): void {
 			task: Type.String({ description: "Complete assignment prompt for the child" }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
 			tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const)),
-			deliberation: Type.Optional(StringEnum(["standard", "deep"] as const)),
 			model: Type.Optional(Type.String({ description: "Exceptional configured concrete model override; normally omit to use agent policy" })),
 			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
 			strict: Type.Optional(Type.Boolean()),
@@ -267,7 +266,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const mode = params.mode ?? "background";
 			const request: DynamicSubagentRequest = {
 				operationId: toolCallId, agent: params.agent, task: params.task,
-				...(params.tier ? { tier: params.tier } : {}), ...(params.deliberation ? { deliberation: params.deliberation } : {}),
+				...(params.tier ? { tier: params.tier } : {}),
 				...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}), ...(params.strict !== undefined ? { strict: params.strict } : {}),
 			};
 			// Esc cancels only an explicitly foreground child. Background children are

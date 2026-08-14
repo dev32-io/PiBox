@@ -37,7 +37,6 @@ export interface DynamicSubagentRequest {
 	agent: string;
 	task: string;
 	tier?: "low" | "medium" | "high" | "max";
-	deliberation?: "standard" | "deep";
 	model?: string;
 	effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	strict?: boolean;

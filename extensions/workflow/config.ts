@@ -7,7 +7,6 @@ import { HarnessError } from "./errors.js";
 import type {
 	CapabilityTier,
 	ConfigDiagnostic,
-	Deliberation,
 	HarnessConfig,
 	HarnessEffort,
 	LoadedHarnessConfig,
@@ -17,39 +16,27 @@ import type {
 
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
-const DELIBERATIONS = new Set<Deliberation>(["standard", "deep"]);
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTiers", "agents", "roles", "orchestrator", "limits"]);
 const ROUTE_KEYS = new Set(["provider", "model", "effort"]);
-const EFFORT_KEYS = new Set(["standard", "deep"]);
-const AGENT_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]);
+const AGENT_KEYS = new Set(["extends", "prompt", "skills", "tools", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]); // deliberation is accepted only for legacy policy compatibility
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	schemaVersion: 2,
 	modelTiers: {
-		max: [
-			{ provider: "openai-codex", model: "gpt-5.6-sol", effort: { standard: "high", deep: "max" } },
-		],
-		high: [
-			{ provider: "openai-codex", model: "gpt-5.6-terra", effort: { standard: "medium", deep: "high" } },
-			{ provider: "openai-codex", model: "gpt-5.6-sol", effort: { standard: "medium", deep: "high" } },
-		],
-		medium: [
-			{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "medium", deep: "high" } },
-			{ provider: "openai-codex", model: "gpt-5.6-terra", effort: { standard: "low", deep: "high" } },
-		],
-		low: [
-			{ provider: "openai-codex", model: "gpt-5.6-luna", effort: { standard: "low", deep: "medium" } },
-		],
+		max: ["openai-codex/gpt-5.6-sol#high"],
+		high: ["openai-codex/gpt-5.6-sol#medium"],
+		medium: ["openai-codex/gpt-5.6-luna#max"],
+		low: ["openai-codex/gpt-5.6-luna#medium"],
 	},
 	agents: {
-		explorer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium", deliberation: "standard" },
-		"plan-critic": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find"], tier: "medium", deliberation: "standard" },
-		implementer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], completionSchema: "implementer-v1", tier: "medium", deliberation: "standard" },
-		"code-reviewer": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "high", deliberation: "deep" },
-		"e2e-tester": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium", deliberation: "standard" },
-		"repair-implementer": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], tier: "high", deliberation: "standard" },
+		explorer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium" },
+		"plan-critic": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find"], tier: "medium" },
+		implementer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], completionSchema: "implementer-v1", tier: "medium" },
+		"code-reviewer": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "high" },
+		"e2e-tester": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium" },
+		"repair-implementer": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], tier: "high" },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
 	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
@@ -89,18 +76,20 @@ function rejectUnknownKeys(value: UnknownRecord, allowed: Set<string>, path: str
 }
 
 function parseRoute(value: unknown, path: string): TierModelRouteConfig {
-	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must be a mapping`);
+	if (typeof value === "string") {
+		const separator = value.lastIndexOf("#");
+		const providerSeparator = value.indexOf("/");
+		if (separator <= providerSeparator || providerSeparator <= 0 || separator === value.length - 1) throw new HarnessError("CONFIG_INVALID", `${path} must use provider/model#effort`);
+		const effort = expectEffort(value.slice(separator + 1), `${path} effort`);
+		return `${value.slice(0, separator)}#${effort}`;
+	}
+	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must use provider/model#effort`);
+	// Normalize the previous mapping form so existing repository policies remain loadable.
 	rejectUnknownKeys(value, ROUTE_KEYS, path);
-	if (!isRecord(value.effort)) throw new HarnessError("CONFIG_INVALID", `${path}.effort must be a mapping`);
-	rejectUnknownKeys(value.effort, EFFORT_KEYS, `${path}.effort`);
-	return {
-		provider: expectString(value.provider, `${path}.provider`),
-		model: expectString(value.model, `${path}.model`),
-		effort: {
-			standard: expectEffort(value.effort.standard, `${path}.effort.standard`),
-			...(value.effort.deep === undefined ? {} : { deep: expectEffort(value.effort.deep, `${path}.effort.deep`) }),
-		},
-	};
+	const provider = expectString(value.provider, `${path}.provider`);
+	const model = expectString(value.model, `${path}.model`);
+	const legacyEffort = isRecord(value.effort) ? value.effort.standard : value.effort;
+	return `${provider}/${model}#${expectEffort(legacyEffort, `${path}.effort`)}`;
 }
 
 function parseAgent(value: unknown, path: string): AgentConfig {
@@ -132,11 +121,7 @@ function parseAgent(value: unknown, path: string): AgentConfig {
 		if (!TIERS.includes(tier)) throw new HarnessError("CONFIG_INVALID", `${path}.tier is unsupported`);
 		agent.tier = tier;
 	}
-	if (value.deliberation !== undefined) {
-		const deliberation = expectString(value.deliberation, `${path}.deliberation`) as Deliberation;
-		if (!DELIBERATIONS.has(deliberation)) throw new HarnessError("CONFIG_INVALID", `${path}.deliberation is unsupported`);
-		agent.deliberation = deliberation;
-	}
+	if (value.deliberation !== undefined && !["standard", "deep"].includes(expectString(value.deliberation, `${path}.deliberation`))) throw new HarnessError("CONFIG_INVALID", `${path}.deliberation is unsupported`);
 	return agent;
 }
 
@@ -166,7 +151,7 @@ export function validateHarnessConfig(value: unknown): HarnessConfig {
 		const parent = agent.extends ? resolveAgent(agent.extends, [...stack, name]) : {};
 		const resolved = mergeConfigValues(parent, agent) as AgentConfig;
 		delete resolved.extends;
-		if (!resolved.tier || !resolved.deliberation) throw new HarnessError("CONFIG_INVALID", `Agent ${name} must resolve tier and deliberation defaults`);
+		if (!resolved.tier) throw new HarnessError("CONFIG_INVALID", `Agent ${name} must resolve a tier default`);
 		agents[name] = resolved;
 		return resolved;
 	};

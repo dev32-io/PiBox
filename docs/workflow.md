@@ -131,27 +131,13 @@ schemaVersion: 2
 
 modelTiers:
   max:
-    - provider: openai-codex
-      model: gpt-5.6-sol
-      effort: { standard: high, deep: max }
+    - openai-codex/gpt-5.6-sol#high
   high:
-    - provider: openai-codex
-      model: gpt-5.6-terra
-      effort: { standard: medium, deep: high }
-    - provider: openai-codex
-      model: gpt-5.6-sol
-      effort: { standard: medium, deep: high }
+    - openai-codex/gpt-5.6-sol#medium
   medium:
-    - provider: openai-codex
-      model: gpt-5.6-luna
-      effort: { standard: medium, deep: high }
+    - openai-codex/gpt-5.6-luna#max
   low:
-    - provider: local-llm
-      model: qwen3.6-27b
-      effort: { standard: off }
-    - provider: openai-codex
-      model: gpt-5.6-luna
-      effort: { standard: low, deep: medium }
+    - openai-codex/gpt-5.6-luna#medium
 
 agents:
   implementer:
@@ -162,13 +148,11 @@ agents:
     canDelegate: false
     completionSchema: implementer-v1
     tier: medium
-    deliberation: standard
 
   deep-reviewer:
     extends: code-reviewer
     tools: [read, grep, find]
     tier: high
-    deliberation: deep
 
 orchestrator:
   modelSwitching: auto-visible
@@ -183,7 +167,7 @@ limits:
 
 Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`. Built-in reusable agent definitions live in `agent-definitions/`; editable harness prompt fragments live in `prompt/`.
 
-Task plans select `low | medium | high | max` capability and `standard | deep` deliberation. Each configured route maps that semantic request to an effort calibrated for its concrete model. Fallback is always visible and stays inside the requested tier/profile; unsupported effort mappings or unavailable strict selections enter `waiting_model` rather than silently lowering capability or clamping effort.
+Task plans select only `low | medium | high | max`. Each tier is an ordered list of `provider/model#effort` entries, so model capability and reasoning cost are tuned together in policy rather than guessed independently by the planner. Fallback is visible and remains inside the requested tier; unsupported or unavailable pairs are skipped in order, and an exhausted tier enters `waiting_model` without silent downgrade or effort clamping. Free-form `subagent_spawn` may still honor an explicit user-selected model and effort.
 
 ## Durable state
 
