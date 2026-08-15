@@ -88,3 +88,18 @@ test("renders canonical mutation changes and commit without receipt JSON", () =>
 		"└─ work-item:checkout/task:implement · create",
 	]);
 });
+
+test("collapses verbose foreground subagent results with an expand hint", () => {
+	const resultLines = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`);
+	const rendered = lines(renderHarnessToolResult("subagent_spawn", {
+		content: [{ type: "text", text: resultLines.join("\n") }],
+	}, false, theme, false));
+	assert.match(rendered.join("\n"), /line 10/);
+	assert.doesNotMatch(rendered.join("\n"), /line 11/);
+	assert.match(rendered.join("\n"), /… \+2 more lines \(ctrl\+o to expand\)/);
+
+	const expanded = lines(renderHarnessToolResult("subagent_spawn", {
+		content: [{ type: "text", text: resultLines.join("\n") }],
+	}, true, theme, false));
+	assert.match(expanded.join("\n"), /line 12/);
+});

@@ -1,5 +1,5 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
-import { Container, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { currentSubagentPulseDot } from "../../../workflow-runtime/subagent-display.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
@@ -130,13 +130,16 @@ function summaryFields(payload: any, details: any): Array<[string, string]> {
 	return fields.slice(0, 6);
 }
 
-function appendTreeRows(container: Container, rows: string[], theme: Theme, expanded: boolean): void {
-	const shown = expanded ? rows : rows.slice(0, 6);
+function appendTreeRows(container: Container, rows: string[], theme: Theme, expanded: boolean, collapsedLimit = 6): void {
+	const shown = expanded ? rows : rows.slice(0, collapsedLimit);
 	shown.forEach((row, index) => {
 		const last = index === shown.length - 1 && shown.length === rows.length;
 		container.addChild(new Text(`${theme.fg("dim", last ? "└─" : "├─")} ${theme.fg("muted", row)}`, 0, 0));
 	});
-	if (rows.length > shown.length) container.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("dim", `… ${rows.length - shown.length} more`)}`, 0, 0));
+	if (rows.length > shown.length) {
+		const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
+		container.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("dim", `… +${rows.length - shown.length} more lines (${toggle} to expand)`)}`, 0, 0));
+	}
 }
 
 export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean): Component {
@@ -177,6 +180,6 @@ export function renderHarnessToolResult(name: string, result: any, expanded: boo
 		return component;
 	}
 	const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-	if (lines.length > 0) appendTreeRows(component, expanded ? lines : lines.slice(0, 4), theme, expanded);
+	if (lines.length > 0) appendTreeRows(component, lines, theme, expanded, name === "subagent_spawn" ? 10 : 4);
 	return component;
 }

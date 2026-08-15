@@ -74,6 +74,16 @@ test("workflow confirmation is extension-owned and does not change mode by itsel
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });
 
+test("workflow confirmation survives session reload", async (t) => {
+	const h = await harness(t);
+	await h.handlers.get("session_start")?.({}, h.ctx);
+	await h.handlers.get("session_shutdown")?.({}, h.ctx);
+	await h.handlers.get("session_start")?.({}, h.ctx);
+	h.setConfirm(true);
+	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:checkout"), true);
+	await h.handlers.get("session_shutdown")?.({}, h.ctx);
+});
+
 test("headless spawned sessions inherit the parent process permission mode", async (t) => {
 	const previous = process.env.PIBOX_PERMISSION_MODE;
 	process.env.PIBOX_PERMISSION_MODE = "bypass";

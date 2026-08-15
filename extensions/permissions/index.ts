@@ -40,7 +40,7 @@ export default function permissions(pi: ExtensionAPI): void {
 		if (sessionCtx?.hasUI) sessionCtx.ui.notify(next === "bypass" ? "Permission mode: BYPASS — repository tool permissions are not enforced." : "Permission mode: ENFORCED", next === "bypass" ? "warning" : "info");
 	};
 
-	const uninstallRuntime = installPermissionRuntime({
+	installPermissionRuntime({
 		getMode: () => mode,
 		setMode,
 		async confirmWorkflowStart(ctx, ref) {
@@ -100,6 +100,5 @@ export default function permissions(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 		sessionCtx = undefined;
 		policy = undefined;
-		uninstallRuntime();
 	});
 }
