@@ -11,7 +11,7 @@ Create a visual explanation that can evolve with the conversation. You own the a
 ## Workflow
 
 1. Clarify the subject or question the user wants to understand.
-2. Explore enough repository evidence to explain it accurately.
+2. Launch one or multiple explorer subagents to gather enough repository evidence to explain it accurately.
 3. Write the JSON visual document under `.pibox/visualization/architecture/` in the target repository, using a short stable topic name such as `.pibox/visualization/architecture/workflow.json`. Create the directory if needed. Keep visual artifacts in this harness-owned ignored area rather than scattering them through the project tree.
 4. Start or reuse the session's managed backend with the `visual_companion` tool:
 
