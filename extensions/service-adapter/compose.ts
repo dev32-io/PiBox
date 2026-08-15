@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { get as httpGet } from "node:http";
+import { get as httpsGet } from "node:https";
 import type { ServiceController, ServiceOperationContext, ServiceSnapshot } from "./types.js";
 
 export interface ComposeServiceConfig {
@@ -69,17 +71,24 @@ class ServiceMutex {
 	}
 }
 
-async function probe(url: string, timeoutMs: number, signal?: AbortSignal): Promise<ServiceSnapshot> {
+export async function probeServiceHealth(url: string, timeoutMs: number, signal?: AbortSignal): Promise<ServiceSnapshot> {
+	const target = new URL(url);
 	const timeout = AbortSignal.timeout(timeoutMs);
 	const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
-	try {
-		const response = await fetch(url, { signal: combined });
-		if (!response.ok) return { state: "unhealthy", detail: `HTTP ${response.status}` };
-		return { state: "running", detail: new URL(url).host };
-	} catch (error) {
-		if (signal?.aborted) throw error;
-		return { state: "stopped" };
-	}
+	return new Promise<ServiceSnapshot>((resolve, reject) => {
+		const transport = target.protocol === "https:" ? httpsGet : httpGet;
+		const request = transport(target, { signal: combined }, (response) => {
+			response.resume();
+			const status = response.statusCode ?? 0;
+			resolve(status >= 200 && status < 300
+				? { state: "running", detail: target.host }
+				: { state: "unhealthy", detail: `HTTP ${status || "unknown"}` });
+		});
+		request.once("error", (error) => {
+			if (signal?.aborted) reject(error);
+			else resolve({ state: "stopped" });
+		});
+	});
 }
 
 export function createComposeServiceController(pi: ExtensionAPI, config: ComposeServiceConfig): ServiceController {
@@ -93,7 +102,7 @@ export function createComposeServiceController(pi: ExtensionAPI, config: Compose
 		});
 		if (result.code !== 0) throw new Error(`docker compose ${args.join(" ")} failed: ${result.stderr.trim().slice(0, 500)}`);
 	};
-	const health = (operation: ServiceOperationContext) => probe(config.healthUrl, config.healthTimeoutMs ?? 3_000, operation.signal);
+	const health = (operation: ServiceOperationContext) => probeServiceHealth(config.healthUrl, config.healthTimeoutMs ?? 3_000, operation.signal);
 	const waitUntilReady = async (operation: ServiceOperationContext): Promise<ServiceSnapshot> => {
 		const deadline = Date.now() + (config.readinessTimeoutMs ?? 60_000);
 		while (Date.now() < deadline) {
