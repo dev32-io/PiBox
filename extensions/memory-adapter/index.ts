@@ -199,7 +199,15 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 		parameters,
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
 			const result = await execute(input, ctx, signal);
-			return { content: [{ type: "text", text: result.text }], details: result.details };
+			return {
+				content: [{ type: "text", text: result.text }],
+				details: {
+					action: input.action,
+					...(input.id ? { requestedId: input.id } : {}),
+					...(input.type ? { requestedType: input.type } : {}),
+					...(result.details && typeof result.details === "object" ? result.details : {}),
+				},
+			};
 		},
 	});
 

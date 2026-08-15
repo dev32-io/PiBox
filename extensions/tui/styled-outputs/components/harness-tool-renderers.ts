@@ -3,7 +3,7 @@ import { Container, getKeybindings, Text, truncateToWidth, type Component } from
 import { currentSubagentPulseDot, formatSubagentRoute } from "../../../workflow-runtime/subagent-display.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
-	"evidence_record", "finding_report", "work_item_complete", "task_integrate",
+	"evidence_record", "finding_report", "memory_adapter", "work_item_complete", "task_integrate",
 ]);
 
 export function isHarnessTool(name: string): boolean {
@@ -27,6 +27,20 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 			? { action: "Update resource", target: args.ref }
 			: { action: "Create resource", target: [args.type, args.value?.title ?? args.value?.id, args.parent].filter(Boolean).join(" · ") };
 		case "resource_delete": return { action: "Delete resource", target: args.ref };
+		case "memory_adapter": {
+			switch (args.action) {
+				case "status": return { action: "Inspect memory status" };
+				case "remember": return { action: "Remember", target: compact(args.memory, 72) };
+				case "recall": return { action: "Recall memories", target: args.query && `“${compact(args.query, 56)}”` };
+				case "list": return { action: "List memories", target: args.type };
+				case "get": return { action: "Read memory", target: args.id };
+				case "update": return { action: "Update memory", target: args.id };
+				case "delete": return { action: "Delete memory", target: args.id };
+				case "history": return { action: "Read memory history", target: args.id };
+				case "audit": return { action: "Audit memories" };
+				default: return { action: "Use memory adapter" };
+			}
+		}
 		case "workflow_list": return { action: "List workflow resources", target: [args.resource, args.workItemId, args.query && `“${compact(args.query, 28)}”`].filter(Boolean).join(" · ") };
 		case "workflow_get": return { action: "Read workflow resource", target: [args.ref, args.view].filter(Boolean).join(" · ") };
 		case "workflow_schema": return { action: "Read workflow schema", target: [args.operation, args.resource].filter(Boolean).join(" · ") };
@@ -146,7 +160,66 @@ export function renderHarnessToolCall(name: string, args: Record<string, any>, t
 	return new HarnessCallComponent(name, args, theme, partial, error, details);
 }
 
+function memoryRecordLabel(record: any): string {
+	if (!record || typeof record !== "object") return compact(String(record), 120);
+	const id = scalar(record.id) ?? "memory";
+	const metadata = record.metadata && typeof record.metadata === "object" ? record.metadata : {};
+	const type = scalar(metadata.type);
+	const status = scalar(metadata.status);
+	const memory = compact(record.memory, 110);
+	return [id, type, status && status !== "active" ? status : undefined, memory].filter(Boolean).join(" · ");
+}
+
+function renderMemoryToolResult(result: any, expanded: boolean, theme: Theme, error: boolean): Component {
+	const component = new Container();
+	const details = result?.details ?? {};
+	const action = scalar(details.action) ?? "memory";
+	const records = Array.isArray(details.records) ? details.records : [];
+	const findings = Array.isArray(details.findings) ? details.findings : [];
+	const history = Array.isArray(details.history) ? details.history : [];
+	const record = details.record && typeof details.record === "object" ? details.record : undefined;
+	const repository = details.repository && typeof details.repository === "object" ? details.repository : undefined;
+	const status = error ? theme.fg("error", "Error") : theme.fg("success", "Done");
+	const metadata: string[] = [];
+	if (action === "status") metadata.push(details.healthy ? "running" : "stopped or unhealthy");
+	else if (action === "audit") {
+		metadata.push(`${scalar(details.checked) ?? 0} checked`, `${findings.length} finding${findings.length === 1 ? "" : "s"}`);
+		if (details.bounded) metadata.push("bounded");
+	} else if (action === "history") metadata.push(`${history.length} event${history.length === 1 ? "" : "s"}`);
+	else if (records.length > 0 || action === "recall" || action === "list" || action === "remember") metadata.push(`${records.length} memor${records.length === 1 ? "y" : "ies"}`);
+	else if (record) metadata.push(scalar(record.id) ?? "1 memory");
+	else if (action === "delete") metadata.push(scalar(details.id) ?? scalar(details.requestedId) ?? "deleted");
+	else if (action === "update") metadata.push(scalar(details.requestedId) ?? "updated");
+	if (action === "status" && repository?.repoId) metadata.push(`repo ${String(repository.repoId).slice(0, 12)}`);
+	const suffix = metadata.length ? `${theme.fg("dim", " · ")}${theme.fg("muted", metadata.join(" · "))}` : "";
+	component.addChild(new Text(`${theme.fg("dim", "└─")} ${status}${suffix}`, 0, 0));
+
+	if (error) {
+		const lines = firstText(result).split("\n").map((line) => line.trim()).filter(Boolean);
+		if (lines.length) appendTreeRows(component, lines, theme, expanded, 4);
+		return component;
+	}
+	if (findings.length) {
+		appendTreeRows(component, findings.map((finding: any) => {
+			const reasons = Array.isArray(finding?.reasons) ? finding.reasons.map(String).join("; ") : "review required";
+			return `${scalar(finding?.id) ?? "memory"} · ${compact(reasons, 120)}`;
+		}), theme, expanded);
+		return component;
+	}
+	const memoryRows = record ? [record] : records;
+	if (memoryRows.length) {
+		appendTreeRows(component, memoryRows.map(memoryRecordLabel), theme, expanded, 5);
+		return component;
+	}
+	if (history.length) {
+		appendTreeRows(component, history.map(itemLabel), theme, expanded, 6);
+		return component;
+	}
+	return component;
+}
+
 export function renderHarnessToolResult(name: string, result: any, expanded: boolean, theme: Theme, error: boolean): Component {
+	if (name === "memory_adapter") return renderMemoryToolResult(result, expanded, theme, error);
 	const component = new Container();
 	const text = firstText(result);
 	const payload = parsePayload(text);

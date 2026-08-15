@@ -38,6 +38,51 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
 });
 
+test("renders memory calls with action-specific titles", () => {
+	assert.equal(isHarnessTool("memory_adapter"), true);
+	assert.deepEqual(lines(renderHarnessToolCall("memory_adapter", {
+		action: "recall",
+		query: "audio interruption semantics",
+	}, theme, false, false)), [
+		"✓ Recall memories “audio interruption semantics”",
+	]);
+});
+
+test("renders recalled memories as compact typed tree rows", () => {
+	const rendered = lines(renderHarnessToolResult("memory_adapter", {
+		content: [{ type: "text", text: "raw memory output that should not be rendered" }],
+		details: {
+			action: "recall",
+			records: [
+				{ id: "memory-1", memory: "Assistant audio remains FIFO by turn.", metadata: { type: "audio-contract", status: "active" } },
+				{ id: "memory-2", memory: "Interrupt clears local playback first.", metadata: { type: "audio-pitfall", status: "active" } },
+			],
+		},
+	}, false, theme, false));
+	assert.deepEqual(rendered, [
+		"└─ Done · 2 memories",
+		"├─ memory-1 · audio-contract · Assistant audio remains FIFO by turn.",
+		"└─ memory-2 · audio-pitfall · Interrupt clears local playback first.",
+	]);
+	assert.doesNotMatch(rendered.join("\n"), /raw memory output/);
+});
+
+test("renders memory audit findings with bounded review reasons", () => {
+	const rendered = lines(renderHarnessToolResult("memory_adapter", {
+		content: [{ type: "text", text: "1 memories require semantic review." }],
+		details: {
+			action: "audit",
+			checked: 41,
+			bounded: true,
+			findings: [{ id: "memory-1", reasons: ["evidence changed since verification", "verification older than 90 days"] }],
+		},
+	}, false, theme, false));
+	assert.deepEqual(rendered, [
+		"└─ Done · 41 checked · 1 finding · bounded",
+		"└─ memory-1 · evidence changed since verification; verification older than 90 days",
+	]);
+});
+
 test("renders resource lists as concise tree rows instead of raw JSON", () => {
 	const result = {
 		content: [{ type: "text", text: JSON.stringify({ count: 2, resources: [
