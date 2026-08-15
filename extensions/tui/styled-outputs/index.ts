@@ -23,7 +23,7 @@ import { renderToolCall, renderToolResult } from "./components/tool-renderers.js
 import { LinePrefixedComponent } from "./components/tool-shell.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
-const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched");
+const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v2");
 // Version tool patches separately so /reload can replace an older shell patch
 // without re-wrapping the already-installed user/assistant message patches.
 const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v6");
@@ -60,6 +60,9 @@ function installMessagePatches(): void {
 				this.contentContainer.clear();
 				return;
 			}
+			// User messages own the turn's trailing gap, so remove Pi's conditional
+			// assistant-leading spacer. This keeps text and tool-only turns aligned.
+			if (visibleChildren[0] instanceof Spacer) visibleChildren[0].setLines(0);
 			for (let index = 0; index < visibleChildren.length; index++) {
 				const child = visibleChildren[index];
 				if (!(child instanceof Markdown)) continue;
@@ -91,11 +94,11 @@ function installMessagePatches(): void {
 					bodyColor: "text",
 				});
 			}
-			// Pi's user shell already sits behind a turn-boundary spacer. Removing its
-			// symmetric vertical padding avoids stacking three blank rows around a
-			// prompt while retaining the wider gap before each new user turn.
+			// Own one stable trailing row here instead of relying on the next assistant
+			// component, which omits its leading spacer for tool-only responses.
 			box.paddingX = 0;
 			box.paddingY = 0;
+			this.addChild(new Spacer(1));
 		};
 		userPrototype[PATCH_FLAG] = true;
 	}
