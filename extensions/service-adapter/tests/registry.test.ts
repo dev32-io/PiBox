@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { formatServiceStatus, listServices, operateService, registerService, resetServiceRegistryForTests } from "../registry.js";
+import { formatServiceStatus, listServiceDetails, listServices, operateService, registerService, resetServiceRegistryForTests } from "../registry.js";
 
 const ctx = {
 	hasUI: true,
@@ -21,6 +21,23 @@ test("orders services and renders intentionally stopped as a neutral hollow dot"
 	} finally {
 		removeMem0();
 		removeVisual();
+	}
+});
+
+test("service details exclude non-cloneable controller functions", () => {
+	resetServiceRegistryForTests();
+	const remove = registerService({ id: "test", name: "Test", order: 1, internal: true, stayAlive: true, singleton: true, perSession: false }, {
+		health: async () => ({ state: "running" }),
+	});
+	try {
+		const details = listServiceDetails();
+		assert.doesNotThrow(() => structuredClone(details));
+		assert.deepEqual(details, [{
+			descriptor: { id: "test", name: "Test", order: 1, internal: true, stayAlive: true, singleton: true, perSession: false },
+			snapshot: { state: "stopped" },
+		}]);
+	} finally {
+		remove();
 	}
 });
 

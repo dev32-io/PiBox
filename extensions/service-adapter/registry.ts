@@ -39,6 +39,13 @@ export function listServices(): RegisteredService[] {
 	return [...services.values()].sort((left, right) => left.descriptor.order - right.descriptor.order || left.descriptor.id.localeCompare(right.descriptor.id));
 }
 
+export function listServiceDetails(): Array<{ descriptor: ServiceDescriptor; snapshot: ServiceSnapshot }> {
+	return listServices().map(({ descriptor, snapshot }) => ({
+		descriptor: { ...descriptor },
+		snapshot: { ...snapshot },
+	}));
+}
+
 export function setServiceSnapshot(id: string, snapshot: ServiceSnapshot, ctx?: ExtensionContext): ServiceSnapshot {
 	const service = services.get(id);
 	if (!service) throw new Error(`Unknown service: ${id}`);

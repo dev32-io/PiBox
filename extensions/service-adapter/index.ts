@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createComposeServiceController } from "./compose.js";
-import { getService, listServices, operateService, publishService, registerService, serviceStatusKey } from "./registry.js";
+import { getService, listServiceDetails, listServices, operateService, publishService, registerService, serviceStatusKey } from "./registry.js";
 import type { ServiceController, ServiceDescriptor, ServiceSnapshot } from "./types.js";
 
 const parameters = Type.Object({
@@ -101,7 +101,7 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
 			if (input.action === "status" && !input.service) {
 				await Promise.allSettled(listServices().map(({ descriptor }) => run("health", descriptor.id, ctx, signal)));
-				return { content: [{ type: "text", text: summarizeServices() || "No services are registered." }], details: { services: listServices() } };
+				return { content: [{ type: "text", text: summarizeServices() || "No services are registered." }], details: { services: listServiceDetails() } };
 			}
 			if (!input.service) throw new Error("service is required for this action.");
 			const snapshot = await run(input.action === "status" ? "health" : input.action, input.service, ctx, signal);
