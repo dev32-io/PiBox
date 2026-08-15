@@ -2,8 +2,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
+import { SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -12,10 +13,25 @@ const RUNNING_FRAMES: Record<string, readonly string[]> = {
 	evaluation: ["◐", "◓", "◑", "◒"],
 };
 const DEFAULT_RUNNING_FRAMES = RUNNING_FRAMES.task!;
+const SUBAGENT_STATUS_KEY = "subagent-dashboard";
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
 type WorkflowNotice = { title: string; detail?: string; attention: boolean };
+type RunningSubagentStatus = {
+	agent: string;
+	mode: "background" | "foreground";
+	startedAt: number;
+	tier?: string;
+	resolved?: DynamicSubagentStarted;
+};
+
+function formatElapsed(startedAt: number): string {
+	const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1_000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
 
 export default function workflows(pi: ExtensionAPI): void {
 	const adapters: WorkflowAdapter[] = [];
@@ -24,10 +40,13 @@ export default function workflows(pi: ExtensionAPI): void {
 	let currentRef: string | undefined;
 	let currentSnapshot: WorkflowSnapshot | undefined;
 	let timer: NodeJS.Timeout | undefined;
+	let subagentPulseTimer: NodeJS.Timeout | undefined;
 	let ticking = false;
 	let frame = 0;
+	let subagentPulseFrame = 0;
 	let sessionCtx: ExtensionContext | undefined;
 	let latestNotice: WorkflowNotice | undefined;
+	const runningSubagents = new Map<string, RunningSubagentStatus>();
 
 	const adapterFor = (ref: string): WorkflowAdapter => {
 		const adapter = adapters.find((candidate) => candidate.canHandle(ref));
@@ -48,6 +67,36 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const sendFeedback = (event: WorkflowFeedbackEvent) => {
 		pi.events.emit(WORKFLOW_FEEDBACK_EVENT, event);
+	};
+
+	const renderSubagentStatus = () => {
+		const ctx = sessionCtx;
+		if (!ctx?.hasUI) return;
+		if (runningSubagents.size === 0) {
+			ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
+			return;
+		}
+		const dot = subagentPulseDot(subagentPulseFrame);
+		const lines = [...runningSubagents.values()].map((status) => {
+			const route = status.resolved
+				? `${status.resolved.provider}/${status.resolved.model}#${status.resolved.effort}`
+				: status.tier ? `${status.tier} tier` : "resolving model";
+			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `running · ${status.mode} · ${route} · ${formatElapsed(status.startedAt)}`)}`;
+		});
+		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
+	};
+
+	const deliverBackgroundSubagentResult = (agent: string, settled: WorkflowRunResult) => {
+		const content = renderBuiltInPrompt("background-subagent-result", {
+			agent,
+			state: settled.state,
+			summary: settled.summary || "The subagent returned no report.",
+		});
+		try {
+			pi.sendMessage({ customType: "pibox-subagent-result", content, display: false, details: settled }, { deliverAs: "followUp", triggerTurn: true });
+		} catch {
+			// The durable subagent record remains available after session replacement or shutdown.
+		}
 	};
 
 	const sendEvent = (title: string, detail?: string, attention = false) => {
@@ -294,14 +343,46 @@ export default function workflows(pi: ExtensionAPI): void {
 					...(params.tier ? { tier: params.tier } : {}),
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}), ...(params.strict !== undefined ? { strict: params.strict } : {}),
 				};
-				const promise = adapter.spawnSubagent!(request, ctx, mode === "foreground" ? signal : undefined, mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, { agent: params.agent, state: "running" })) : undefined);
-				if (mode === "foreground") {
-					const settled = await promise;
-					if (settled.state === "failed") throw new Error(settled.summary);
-					return result(settled.summary, settled);
+				if (mode === "background") {
+					const catalogTier = catalog.find((agent) => agent.name === params.agent)?.tier;
+					const tier = params.tier ?? catalogTier;
+					runningSubagents.set(toolCallId, { agent: params.agent, mode, startedAt: Date.now(), ...(tier ? { tier } : {}) });
+					renderSubagentStatus();
 				}
-				void promise.then((settled) => sendEvent(`${params.agent} · ${settled.state}`, settled.summary, Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed"))).catch((error) => sendEvent(`${params.agent} · failed`, error instanceof Error ? error.message : String(error), true));
-				return result(`Spawned ${params.agent} in background. Lifecycle and attention updates will be delivered to this session.`, { agent: params.agent, state: "starting" });
+				const promise = adapter.spawnSubagent!(
+					request,
+					ctx,
+					mode === "foreground" ? signal : undefined,
+					mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, { agent: params.agent, state: "running" })) : undefined,
+					mode === "background" ? (resolved) => {
+						const current = runningSubagents.get(toolCallId);
+						if (current) runningSubagents.set(toolCallId, { ...current, resolved });
+						renderSubagentStatus();
+					} : undefined,
+				);
+				if (mode === "foreground") {
+					try {
+						const settled = await promise;
+						if (settled.state === "failed") throw new Error(settled.summary);
+						return result(settled.summary, settled);
+					} finally {
+						runningSubagents.delete(toolCallId);
+						renderSubagentStatus();
+					}
+				}
+				void promise
+					.then((settled) => deliverBackgroundSubagentResult(params.agent, settled))
+					.catch((error) => deliverBackgroundSubagentResult(params.agent, {
+						ref: `agent:${params.agent}`,
+						state: "failed",
+						summary: error instanceof Error ? error.message : String(error),
+						attention: true,
+					}))
+					.finally(() => {
+						runningSubagents.delete(toolCallId);
+						renderSubagentStatus();
+					});
+				return result(`Spawned ${params.agent} in background. Its terminal report will be returned to this session and trigger a response.`, { agent: params.agent, state: "starting" });
 			},
 		});
 	};
@@ -372,10 +453,24 @@ export default function workflows(pi: ExtensionAPI): void {
 		for (const [ref, state] of states) if (state !== "stopped") { active.set(ref, state); currentRef = ref; }
 		if (currentRef) currentSnapshot = await adapterFor(currentRef).snapshot(currentRef, ctx).catch(() => undefined);
 		renderDashboard(ctx);
+		renderSubagentStatus();
 		timer = setInterval(() => { if (sessionCtx) void tick(sessionCtx); }, 500); timer.unref();
+		subagentPulseTimer = setInterval(() => {
+			if (runningSubagents.size === 0) return;
+			subagentPulseFrame++;
+			renderSubagentStatus();
+		}, SUBAGENT_PULSE_INTERVAL_MS);
+		subagentPulseTimer.unref();
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		if (timer) clearInterval(timer); timer = undefined; sessionCtx = undefined; ctx.ui.setWidget("pibox-workflow", undefined);
+		if (timer) clearInterval(timer);
+		if (subagentPulseTimer) clearInterval(subagentPulseTimer);
+		timer = undefined;
+		subagentPulseTimer = undefined;
+		runningSubagents.clear();
+		if (ctx.hasUI) ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
+		sessionCtx = undefined;
+		ctx.ui.setWidget("pibox-workflow", undefined);
 	});
 }

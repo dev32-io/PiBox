@@ -97,6 +97,7 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	const policy = await readFile(join(root, ".pi", "harness.yaml"), "utf8");
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);
+	assert.doesNotMatch(policy, /^\s+tools:/m, "repository harness policy must not duplicate agent frontmatter tools");
 	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.worktree/\n/.pibox/\n");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".pibox/probe"), ".pibox/probe");

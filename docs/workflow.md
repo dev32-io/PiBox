@@ -63,12 +63,12 @@ Planning submission validates the execution topology and marks the review handof
 
 The independent workflow extension owns the generic background execution surface. Each work item separates planning kind (`story | change`) from delivery intent (`feature | fix`, `create | continue`, base `develop`). For new delivery, `workflow_start` requires a clean checkout, switches to `develop`, pulls with `--ff-only`, and creates `feature/<work-item-id>` or `fix/<work-item-id>`. For continued delivery, it requires a clean checkout already on the recorded ongoing feature/fix branch and does not sync `develop`. It then asks the registered managed-work adapter to derive current task, task-merge, and evaluation steps directly from the reviewed work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
 
-- `subagent_spawn` dynamically launches a configured agent definition with a task prompt in background mode by default; foreground mode remains available for explicit waiting. Use `general-purpose` for open-ended bounded work that may combine research, edits, commands, and tests, or `explorer` for evidence-driven read-only repository investigation. Children receive an explicit tool allowlist without workflow or subagent controls and cannot delegate recursively.
+- `subagent_spawn` dynamically launches a configured agent definition with a task prompt in background mode by default; foreground mode remains available for explicit waiting. Use `general-purpose` for open-ended bounded work that may combine research, edits, commands, and tests, or `explorer` for evidence-driven read-only repository investigation. Children receive the tool allowlist from their agent-definition frontmatter without workflow or subagent controls and cannot delegate recursively. A foreground launch renders as an inline pulsing agent row until its terminal report returns as the blocking tool result. A background launch returns immediately, shows one pulsing footer row per active child with its agent name, foreground/background mode, resolved model/effort, and elapsed time, then injects the terminal report with a built-in response prompt and starts a main-agent follow-up turn.
 - `subagent_status`, `subagent_control`, and `subagent_respond` monitor and steer logical children.
 - `workflow_control` pauses scheduling, resumes it, or stops active children.
 - Managed task and evaluation spawning is internal to `workflow_start`/resume and uses the same launch coordinator and lifecycle registry as dynamic `subagent_spawn` calls.
 - Agent definitions remain generic. Managed launches append workflow protocol prompts from `prompt/workflow-*-agent.md`; direct user launches receive only the selected agent definition and assignment.
-- Built-in and trusted repository `.pi/agents/*.md` definitions use conventional Pi frontmatter (`name`, `description`, optional `tools` and `model`) plus optional PiBox `tier: low | medium | high | max`. Omitted tiers default to `medium`; valid project definitions override catalog entries with the same name, while invalid files are skipped with diagnostics. The declared `tools` are the child's base allowlist; omission preserves conventional Pi behavior by enabling the default child tool set. Namespaced selectors such as `pibox:task` and `pibox:evaluation` expand through one central group registry; managed launches add only the required group at runtime rather than hardcoding capability lists at each launch site. A selector such as `mcp:playwright` optionally enables the independently installed `pi-mcp-adapter` proxy and scopes it to that registered server. Missing adapters or server definitions are ignored rather than invalidating the agent; no MCP transport, command, credential, or version is stored in harness configuration.
+- Built-in and trusted repository `.pi/agents/*.md` definitions use conventional Pi frontmatter (`name`, `description`, optional `tools` and `model`) plus optional PiBox `tier: low | medium | high | max`. Omitted tiers default to `medium`; valid project definitions override catalog entries with the same name, while invalid files are skipped with diagnostics. Agent-definition frontmatter is the sole authority for the child's base tool allowlist; `tools` entries in global or repository `harness.yaml` policy are ignored. Omission preserves conventional Pi behavior by enabling the default child tool set. Namespaced selectors such as `pibox:task` and `pibox:evaluation` expand through one central group registry; managed launches add only the required group at runtime rather than hardcoding capability lists at each launch site. A selector such as `mcp:playwright` optionally enables the independently installed `pi-mcp-adapter` proxy and scopes it to that registered server. Missing adapters or server definitions are ignored rather than invalidating the agent; no MCP transport, command, credential, or version is stored in harness configuration.
 - Workers receive a focused task packet in persistent system context. Reviewers receive their scoped task contracts plus full specification and design context through the same compaction-resistant mechanism. `task_clarify` provides optional targeted context; structured completion tools record durable handoffs.
 
 MCP ownership stays outside PiBox: install and update `pi-mcp-adapter` with Pi, then register `playwright`, `context7`, or other server names in the adapter's standard user/project `mcp.json`. PiBox stores only selectors in agent definitions. The built-ins currently request Playwright for `e2e-tester`, Context7 for `implementer`, and both for `general-purpose`; the main session uses the adapter's ordinary user configuration directly.
@@ -146,7 +146,6 @@ agents:
   implementer:
     prompt: ../agent-definitions/implementer.md
     skills: [skills/repository-testing/SKILL.md]
-    tools: [read, grep, find, bash, edit, write]
     workspace: worktree
     canDelegate: false
     completionSchema: implementer-v1
@@ -154,7 +153,6 @@ agents:
 
   deep-reviewer:
     extends: code-reviewer
-    tools: [read, grep, find]
     tier: high
 
 orchestrator:
@@ -168,7 +166,7 @@ limits:
   repairRounds: 2
 ```
 
-Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`. Built-in reusable agent definitions live in `agent-definitions/`; editable harness prompt fragments live in `prompt/`.
+Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`. Built-in reusable agent definitions live in `agent-definitions/`; editable harness prompt fragments live in `prompt/`. Put tool declarations and MCP selectors in those Markdown definitions, not harness policy.
 
 Task plans select only `low | medium | high | max`. Each tier is an ordered list of `provider/model#effort` entries, so model capability and reasoning cost are tuned together in policy rather than guessed independently by the planner. Fallback is visible and remains inside the requested tier; unsupported or unavailable pairs are skipped in order, and an exhausted tier enters `waiting_model` without silent downgrade or effort clamping. Free-form `subagent_spawn` may still honor an explicit user-selected model and effort.
 

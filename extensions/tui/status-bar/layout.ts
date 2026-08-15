@@ -15,6 +15,7 @@ export interface StatusRenderData {
 	git: GitSnapshot;
 	config: StatusBarConfig;
 	visualCompanionStatus?: string;
+	subagentStatuses?: string[];
 }
 
 export function layoutMode(width: number, config: StatusBarConfig): LayoutMode {
@@ -166,5 +167,6 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const row2 = buildRow([thinkingSegment(data)], row2Right, width);
 	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
 	if (data.visualCompanionStatus) rows.push(buildRow([data.visualCompanionStatus], [], width));
+	for (const status of data.subagentStatuses ?? []) rows.push(buildRow([status], [], width));
 	return rows;
 }

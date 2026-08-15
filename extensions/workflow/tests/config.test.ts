@@ -41,8 +41,8 @@ test("merges maps recursively and replaces arrays", () => {
 
 test("loads user then repository tier configuration and records a stable digest", () => {
 	const files: Record<string, string> = {
-		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - local/bounded#off\nroles:\n  implementer:\n    tier: medium\nlimits:\n  maxConcurrency: 2\n",
-		"/repo/.pi/harness.yaml": "schemaVersion: 2\nlimits:\n  maxConcurrency: 6\n",
+		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - local/bounded#off\nroles:\n  implementer:\n    tier: medium\n    tools: [read]\nlimits:\n  maxConcurrency: 2\n",
+		"/repo/.pi/harness.yaml": "schemaVersion: 2\nagents:\n  e2e-tester:\n    tools: [bash]\nlimits:\n  maxConcurrency: 6\n",
 	};
 	const loaded = loadHarnessConfig("/repo", {
 		home: "/home",
@@ -54,6 +54,8 @@ test("loads user then repository tier configuration and records a stable digest"
 	assert.equal(loaded.config.limits.maxSubagentDepth, 1);
 	assert.deepEqual(loaded.config.modelTiers.medium, ["local/bounded#off"]);
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
+	assert.deepEqual(loaded.config.agents.implementer?.tools, DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, "harness policy cannot override frontmatter tools");
+	assert.deepEqual(loaded.config.agents["e2e-tester"]?.tools, DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, "existing repository tool lists are ignored");
 	assert.equal(loaded.sources.length, 3);
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
 });
@@ -87,11 +89,11 @@ test("resolves explicit agent inheritance while preserving routing defaults", ()
 		...structuredClone(DEFAULT_HARNESS_CONFIG),
 		agents: {
 			...structuredClone(DEFAULT_HARNESS_CONFIG.agents),
-			custom: { extends: "implementer", tools: ["read"], tier: "low" },
+			custom: { extends: "implementer", tier: "low" },
 		},
 	});
 	assert.equal(config.agents.custom?.workspace, "repository");
-	assert.deepEqual(config.agents.custom?.tools, ["read"]);
+	assert.deepEqual(config.agents.custom?.tools, DEFAULT_HARNESS_CONFIG.agents.implementer?.tools);
 	assert.equal(config.agents.custom?.tier, "low");
 	assert.equal(config.agents["plan-critic"]?.tier, "medium");
 	assert.ok(config.agents.implementer?.tools?.includes("edit"));

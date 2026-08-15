@@ -535,16 +535,15 @@ The critic reports findings to the orchestrator. It cannot edit canonical artifa
 
 An agent definition is a generic configurable execution contract rather than a workflow-specific persona:
 
-```yaml
-agents:
-  implementer:
-    prompt: ../agent-definitions/implementer.md
-    skills: [testing, implementation]
-    tools: [read, grep, find, bash, edit, write]
-    workspace: worktree
-    canDelegate: false
-    completionSchema: implementer-v1
-    tier: medium
+```markdown
+---
+name: implementer
+description: General implementation work for managed tasks
+tools: [read, grep, find, bash, edit, write, mcp:context7]
+tier: medium
+---
+
+Deliver the assigned contribution as working, verified code.
 ```
 
 Each agent definition configures:
@@ -1052,7 +1051,7 @@ subagent_respond
 
 The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates reviewed tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
 
-`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured agent definition and task prompt, inventories validated built-in/configured/trusted-project definitions in its live description, defaults to background execution, and can wait in foreground mode when explicitly requested. Built-in and trusted `.pi/agents/*.md` definitions use conventional Pi frontmatter plus an optional PiBox capability `tier`; their `tools` field is the spawned child's base allowlist. Reserved selectors such as `pibox:task` and `pibox:evaluation` resolve through a central tool-group registry, and managed launches may add a group at runtime without duplicating its concrete capability names. Optional `mcp:<server>` entries reuse that same `tools` field: they activate the external adapter proxy when present and constrain child calls to the declared server names, while missing user-managed MCP configuration degrades to no capability rather than invalidating the agent. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. Repository exploration is ordinary delegation to the `explorer` definition. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
+`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured agent definition and task prompt, inventories validated built-in/configured/trusted-project definitions in its live description, defaults to background execution, and can wait in foreground mode when explicitly requested. Foreground execution renders as an inline pulsing agent row and returns the terminal report as the blocking tool result. Background execution returns immediately, displays a vertical pulsing footer stack with each child's agent name, foreground/background mode, resolved model/effort, and elapsed time, and on terminal settlement injects the report with a built-in instruction that triggers a main-agent response. This direct delegation callback is separate from managed workflow lifecycle advancement. Built-in and trusted `.pi/agents/*.md` definitions use conventional Pi frontmatter plus an optional PiBox capability `tier`; their `tools` field is the sole base allowlist, and any `tools` field in global or repository harness policy is ignored. Reserved selectors such as `pibox:task` and `pibox:evaluation` resolve through a central tool-group registry, and managed launches may add a group at runtime without duplicating its concrete capability names. Optional `mcp:<server>` entries reuse the frontmatter `tools` field: they activate the external adapter proxy when present and constrain child calls to the declared server names, while missing user-managed MCP configuration degrades to no capability rather than invalidating the agent. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. Repository exploration is ordinary delegation to the `explorer` definition. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
 
 ### 16.3 Worker capabilities
 
@@ -1494,7 +1493,7 @@ The design is successfully implemented when:
 3. Execution begins only after a clear user request to run the reviewed workflow.
 4. The planner can explicitly skip, defer, batch, or combine task-level review and testing while declaring the later meaningful verification boundary.
 5. Partial task contributions can be assembled in orchestrator-controlled stages without pretending they are independently complete.
-6. Agent definitions, tools, capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
+6. Agent definitions own their tools in Markdown frontmatter; capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
 7. The planner records one capability tier per task; the runtime resolves its ordered provider/model/effort pairs against Pi availability and exact thinking support.
 8. Missing or unsupported pairs fall back visibly within the requested tier or enter a waiting state without silent downgrade or effort clamping.
 9. Concurrent tasks run in deterministic isolated worktrees from a clean committed base.

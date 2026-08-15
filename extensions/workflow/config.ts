@@ -77,6 +77,15 @@ function rejectUnknownKeys(value: UnknownRecord, allowed: Set<string>, path: str
 	for (const key of Object.keys(value)) if (!allowed.has(key)) throw new HarnessError("CONFIG_INVALID", `Unknown configuration field: ${path}.${key}`);
 }
 
+/** Agent tool allowlists belong to agent-definition frontmatter, never harness policy. */
+function ignoreHarnessAgentTools(value: UnknownRecord): void {
+	for (const key of ["agents", "roles"] as const) {
+		const agents = value[key];
+		if (!isRecord(agents)) continue;
+		for (const agent of Object.values(agents)) if (isRecord(agent)) delete agent.tools;
+	}
+}
+
 function parseRoute(value: unknown, path: string): TierModelRouteConfig {
 	if (typeof value === "string") {
 		const separator = value.lastIndexOf("#");
@@ -204,6 +213,7 @@ export function loadHarnessConfig(
 			const parsed = parse(readFile(source));
 			if (!isRecord(parsed)) throw new HarnessError("CONFIG_INVALID", "Configuration file must contain a mapping");
 			if (parsed.schemaVersion === 1 || "models" in parsed) throw new HarnessError("CONFIG_INVALID", "Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTiers");
+			ignoreHarnessAgentTools(parsed);
 			if (isRecord(parsed.roles) && !isRecord(parsed.agents)) parsed.agents = parsed.roles;
 			delete parsed.roles;
 			merged = mergeConfigValues(merged, parsed);

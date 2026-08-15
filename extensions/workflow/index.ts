@@ -26,11 +26,12 @@ import { WorkItemStore } from "./work-items.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors } from "./tool-groups.js";
 import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment } from "./mcp-capabilities.js";
+import { resourceDisplayDiff } from "./resource-diff.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 
@@ -715,7 +716,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
 	};
 
-	const spawnDynamicSubagent = async (request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult> => {
+	const spawnDynamicSubagent = async (request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void): Promise<WorkflowRunResult> => {
 		try {
 			requireTrusted(ctx);
 			const runtime = await runtimeFor(ctx);
@@ -750,6 +751,7 @@ export default function workflow(pi: ExtensionAPI): void {
 						: {}),
 				...(agentDefinition.skills ? { skillPaths: agentDefinition.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) } : {}),
 				...(signal ? { signal } : {}), ...(onText ? { onText } : {}),
+				...(onStarted ? { onStarted: (agent: { id: string; provider: string; model: string; effort: string; startedAt: string }) => onStarted({ agentId: agent.id, provider: agent.provider, model: agent.model, effort: agent.effort, startedAt: agent.startedAt }) } : {}),
 			});
 			const direct = launched.result;
 			await runtime.events.append("subagent.settled", { agentId: launched.agent.id, role: request.agent, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
@@ -846,6 +848,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					if (params.ref && (params.type || params.parent)) throw new HarnessError("INVALID_ARTIFACT", "Resource update uses ref and value only");
 					if (!params.ref && !params.type) throw new HarnessError("INVALID_ARTIFACT", "Resource creation requires type");
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const before = params.ref ? await service.get(params.ref) : undefined;
 					const authority: MutationAuthority = { rationale: params.ref ? "Update the selected canonical resource" : "Create the authored canonical resource" };
 					let ref: string;
 					let result;
@@ -866,9 +869,13 @@ export default function workflow(pi: ExtensionAPI): void {
 						ref = createdResourceRef(type, params.parent, body);
 						result = await service.transaction(`harness: write ${ref}`, () => service.create(type, params.parent, body, authority));
 					}
+					const after = await service.get(ref);
 					await runtime.events.append("resource.written", { ref, commit: result.commit });
 					const receipt = await mutationReceipt(runtime, result.commit, [{ action: params.ref ? "patch" : "create", ref }]);
-					return textResult(`Wrote ${ref}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+					return textResult(`Wrote ${ref}.\n${JSON.stringify(receipt, null, 2)}`, {
+						...receipt,
+						piboxResourceDiff: resourceDisplayDiff(params.ref ? "update" : "create", ref, before, after),
+					});
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref ?? params.parent); }
 		},
@@ -885,9 +892,13 @@ export default function workflow(pi: ExtensionAPI): void {
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
+					const before = await service.get(params.ref);
 					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { authority: { rationale: "Delete the selected undelivered resource" } }));
 					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "delete", ref: params.ref }]);
-					return textResult(`Deleted ${params.ref}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
+					return textResult(`Deleted ${params.ref}.\n${JSON.stringify(receipt, null, 2)}`, {
+						...receipt,
+						piboxResourceDiff: resourceDisplayDiff("delete", params.ref, before, undefined),
+					});
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},

@@ -32,7 +32,9 @@ export default function statusBar(pi: ExtensionAPI): void {
 			const unsubscribeBranch = footerData.onBranchChange(() => poller?.requestRefresh());
 			return {
 				render(width: number): string[] {
-					const visualCompanionStatus = footerData.getExtensionStatuses().get("visual-companion");
+					const extensionStatuses = footerData.getExtensionStatuses();
+					const visualCompanionStatus = extensionStatuses.get("visual-companion");
+					const subagentStatuses = extensionStatuses.get("subagent-dashboard")?.split("\n").filter(Boolean);
 					return renderStatusBar(width, {
 						ctx,
 						theme,
@@ -48,6 +50,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						},
 						config,
 						...(visualCompanionStatus ? { visualCompanionStatus } : {}),
+						...(subagentStatuses?.length ? { subagentStatuses } : {}),
 					});
 				},
 				invalidate(): void {},

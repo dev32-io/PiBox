@@ -40,6 +40,14 @@ export interface WorkflowRunResult {
 	attention?: boolean;
 }
 
+export interface DynamicSubagentStarted {
+	agentId: string;
+	provider: string;
+	model: string;
+	effort: string;
+	startedAt: string;
+}
+
 export interface SpawnableAgentDefinition {
 	name: string;
 	description: string;
@@ -66,7 +74,7 @@ export interface WorkflowAdapter {
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
 	/** Optional dynamic agent/task launcher used by the main-session subagent_spawn tool. */
-	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
+	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void): Promise<WorkflowRunResult>;
 	/** Trusted, validated definitions available to the generic launcher. */
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;

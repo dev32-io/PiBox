@@ -11,6 +11,7 @@ function fixture() {
 	const messages: any[] = [];
 	const entries: any[] = [];
 	let widget: unknown;
+	const statuses = new Map<string, string>();
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool(definition: any) { tools.set(definition.name, definition); },
@@ -29,10 +30,11 @@ function fixture() {
 		ui: {
 			theme: { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text },
 			setWidget(_id: string, value: unknown) { widget = value; },
+			setStatus(id: string, value: string | undefined) { if (value === undefined) statuses.delete(id); else statuses.set(id, value); },
 		},
 		sessionManager: { getEntries: () => entries },
 	};
-	return { pi, tools, handlers, messages, entries, ctx, widget: () => widget };
+	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget };
 }
 
 test("registers the generalized workflow and subagent surface", async () => {
@@ -171,7 +173,7 @@ test("transient snapshot attention does not pause an in-flight step or block rou
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("background spawning delegates a role and prompt and later emits a lifecycle message", async () => {
+test("background spawning returns its report to the main agent and shows running status", async () => {
 	const f = fixture();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -180,7 +182,12 @@ test("background spawning delegates a role and prompt and later emits a lifecycl
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(input) { request = input; await gate; return { ref: "agent:one", agentId: "one", state: "completed", summary: "Background critic completed." }; },
+		async spawnSubagent(input, _ctx, _signal, _onText, onStarted) {
+			request = input;
+			onStarted?.({ agentId: "one", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", startedAt: new Date().toISOString() });
+			await gate;
+			return { ref: "agent:one", agentId: "one", state: "completed", summary: "Background critic completed." };
+		},
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
 		async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
 	};
@@ -189,28 +196,45 @@ test("background spawning delegates a role and prompt and later emits a lifecycl
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
-	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("completed")), false);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · background · openai-codex\/gpt-5\.6-sol#high · \d+s/);
+	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
 	release();
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), true);
-	assert.equal(f.messages.find((entry) => String(entry.message.content).includes("Background critic completed"))?.message.display, false);
+	const completion = f.messages.find((entry) => String(entry.message.content).includes("Background critic completed"));
+	assert.equal(completion?.message.customType, "pibox-subagent-result");
+	assert.equal(completion?.message.display, false);
+	assert.equal(completion?.options.deliverAs, "followUp");
+	assert.equal(completion?.options.triggerTurn, true);
+	assert.match(completion?.message.content ?? "", /Respond to the user now/);
+	assert.equal(f.statuses.has("subagent-dashboard"), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("foreground spawning waits for the delegated subagent result", async () => {
+test("foreground spawning waits for the delegated result without using the background footer", async () => {
 	const f = fixture();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: () => false,
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(request) { return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${request.agent}: ready` }; },
+		async spawnSubagent(request, _ctx, _signal, _onText, onStarted) {
+			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", startedAt: new Date().toISOString() });
+			await gate;
+			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${request.agent}: ready` };
+		},
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const settled = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review", mode: "foreground" }, undefined, undefined, f.ctx);
+	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review", mode: "foreground" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(f.statuses.has("subagent-dashboard"), false);
+	release();
+	const settled = await pending;
 	assert.equal(settled.content[0].text, "plan-critic: ready");
 	assert.equal(settled.details.agentId, "critic");
+	assert.equal(f.statuses.has("subagent-dashboard"), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

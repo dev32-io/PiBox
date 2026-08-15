@@ -22,6 +22,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	env?: Record<string, string>;
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
+	onStarted?: (agent: SessionAgentRecord) => void;
 	onSpawn?: (pid: number | undefined) => void;
 	invocationResolver?: (args: string[]) => { command: string; args: string[] };
 	deferCompletion?: boolean;
@@ -60,6 +61,7 @@ export class LaunchCoordinator {
 			...(input.workspace ? { workspace: input.workspace } : {}),
 		});
 		const { attempt } = await this.registry.startAttempt(reserved.id);
+		input.onStarted?.(await this.registry.get(reserved.id));
 		const agentRoot = join(this.registry.root, "agents", reserved.id);
 		const attemptRoot = join(agentRoot, "attempts", attempt.id);
 		let running: Promise<unknown> | undefined;

@@ -13,6 +13,7 @@ test("launches a direct child through the registry with file-backed process outp
 	const registry = new SessionAgentRegistry(root, "session-1", 16, 1);
 	await registry.initialize("main:session-1");
 	let effectiveSystemPrompt = "";
+	let started: { id: string; model: string; effort: string } | undefined;
 	const coordinator = new LaunchCoordinator(registry, "main:session-1");
 	const fake = join(root, "fake-child.mjs");
 	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"mapped repository"}]}}));\n`);
@@ -30,6 +31,7 @@ test("launches a direct child through the registry with file-backed process outp
 		agentPrompt: "Agent instructions.",
 		additionalPrompt: "Workflow protocol.",
 		persistentContext: "Persistent canonical context.",
+		onStarted: (agent) => { started = { id: agent.id, model: agent.model, effort: agent.effort }; },
 		invocationResolver: (args) => {
 			const promptIndex = args.indexOf("--append-system-prompt");
 			effectiveSystemPrompt = readFileSync(args[promptIndex + 1]!, "utf8");
@@ -38,6 +40,7 @@ test("launches a direct child through the registry with file-backed process outp
 	});
 
 	assert.equal(launched.result.text, "mapped repository");
+	assert.deepEqual(started, { id: launched.agent.id, model: "fake", effort: "low" });
 	assert.match(effectiveSystemPrompt, /Agent instructions\.[\s\S]+Workflow protocol\.[\s\S]+Persistent canonical context\./);
 	assert.equal(launched.agent.state, "completed");
 	assert.equal(await registry.activeCount(), 0);

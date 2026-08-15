@@ -21,11 +21,12 @@ import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "./config.js";
 import { createPrefixedMarkdown } from "./components/message-layout.js";
 import { renderToolCall, renderToolResult } from "./components/tool-renderers.js";
 import { LinePrefixedComponent } from "./components/tool-shell.js";
+import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched");
 // Version tool patches separately so /reload can replace an older shell patch
 // without re-wrapping the already-installed user/assistant message patches.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v5");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v6");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 const STYLED_TOOL_NAMES = new Set<string>(["read", "bash", "edit", "write", "grep", "find", "ls"]);
@@ -118,6 +119,20 @@ function installToolPatch(): void {
 			this.contentBox.paddingX = 3;
 			this.contentBox.paddingY = 0;
 			this.contentBox.setBgFn(undefined);
+		}
+
+		// PiBox harness tools share one semantic renderer so structured results remain
+		// readable instead of appearing as raw JSON blobs. Foreground subagents use
+		// the same pulsing row language as the background footer dashboard.
+		if (isHarnessTool(this.toolName) && Array.isArray(renderContainer?.children)) {
+			const theme = globalState().theme;
+			if (theme) {
+				const call = renderHarnessToolCall(this.toolName, this.args ?? {}, theme, this.isPartial, this.result?.isError ?? false);
+				const children = [call];
+				if (this.result) children.push(renderHarnessToolResult(this.toolName, this.result, this.expanded, theme, this.result.isError ?? false));
+				renderContainer.children = children;
+			}
+			return;
 		}
 
 		// Third-party renderers already know how to summarize their domain-specific

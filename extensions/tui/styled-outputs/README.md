@@ -6,6 +6,8 @@ Provides Pikit-style visual structure adapted to `rattle`:
 - Compact built-in tool headers with running/success/error symbols
 - Single-line `Loaded skill …` and `Loaded rule …` rows without redundant collapsed previews
 - Shared lifecycle symbols and `└─ Done`/`Error` branches around third-party renderers
+- Inline pulsing rows for foreground subagents and semantic tree/field summaries for PiBox harness tools instead of raw JSON
+- Syntax-colored canonical before/after diffs for resource create, update, and delete operations, with revision/timestamp noise removed
 - Truly collapsed third-party results with configured expand-key hints and full expanded output
 - Theme-normalized collapsed summaries without third-party foreground/background leakage
 - Tool rows aligned with transcript message-body indentation

@@ -7,14 +7,11 @@ import { atomicWriteFile, isGitPathIgnored, runGit } from "./repository.js";
 
 export type HarnessScaffoldProfile = "standard" | "economy";
 
-function economyConfig() {
+function repositoryPolicy(profile: HarnessScaffoldProfile) {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.limits = { ...config.limits, maxConcurrency: 2, repairRounds: 1 };
+	if (profile === "economy") config.limits = { ...config.limits, maxConcurrency: 2, repairRounds: 1 };
+	for (const agent of Object.values(config.agents)) delete agent.tools;
 	return config;
-}
-
-function standardConfig() {
-	return structuredClone(DEFAULT_HARNESS_CONFIG);
 }
 
 export interface HarnessScaffoldResult {
@@ -155,7 +152,7 @@ export async function scaffoldHarness(repositoryRoot: string, profile: HarnessSc
 		const content = [
 			"# PiBox harness repository policy.",
 			`# Scaffold profile: ${profile}. Arrays replace inherited defaults.`,
-			stringify(profile === "economy" ? economyConfig() : standardConfig()).trim(),
+			stringify(repositoryPolicy(profile)).trim(),
 			"",
 		].join("\n");
 		await atomicWriteFile(configPath, content);
