@@ -107,6 +107,15 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(critic, /Prefer narrow end-to-end contributions/i);
 });
 
+test("general-purpose supports open-ended delegation without recursive spawning", async () => {
+	const content = await readFile(join(root, "agent-definitions/general-purpose.md"), "utf8");
+	const { frontmatter, body } = parseFrontmatter<{ tools?: unknown }>(content);
+	assert.deepEqual(frontmatter.tools, ["read", "grep", "find", "ls", "bash", "edit", "write"]);
+	assert.match(body, /research, analysis, editing, command execution, and testing directly/i);
+	assert.match(body, /Do not delegate or spawn another agent/i);
+	assert.match(body, /rather than assuming every delegation requires code changes/i);
+});
+
 test("explorer supports evidence-driven code understanding and diagnosis", async () => {
 	const explorer = await readFile(join(root, "agent-definitions/explorer.md"), "utf8");
 	for (const mode of ["lookup", "map", "trace", "impact", "diagnose", "explain"]) assert.ok(explorer.includes(`\`${mode}\``), mode);

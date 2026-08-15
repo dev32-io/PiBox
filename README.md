@@ -71,7 +71,7 @@ Discuss and shape the story, review the persisted story, then create and review 
 After reviewing the plan, say “start the workflow” to execute it.
 ```
 
-Task tickets are self-contained; `task_clarify` is an exceptional targeted context lookup. Delivery plans may add focused evaluations, while the runtime owns final whole-branch journey verification and final branch review. Existing legacy final-E2E coverage is adopted rather than duplicated.
+Task tickets are self-contained; `task_clarify` is an exceptional targeted context lookup. For ad hoc delegation, `general-purpose` handles open-ended bounded research, implementation, and verification with broad repository tools but no recursive subagent controls; specialized definitions remain available for exploration, review, and managed execution. Delivery plans may add focused evaluations, while the runtime owns final whole-branch journey verification and final branch review. Existing legacy final-E2E coverage is adopted rather than duplicated.
 
 See [docs/workflow.md](docs/workflow.md) for setup and behavior, and [docs/specs/visual-tui.md](docs/specs/visual-tui.md) for visual contracts.
 

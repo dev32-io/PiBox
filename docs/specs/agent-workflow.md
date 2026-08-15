@@ -563,6 +563,7 @@ Each agent definition configures:
 
 | Agent definition | Responsibility | Mutation authority |
 |---|---|---|
+| General purpose | Open-ended bounded research, analysis, implementation, commands, and verification | Within the explicit delegation; no recursive delegation |
 | Explorer | Repository investigation and dependency mapping | None |
 | Plan critic | Challenge planning artifacts and verification coverage | Findings only |
 | Implementer | Implement one bounded task and its tests | Assigned worktree |

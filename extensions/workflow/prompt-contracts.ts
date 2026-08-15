@@ -13,7 +13,7 @@ export const BUILT_IN_PROMPT_SURFACES: PromptSurface[] = [
 		"product-discussion", "shape-story", "plan-delivery", "workflow-run",
 	].map((id): PromptSurface => ({ id, category: "skill", source: `skills/${id}/SKILL.md`, completion: id === "plan-delivery" ? "workflow_transition:submit" : id === "workflow-run" ? "work_item_complete" : "none" })),
 	...[
-		"explorer", "plan-critic", "implementer", "code-reviewer", "e2e-tester", "repair-implementer",
+		"general-purpose", "explorer", "plan-critic", "implementer", "code-reviewer", "e2e-tester", "repair-implementer",
 	].map((id): PromptSurface => ({ id, category: "agent", source: `agent-definitions/${id}.md`, completion: "none" })),
 	{ id: "supervised-task", category: "dynamic", source: "prompt/managed-task.md", completion: "none" },
 	{ id: "implementation-context", category: "dynamic", source: "prompt/implementation-context.md", completion: "none" },
