@@ -1,6 +1,6 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { currentSubagentPulseDot } from "../../../workflow-runtime/subagent-display.js";
+import { currentSubagentPulseDot, formatSubagentRoute } from "../../../workflow-runtime/subagent-display.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
 	"evidence_record", "finding_report", "work_item_complete", "task_integrate",
@@ -62,6 +62,7 @@ class HarnessCallComponent implements Component {
 		private readonly theme: Theme,
 		private readonly partial: boolean,
 		private readonly error: boolean,
+		private readonly details?: Record<string, any>,
 	) {}
 
 	render(width: number): string[] {
@@ -71,11 +72,10 @@ class HarnessCallComponent implements Component {
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
 		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
 		if (!this.partial) return [truncateToWidth(headline, width, "…")];
-		const mode = this.name === "subagent_spawn" ? this.args.mode ?? "background" : undefined;
 		const route = this.name === "subagent_spawn"
-			? this.args.model ? `${this.args.model}${this.args.effort ? `#${this.args.effort}` : ""}` : `${this.args.tier ?? "configured"} tier`
+			? formatSubagentRoute(this.details?.tier ?? this.args.tier, this.details?.resolved)
 			: undefined;
-		const state = ["running", mode, route].filter(Boolean).join(" · ");
+		const state = ["running", route].filter(Boolean).join(" · ");
 		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", state)}`, width, "…")];
 	}
 
@@ -142,8 +142,8 @@ function appendTreeRows(container: Container, rows: string[], theme: Theme, expa
 	}
 }
 
-export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean): Component {
-	return new HarnessCallComponent(name, args, theme, partial, error);
+export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>): Component {
+	return new HarnessCallComponent(name, args, theme, partial, error, details);
 }
 
 export function renderHarnessToolResult(name: string, result: any, expanded: boolean, theme: Theme, error: boolean): Component {

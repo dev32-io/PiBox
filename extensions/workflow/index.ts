@@ -1269,25 +1269,28 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "work_item_complete",
 		label: "Complete Workflow Work Item",
-		description: "Apply the completion gate and render a structured outcome from delivered work, canonical verification, deviations, findings, and residual risk. Pass the bare work-item ID, not a work-item: ref. The gate creates outcome.md when absent.",
-		parameters: Type.Union([
-			Type.Object({
-				workItemId: Type.String({ description: "Bare work-item ID, for example checkout; do not pass work-item:checkout." }),
-				outcomeSections: Type.Object({
-					delivered: Type.Array(Type.String()),
-					deviations: Type.Optional(Type.Array(Type.String())),
-					residualRisks: Type.Optional(Type.Array(Type.String())),
-					followUp: Type.Optional(Type.Array(Type.String())),
-				}, { additionalProperties: false }),
-			}, { additionalProperties: false }),
-			Type.Object({ workItemId: Type.String({ description: "Bare work-item ID." }), outcome: Type.String({ description: "Legacy schema-v1 outcome Markdown" }) }, { additionalProperties: false }),
-		]),
+		description: "Apply the completion gate and render a structured outcome from delivered work, canonical verification, deviations, findings, and residual risk. Pass the bare work-item ID with outcomeSections. Legacy schema-v1 callers may pass outcome Markdown instead. The gate creates outcome.md when absent.",
+		// Keep a top-level object schema: strict OpenAI-compatible servers discard
+		// discoverability when a function's parameter root is an anyOf union.
+		parameters: Type.Object({
+			workItemId: Type.String({ description: "Bare work-item ID, for example checkout; do not pass work-item:checkout." }),
+			outcomeSections: Type.Optional(Type.Object({
+				delivered: Type.Array(Type.String()),
+				deviations: Type.Optional(Type.Array(Type.String())),
+				residualRisks: Type.Optional(Type.Array(Type.String())),
+				followUp: Type.Optional(Type.Array(Type.String())),
+			}, { additionalProperties: false })),
+			outcome: Type.Optional(Type.String({ description: "Legacy schema-v1 outcome Markdown; do not combine with outcomeSections." })),
+		}, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
 				requireTrusted(ctx);
+				const hasSections = params.outcomeSections !== undefined;
+				const hasLegacyOutcome = params.outcome !== undefined;
+				if (hasSections === hasLegacyOutcome) throw new HarnessError("INVALID_ARTIFACT", "Provide exactly one of outcomeSections or outcome");
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
-					const item = "outcome" in params
+					const item = hasLegacyOutcome
 						? await runtime.workItems.completeWorkItem(params.workItemId, params.outcome)
 						: await runtime.workItems.completeWorkItem(params.workItemId, undefined, params.outcomeSections);
 					await runtime.events.append("work_item.completed", { workItemId: item.id });

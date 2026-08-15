@@ -16,14 +16,26 @@ const lines = (component: { render(width: number): string[] }) => component.rend
 
 test("renders a foreground subagent as an inline pulsing agent row", () => {
 	assert.equal(isHarnessTool("subagent_spawn"), true);
-	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
+	const starting = lines(renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester",
 		mode: "foreground",
 		tier: "medium",
 		task: "Verify one browser flow like a real user",
 	}, theme, true, false));
+	assert.equal(starting[1], "└─ running · Medium");
+	assert.doesNotMatch(starting.join("\n"), /resolving model|foreground/);
+	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
+		agent: "e2e-tester",
+		mode: "foreground",
+		tier: "medium",
+		task: "Verify one browser flow like a real user",
+	}, theme, true, false, {
+		tier: "medium",
+		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+	}));
 	assert.match(rendered[0] ?? "", /^[·•●] e2e-tester Verify one browser flow like a real user/);
-	assert.equal(rendered[1], "└─ running · foreground · medium tier");
+	assert.equal(rendered[1], "└─ running · Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
 });
 
 test("renders resource lists as concise tree rows instead of raw JSON", () => {

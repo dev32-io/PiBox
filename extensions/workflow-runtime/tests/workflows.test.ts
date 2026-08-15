@@ -221,10 +221,11 @@ test("background spawning returns its report to the main agent and shows running
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
+	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", tier: "medium", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · background · openai-codex\/gpt-5\.6-sol#high · \d+s/);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · Medium \(openai-codex\/gpt-5\.6-sol#high\) · \d+s/);
+	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
 	release();
 	await new Promise((resolve) => setTimeout(resolve, 20));
@@ -255,9 +256,14 @@ test("foreground spawning waits for the delegated result without using the backg
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review", mode: "foreground" }, undefined, undefined, f.ctx);
+	const updates: any[] = [];
+	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review", mode: "foreground", tier: "medium" }, undefined, (update: any) => updates.push(update), f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(f.statuses.has("subagent-dashboard"), false);
+	assert.deepEqual(
+		{ agent: updates.at(-1)?.details.agent, tier: updates.at(-1)?.details.tier, provider: updates.at(-1)?.details.resolved?.provider, model: updates.at(-1)?.details.resolved?.model, effort: updates.at(-1)?.details.resolved?.effort },
+		{ agent: "plan-critic", tier: "medium", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max" },
+	);
 	release();
 	const settled = await pending;
 	assert.equal(settled.content[0].text, "plan-critic: ready");

@@ -4,7 +4,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
-import { SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
+import { formatSubagentRoute, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
@@ -79,10 +79,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 		const dot = subagentPulseDot(subagentPulseFrame);
 		const lines = [...runningSubagents.values()].map((status) => {
-			const route = status.resolved
-				? `${status.resolved.provider}/${status.resolved.model}#${status.resolved.effort}`
-				: status.tier ? `${status.tier} tier` : "resolving model";
-			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `running · ${status.mode} · ${route} · ${formatElapsed(status.startedAt)}`)}`;
+			const route = formatSubagentRoute(status.tier, status.resolved);
+			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `running · ${route} · ${formatElapsed(status.startedAt)}`)}`;
 		});
 		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
 	};
@@ -347,22 +345,29 @@ export default function workflows(pi: ExtensionAPI): void {
 					...(params.tier ? { tier: params.tier } : {}),
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}), ...(params.strict !== undefined ? { strict: params.strict } : {}),
 				};
+				const catalogTier = catalog.find((agent) => agent.name === params.agent)?.tier;
+				const tier = params.tier ?? catalogTier;
+				let resolvedStatus: DynamicSubagentStarted | undefined;
 				if (mode === "background") {
-					const catalogTier = catalog.find((agent) => agent.name === params.agent)?.tier;
-					const tier = params.tier ?? catalogTier;
 					runningSubagents.set(toolCallId, { agent: params.agent, mode, startedAt: Date.now(), ...(tier ? { tier } : {}) });
 					renderSubagentStatus();
 				}
+				const runningDetails = () => ({ agent: params.agent, state: "running", tier, resolved: resolvedStatus });
 				const promise = adapter.spawnSubagent!(
 					request,
 					ctx,
 					mode === "foreground" ? signal : undefined,
-					mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, { agent: params.agent, state: "running" })) : undefined,
-					mode === "background" ? (resolved) => {
-						const current = runningSubagents.get(toolCallId);
-						if (current) runningSubagents.set(toolCallId, { ...current, resolved });
-						renderSubagentStatus();
-					} : undefined,
+					mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, runningDetails())) : undefined,
+					(resolved) => {
+						resolvedStatus = resolved;
+						if (mode === "background") {
+							const current = runningSubagents.get(toolCallId);
+							if (current) runningSubagents.set(toolCallId, { ...current, resolved });
+							renderSubagentStatus();
+						} else if (onUpdate) {
+							onUpdate(result("", runningDetails()));
+						}
+					},
 				);
 				if (mode === "foreground") {
 					try {

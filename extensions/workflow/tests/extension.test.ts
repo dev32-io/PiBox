@@ -79,6 +79,10 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.ok(JSON.stringify(schemas.get("workflow_apply_change")).length < 2500, "always-visible repair batch stays compact");
 	assert.match(JSON.stringify(schemas.get("resource_list")), /type.*parent.*query/);
 	assert.match(JSON.stringify(schemas.get("resource_read")), /ref/);
+	const completionSchema = schemas.get("work_item_complete") as { type?: string; properties?: Record<string, unknown>; anyOf?: unknown };
+	assert.equal(completionSchema.type, "object");
+	assert.deepEqual(Object.keys(completionSchema.properties ?? {}), ["workItemId", "outcomeSections", "outcome"]);
+	assert.equal(completionSchema.anyOf, undefined, "completion arguments remain discoverable to strict local servers");
 	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);
 	assert.deepEqual(events, ["tool_call", "before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
 	activeTools = [...tools, "read"];

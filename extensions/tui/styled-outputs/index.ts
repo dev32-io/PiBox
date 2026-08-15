@@ -141,9 +141,9 @@ function installToolPatch(): void {
 		if (isHarnessTool(this.toolName) && Array.isArray(renderContainer?.children)) {
 			const theme = globalState().theme;
 			if (theme) {
-				const call = renderHarnessToolCall(this.toolName, this.args ?? {}, theme, this.isPartial, this.result?.isError ?? false);
+				const call = renderHarnessToolCall(this.toolName, this.args ?? {}, theme, this.isPartial, this.result?.isError ?? false, this.result?.details);
 				const children = [call];
-				if (this.result) children.push(renderHarnessToolResult(this.toolName, this.result, this.expanded, theme, this.result.isError ?? false));
+				if (this.result && !this.isPartial) children.push(renderHarnessToolResult(this.toolName, this.result, this.expanded, theme, this.result.isError ?? false));
 				renderContainer.children = children;
 			}
 			return;
