@@ -88,7 +88,9 @@ Discuss and shape the story, review the persisted story, then create and review 
 After reviewing the plan, say “start the workflow” to execute it.
 ```
 
-Task tickets are self-contained; `task_clarify` is an exceptional targeted context lookup. For ad hoc delegation, `general-purpose` handles open-ended bounded research, implementation, and verification with broad repository tools but no recursive subagent controls; specialized definitions remain available for exploration, review, and managed execution. Delivery plans may add focused evaluations, while the runtime owns final whole-branch journey verification and final branch review. Existing legacy final-E2E coverage is adopted rather than duplicated.
+Task tickets are self-contained; `task_clarify` is an exceptional targeted context lookup. For ad hoc delegation, `general-purpose` handles open-ended bounded research, implementation, and verification with broad repository tools but no recursive subagent controls; specialized definitions remain available for exploration, review, and managed execution. Agent `tools` may also contain optional `mcp:<server>` selectors backed by the independently installed `pi-mcp-adapter`: missing servers are ignored, while launched children scope the adapter proxy to only the declared server names. Built-ins grant Playwright to `e2e-tester`, Playwright and Context7 to `general-purpose`, and Context7 to `implementer`. Delivery plans may add focused evaluations, while the runtime owns final whole-branch journey verification and final branch review. Existing legacy final-E2E coverage is adopted rather than duplicated.
+
+MCP transport and updates remain user-owned. Install `pi-mcp-adapter` separately and register server names such as `playwright` and `context7` in its standard `mcp.json`; PiBox does not bundle MCP clients or server versions.
 
 See [docs/workflow.md](docs/workflow.md) for setup and behavior, and [docs/specs/visual-tui.md](docs/specs/visual-tui.md) for visual contracts.
 

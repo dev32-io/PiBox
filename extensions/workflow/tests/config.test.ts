@@ -18,13 +18,14 @@ test("uses cost-aware model-effort pairs for the four capability tiers", () => {
 test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.match(DEFAULT_HARNESS_CONFIG.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.implementer?.description, "General implementation work for managed tasks");
-	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7"]);
 	const generalPurpose = DEFAULT_HARNESS_CONFIG.agents["general-purpose"];
 	assert.match(generalPurpose?.prompt ?? "", /agent-definitions\/general-purpose\.md$/);
 	assert.equal(generalPurpose?.description, "Open-ended delegation for research, analysis, implementation, testing, and other bounded work");
-	assert.deepEqual(generalPurpose?.tools, ["read", "grep", "find", "ls", "bash", "edit", "write"]);
+	assert.deepEqual(generalPurpose?.tools, ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp:playwright", "mcp:context7"]);
 	assert.equal(generalPurpose?.canDelegate, false);
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "mcp:playwright"]);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "high");
 });
 

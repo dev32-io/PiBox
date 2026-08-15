@@ -1,3 +1,5 @@
+import { parseMcpToolSelector } from "./mcp-capabilities.js";
+
 /**
  * Namespaced tool selectors keep harness capabilities out of launch-site lists.
  * Agent definitions may use these selectors directly; managed workflows may add
@@ -18,6 +20,7 @@ export function validateToolSelectors(selectors: readonly string[]): void {
 	for (const selector of selectors) {
 		if (!selector.trim()) throw new Error("tool selectors must be non-empty strings");
 		if (selector.startsWith("pibox:") && !(selector in PIBOX_TOOL_GROUPS)) throw new Error(`Unknown PiBox tool group: ${selector}`);
+		parseMcpToolSelector(selector);
 	}
 }
 
@@ -26,7 +29,8 @@ export function resolveToolSelectors(selectors: readonly string[], runtimeGroups
 	validateToolSelectors(combined);
 	const resolved: string[] = [];
 	for (const selector of combined) {
-		const tools = selector in PIBOX_TOOL_GROUPS ? PIBOX_TOOL_GROUPS[selector as PiBoxToolGroup] : [selector];
+		const mcpServer = parseMcpToolSelector(selector);
+		const tools = mcpServer ? ["mcp"] : selector in PIBOX_TOOL_GROUPS ? PIBOX_TOOL_GROUPS[selector as PiBoxToolGroup] : [selector];
 		for (const tool of tools) if (!resolved.includes(tool)) resolved.push(tool);
 	}
 	return resolved;

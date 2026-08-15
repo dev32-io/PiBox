@@ -30,6 +30,7 @@ import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicS
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors } from "./tool-groups.js";
+import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment } from "./mcp-capabilities.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 
@@ -522,6 +523,13 @@ export default function workflow(pi: ExtensionAPI): void {
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
 
+	pi.on("tool_call", (event) => {
+		if (event.toolName !== "mcp") return;
+		const allowedServers = configuredMcpServerAllowlist();
+		if (allowedServers === undefined) return;
+		return authorizeMcpProxyCall(event.input as Record<string, unknown>, allowedServers);
+	});
+
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
 		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
 			return sessionRuntime;
@@ -627,7 +635,8 @@ export default function workflow(pi: ExtensionAPI): void {
 			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }),
 			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
 			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
-			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true, ...(signal ? { signal } : {}),
+			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
+			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
 			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
 		});
 		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
@@ -673,7 +682,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_EVALUATION_TOOL_GROUP]),
 				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-review-agent"), persistentContext,
-				env: { PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
+				env: { ...mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
 				promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, `${agentName}.md`),
 				onSpawn: (pid) => void runs.update(created.record.id, { ...(pid === undefined ? {} : { pid }) }, "run.process_started"),
 				...(signal ? { signal } : {}),
@@ -733,6 +742,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workspace: runtime.identity.root,
+				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				...(agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt)
 					? { promptPath: resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string }
 					: existsSync(join(BUILT_IN_AGENT_ROOT, `${request.agent}.md`))

@@ -13,6 +13,7 @@ import { taskAgentName, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } from "./tool-groups.js";
+import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
 
 export interface LaunchModel {
 	provider: string;
@@ -144,6 +145,7 @@ export class SubagentSupervisor {
 					runId: created.record.id,
 					workspace: options.workspace,
 					env: {
+						...mcpLaunchEnvironment(options.tools ?? DEFAULT_SUBAGENT_TOOLS),
 						PIBOX_HARNESS_RUN_ID: created.record.id,
 						PIBOX_HARNESS_WORK_ITEM: options.workItemId,
 						PIBOX_HARNESS_TASK: options.task.id,
@@ -283,6 +285,7 @@ export class SubagentSupervisor {
 					stdio: ["ignore", "pipe", "pipe"],
 					env: {
 						...process.env,
+						...mcpLaunchEnvironment(options.tools ?? DEFAULT_SUBAGENT_TOOLS),
 						PIBOX_HARNESS_RUN_ID: runId,
 						PIBOX_HARNESS_WORK_ITEM: options.workItemId,
 						PIBOX_HARNESS_TASK: options.task.id,

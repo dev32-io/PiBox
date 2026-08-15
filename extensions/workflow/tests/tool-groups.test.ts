@@ -13,6 +13,12 @@ test("adds managed capability groups at runtime while preserving agent restricti
 	assert.deepEqual(resolveToolSelectors(["read"], [PIBOX_EVALUATION_TOOL_GROUP]), ["read", ...PIBOX_TOOL_GROUPS[PIBOX_EVALUATION_TOOL_GROUP]]);
 });
 
+test("maps optional MCP server selectors to the adapter proxy tool", () => {
+	assert.deepEqual(resolveToolSelectors(["read", "mcp:playwright", "mcp:context7"]), ["read", "mcp"]);
+	assert.throws(() => validateToolSelectors(["mcp:"]), /mcp:<server>/);
+	assert.throws(() => validateToolSelectors(["mcp:playwright/browser_click"]), /mcp:<server>/);
+});
+
 test("keeps the conventional default child tools available when definitions omit tools", () => {
 	assert.ok(DEFAULT_SUBAGENT_TOOLS.includes("read"));
 	assert.ok(DEFAULT_SUBAGENT_TOOLS.includes("edit"));

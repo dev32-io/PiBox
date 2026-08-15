@@ -80,7 +80,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.match(JSON.stringify(schemas.get("resource_list")), /type.*parent.*query/);
 	assert.match(JSON.stringify(schemas.get("resource_read")), /ref/);
 	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);
-	assert.deepEqual(events, ["before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
+	assert.deepEqual(events, ["tool_call", "before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });
 	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(tools.includes(legacy), false, legacy);
