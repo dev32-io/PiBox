@@ -14,6 +14,7 @@ import { normalizeStrictToolSchemas } from "../shared/strict-tool-schema.js";
 
 const PROVIDER_ID = "local-llm";
 const URL_FIELD = "LOCAL_LLM_BASE_URL";
+const CONTEXT_OVERFLOW_PATTERN = /context size has been exceeded/i;
 
 function strictToolSchemaCompatibleApi() {
 	const api = openAICompletionsApi();
@@ -112,4 +113,23 @@ export default function localLlmProvider(pi: ExtensionAPI): void {
 			api: strictToolSchemaCompatibleApi(),
 		}),
 	);
+
+	// LM Studio reports this overflow as a generic HTTP 500 whose wording is not
+	// recognized by Pi. Normalize only local-llm failures so Pi compacts and
+	// performs its single bounded overflow retry instead of treating it as a
+	// transient server failure.
+	pi.on("message_end", (event, ctx) => {
+		const message = event.message;
+		if (message.role !== "assistant" || message.stopReason !== "error") return;
+		if (message.provider !== PROVIDER_ID && ctx.model?.provider !== PROVIDER_ID) return;
+		const errorMessage = message.errorMessage ?? "";
+		if (/context[_ ]length[_ ]exceeded/i.test(errorMessage)) return;
+		if (!CONTEXT_OVERFLOW_PATTERN.test(errorMessage)) return;
+		return {
+			message: {
+				...message,
+				errorMessage: `context_length_exceeded: ${errorMessage}`,
+			},
+		};
+	});
 }

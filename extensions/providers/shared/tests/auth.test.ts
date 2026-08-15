@@ -7,9 +7,21 @@ import ollamaCloudProvider from "../../ollama-cloud/index.js";
 
 function captureProvider(register: (pi: ExtensionAPI) => void): Provider {
 	let captured: Provider | undefined;
-	register({ registerProvider: (provider: Provider) => { captured = provider; } } as unknown as ExtensionAPI);
+	register({ registerProvider: (provider: Provider) => { captured = provider; }, on: () => {} } as unknown as ExtensionAPI);
 	assert.ok(captured);
 	return captured;
+}
+
+function captureLocalLlmMessageEnd(): (event: any, ctx: any) => any {
+	let handler: ((event: any, ctx: any) => any) | undefined;
+	localLlmProvider({
+		registerProvider: () => {},
+		on: (event: string, candidate: (event: any, ctx: any) => any) => {
+			if (event === "message_end") handler = candidate;
+		},
+	} as unknown as ExtensionAPI);
+	assert.ok(handler);
+	return handler;
 }
 
 test("Ollama Cloud registers an API-key login", async () => {
@@ -50,4 +62,31 @@ test("Local LLM login stores both endpoint URL and API key", async () => {
 	});
 	assert.equal(provider.getModels()[0]?.id, "local-model");
 	globalThis.fetch = originalFetch;
+});
+
+test("Local LLM normalizes LM Studio context overflow errors for Pi compaction", () => {
+	const handler = captureLocalLlmMessageEnd();
+	const message = {
+		role: "assistant",
+		provider: "local-llm",
+		stopReason: "error",
+		errorMessage: 'Engine protocol returned {"message":"Context size has been exceeded."}',
+	};
+	const result = handler({ message }, { model: { provider: "local-llm" } });
+	assert.equal(
+		result?.message.errorMessage,
+		`context_length_exceeded: ${message.errorMessage}`,
+	);
+});
+
+test("Local LLM overflow normalization stays provider- and error-scoped", () => {
+	const handler = captureLocalLlmMessageEnd();
+	const overflow = {
+		role: "assistant",
+		provider: "another-provider",
+		stopReason: "error",
+		errorMessage: "Context size has been exceeded.",
+	};
+	assert.equal(handler({ message: overflow }, { model: { provider: "another-provider" } }), undefined);
+	assert.equal(handler({ message: { ...overflow, provider: "local-llm", errorMessage: "Internal server error" } }, { model: { provider: "local-llm" } }), undefined);
 });
