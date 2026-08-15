@@ -103,6 +103,23 @@ test("workflow start begins execution and activates draft tasks according to dep
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("adopts a legacy work-item journey evaluation instead of inserting a duplicate final gate", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "legacy-journey", title: "Legacy journey", kind: "change", intent: "Preserve a previously planned whole-branch journey." });
+	const legacy: EvaluationManifest = {
+		schemaVersion: 1, id: "planned-journey", type: "e2e", scope: { workItem: "legacy-journey" },
+		status: "planned", required: true, attempt: 0, methods: ["Exercise the planned journey"],
+	};
+	await store.defineEvaluation("legacy-journey", legacy);
+	const finals = await store.ensureFinalEvaluations("legacy-journey", 2);
+	const item = await store.read("legacy-journey");
+	assert.deepEqual(finals.map((evaluation) => evaluation.id), ["planned-journey", "final-branch-review"]);
+	assert.deepEqual(item.evaluations.map((evaluation) => evaluation.id), ["planned-journey", "final-branch-review"]);
+	assert.equal(item.evaluations.some((evaluation) => evaluation.id === "final-e2e"), false);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
 test("renders schema-v2 intent, artifacts, and task contracts from semantic values", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);

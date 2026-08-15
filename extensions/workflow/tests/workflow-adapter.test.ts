@@ -139,6 +139,36 @@ test("derives singleton repository execution and parallel stage merge barriers",
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:right"))?.status, "pending");
 });
 
+test("final branch review follows an adopted semantic journey gate instead of a fixed evaluation id", async () => {
+	const tasks: any[] = [task("implementation", "merged")];
+	const item: any = {
+		id: "legacy", title: "Legacy", planning: { revision: 1 }, tasks: [{ id: "implementation" }],
+		executionStages: [{ id: "delivery", tasks: ["implementation"] }], integrationUnits: [],
+		evaluations: [{ id: "planned-journey" }, { id: "final-branch-review" }],
+	};
+	let journeyStatus = "planned";
+	const runtime: any = {
+		identity: { root: "/repo" },
+		workItems: {
+			async read() { return item; },
+			async readTask() { return tasks[0]; },
+			async readEvaluation(_workItemId: string, id: string) {
+				return id === "planned-journey"
+					? { id, type: "e2e", scope: { workItem: "legacy" }, status: journeyStatus }
+					: { id, type: "combined-review", checkpoint: "final-review", scope: { workItem: "legacy" }, status: "planned" };
+			},
+		},
+		agents: { async list() { return []; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let snapshot = await adapter.snapshot("work-item:legacy", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:planned-journey"))?.status, "ready");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:final-branch-review"))?.status, "pending");
+	journeyStatus = "passed";
+	snapshot = await adapter.snapshot("work-item:legacy", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:final-branch-review"))?.status, "ready");
+});
+
 test("does not render exited or reported evaluation agents as running", async () => {
 	const tasks: any[] = [task("first", "merged")];
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: "first" }], executionStages: [{ id: "delivery", tasks: ["first"] }], integrationUnits: [], evaluations: [{ id: "review" }] };

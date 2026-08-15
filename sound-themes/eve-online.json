@@ -3,6 +3,8 @@
   "id": "eve-online",
   "label": "EVE Online (user-supplied audio)",
   "sounds": {
-    "response-complete": "eve-online-notification-ping.mp3"
+    "response-complete": "eve-online-notification-ping.mp3",
+    "workflow-task-completed": "eve-online-skill-completed-chime-wo-aura.mp3",
+    "workflow-error": "eve-online-capacitor-warning.mp3"
   }
 }

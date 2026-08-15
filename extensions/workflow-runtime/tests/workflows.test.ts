@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, type WorkflowAdapter, type WorkflowSnapshot } from "../api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowSnapshot } from "../api.js";
 
 function fixture() {
 	const tools = new Map<string, any>();
@@ -94,6 +94,45 @@ test("background step failure pauses instead of retrying unchanged state", async
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(runs, 1);
 	assert.ok(f.entries.some((entry) => (entry.data as any).state === "paused"));
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("emits workflow feedback when a task contribution completes", async () => {
+	const f = fixture();
+	let done = false;
+	const feedback: WorkflowFeedbackEvent[] = [];
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() {
+			return { ref: "test:workflow", title: "Feedback", status: done ? "done" : "ready", steps: [{ ref: "test:task", title: "Implement feedback", kind: "task", status: done ? "done" : "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }] };
+		},
+		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Contribution completed." }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.deepEqual(feedback, [{ type: "task-completed", workflowRef: "test:workflow", stepRef: "test:task", title: "Implement feedback", detail: "Contribution completed." }]);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("emits workflow error feedback when a step pauses for attention", async () => {
+	const f = fixture();
+	const feedback: WorkflowFeedbackEvent[] = [];
+	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Feedback", status: "ready", steps: [{ ref: "test:task", title: "Blocked feedback", kind: "task", status: "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }] };
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep(ref) { return { ref, state: "blocked", summary: "Needs user attention.", attention: true }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.deepEqual(feedback, [{ type: "error", workflowRef: "test:workflow", stepRef: "test:task", title: "Blocked feedback", detail: "Needs user attention." }]);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

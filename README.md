@@ -8,8 +8,8 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **TUI extensions** — responsive status bar, refined chat input, compact tool previews/diffs, animated working status, and startup display.
 - **`/effort`** — choose a reasoning effort supported by the active model; non-reasoning models safely use `off`.
 - **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.
-- **Sound hooks** — optional completion feedback.
-- **Workflow** — capability-backed planning, delegated worktrees, verification, and recovery. See [docs/workflow.md](docs/workflow.md).
+- **Sound hooks** — optional response, workflow task-completion, and workflow-attention feedback using user-supplied audio.
+- **Workflow** — collaborative story shaping, capability-backed delivery planning, delegated worktrees, runtime-owned final verification, and recovery. See [docs/workflow.md](docs/workflow.md).
 - **Architecture visualizer skill** — agent-authored JSON rendered as a live, interactive local browser diagram with deterministic automatic layouts.
 
 ## Install and verify
@@ -51,16 +51,39 @@ Use `/effort` to select a compatible level interactively, or `/effort high` dire
 
 Invoke `/skill:architecture-visualizer` to explore a codebase and create a live visual explanation. The skill writes a flexible JSON document while its local renderer owns layout, grouping, arrows, and interaction. The `visual_companion` tool starts or stops one random-port loopback backend per Pi session; updating the JSON during later conversation automatically refreshes the open page. Future visualizers can register with the same backend.
 
+## Sound feedback
+
+The default EVE Online manifest maps three feedback boundaries:
+
+- Pi response settled;
+- managed workflow task contribution completed;
+- managed workflow paused for failure or user/orchestrator attention.
+
+Audio is not distributed with PiBox. Install user-supplied files under `~/.pi/agent/pibox/sounds/eve-online/`; see [extensions/feedback/sound-hooks/README.md](extensions/feedback/sound-hooks/README.md) for filenames, configuration, and the local-copy example. Copyrighted media must remain untracked.
+
 ## Workflow
 
 ```text
 /harness init [standard|economy]
 /workflow status
 
-After reviewing a plan, say “start the workflow” to execute it.
+Discuss and shape the story, review the persisted story, then create and review the delivery plan.
+After reviewing the plan, say “start the workflow” to execute it.
 ```
 
+Task tickets are self-contained; `task_clarify` is an exceptional targeted context lookup. Delivery plans may add focused evaluations, while the runtime owns final whole-branch journey verification and final branch review. Existing legacy final-E2E coverage is adopted rather than duplicated.
+
 See [docs/workflow.md](docs/workflow.md) for setup and behavior, and [docs/specs/visual-tui.md](docs/specs/visual-tui.md) for visual contracts.
+
+### Workflow execution benchmark
+
+```bash
+npm run eval:workflow                 # deterministic CI-grade scenarios
+npm run eval:workflow:model           # opt-in Luna model scenarios
+npm run eval:workflow:compare         # compare with the reviewed baseline
+```
+
+The benchmark covers scheduling, Git safety, review/repair, recovery, clarification, protocol, and completion. Reports are written beneath ignored `.benchmark/`; reviewed baselines and retained findings live in `benchmarks/workflow-execution/`. See [docs/workflow-execution-eval.md](docs/workflow-execution-eval.md).
 
 ## License
 

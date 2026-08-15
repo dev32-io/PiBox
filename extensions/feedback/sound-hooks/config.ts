@@ -2,7 +2,10 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve, sep } from "node:path";
 
 export const RESPONSE_COMPLETE_EVENT = "response-complete" as const;
-export type FeedbackEvent = typeof RESPONSE_COMPLETE_EVENT;
+export const WORKFLOW_TASK_COMPLETED_EVENT = "workflow-task-completed" as const;
+export const WORKFLOW_ERROR_EVENT = "workflow-error" as const;
+export const FEEDBACK_EVENTS = [RESPONSE_COMPLETE_EVENT, WORKFLOW_TASK_COMPLETED_EVENT, WORKFLOW_ERROR_EVENT] as const;
+export type FeedbackEvent = typeof FEEDBACK_EVENTS[number];
 
 export interface SoundTheme {
 	schemaVersion: 1;
@@ -41,15 +44,14 @@ export function parseSoundTheme(value: unknown): SoundTheme | undefined {
 	}
 	if (!isRecord(value.sounds)) return undefined;
 
-	const responseComplete = value.sounds[RESPONSE_COMPLETE_EVENT];
-	if (responseComplete !== undefined && typeof responseComplete !== "string") return undefined;
+	const sounds: Partial<Record<FeedbackEvent, string>> = {};
+	for (const event of FEEDBACK_EVENTS) {
+		const filename = value.sounds[event];
+		if (filename !== undefined && typeof filename !== "string") return undefined;
+		if (filename !== undefined) sounds[event] = filename;
+	}
 
-	return {
-		schemaVersion: 1,
-		id: value.id,
-		label: value.label,
-		sounds: responseComplete === undefined ? {} : { [RESPONSE_COMPLETE_EVENT]: responseComplete },
-	};
+	return { schemaVersion: 1, id: value.id, label: value.label, sounds };
 }
 
 export function resolveSoundFile(root: string, theme: SoundTheme, event: FeedbackEvent): string | undefined {

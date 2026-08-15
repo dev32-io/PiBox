@@ -2,6 +2,15 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const WORKFLOW_ADAPTER_DISCOVERY_EVENT = "pibox:workflow:discover-adapters";
 export const WORKFLOW_CONTROL_EVENT = "pibox:workflow:control";
+export const WORKFLOW_FEEDBACK_EVENT = "pibox:workflow:feedback";
+
+export interface WorkflowFeedbackEvent {
+	type: "task-completed" | "error";
+	workflowRef: string;
+	stepRef?: string;
+	title: string;
+	detail?: string;
+}
 
 export type WorkflowStepStatus = "pending" | "ready" | "running" | "done" | "attention" | "cancelled";
 

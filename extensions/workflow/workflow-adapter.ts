@@ -137,12 +137,15 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				};
 			});
 			const evaluations = await Promise.all(item.evaluations.map((entry) => runtime.workItems.readEvaluation(item.id, entry.id)));
+			const finalJourneyRefs = evaluations
+				.filter((evaluation) => evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id))
+				.map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
 			for (const evaluation of evaluations) {
 				const legacyStage = evaluation.scope.integrationUnit ? stages.find((stage) => stage.id === evaluation.scope.integrationUnit) : undefined;
 				const dependencies = evaluation.scope.task ? [`work-item:${item.id}/task:${evaluation.scope.task}`]
 					: legacyStage ? legacyStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
 					: evaluation.checkpoint === "final-review"
-						? [`work-item:${item.id}/evaluation:final-e2e`]
+						? finalJourneyRefs.length ? finalJourneyRefs : tasks.map((task) => `work-item:${item.id}/task:${task.id}`)
 						: tasks.map((task) => `work-item:${item.id}/task:${task.id}`);
 				const dependenciesDone = dependencies.every((dependency) => steps.find((step) => step.ref === dependency)?.status === "done");
 				let status: WorkflowStepStatus = "pending"; let detail: string | undefined;

@@ -16,4 +16,4 @@ description: Use when the user asks to start or resume a reviewed workflow, or w
 
 ## Finish
 
-Read `outcome.md` and observed lifecycle evidence. Brief the user on delivered behavior, verification/review, deviations, residual risks or follow-up, and branch state. For a new branch, report readiness to merge into `develop`; for a continued branch, describe only this increment without implying the larger branch is finished. Continue conversationally if follow-up is needed.
+After every required step and gate settles, call `work_item_complete` with the bare work-item ID; this completion gate creates `outcome.md` when it does not already exist. Do not report the expected pre-gate absence of `outcome.md` as a deviation. Read the resulting outcome and observed lifecycle evidence, then brief the user on delivered behavior, verification/review, genuine deviations, residual risks or follow-up, and branch state. For a new branch, report readiness to merge into `develop`; for a continued branch, describe only this increment without implying the larger branch is finished. Continue conversationally if follow-up is needed.

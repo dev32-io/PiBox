@@ -786,12 +786,19 @@ export class WorkItemStore {
 
 	async ensureFinalEvaluations(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
 		const item = await this.read(workItemId);
-		const defaults: EvaluationManifest[] = [
-			{ schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Exercise the complete meaningful user journey; record not_applicable only when no runnable E2E surface exists."], loop: { state: "planned", iteration: 0, maxIterations } },
-			{ schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Review the complete feature-branch diff for specification fit, correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } },
-		];
-		for (const evaluation of defaults) if (!item.evaluations.some((entry) => entry.id === evaluation.id)) await this.defineRuntimeEvaluation(workItemId, evaluation);
-		return Promise.all(defaults.map((evaluation) => this.readEvaluation(workItemId, evaluation.id)));
+		const existing = await Promise.all(item.evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
+		let finalJourney = existing.find((evaluation) => evaluation.checkpoint === "final-e2e")
+			?? existing.find((evaluation) => evaluation.type === "e2e" && evaluation.scope.workItem === workItemId);
+		if (!finalJourney) {
+			finalJourney = { schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Exercise the complete meaningful user journey; record not_applicable only when no runnable E2E surface exists."], loop: { state: "planned", iteration: 0, maxIterations } };
+			await this.defineRuntimeEvaluation(workItemId, finalJourney);
+		}
+		let finalReview = existing.find((evaluation) => evaluation.checkpoint === "final-review");
+		if (!finalReview) {
+			finalReview = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Review the complete feature-branch diff for specification fit, correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } };
+			await this.defineRuntimeEvaluation(workItemId, finalReview);
+		}
+		return [await this.readEvaluation(workItemId, finalJourney.id), await this.readEvaluation(workItemId, finalReview.id)];
 	}
 
 	private async defineRuntimeEvaluation(workItemId: string, manifest: EvaluationManifest): Promise<void> {

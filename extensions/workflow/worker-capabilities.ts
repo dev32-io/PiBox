@@ -156,7 +156,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		description: "Submit the required terminal implementation handoff. Git state and artifact restrictions are validated deterministically.",
 		parameters: Type.Object({
 			summary: Type.String(),
-			commits: Type.Array(Type.String()),
+			commits: Type.Array(Type.String({ description: "Full 40-character commit SHA(s) from the task branch; abbreviated hashes are rejected." })),
 			checks: Type.Array(Type.Object({ command: Type.String(), result: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]), output: Type.Optional(Type.String()) })),
 			expectedFailures: Type.Optional(Type.Array(Type.String())),
 			risks: Type.Optional(Type.Array(Type.String())),

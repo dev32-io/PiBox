@@ -83,6 +83,8 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /complete rendered task contract in persistent context/i);
 	assert.match(delivery, /Use `resource_list` to inventory[\s\S]+`resource_read` to inspect each complete task/i);
 	assert.match(delivery, /Check coverage, vagueness, consistency/i);
+	assert.match(delivery, /runtime owns final whole-branch journey verification and the final branch review/i);
+	assert.doesNotMatch(delivery, /\be2e\b/i);
 	assert.match(delivery, /Correct only the affected resource with `resource_write`/i);
 	assert.match(delivery, /Resource Examples/i);
 	assert.match(delivery, /task_clarify.*escape hatch/is);
@@ -97,6 +99,8 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /no separate approval command is required/i);
 	assert.match(run, /clear user request to execute the reviewed workflow is the sole execution gate/i);
 	assert.match(run, /call `workflow_start` directly/i);
+	assert.match(run, /call `work_item_complete` with the bare work-item ID/i);
+	assert.match(run, /Do not report[\s\S]+pre-gate absence of `outcome\.md` as a deviation/i);
 	assert.match(critic, /Upstream premises/i);
 	assert.match(critic, /without rewarding task count or concurrency/i);
 	assert.match(critic, /Do not accept the caller's preferred task count/i);

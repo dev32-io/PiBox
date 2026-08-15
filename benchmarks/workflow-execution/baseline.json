@@ -1,0 +1,1242 @@
+{
+  "schemaVersion": 1,
+  "kind": "combined",
+  "startedAt": "2026-08-15T00:00:04.673Z",
+  "completedAt": "2026-08-15T00:00:41.574Z",
+  "gitCommit": "5d41aa3263e61caee06e4da589e0e8764da74d83",
+  "modelPolicy": {
+    "provider": "openai-codex",
+    "model": "gpt-5.6-luna",
+    "effort": "medium"
+  },
+  "deterministic": [
+    {
+      "scenarioId": "mixed-topology",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 2,
+      "stepStatuses": {
+        "foundation": "done",
+        "api": "done",
+        "ui": "done",
+        "assembly": "done",
+        "e2e": "done"
+      },
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": [
+        {
+          "sequence": 1,
+          "type": "workflow_prepared",
+          "detail": "bench:mixed-topology"
+        },
+        {
+          "sequence": 2,
+          "type": "step_started",
+          "stepId": "foundation",
+          "active": [
+            "foundation"
+          ]
+        },
+        {
+          "sequence": 3,
+          "type": "step_completed",
+          "stepId": "foundation",
+          "active": []
+        },
+        {
+          "sequence": 4,
+          "type": "step_started",
+          "stepId": "api",
+          "active": [
+            "api"
+          ]
+        },
+        {
+          "sequence": 5,
+          "type": "step_started",
+          "stepId": "ui",
+          "active": [
+            "api",
+            "ui"
+          ]
+        },
+        {
+          "sequence": 6,
+          "type": "step_completed",
+          "stepId": "ui",
+          "active": [
+            "api"
+          ]
+        },
+        {
+          "sequence": 7,
+          "type": "step_completed",
+          "stepId": "api",
+          "active": []
+        },
+        {
+          "sequence": 8,
+          "type": "step_started",
+          "stepId": "assembly",
+          "active": [
+            "assembly"
+          ]
+        },
+        {
+          "sequence": 9,
+          "type": "step_completed",
+          "stepId": "assembly",
+          "active": []
+        },
+        {
+          "sequence": 10,
+          "type": "step_started",
+          "stepId": "e2e",
+          "active": [
+            "e2e"
+          ]
+        },
+        {
+          "sequence": 11,
+          "type": "step_completed",
+          "stepId": "e2e",
+          "active": []
+        },
+        {
+          "sequence": 12,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting foundation",
+          "attention": false
+        },
+        {
+          "sequence": 13,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nfoundation · completed\nfoundation completed.",
+          "attention": false
+        },
+        {
+          "sequence": 14,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting api",
+          "attention": false
+        },
+        {
+          "sequence": 15,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting ui",
+          "attention": false
+        },
+        {
+          "sequence": 16,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nui · completed\nui completed.",
+          "attention": false
+        },
+        {
+          "sequence": 17,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\napi · completed\napi completed.",
+          "attention": false
+        },
+        {
+          "sequence": 18,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting assembly",
+          "attention": false
+        },
+        {
+          "sequence": 19,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nassembly · completed\nassembly completed.",
+          "attention": false
+        },
+        {
+          "sequence": 20,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting e2e",
+          "attention": false
+        },
+        {
+          "sequence": 21,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\ne2e · completed\ne2e completed.",
+          "attention": false
+        },
+        {
+          "sequence": 22,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nSerial, parallel, and assembly stages · complete\nFinished all workflow steps.",
+          "attention": false
+        },
+        {
+          "sequence": 23,
+          "type": "workflow_message",
+          "detail": "Workflow bench:mixed-topology completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.",
+          "attention": false
+        }
+      ]
+    },
+    {
+      "scenarioId": "resource-collision",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 1,
+      "stepStatuses": {
+        "left": "done",
+        "right": "done"
+      },
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": [
+        {
+          "sequence": 1,
+          "type": "workflow_prepared",
+          "detail": "bench:resource-collision"
+        },
+        {
+          "sequence": 2,
+          "type": "step_started",
+          "stepId": "left",
+          "active": [
+            "left"
+          ]
+        },
+        {
+          "sequence": 3,
+          "type": "step_completed",
+          "stepId": "left",
+          "active": []
+        },
+        {
+          "sequence": 4,
+          "type": "step_started",
+          "stepId": "right",
+          "active": [
+            "right"
+          ]
+        },
+        {
+          "sequence": 5,
+          "type": "step_completed",
+          "stepId": "right",
+          "active": []
+        },
+        {
+          "sequence": 6,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting left",
+          "attention": false
+        },
+        {
+          "sequence": 7,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nleft · completed\nleft completed.",
+          "attention": false
+        },
+        {
+          "sequence": 8,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting right",
+          "attention": false
+        },
+        {
+          "sequence": 9,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nright · completed\nright completed.",
+          "attention": false
+        },
+        {
+          "sequence": 10,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nResource claims serialize otherwise parallel work · complete\nFinished all workflow steps.",
+          "attention": false
+        },
+        {
+          "sequence": 11,
+          "type": "workflow_message",
+          "detail": "Workflow bench:resource-collision completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.",
+          "attention": false
+        }
+      ]
+    },
+    {
+      "scenarioId": "blocking-failure",
+      "passed": true,
+      "score": 100,
+      "terminal": "paused",
+      "peakConcurrency": 1,
+      "stepStatuses": {
+        "implement": "attention",
+        "dependent": "pending"
+      },
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": [
+        {
+          "sequence": 1,
+          "type": "workflow_prepared",
+          "detail": "bench:blocking-failure"
+        },
+        {
+          "sequence": 2,
+          "type": "step_started",
+          "stepId": "implement",
+          "active": [
+            "implement"
+          ]
+        },
+        {
+          "sequence": 3,
+          "type": "step_failed",
+          "stepId": "implement",
+          "active": []
+        },
+        {
+          "sequence": 4,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting implement",
+          "attention": false
+        },
+        {
+          "sequence": 5,
+          "type": "workflow_message",
+          "detail": "[Workflow attention]\nimplement · failed\nimplement failed.",
+          "attention": true
+        }
+      ]
+    },
+    {
+      "scenarioId": "resume-after-repair",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 1,
+      "stepStatuses": {
+        "implement": "done",
+        "verify": "done"
+      },
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": [
+        {
+          "sequence": 1,
+          "type": "workflow_prepared",
+          "detail": "bench:resume-after-repair"
+        },
+        {
+          "sequence": 2,
+          "type": "step_started",
+          "stepId": "implement",
+          "active": [
+            "implement"
+          ]
+        },
+        {
+          "sequence": 3,
+          "type": "step_failed",
+          "stepId": "implement",
+          "active": []
+        },
+        {
+          "sequence": 4,
+          "type": "workflow_control",
+          "detail": "resume"
+        },
+        {
+          "sequence": 5,
+          "type": "step_started",
+          "stepId": "implement",
+          "active": [
+            "implement"
+          ]
+        },
+        {
+          "sequence": 6,
+          "type": "step_completed",
+          "stepId": "implement",
+          "active": []
+        },
+        {
+          "sequence": 7,
+          "type": "step_started",
+          "stepId": "verify",
+          "active": [
+            "verify"
+          ]
+        },
+        {
+          "sequence": 8,
+          "type": "step_completed",
+          "stepId": "verify",
+          "active": []
+        },
+        {
+          "sequence": 9,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting implement",
+          "attention": false
+        },
+        {
+          "sequence": 10,
+          "type": "workflow_message",
+          "detail": "[Workflow attention]\nimplement · failed\nimplement failed.",
+          "attention": true
+        },
+        {
+          "sequence": 11,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting implement",
+          "attention": false
+        },
+        {
+          "sequence": 12,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nimplement · completed\nimplement completed.",
+          "attention": false
+        },
+        {
+          "sequence": 13,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting verify",
+          "attention": false
+        },
+        {
+          "sequence": 14,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nverify · completed\nverify completed.",
+          "attention": false
+        },
+        {
+          "sequence": 15,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nA stopped attempt resumes under explicit steering · complete\nFinished all workflow steps.",
+          "attention": false
+        },
+        {
+          "sequence": 16,
+          "type": "workflow_message",
+          "detail": "Workflow bench:resume-after-repair completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.",
+          "attention": false
+        }
+      ]
+    },
+    {
+      "scenarioId": "review-repair-loop",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 1,
+      "stepStatuses": {
+        "implement": "done",
+        "final-review": "done"
+      },
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": [
+        {
+          "sequence": 1,
+          "type": "workflow_prepared",
+          "detail": "bench:review-repair-loop"
+        },
+        {
+          "sequence": 2,
+          "type": "step_started",
+          "stepId": "implement",
+          "active": [
+            "implement"
+          ]
+        },
+        {
+          "sequence": 3,
+          "type": "step_completed",
+          "stepId": "implement",
+          "active": []
+        },
+        {
+          "sequence": 4,
+          "type": "step_started",
+          "stepId": "final-review",
+          "active": [
+            "final-review"
+          ]
+        },
+        {
+          "sequence": 5,
+          "type": "step_failed",
+          "stepId": "final-review",
+          "active": []
+        },
+        {
+          "sequence": 6,
+          "type": "workflow_control",
+          "detail": "checkpoint:request_changes:final-review"
+        },
+        {
+          "sequence": 7,
+          "type": "step_started",
+          "stepId": "final-review",
+          "active": [
+            "final-review"
+          ]
+        },
+        {
+          "sequence": 8,
+          "type": "step_completed",
+          "stepId": "final-review",
+          "active": []
+        },
+        {
+          "sequence": 9,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting implement",
+          "attention": false
+        },
+        {
+          "sequence": 10,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nimplement · completed\nimplement completed.",
+          "attention": false
+        },
+        {
+          "sequence": 11,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting final-review",
+          "attention": false
+        },
+        {
+          "sequence": 12,
+          "type": "workflow_message",
+          "detail": "[Workflow attention]\nfinal-review · failed\nfinal-review failed.",
+          "attention": true
+        },
+        {
+          "sequence": 13,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting final-review",
+          "attention": false
+        },
+        {
+          "sequence": 14,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nfinal-review · completed\nfinal-review completed.",
+          "attention": false
+        },
+        {
+          "sequence": 15,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nBlocking review receives focused changes and re-review · complete\nFinished all workflow steps.",
+          "attention": false
+        },
+        {
+          "sequence": 16,
+          "type": "workflow_message",
+          "detail": "Workflow bench:review-repair-loop completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.",
+          "attention": false
+        }
+      ]
+    },
+    {
+      "scenarioId": "accept-residual-risk",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 1,
+      "stepStatuses": {
+        "implement": "done",
+        "final-review": "done"
+      },
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": [
+        {
+          "sequence": 1,
+          "type": "workflow_prepared",
+          "detail": "bench:accept-residual-risk"
+        },
+        {
+          "sequence": 2,
+          "type": "step_started",
+          "stepId": "implement",
+          "active": [
+            "implement"
+          ]
+        },
+        {
+          "sequence": 3,
+          "type": "step_completed",
+          "stepId": "implement",
+          "active": []
+        },
+        {
+          "sequence": 4,
+          "type": "step_started",
+          "stepId": "final-review",
+          "active": [
+            "final-review"
+          ]
+        },
+        {
+          "sequence": 5,
+          "type": "step_failed",
+          "stepId": "final-review",
+          "active": []
+        },
+        {
+          "sequence": 6,
+          "type": "workflow_control",
+          "detail": "checkpoint:accept_risk:final-review"
+        },
+        {
+          "sequence": 7,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting implement",
+          "attention": false
+        },
+        {
+          "sequence": 8,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nimplement · completed\nimplement completed.",
+          "attention": false
+        },
+        {
+          "sequence": 9,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nStarting final-review",
+          "attention": false
+        },
+        {
+          "sequence": 10,
+          "type": "workflow_message",
+          "detail": "[Workflow attention]\nfinal-review · failed\nfinal-review failed.",
+          "attention": true
+        },
+        {
+          "sequence": 11,
+          "type": "workflow_message",
+          "detail": "[Workflow event]\nManager accepts a justified non-blocking finding · complete\nFinished all workflow steps.",
+          "attention": false
+        },
+        {
+          "sequence": 12,
+          "type": "workflow_message",
+          "detail": "Workflow bench:accept-residual-risk completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.",
+          "attention": false
+        }
+      ]
+    },
+    {
+      "scenarioId": "atomic-parallel-conflict",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 2,
+      "stepStatuses": {},
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": []
+    },
+    {
+      "scenarioId": "post-check-rollback",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 2,
+      "stepStatuses": {},
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": []
+    },
+    {
+      "scenarioId": "dirty-canonical-preserved",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 2,
+      "stepStatuses": {},
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": []
+    },
+    {
+      "scenarioId": "final-journey-dedup",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 2,
+      "stepStatuses": {},
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": []
+    },
+    {
+      "scenarioId": "interrupted-run-recovery",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 1,
+      "stepStatuses": {},
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": []
+    },
+    {
+      "scenarioId": "durable-change-request-resume",
+      "passed": true,
+      "score": 100,
+      "terminal": "complete",
+      "peakConcurrency": 1,
+      "stepStatuses": {},
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "scheduling",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "findings": [],
+      "trace": []
+    }
+  ],
+  "modelRuns": [
+    {
+      "scenarioId": "routine-managed-workflow",
+      "model": "openai-codex/gpt-5.6-luna",
+      "effort": "medium",
+      "score": 90,
+      "passed": false,
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 15,
+          "score": 30,
+          "findings": [
+            "task_complete failed: INVALID_HANDOFF: Reported commits do not match the task branch",
+            "task_complete failed: INVALID_HANDOFF: Reported commits do not match the task branch"
+          ]
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "clarification",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 20,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "verification",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "metrics": {
+        "toolCalls": 56,
+        "processAttempts": 4,
+        "orchestratorInterventions": 0,
+        "userEscalations": 0,
+        "clarificationPrecision": 1
+      }
+    },
+    {
+      "scenarioId": "targeted-task-clarify",
+      "model": "openai-codex/gpt-5.6-luna",
+      "effort": "medium",
+      "score": 95,
+      "passed": true,
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 15,
+          "score": 65,
+          "findings": [
+            "task_complete failed: INVALID_HANDOFF: Reported commits do not match the task branch"
+          ]
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "clarification",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 20,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "verification",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "metrics": {
+        "toolCalls": 53,
+        "processAttempts": 4,
+        "orchestratorInterventions": 0,
+        "userEscalations": 0,
+        "clarificationPrecision": 1
+      }
+    },
+    {
+      "scenarioId": "worker-change-request",
+      "model": "openai-codex/gpt-5.6-luna",
+      "effort": "medium",
+      "score": 87,
+      "passed": false,
+      "dimensions": [
+        {
+          "name": "outcome",
+          "weight": 25,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "protocol",
+          "weight": 15,
+          "score": 65,
+          "findings": [
+            "task_complete failed: INVALID_HANDOFF: Reported commits do not match the task branch"
+          ]
+        },
+        {
+          "name": "autonomy",
+          "weight": 15,
+          "score": 50,
+          "findings": [
+            "Observed 1 user escalation(s); expected 0."
+          ]
+        },
+        {
+          "name": "clarification",
+          "weight": 10,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "safety",
+          "weight": 20,
+          "score": 100,
+          "findings": []
+        },
+        {
+          "name": "verification",
+          "weight": 15,
+          "score": 100,
+          "findings": []
+        }
+      ],
+      "metrics": {
+        "toolCalls": 58,
+        "processAttempts": 5,
+        "orchestratorInterventions": 1,
+        "userEscalations": 1,
+        "clarificationPrecision": 1
+      }
+    }
+  ],
+  "summary": {
+    "score": 98,
+    "passed": 13,
+    "failed": 2,
+    "scenarios": 15
+  }
+}

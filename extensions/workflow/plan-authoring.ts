@@ -237,6 +237,7 @@ export function normalizePlanEvaluation(value: unknown, workItemId: string): Pla
 export function normalizeResourceEvaluation(value: unknown, workItemId: string): PlanAuthoringRecord {
 	const evaluation = record(value);
 	const type = evaluation.kind ?? evaluation.type;
+	if (type === "e2e") throw new HarnessError("INVALID_ARTIFACT", "Final whole-branch journey verification is runtime-owned and must not be created by delivery planning. Use a focused deterministic, regression, migration, or review evaluation instead.");
 	const explicitMethods = strings(evaluation.methods);
 	const context = strings(evaluation.context).map((entry) => `Context: ${entry}`);
 	const behavioralCriteria = strings(evaluation.criteria).filter((entry) => !/^[a-z0-9]+(?:-[a-z0-9]+)*#AC-\d{3}$/.test(entry)).map((entry) => `Verify: ${entry}`);

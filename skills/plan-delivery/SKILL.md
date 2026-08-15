@@ -20,7 +20,7 @@ Read the compact work item, then read each intent, specification, design, and de
 3. **Write complete tickets** — Give each task its outcome, necessary context, included and excluded boundary, required work, interfaces, constraints, observable acceptance, proof, checks, and integration expectation. Include the relevant requirement directly; do not make the worker dereference specification or design IDs to understand the assignment.
 4. **Arrange delivery** — Declare blockers and stages only where sequencing matters. Tasks in one stage are the parallel frontier and must not depend on each other or claim the same shared resource. The runtime derives repository versus worktree isolation from the reviewed stage graph.
 5. **Route capability** — Choose one tier after the task boundary is settled. Use `medium` by default; use `low` for mechanical work, `high` for difficult integration or state/control flow, and `max` only for architecture, security, privacy, irreversible, or unusually high-blast-radius work. Each tier is an ordered list of concrete `provider/model#effort` pairs resolved by the harness.
-6. **Plan proof** — Ensure every binding story criterion is implemented and verified somewhere in the task set. Keep this coverage at the assembled-plan level rather than encoding artifact references into each task. Add deterministic, review, regression, migration, or E2E evaluations only where their risk justifies them.
+6. **Plan proof** — Ensure every binding story criterion is implemented and verified somewhere in the task set. Keep this coverage at the assembled-plan level rather than encoding artifact references into each task. Add focused deterministic, regression, migration, or independent review evaluations only where their risk justifies them. The runtime owns final whole-branch journey verification and the final branch review; do not create either in the delivery plan.
 7. **Write resources** — Use `resource_write` to create or update one task or evaluation at a time; task `stageId` records stage membership. Creation uses `type`, `parent`, and `value`; updates use `ref` and `value`. Do not read a separate schema or resend unchanged intent, specification, or design resources.
 8. **Review the durable plan** — Use `resource_list` to inventory the assembled plan and `resource_read` to inspect each complete task. Check coverage, vagueness, consistency, dependency order, parallel safety, and whether every ticket fits one fresh worker context. Correct only the affected resource with `resource_write`.
 9. **Submit for review** — Call `workflow_transition` with `submit` only after the durable resources are coherent. Submission is a user review handoff, not execution authorization. A separate planning critique is optional and runs only when the user explicitly requests it; use `subagent_spawn` with `plan-critic` without delaying ordinary plans.
@@ -83,19 +83,19 @@ Create one self-contained task. Use this shape as a guide and omit optional fiel
 }
 ```
 
-Create a risk-warranted evaluation with the same ticket-like style:
+Create a risk-warranted focused evaluation with the same ticket-like style:
 
 ```json
 {
   "type": "evaluation",
   "parent": "work-item:checkout",
   "value": {
-    "id": "checkout-e2e",
-    "kind": "e2e",
-    "title": "Verify checkout journey",
-    "context": ["Run after all checkout tasks are integrated."],
-    "criteria": ["A valid checkout completes and a rejected checkout creates no order."],
-    "checks": ["npm test", "npm run e2e -- checkout"]
+    "id": "checkout-idempotency-regression",
+    "kind": "regression",
+    "title": "Verify checkout idempotency",
+    "context": ["Run after checkout submission is integrated."],
+    "criteria": ["Repeated submission creates exactly one order."],
+    "checks": ["npm test -- checkout-idempotency"]
   }
 }
 ```

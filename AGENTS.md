@@ -4,7 +4,7 @@ PiBox is a deterministic workflow harness around a capable main orchestrator and
 
 ## Collaboration Flow
 
-Work moves through free-form discussion → durable story/spec/design → executable plan → explicit user-requested workflow run → staged implementation → managed review/fix loops → E2E and full-branch review → completion. Clear local reversible edits may stay ad hoc. Planning does not authorize execution; a clear user request to start/run does. Routine ready work advances automatically. Material outcome, policy, privacy/security, irreversible, or destructive decisions return to the user.
+Work moves through free-form discussion → collaborative story/spec/design shaping → explicit review of the persisted story → executable delivery plan → explicit user-requested workflow run → staged implementation → managed review/fix loops → runtime-owned whole-branch journey verification and final review → completion. Never move from first persistence of a shaped story into delivery planning in the same turn; hand the story back for user review first. Clear local reversible edits may stay ad hoc. Planning does not authorize execution; a clear user request to start/run does. Routine ready work advances automatically. Material outcome, policy, privacy/security, irreversible, or destructive decisions return to the user.
 
 ## Context and Agent Model
 
@@ -12,4 +12,10 @@ Tasks are self-contained bounded context capsules. Each implementer receives the
 
 Reusable generic agent definitions live in `agent-definitions/`; workflow-only protocol and harness prompt fragments live in `prompt/`; on-demand workflows live in `skills/`. Managed launches append protocol prompts to the selected generic definition. Keep prompt prose in Markdown rather than inline TypeScript. Configuration selects an agent definition and capability tier; each tier is an ordered list of concrete `provider/model#effort` routes, and the runtime resolves the first available pair and tools.
 
-Run `npm run check`, `npm test`, and `git diff --check` before committing.
+Delivery planning may define focused deterministic, regression, migration, or independent-review evaluations. It must not author final whole-branch journey verification or final branch review: the runtime inserts or semantically adopts those gates after assembly.
+
+## Development and Evaluation
+
+Run `npm run check`, `npm test`, and `git diff --check` before committing. For workflow scheduler, Git integration, recovery, protocol, or evaluation changes, also run `npm run eval:workflow`; use the opt-in Luna model suite only when model behavior needs measurement. Keep generated run artifacts under ignored `.benchmark/`, and update the reviewed baseline only after inspecting changed dimensions and retained findings.
+
+Sound manifests may map user-supplied media, but copyrighted audio stays outside Git under the user's configured sound root.

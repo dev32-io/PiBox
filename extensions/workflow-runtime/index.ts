@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
@@ -44,6 +44,10 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const persist = (ref: string, state: "running" | "paused" | "stopped") => {
 		pi.appendEntry("pibox-workflow", { ref, state, at: new Date().toISOString() });
+	};
+
+	const sendFeedback = (event: WorkflowFeedbackEvent) => {
+		pi.events.emit(WORKFLOW_FEEDBACK_EVENT, event);
 	};
 
 	const sendEvent = (title: string, detail?: string, attention = false) => {
@@ -118,13 +122,24 @@ export default function workflows(pi: ExtensionAPI): void {
 	const settleStep = async (adapter: WorkflowAdapter, step: WorkflowStep, promise: Promise<WorkflowRunResult>, ctx: ExtensionContext, workflowRef?: string) => {
 		try {
 			const settled = await promise;
-			sendEvent(`${step.title} · ${settled.state}`, settled.summary, Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed"));
-			if (settled.attention || settled.state === "blocked" || settled.state === "failed") {
-				if (workflowRef) { active.set(workflowRef, "paused"); persist(workflowRef, "paused"); }
+			const attention = Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed");
+			sendEvent(`${step.title} · ${settled.state}`, settled.summary, attention);
+			if (workflowRef && step.kind === "task" && settled.state === "completed" && !attention) {
+				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, title: step.title, detail: settled.summary });
+			}
+			if (attention) {
+				if (workflowRef) {
+					active.set(workflowRef, "paused"); persist(workflowRef, "paused");
+					sendFeedback({ type: "error", workflowRef, stepRef: step.ref, title: step.title, detail: settled.summary });
+				}
 			}
 		} catch (error) {
-			if (workflowRef) { active.set(workflowRef, "paused"); persist(workflowRef, "paused"); }
-			sendEvent(`${step.title} · failed`, error instanceof Error ? error.message : String(error), true);
+			const detail = error instanceof Error ? error.message : String(error);
+			if (workflowRef) {
+				active.set(workflowRef, "paused"); persist(workflowRef, "paused");
+				sendFeedback({ type: "error", workflowRef, stepRef: step.ref, title: step.title, detail });
+			}
+			sendEvent(`${step.title} · failed`, detail, true);
 		} finally {
 			inFlight.delete(step.ref);
 			await tick(ctx);
@@ -165,8 +180,10 @@ export default function workflows(pi: ExtensionAPI): void {
 				try { snapshot = await adapter.snapshot(ref, ctx); }
 				catch (error) {
 					if (state === "running") {
+						const detail = error instanceof Error ? error.message : String(error);
 						active.set(ref, "paused"); persist(ref, "paused");
-						sendEvent(`${ref} · attention`, error instanceof Error ? error.message : String(error), true);
+						sendFeedback({ type: "error", workflowRef: ref, title: ref, detail });
+						sendEvent(`${ref} · attention`, detail, true);
 					}
 					continue;
 				}
@@ -183,7 +200,9 @@ export default function workflows(pi: ExtensionAPI): void {
 					const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
 					const detail = attentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
 					const checkpoint = attentionSteps.find((step) => step.kind === "evaluation");
-					sendEvent(`${snapshot.title} · attention`, `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref} to request changes, retry the same reviewer, continue, skip, or accept non-blocking risk. Do not manipulate Git or task state manually.` : ""}`, true);
+					const guidance = `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref} to request changes, retry the same reviewer, continue, skip, or accept non-blocking risk. Do not manipulate Git or task state manually.` : ""}`;
+					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref } : {}), title: snapshot.title, detail: guidance });
+					sendEvent(`${snapshot.title} · attention`, guidance, true);
 					continue;
 				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
@@ -198,7 +217,9 @@ export default function workflows(pi: ExtensionAPI): void {
 				}
 			}
 		} catch (error) {
-			sendEvent("Workflow runner · attention", error instanceof Error ? error.message : String(error), true);
+			const detail = error instanceof Error ? error.message : String(error);
+			if (currentRef) sendFeedback({ type: "error", workflowRef: currentRef, title: "Workflow runner", detail });
+			sendEvent("Workflow runner · attention", detail, true);
 		} finally { ticking = false; }
 	};
 

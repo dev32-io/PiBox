@@ -28,12 +28,19 @@ test("accepts concise author-facing design artifacts", () => {
 	assert.deepEqual(artifact.sections.chosenApproach, ["Use one reducer."]);
 });
 
-test("accepts ticket-like evaluation resources", () => {
-	const evaluation = normalizeResourceEvaluation({ id: "checkout-e2e", kind: "e2e", context: ["Run after integration."], criteria: ["Valid checkout succeeds."], checks: ["npm test", "npm run e2e"] }, "checkout") as any;
-	assert.equal(evaluation.type, "e2e");
+test("accepts focused ticket-like evaluation resources", () => {
+	const evaluation = normalizeResourceEvaluation({ id: "checkout-idempotency", kind: "regression", context: ["Run after checkout integration."], criteria: ["Repeated checkout creates one order."], checks: ["npm test -- checkout-idempotency"] }, "checkout") as any;
+	assert.equal(evaluation.type, "regression");
 	assert.deepEqual(evaluation.scope, { workItem: "checkout" });
-	assert.deepEqual(evaluation.methods, ["Context: Run after integration.", "Verify: Valid checkout succeeds.", "Run: npm test", "Run: npm run e2e"]);
+	assert.deepEqual(evaluation.methods, ["Context: Run after checkout integration.", "Verify: Repeated checkout creates one order.", "Run: npm test -- checkout-idempotency"]);
 	assert.equal(evaluation.criteria, undefined);
+});
+
+test("reserves final whole-branch journey verification for the runtime", () => {
+	assert.throws(
+		() => normalizeResourceEvaluation({ id: "planner-final", kind: "e2e", criteria: ["Whole journey passes."] }, "checkout"),
+		/runtime-owned/i,
+	);
 });
 
 test("expands concise self-contained task contracts", () => {
