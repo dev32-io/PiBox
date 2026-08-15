@@ -98,6 +98,9 @@ export async function createVisualCompanionBackend({ viewers, host = "127.0.0.1"
     server.once("error", reject);
     server.listen(port, host, resolveListen);
   });
+  // The companion is session-owned convenience UI. It must never keep Pi's
+  // process alive if an abrupt quit bypasses the normal session_shutdown hook.
+  server.unref();
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const baseUrl = `http://${host}:${actualPort}`;
@@ -131,7 +134,9 @@ export async function createVisualCompanionBackend({ viewers, host = "127.0.0.1"
       state.watcher = watch(resolvedArtifact, () => {
         clearTimeout(state.timer);
         state.timer = setTimeout(() => refresh(viewerId), 60);
+        state.timer.unref?.();
       });
+      state.watcher.unref?.();
       states.set(viewerId, state);
       return {
         viewerId,
@@ -148,7 +153,10 @@ export async function createVisualCompanionBackend({ viewers, host = "127.0.0.1"
         for (const client of state.clients) client.end();
       }
       states.clear();
-      await new Promise((resolveClose) => server.close(resolveClose));
+      await new Promise((resolveClose, rejectClose) => {
+        server.close((error) => error ? rejectClose(error) : resolveClose());
+        server.closeAllConnections?.();
+      });
     },
   };
 }

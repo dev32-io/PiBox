@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createVisualCompanionBackend } from "../backend.mjs";
@@ -41,6 +43,31 @@ test("one random-port backend serves multiple registered visualizers", async () 
 		assert.equal((await fetch(`${backend.url}/package.json`)).status, 404);
 	} finally {
 		await backend.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("backend and artifact watcher cannot pin the owning Pi process after quit", async () => {
+	const root = await mkdtemp(join(tmpdir(), "visual-companion-exit-"));
+	const visualizer = await fixture(root, "exit-check");
+	const backendModule = pathToFileURL(resolve("extensions/visual-companion/backend.mjs")).href;
+	const script = `
+		import { createVisualCompanionBackend } from ${JSON.stringify(backendModule)};
+		const backend = await createVisualCompanionBackend({ viewers: [{
+			id: "exit-check",
+			assetsDir: ${JSON.stringify(visualizer.viewer.assetsDir)},
+			loadDocument: (path) => ({ ok: true, document: { path }, errors: [] }),
+		}] });
+		backend.show({ viewerId: "exit-check", artifactPath: ${JSON.stringify(visualizer.artifactPath)} });
+	`;
+	try {
+		await new Promise<void>((done, reject) => {
+			const child = spawn(process.execPath, ["--input-type=module", "--eval", script], { stdio: "ignore" });
+			const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("visual companion backend kept its owner process alive")); }, 3_000);
+			child.once("error", (error) => { clearTimeout(timer); reject(error); });
+			child.once("exit", (code) => { clearTimeout(timer); code === 0 ? done() : reject(new Error(`child exited ${code}`)); });
+		});
+	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
 });
