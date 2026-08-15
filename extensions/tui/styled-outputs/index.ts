@@ -23,7 +23,7 @@ import { renderToolCall, renderToolResult } from "./components/tool-renderers.js
 import { LinePrefixedComponent } from "./components/tool-shell.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
-const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v2");
+const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v3");
 // Version tool patches separately so /reload can replace an older shell patch
 // without re-wrapping the already-installed user/assistant message patches.
 const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v6");
@@ -46,6 +46,17 @@ function installMessagePatches(): void {
 		const originalUpdateContent = assistantPrototype.updateContent;
 		assistantPrototype.updateContent = function piBoxAssistantUpdate(message: any, isStreaming?: boolean) {
 			originalUpdateContent.call(this, message, isStreaming);
+			// Pi must retain the normalized error internally to trigger overflow
+			// recovery, but the transcript does not need to show that recovered
+			// failure above the auto-compaction status.
+			if (
+				message?.provider === "local-llm" &&
+				message?.stopReason === "error" &&
+				/context[_ ]length[_ ]exceeded/i.test(message?.errorMessage ?? "")
+			) {
+				this.contentContainer?.clear();
+				return;
+			}
 			const theme = globalState().theme;
 			const children = this.contentContainer?.children;
 			if (!theme || !Array.isArray(children)) return;
