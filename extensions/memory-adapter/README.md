@@ -15,7 +15,7 @@ The `memory_adapter` tool supports `status`, `remember`, `recall`, `list`, `get`
 
 Every curated record carries `repo_id`, type, source, evidence paths, verified commit/date, status, and schema version. Current source and reviewed repository contracts outrank recalled memory.
 
-`/memory-audit` runs deterministic freshness/evidence checks, caps candidates at 50, and asks the main session for a semantic recommendation. It never mutates memory. Recommendations are `keep`, `reverify`, `update`, `supersede`, `archive`, `delete`, or `needs_user`; mutation requires explicit user approval.
+`/memory-audit` runs deterministic freshness/evidence checks, caps candidates at 50, and asks the main session for a semantic recommendation. When candidates exist, the audit prompt requires read-only explorer subagents to verify claims against current source before the main session reconciles recommendations. It never mutates memory. Recommendations are `keep`, `reverify`, `update`, `supersede`, `archive`, `delete`, or `needs_user`; mutation requires explicit user approval.
 
 ## Local service
 

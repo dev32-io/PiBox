@@ -7,6 +7,7 @@ import { join, relative, resolve } from "node:path";
 import { Mem0Client, type MemoryRecord } from "./client.js";
 import { deriveRepositoryScope, type RepositoryScope } from "./scope.js";
 import { getService, operateService } from "../service-adapter/registry.js";
+import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 
 const SCHEMA_VERSION = 1;
 const USER_ID = "pibox";
@@ -36,9 +37,9 @@ function client(): Mem0Client {
 }
 
 async function ensureRunning(ctx: ExtensionContext, signal?: AbortSignal): Promise<void> {
+	if (await client().health(signal)) return;
 	const service = getService("mem0");
-	if (!service) throw new Error("The Mem0 service is not registered.");
-	if (service.snapshot.state === "running" && await client().health(signal)) return;
+	if (!service) throw new Error("Mem0 is unavailable and its PiBox service is not registered.");
 	await operateService("mem0", "start", { ctx, ...(signal ? { signal } : {}) });
 }
 
@@ -229,14 +230,12 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 			try {
 				const result = await execute({ action: "audit" }, ctx);
 				const details = result.details as { findings: unknown[]; checked: number; bounded: boolean; repository: RepositoryScope };
-				pi.sendUserMessage([
-					"Perform a bounded semantic audit of the following deterministic memory findings.",
-					"For each candidate recommend exactly one of: keep, reverify, update, supersede, archive, delete, needs_user.",
-					"Compare claims with current repository source or reviewed contracts when practical. Treat repository authority as higher than memory.",
-					"Return findings and discuss recommendations with me. Do not call memory mutation actions unless I explicitly approve them.",
-					`Checked ${details.checked} records${details.bounded ? `; candidates were capped at ${MAX_AUDIT_CANDIDATES}` : ""}.`,
-					JSON.stringify(details.findings, null, 2),
-				].join("\n\n"));
+				pi.sendUserMessage(renderBuiltInPrompt("memory-audit", {
+					checked: details.checked,
+					boundedNotice: details.bounded ? `; candidates were capped at ${MAX_AUDIT_CANDIDATES}` : "",
+					repository: JSON.stringify(details.repository, null, 2),
+					findings: JSON.stringify(details.findings, null, 2),
+				}));
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}

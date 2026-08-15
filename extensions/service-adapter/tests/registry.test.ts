@@ -24,6 +24,20 @@ test("orders services and renders intentionally stopped as a neutral hollow dot"
 	}
 });
 
+test("a stale unregister callback cannot remove a newer registration", () => {
+	resetServiceRegistryForTests();
+	const removeOld = registerService({ id: "mem0", name: "Mem0", order: 10, internal: true, stayAlive: true, singleton: true, perSession: false }, { health: async () => ({ state: "stopped" }) });
+	removeOld();
+	const removeCurrent = registerService({ id: "mem0", name: "Mem0", order: 10, internal: true, stayAlive: true, singleton: true, perSession: false }, { health: async () => ({ state: "running" }) });
+	try {
+		removeOld();
+		assert.equal(listServices().length, 1);
+		assert.equal(listServices()[0]?.descriptor.id, "mem0");
+	} finally {
+		removeCurrent();
+	}
+});
+
 test("service details exclude non-cloneable controller functions", () => {
 	resetServiceRegistryForTests();
 	const remove = registerService({ id: "test", name: "Test", order: 1, internal: true, stayAlive: true, singleton: true, perSession: false }, {

@@ -27,8 +27,11 @@ export function publishService(ctx: ExtensionContext, service: RegisteredService
 
 export function registerService(descriptor: ServiceDescriptor, controller: ServiceController): () => void {
 	if (services.has(descriptor.id)) throw new Error(`Service already registered: ${descriptor.id}`);
-	services.set(descriptor.id, { descriptor, controller, snapshot: { state: "stopped" } });
-	return () => services.delete(descriptor.id);
+	const registration = { descriptor, controller, snapshot: { state: "stopped" } } satisfies RegisteredService;
+	services.set(descriptor.id, registration);
+	return () => {
+		if (services.get(descriptor.id) === registration) services.delete(descriptor.id);
+	};
 }
 
 export function getService(id: string): RegisteredService | undefined {
