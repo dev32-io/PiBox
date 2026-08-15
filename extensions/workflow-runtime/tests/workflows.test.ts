@@ -3,8 +3,9 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowSnapshot } from "../api.js";
+import { installPermissionRuntime } from "../../permissions/runtime.js";
 
-function fixture() {
+function fixture(workflowConfirmed = true) {
 	const tools = new Map<string, any>();
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const bus = new Map<string, Array<(data: unknown) => void>>();
@@ -25,7 +26,14 @@ function fixture() {
 		getActiveTools() { return activeTools; }, setActiveTools(names: string[]) { activeTools = names; },
 	} as unknown as ExtensionAPI;
 	workflows(pi);
+	let permissionMode = "enforce";
+	installPermissionRuntime({
+		getMode: () => permissionMode as "enforce" | "bypass",
+		setMode: (next) => { permissionMode = next; },
+		confirmWorkflowStart: async () => workflowConfirmed,
+	});
 	const ctx: any = {
+		mode: "tui",
 		hasUI: true,
 		ui: {
 			theme: { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text },
@@ -34,7 +42,7 @@ function fixture() {
 		},
 		sessionManager: { getEntries: () => entries },
 	};
-	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget };
+	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget, permissionMode: () => permissionMode };
 }
 
 test("registers the generalized workflow and subagent surface", async () => {
@@ -44,7 +52,7 @@ test("registers the generalized workflow and subagent surface", async () => {
 	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /tier.*model.*effort.*strict/);
-	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*No separate approval command/i);
+	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*TUI confirmation.*permission bypass mode/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
@@ -82,6 +90,25 @@ test("failed workflow start returns an error and leaves no dashboard", async () 
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("workflow start requires extension-owned bypass confirmation before adapter preparation", async () => {
+	const f = fixture(false);
+	let prepared = false;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async prepareWorkflow() { prepared = true; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const outcome = await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	assert.equal(prepared, false);
+	assert.equal(f.permissionMode(), "enforce");
+	assert.match(outcome.content[0].text, /cancelled/i);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("background step failure pauses instead of retrying unchanged state", async () => {
 	const f = fixture();
 	let runs = 0;
@@ -93,6 +120,7 @@ test("background step failure pauses instead of retrying unchanged state", async
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	assert.equal(f.permissionMode(), "bypass");
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(runs, 1);
 	assert.ok(f.entries.some((entry) => (entry.data as any).state === "paused"));

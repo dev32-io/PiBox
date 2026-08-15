@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
+import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -274,13 +275,16 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "workflow_start", label: "Start Workflow",
-		description: "Start deterministic background execution for a reviewed workflow reference after the user explicitly asks to run it. No separate approval command is required. The registered adapter refreshes current steps and advances routine ready work.",
+		description: "Start deterministic background execution for a reviewed workflow reference after the user explicitly asks to run it. Before launch, PiBox shows a user-owned TUI confirmation and switches the session and spawned subagents to permission bypass mode. The registered adapter refreshes current steps and advances routine ready work.",
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
+				const confirmed = await confirmWorkflowBypass(ctx, params.ref);
+				if (!confirmed) return result(`Workflow start cancelled. ${params.ref} was not launched and permission mode was not changed.`, { ref: params.ref, cancelled: true });
 				const adapter = adapterFor(params.ref);
 				await adapter.prepareWorkflow?.(params.ref, ctx);
 				const snapshot = await adapter.snapshot(params.ref, ctx);
+				activateWorkflowBypass();
 				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
 				void tick(ctx);
 				return result(`Started workflow ${params.ref} in background with ${snapshot.steps.length} step(s).`, snapshot);

@@ -14,7 +14,7 @@ export default function startup(pi: ExtensionAPI): void {
 		const keybindings = getKeybindings();
 		const keys: StartupKeys = {
 			model: keybindings.getKeys("app.model.cycleForward")[0] ?? "ctrl+p",
-			thinking: keybindings.getKeys("app.thinking.cycle")[0] ?? "shift+tab",
+			permissions: "shift+tab",
 		};
 		ctx.ui.setHeader((tui, theme) => {
 			activeTui = tui;

@@ -34,11 +34,13 @@ export default function statusBar(pi: ExtensionAPI): void {
 				render(width: number): string[] {
 					const extensionStatuses = footerData.getExtensionStatuses();
 					const visualCompanionStatus = extensionStatuses.get("visual-companion");
+					const permissionMode = extensionStatuses.get("permission-mode") === "bypass" ? "bypass" : "enforce";
 					const subagentStatuses = extensionStatuses.get("subagent-dashboard")?.split("\n").filter(Boolean);
 					return renderStatusBar(width, {
 						ctx,
 						theme,
 						thinkingLevel: pi.getThinkingLevel(),
+						permissionMode,
 						metrics: collectSessionMetrics(ctx),
 						git: poller?.getSnapshot() ?? {
 							insideWorkTree: false,

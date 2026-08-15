@@ -11,7 +11,7 @@ const theme = {
 } as unknown as Theme;
 
 const counts = { models: 8, components: 5, contextFiles: 2 };
-const keys = { model: "ctrl+p", thinking: "shift+tab" };
+const keys = { model: "ctrl+p", permissions: "shift+tab" };
 
 test("startup remains visible and width-safe across layouts", () => {
 	for (const width of [20, 36, 51, 52, 80, 120]) {

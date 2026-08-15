@@ -11,6 +11,7 @@ export interface StatusRenderData {
 	ctx: ExtensionContext;
 	theme: Theme;
 	thinkingLevel: string;
+	permissionMode: "enforce" | "bypass";
 	metrics: SessionMetrics;
 	git: GitSnapshot;
 	config: StatusBarConfig;
@@ -128,6 +129,11 @@ function gitSegment(data: StatusRenderData): string {
 	return data.theme.fg(dirty ? "warning" : "success", `${icon} ${status}`);
 }
 
+function permissionSegment(data: StatusRenderData): string {
+	if (data.permissionMode === "bypass") return `${data.theme.fg("warning", "⚠")} ${data.theme.fg("dim", "Permissions:")} ${data.theme.bold(data.theme.fg("warning", "BYPASS"))}`;
+	return `${data.theme.fg("success", "◆")} ${data.theme.fg("dim", "Permissions:")} ${data.theme.bold(data.theme.fg("success", "ENFORCED"))}`;
+}
+
 function thinkingSegment(data: StatusRenderData): string {
 	const level = data.thinkingLevel || "off";
 	const labels: Record<string, string> = { off: "OFF", minimal: "MINIMAL", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "EXTRA HIGH", max: "MAX" };
@@ -164,7 +170,7 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const row1Left = [piMark, divider, modelSegment(data), divider, pathSegment(data, mode), gitSegment(data)];
 	const row1 = buildRow(row1Left, [contextSegment(data, mode)], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
-	const row2 = buildRow([thinkingSegment(data)], row2Right, width);
+	const row2 = buildRow([permissionSegment(data), divider, thinkingSegment(data)], row2Right, width);
 	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
 	if (data.visualCompanionStatus) rows.push(buildRow([data.visualCompanionStatus], [], width));
 	for (const status of data.subagentStatuses ?? []) rows.push(buildRow([status], [], width));

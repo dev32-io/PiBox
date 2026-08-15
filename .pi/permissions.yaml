@@ -1,0 +1,20 @@
+version: 1
+default: allow
+
+permissions:
+  ask:
+    - Bash(git push*)
+    - Bash(ssh *)
+    - Bash(scp *)
+    - Bash(rsync *:*)
+  deny:
+    - Bash(rm -rf /)
+    - Bash(rm -rf ~*)
+    - Bash(sudo *)
+    - Bash(mkfs*)
+    - Read(~/.ssh/id_*)
+    - Read(~/.aws/credentials)
+    - Write(~/.ssh/**)
+    - Write(~/.pi/**)
+    - Write(~/Library/LaunchAgents/**)
+    - Write(~/Library/LaunchDaemons/**)

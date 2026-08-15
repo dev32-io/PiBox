@@ -4,7 +4,7 @@ PiBox is a deterministic workflow harness around a capable main orchestrator and
 
 ## Collaboration Flow
 
-Work moves through free-form discussion → collaborative story/spec/design shaping → explicit review of the persisted story → executable delivery plan → explicit user-requested workflow run → staged implementation → managed review/fix loops → runtime-owned whole-branch journey verification and final review → completion. Never move from first persistence of a shaped story into delivery planning in the same turn; hand the story back for user review first. Clear local reversible edits may stay ad hoc. Planning does not authorize execution; a clear user request to start/run does. Routine ready work advances automatically. Material outcome, policy, privacy/security, irreversible, or destructive decisions return to the user.
+Work moves through free-form discussion → collaborative story/spec/design shaping → explicit review of the persisted story → executable delivery plan → explicit user-requested workflow run → extension-owned bypass confirmation → staged implementation → managed review/fix loops → runtime-owned whole-branch journey verification and final review → completion. Never move from first persistence of a shaped story into delivery planning in the same turn; hand the story back for user review first. Clear local reversible edits may stay ad hoc. Planning does not authorize execution; a clear user request to start/run does. `workflow_start` then asks the user to confirm the visible permission bypass required for unattended execution; cancellation launches nothing. Routine ready work advances automatically. Material outcome, policy, privacy/security, irreversible, or destructive decisions return to the user.
 
 ## Context and Agent Model
 
@@ -15,6 +15,8 @@ Reusable generic agent definitions live in `agent-definitions/`; workflow-only p
 Delivery planning may define focused deterministic, regression, migration, or independent-review evaluations. It must not author final whole-branch journey verification or final branch review: the runtime inserts or semantically adopts those gates after assembly.
 
 Path-scoped repository instructions live under `.claude/rules/` or `.pi/rules/` with Claude-compatible `paths:` frontmatter. Keep unconditional rules small; scoped bodies load after a matching file read instead of inflating initial context.
+
+Repository tool permissions live at `.pi/permissions.yaml`. Enforced mode applies allow/ask/deny policy decisions; bypass skips only that gate and never bypasses harness controls. `Shift+Tab` toggles the visible session-scoped mode. Every spawned child inherits its parent's mode, and managed workflows enter bypass only after the user accepts the extension-owned `workflow_start` confirmation.
 
 ## Development and Evaluation
 

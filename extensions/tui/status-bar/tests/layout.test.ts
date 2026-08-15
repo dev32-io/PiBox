@@ -21,6 +21,7 @@ const data = {
 	ctx,
 	theme,
 	thinkingLevel: "medium",
+	permissionMode: "enforce" as const,
 	metrics: { input: 12_400, output: 810, cacheRead: 4_000, cacheWrite: 0, cacheHitPercent: 24.4, cost: 0.042, durationMs: 840_000 },
 	git: { insideWorkTree: true, branch: "main", staged: 1, modified: 2, untracked: 0, ahead: 0, behind: 0 },
 	config: normalizeStatusBarConfig(),
@@ -44,10 +45,15 @@ test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
 	assert.match(text, /42\.0%/);
 	assert.match(text, /\/ 100k/);
-	assert.match(text, /Thinking: MEDIUM/);
+	assert.match(text, /◆ Permissions: ENFORCED │ Thinking: MEDIUM/);
 	assert.match(text, /↑ 12k/);
 	assert.match(text, /↓ 810/);
 	assert.match(text, /\$0\.04/);
+});
+
+test("bypass permission mode is rendered before thinking", () => {
+	const row = renderStatusBar(160, { ...data, permissionMode: "bypass" })[3] ?? "";
+	assert.match(row, /⚠ Permissions: BYPASS │ Thinking: MEDIUM/);
 });
 
 test("visual companion status appears on an optional row below thinking", () => {

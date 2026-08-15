@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../workflow-runtime/index.js";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, type WorkflowAdapter } from "../workflow-runtime/api.js";
+import { installPermissionRuntime } from "../permissions/runtime.js";
 
 export interface WorkflowBenchHarness {
 	pi: ExtensionAPI;
@@ -35,6 +36,12 @@ export function createWorkflowBenchHarness(): WorkflowBenchHarness {
 		setActiveTools(names: string[]) { activeTools = names; },
 	} as unknown as ExtensionAPI;
 	workflows(pi);
+	let permissionMode: "enforce" | "bypass" = "enforce";
+	installPermissionRuntime({
+		getMode: () => permissionMode,
+		setMode: (next) => { permissionMode = next; },
+		confirmWorkflowStart: async () => true,
+	});
 	const ctx: any = {
 		hasUI: false,
 		ui: {

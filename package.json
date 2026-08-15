@@ -33,6 +33,7 @@
   },
   "pi": {
     "extensions": [
+      "./extensions/permissions/index.ts",
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
       "./extensions/rule/index.ts",

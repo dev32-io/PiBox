@@ -271,7 +271,7 @@ This avoids encoding combinations such as `execution-paused-for-user` into one u
 
 ### 7.3 Execution authorization
 
-Research can flow naturally into planning and review. A clear user request to start or run the reviewed workflow is the sole execution gate. Planning, review, acknowledgement, a problem report, or a proposed fix does not itself authorize execution. No separate approval command or planning-status transition exists.
+Research can flow naturally into planning and review. A clear user request to start or run the reviewed workflow is the model-facing execution gate. Planning, review, acknowledgement, a problem report, or a proposed fix does not itself authorize execution. No separate approval command or planning-status transition exists. After `workflow_start` is called, an extension-owned TUI confirmation tells the user that unattended execution requires permission bypass; cancellation launches nothing. Successful preparation and snapshot validation switch the session to bypass before scheduling work.
 
 The deliverable contract covers intent, requirements, acceptance criteria, and binding user/architecture decisions. Execution mechanics—task boundaries, integration grouping, evaluator placement, and check timing—remain under orchestrator authority unless the user explicitly made one of them binding.
 

@@ -6,6 +6,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 
 - **`rattle` theme** — cool-steel colors for Pi.
 - **TUI extensions** — responsive status bar, refined chat input, compact tool previews/diffs, animated working status, and startup display.
+- **Repository permissions** — Claude Code-style `.pi/permissions.yaml` rules with enforced/bypass modes, inherited child state, and `Shift+Tab` switching.
 - **`/effort`** — choose a reasoning effort supported by the active model; non-reasoning models safely use `off`.
 - **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.
 - **Sound hooks** — optional response, workflow task-completion, and workflow-attention feedback using user-supplied audio.
@@ -24,6 +25,7 @@ Pi loads the package extensions listed in `package.json`. For a local preview wi
 
 ```bash
 pi --no-extensions \
+  -e ./extensions/permissions/index.ts \
   -e ./extensions/tui/chat-input/index.ts \
   -e ./extensions/tui/effort/index.ts \
   -e ./extensions/tui/status-bar/index.ts \
@@ -46,7 +48,13 @@ models:
   openai-codex/gpt-5.6-luna: high
 ```
 
-Use `/effort` to select a compatible level interactively, or `/effort high` directly.
+Use `/effort` to select a compatible level interactively, or `/effort high` directly. PiBox uses `Shift+Tab` for permission mode instead of effort cycling; set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding.
+
+## Repository permissions
+
+Repository policy lives at `.pi/permissions.yaml` and supports `allow`, `ask`, and `deny` decisions for file, Bash, MCP, and extension tools. Restrictive matches win. Enforced mode prompts only in the interactive TUI and denies unattended asks; bypass permits tools without evaluating the repository tool permission policy. `Shift+Tab` and `/permissions` switch the session-scoped mode, and every spawned PiBox child inherits its parent's mode.
+
+Managed workflows require bypass. `workflow_start` shows an extension-owned confirmation before preparation and switches to bypass only after successful preparation and snapshot validation. The permission bypass does not bypass PiBox workflow authority, Git isolation, reviews, or verification. See [extensions/permissions/README.md](extensions/permissions/README.md).
 
 ## Context rules
 

@@ -4,7 +4,7 @@ import type { StartupCounts } from "./discovery.js";
 
 export interface StartupKeys {
 	model: string;
-	thinking: string;
+	permissions: string;
 }
 
 const PI_ART = [
@@ -37,7 +37,7 @@ export function renderStartup(theme: Theme, counts: StartupCounts, keys: Startup
 		return [
 			`${theme.fg("accent", "PiBox")}${theme.fg("dim", ` · Pi ${VERSION}`)}`,
 			truncateToWidth(theme.fg("muted", details), width, ""),
-			truncateToWidth(theme.fg("dim", `/ commands · ! bash · ${keys.model} model · ${keys.thinking} thinking`), width, "…"),
+			truncateToWidth(theme.fg("dim", `/ commands · ! bash · ${keys.model} model · ${keys.permissions} permissions`), width, "…"),
 			"",
 		];
 	}
@@ -59,7 +59,7 @@ export function renderStartup(theme: Theme, counts: StartupCounts, keys: Startup
 		`${theme.fg("accent", "/")} for commands`,
 		`${theme.fg("warning", "!")} to run bash`,
 		`${theme.fg("dim", keys.model)} cycle model`,
-		`${theme.fg("dim", keys.thinking)} cycle thinking`,
+		`${theme.fg("dim", keys.permissions)} toggle permissions`,
 	];
 	const art = ["", ...PI_ART.map((line) => center(theme.bold(theme.fg("accent", line)), artWidth)), ""];
 	const countColumn = [

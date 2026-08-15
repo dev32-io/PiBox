@@ -229,7 +229,7 @@ Conceptual layout:
 
 ```text
 PiBox │ GPT-5.6 Sol (OpenAI) │ ~/Development/PiBox │ main +2 ?1     ▋▋▋▋▋▋░░░░ 38% / 400k
-Thinking: MEDIUM │ 14m                                      ↑ 124k ↓ 8.2k │ cache 71% │ $0.042
+◆ Permissions: ENFORCED │ Thinking: MEDIUM                  ↑ 124k ↓ 8.2k │ cache 71% │ $0.042
 ```
 
 The exact PiBox mark and separators will be selected during implementation. The status bar should not require Nerd Font glyphs to remain understandable.
@@ -266,10 +266,11 @@ Suggested priority order:
 
 1. Model
 2. Context percentage
-3. Thinking level
-4. Project/directory basename
-5. Git branch/dirty state
-6. Input/output token totals
+3. Permission mode
+4. Thinking level
+5. Project/directory basename
+6. Git branch/dirty state
+7. Input/output token totals
 7. Cost
 8. Cache metrics
 9. Provider
@@ -664,7 +665,7 @@ The first visual phase may show:
 - Native command hint
 - Native Bash hint
 - Model-cycle shortcut
-- Thinking-cycle shortcut
+- Permission-mode shortcut (`Shift+Tab`); effort selection remains available through `/effort`
 
 Do not show or advertise features that PiBox has not implemented, such as skills, MCP, plan mode, or chat mode.
 
