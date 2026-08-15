@@ -5,7 +5,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 ## Included
 
 - **`rattle` theme** — cool-steel colors for Pi.
-- **TUI extensions** — responsive status bar, refined chat input, compact tool previews/diffs, animated working status, and startup display.
+- **TUI extensions** — responsive status bar, refined chat input with a clickable fullscreen return-to-bottom action, compact tool previews/diffs, animated working status, and startup display.
 - **Repository permissions** — Claude Code-style `.pi/permissions.yaml` rules with enforced/bypass modes, inherited child state, and `Shift+Tab` switching.
 - **`/effort`** — choose a reasoning effort supported by the active model; non-reasoning models safely use `off`.
 - **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.

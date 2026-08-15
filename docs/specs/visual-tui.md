@@ -195,6 +195,9 @@ Default properties:
 - Keep autocomplete rows outside the visual box unless testing shows a clearer stable layout.
 - Preserve Pi's viewport indicators.
 - Embed `↑ N more` and `↓ N more` indicators in the top or bottom frame.
+- In fullscreen mode, show `↓ Scroll to bottom` centered in the input's top frame only while the transcript viewport is not following its end.
+- Treat a primary-button click on that label as `scrollToBottom()`, consume the click before transcript selection, and hide the label immediately after following resumes.
+- Omit the label when its centered placement would overlap a native editor viewport indicator.
 - Fall back to horizontal rails or native layout when terminal width is too small for a box.
 - Ensure every rendered line is at most the supplied terminal width.
 - Rebuild themed content after theme invalidation.
