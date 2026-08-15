@@ -3,6 +3,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { StatusBarConfig } from "./config.js";
 import type { GitSnapshot } from "./git.js";
 import type { SessionMetrics } from "./metrics.js";
+import { renderPermissionMode } from "../../permissions/display.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
@@ -131,8 +132,7 @@ function gitSegment(data: StatusRenderData): string {
 }
 
 function permissionSegment(data: StatusRenderData): string {
-	if (data.permissionMode === "bypass") return `${data.theme.fg("warning", "⚠")} ${data.theme.fg("dim", "Permissions:")} ${data.theme.bold(data.theme.fg("warning", "BYPASS"))}`;
-	return `${data.theme.fg("success", "◆")} ${data.theme.fg("dim", "Permissions:")} ${data.theme.bold(data.theme.fg("success", "ENFORCED"))}`;
+	return renderPermissionMode(data.permissionMode, data.theme);
 }
 
 function thinkingSegment(data: StatusRenderData): string {

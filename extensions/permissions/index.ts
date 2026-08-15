@@ -1,7 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { evaluateToolCall, loadPermissionPolicy } from "./policy.js";
+import { renderPermissionMode } from "./display.js";
 import { installPermissionRuntime } from "./runtime.js";
 import type { LoadedPermissionPolicy, PermissionMode } from "./types.js";
+
+const WORKFLOW_BYPASS_CANCEL = "No — keep permissions enforced";
+const WORKFLOW_BYPASS_CONFIRM = "Yes — switch to BYPASS and start workflow";
 
 const STATUS_KEY = "permission-mode";
 const ENTRY_TYPE = "pibox-permission-mode";
@@ -45,10 +49,15 @@ export default function permissions(pi: ExtensionAPI): void {
 		setMode,
 		async confirmWorkflowStart(ctx, ref) {
 			if (ctx.mode !== "tui" || !ctx.hasUI) return false;
-			return ctx.ui.confirm(
-				"Run workflow in bypass mode?",
-				`Starting ${ref} will switch this session and every spawned subagent to BYPASS. Repository tool permissions will not be enforced while the workflow runs. PiBox workflow authority, Git isolation, reviews, and verification remain active. Continue?`,
+			const permissionLine = renderPermissionMode("bypass", ctx.ui.theme);
+			const choice = await ctx.ui.select(
+				`Start unattended workflow?\n\n${permissionLine}\n\nStarting ${ref} will disable repository tool permission enforcement for this session and every spawned subagent. The workflow will run unattended and its agents can execute tools without allow, ask, or deny policy checks.\n\nPiBox workflow authority, Git isolation, managed reviews, and verification remain active.`,
+				[
+					WORKFLOW_BYPASS_CANCEL,
+					WORKFLOW_BYPASS_CONFIRM,
+				],
 			);
+			return choice === WORKFLOW_BYPASS_CONFIRM;
 		},
 	});
 

@@ -18,7 +18,9 @@ async function harness(t: test.TestContext) {
 	const entries: any[] = [];
 	const statuses = new Map<string, string>();
 	const notifications: string[] = [];
+	const selections: Array<{ title: string; options: string[] }> = [];
 	let confirmResult = true;
+	let workflowConfirmed = true;
 	const pi = {
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		registerShortcut(key: string, definition: any) { shortcuts.set(key, definition); },
@@ -32,12 +34,23 @@ async function harness(t: test.TestContext) {
 		hasUI: true,
 		sessionManager: { getEntries: () => entries, getBranch: () => entries },
 		ui: {
+			theme: {
+				fg: (_token: string, value: string) => value,
+				bold: (value: string) => value,
+			},
 			setStatus(key: string, value: string | undefined) { if (value === undefined) statuses.delete(key); else statuses.set(key, value); },
 			notify(message: string) { notifications.push(message); },
 			confirm: async () => confirmResult,
+			select: async (title: string, options: string[]) => {
+				selections.push({ title, options });
+				return options[workflowConfirmed ? 1 : 0];
+			},
 		},
 	};
-	return { handlers, shortcuts, commands, entries, statuses, notifications, ctx, setConfirm: (value: boolean) => { confirmResult = value; } };
+	return {
+		handlers, shortcuts, commands, entries, statuses, notifications, selections, ctx,
+		setConfirm: (value: boolean) => { confirmResult = value; workflowConfirmed = value; },
+	};
 }
 
 test("shift+tab toggles a persisted permission mode and updates the footer status", async (t) => {
@@ -69,6 +82,12 @@ test("workflow confirmation is extension-owned and does not change mode by itsel
 	h.setConfirm(true);
 	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:checkout"), true);
 	assert.equal(currentPermissionMode(), "enforce");
+	assert.deepEqual(h.selections[0]?.options, [
+		"No — keep permissions enforced",
+		"Yes — switch to BYPASS and start workflow",
+	]);
+	assert.match(h.selections[0]?.title ?? "", /\n\n⚠ Permissions: BYPASS\n\n/);
+	assert.match(h.selections[0]?.title ?? "", /execute tools without allow, ask, or deny policy checks/i);
 	h.setConfirm(false);
 	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:checkout"), false);
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
