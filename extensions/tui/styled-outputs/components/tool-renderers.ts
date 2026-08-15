@@ -5,6 +5,16 @@ import { LinePrefixedComponent } from "./tool-shell.js";
 
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 type PreviewLine = { text: string; omitted?: boolean; diff?: boolean };
+type LoadedResource = { kind: "skill" | "rule"; label: string };
+
+export function classifyLoadedResource(path: string): LoadedResource | undefined {
+	const normalized = path.replaceAll("\\", "/");
+	const skill = normalized.match(/(?:^|\/)skills\/(.+?)\/SKILL\.md$/i);
+	if (skill?.[1]) return { kind: "skill", label: skill[1] };
+	const rule = normalized.match(/(?:^|\/)\.(?:claude|pi)\/(?:agent\/)?rules\/(.+?)\.md$/i);
+	if (rule?.[1]) return { kind: "rule", label: rule[1] };
+	return undefined;
+}
 
 // A small number of machine-generated lines (for example, source maps) can wrap
 // into a full screen. Keep collapsed tool output scannable by limiting that case
@@ -128,7 +138,10 @@ function appendPreview(container: Container, name: ToolName, lines: PreviewLine[
 export function renderToolCall(name: ToolName, args: any, theme: Theme, ctx: any): Text {
 	const isError = ctx.isError;
 	const prefix = ctx.isPartial ? theme.fg("muted", "✽") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-	const header = `${prefix} ${theme.bold(theme.fg("toolTitle", actionLabel(name, ctx)))} ${theme.fg("dim", summary(name, args, ctx.cwd ?? process.cwd()))}`;
+	const loadedResource = name === "read" ? classifyLoadedResource(args.path ?? args.file_path ?? "") : undefined;
+	const action = loadedResource ? ctx.isPartial ? "Loading" : isError ? "Load" : "Loaded" : actionLabel(name, ctx);
+	const target = loadedResource ? `${loadedResource.kind} ${loadedResource.label}` : summary(name, args, ctx.cwd ?? process.cwd());
+	const header = `${prefix} ${theme.bold(theme.fg("toolTitle", action))} ${theme.fg("dim", target)}`;
 	const detail = ctx.isPartial ? `\n${theme.fg("dim", "└─")} ${theme.fg("muted", "Running…")}` : "";
 	const component = ctx.lastComponent instanceof Text ? ctx.lastComponent : new Text("", 0, 0);
 	component.setText(header + detail);
@@ -136,6 +149,8 @@ export function renderToolCall(name: ToolName, args: any, theme: Theme, ctx: any
 }
 
 export function renderToolResult(name: ToolName, result: any, options: { expanded: boolean }, theme: Theme, ctx: any): Container {
+	const loadedResource = name === "read" ? classifyLoadedResource(ctx.args?.path ?? ctx.args?.file_path ?? "") : undefined;
+	if (loadedResource && !ctx.isError && !options.expanded) return new Container();
 	const metadata = name === "write" ? writeMetadata(result) : undefined;
 	if (metadata && ctx.state && ctx.state.piboxWrite !== metadata) {
 		ctx.state.piboxWrite = metadata;

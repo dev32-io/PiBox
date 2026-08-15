@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { normalizeDiffGutters, renderToolCall, renderToolResult } from "../components/tool-renderers.js";
+import { classifyLoadedResource, normalizeDiffGutters, renderToolCall, renderToolResult } from "../components/tool-renderers.js";
 
 const theme = {
 	fg: (_token: string, value: string) => value,
@@ -14,6 +14,20 @@ test("reserves a sign column in diff line-number gutters", () => {
 		normalizeDiffGutters(" 8     context\n+8     added\n-23    removed\n 24    context"),
 		"  8     context\n+ 8     added\n-23    removed\n 24    context",
 	);
+});
+
+test("renders skill and rule reads as compact loaded resources", () => {
+	assert.deepEqual(classifyLoadedResource("/repo/skills/architecture-visualizer/SKILL.md"), { kind: "skill", label: "architecture-visualizer" });
+	assert.deepEqual(classifyLoadedResource("/repo/.claude/rules/gateway/typescript.md"), { kind: "rule", label: "gateway/typescript" });
+	assert.deepEqual(classifyLoadedResource("~/.pi/agent/rules/personal.md"), { kind: "rule", label: "personal" });
+	assert.equal(classifyLoadedResource("/repo/src/rules.ts"), undefined);
+
+	const call = renderToolCall("read", { path: "/repo/.pi/rules/typescript.md" }, theme, { cwd: "/repo", isPartial: false, isError: false });
+	assert.equal(call.render(100).join("\n").trimEnd(), "✓ Loaded rule typescript");
+	const collapsed = renderToolResult("read", { content: [{ type: "text", text: "rule body" }] }, { expanded: false }, theme, {
+		args: { path: "/repo/.pi/rules/typescript.md" }, isError: false, state: {},
+	});
+	assert.deepEqual(collapsed.render(100), []);
 });
 
 test("caps read previews at ten lines", () => {

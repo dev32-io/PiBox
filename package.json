@@ -35,6 +35,7 @@
     "extensions": [
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
+      "./extensions/rule/index.ts",
       "./extensions/visual-companion/index.ts",
       "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",

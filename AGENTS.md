@@ -14,6 +14,8 @@ Reusable generic agent definitions live in `agent-definitions/`; workflow-only p
 
 Delivery planning may define focused deterministic, regression, migration, or independent-review evaluations. It must not author final whole-branch journey verification or final branch review: the runtime inserts or semantically adopts those gates after assembly.
 
+Path-scoped repository instructions live under `.claude/rules/` or `.pi/rules/` with Claude-compatible `paths:` frontmatter. Keep unconditional rules small; scoped bodies load after a matching file read instead of inflating initial context.
+
 ## Development and Evaluation
 
 Run `npm run check`, `npm test`, and `git diff --check` before committing. For workflow scheduler, Git integration, recovery, protocol, or evaluation changes, also run `npm run eval:workflow`; use the opt-in Luna model suite only when model behavior needs measurement. Keep generated run artifacts under ignored `.benchmark/`, and update the reviewed baseline only after inspecting changed dimensions and retained findings.

@@ -9,6 +9,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **`/effort`** — choose a reasoning effort supported by the active model; non-reasoning models safely use `off`.
 - **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.
 - **Sound hooks** — optional response, workflow task-completion, and workflow-attention feedback using user-supplied audio.
+- **Context rules** — Claude-compatible path-scoped instructions loaded only after matching files are read, from `.claude/rules/` or `.pi/rules/`.
 - **Workflow** — collaborative story shaping, capability-backed delivery planning, delegated worktrees, runtime-owned final verification, and recovery. See [docs/workflow.md](docs/workflow.md).
 - **Architecture visualizer skill** — agent-authored JSON rendered as a live, interactive local browser diagram with deterministic automatic layouts.
 
@@ -46,6 +47,22 @@ models:
 ```
 
 Use `/effort` to select a compatible level interactively, or `/effort high` directly.
+
+## Context rules
+
+Rules without `paths:` frontmatter apply on every agent start. Scoped rules load after the agent reads a matching file, avoiding an up-front dump of unrelated instructions:
+
+```markdown
+---
+paths: ["src/**/*.ts"]
+---
+
+# TypeScript rules
+
+Use strict types at public boundaries.
+```
+
+Project rules live under `.claude/rules/` or `.pi/rules/`; user rules live under `~/.claude/rules/` or `~/.pi/agent/rules/`. Rule and skill reads use compact `Loaded …` transcript rows. See [extensions/rule/README.md](extensions/rule/README.md).
 
 ## Architecture visualizer
 
