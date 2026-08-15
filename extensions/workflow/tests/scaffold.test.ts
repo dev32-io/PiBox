@@ -45,7 +45,6 @@ test("bootstraps an empty directory as a develop repository without staging outs
 		assert.equal(await git(root, "branch", "--show-current"), "develop");
 		assert.equal(await git(root, "status", "--porcelain"), "");
 		assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /modelTiers:/);
-		assert.match(await readFile(join(root, ".pi", "permissions.yaml"), "utf8"), /default: allow/);
 	} finally {
 		for (const [key, value] of Object.entries({
 			GIT_AUTHOR_NAME: previous.authorName,
@@ -99,9 +98,6 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);
 	assert.doesNotMatch(policy, /^\s+tools:/m, "repository harness policy must not duplicate agent frontmatter tools");
-	const permissions = await readFile(join(root, ".pi", "permissions.yaml"), "utf8");
-	assert.match(permissions, /default: allow/);
-	assert.match(permissions, /Bash\(git push\*\)/);
 	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.worktree/\n/.pibox/\n");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".pibox/probe"), ".pibox/probe");
@@ -121,8 +117,7 @@ test("prepares the worktree ignore for an existing harness policy", async (t) =>
 	assert.equal(result.created, false);
 	assert.equal(result.worktreeIgnoreAdded, true);
 	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.worktree/\n/.pibox/\n");
-	assert.match(await readFile(join(root, ".pi", "permissions.yaml"), "utf8"), /default: allow/);
-	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): update repository scaffolding");
+	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): ignore repository-local worktrees");
 });
 
 test("refuses to initialize over unrelated dirty work", async (t) => {

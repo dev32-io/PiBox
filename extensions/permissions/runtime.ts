@@ -7,25 +7,32 @@ export interface PermissionRuntimeController {
 	confirmWorkflowStart(ctx: ExtensionContext, ref: string): Promise<boolean>;
 }
 
-let controller: PermissionRuntimeController | undefined;
+const RUNTIME_KEY = Symbol.for("pibox:permission-runtime");
+type RuntimeGlobal = typeof globalThis & { [RUNTIME_KEY]?: PermissionRuntimeController };
+
+function runtimeGlobal(): RuntimeGlobal {
+	return globalThis as RuntimeGlobal;
+}
 
 export function installPermissionRuntime(next: PermissionRuntimeController): () => void {
-	controller = next;
+	runtimeGlobal()[RUNTIME_KEY] = next;
 	return () => {
-		if (controller === next) controller = undefined;
+		if (runtimeGlobal()[RUNTIME_KEY] === next) delete runtimeGlobal()[RUNTIME_KEY];
 	};
 }
 
 export function currentPermissionMode(): PermissionMode | undefined {
-	return controller?.getMode();
+	return runtimeGlobal()[RUNTIME_KEY]?.getMode();
 }
 
 export async function confirmWorkflowBypass(ctx: ExtensionContext, ref: string): Promise<boolean> {
+	const controller = runtimeGlobal()[RUNTIME_KEY];
 	if (!controller) throw new Error("PiBox permission extension is unavailable; refusing to start an unattended workflow without explicit bypass confirmation.");
 	return controller.confirmWorkflowStart(ctx, ref);
 }
 
 export function activateWorkflowBypass(): void {
+	const controller = runtimeGlobal()[RUNTIME_KEY];
 	if (!controller) throw new Error("PiBox permission extension is unavailable; cannot activate workflow bypass mode.");
 	controller.setMode("bypass", "workflow");
 }

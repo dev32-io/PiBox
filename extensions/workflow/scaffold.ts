@@ -30,37 +30,6 @@ const PRIVATE_STATE_IGNORE_PATTERN = "/.pibox/";
 const WORKTREE_IGNORE_PROBE = ".worktree/pibox/.ignore-check";
 const PRIVATE_STATE_IGNORE_PROBE = ".pibox/.ignore-check";
 
-function defaultPermissionPolicy(): string {
-	return [
-		"# PiBox repository tool permissions.",
-		stringify({
-			version: 1,
-			default: "allow",
-			permissions: {
-				ask: [
-					"Bash(git push*)",
-					"Bash(ssh *)",
-					"Bash(scp *)",
-					"Bash(rsync *:*)",
-				],
-				deny: [
-					"Bash(rm -rf /)",
-					"Bash(rm -rf ~*)",
-					"Bash(sudo *)",
-					"Bash(mkfs*)",
-					"Read(~/.ssh/id_*)",
-					"Read(~/.aws/credentials)",
-					"Write(~/.ssh/**)",
-					"Write(~/.pi/**)",
-					"Write(~/Library/LaunchAgents/**)",
-					"Write(~/Library/LaunchDaemons/**)",
-				],
-			},
-		}).trim(),
-		"",
-	].join("\n");
-}
-
 async function readOptional(path: string): Promise<string | undefined> {
 	try {
 		return await readFile(path, "utf8");
@@ -158,33 +127,28 @@ export async function initializeHarnessRepository(cwd: string, profile: HarnessS
 export async function scaffoldHarness(repositoryRoot: string, profile: HarnessScaffoldProfile, overwrite = false): Promise<HarnessScaffoldResult> {
 	await assertInitializationClean(repositoryRoot);
 	const configPath = join(repositoryRoot, ".pi", "harness.yaml");
-	const permissionPath = join(repositoryRoot, ".pi", "permissions.yaml");
 	const ignorePath = join(repositoryRoot, ".gitignore");
 	const previousConfig = await readOptional(configPath);
-	const previousPermissions = await readOptional(permissionPath);
 	const previousIgnore = await readOptional(ignorePath);
 	let ignoreAdded = false;
 	try {
 		ignoreAdded = await ensureHarnessIgnores(repositoryRoot, ignorePath);
-		await mkdir(join(repositoryRoot, ".pi"), { recursive: true });
-		const permissionCreated = previousPermissions === undefined || overwrite;
-		if (permissionCreated) await atomicWriteFile(permissionPath, defaultPermissionPolicy());
 		if (previousConfig !== undefined && !overwrite) {
 			loadHarnessConfig(repositoryRoot);
-			const paths = [...(ignoreAdded ? [".gitignore"] : []), ...(permissionCreated ? [relative(repositoryRoot, permissionPath)] : [])];
-			if (paths.length > 0) {
-				await runGit(repositoryRoot, ["add", "--", ...paths]);
-				await runGit(repositoryRoot, ["commit", "-m", "chore(harness): update repository scaffolding", "--", ...paths]);
+			if (ignoreAdded) {
+				await runGit(repositoryRoot, ["add", "--", ".gitignore"]);
+				await runGit(repositoryRoot, ["commit", "-m", "chore(harness): ignore repository-local worktrees", "--", ".gitignore"]);
 			}
 			return {
 				created: false,
 				profile,
 				configPath,
 				worktreeIgnoreAdded: ignoreAdded,
-				...(paths.length > 0 ? { commit: await runGit(repositoryRoot, ["rev-parse", "HEAD"]) } : {}),
+				...(ignoreAdded ? { commit: await runGit(repositoryRoot, ["rev-parse", "HEAD"]) } : {}),
 			};
 		}
 
+		await mkdir(join(repositoryRoot, ".pi"), { recursive: true });
 		const content = [
 			"# PiBox harness repository policy.",
 			`# Scaffold profile: ${profile}. Arrays replace inherited defaults.`,
@@ -193,16 +157,14 @@ export async function scaffoldHarness(repositoryRoot: string, profile: HarnessSc
 		].join("\n");
 		await atomicWriteFile(configPath, content);
 		loadHarnessConfig(repositoryRoot);
-		const paths = [relative(repositoryRoot, configPath), relative(repositoryRoot, permissionPath), ...(ignoreAdded ? [".gitignore"] : [])];
+		const paths = [relative(repositoryRoot, configPath), ...(ignoreAdded ? [".gitignore"] : [])];
 		await runGit(repositoryRoot, ["add", "--", ...paths]);
 		await runGit(repositoryRoot, ["commit", "-m", `chore(harness): initialize ${profile} policy`, "--", ...paths]);
 		return { created: true, profile, configPath, worktreeIgnoreAdded: ignoreAdded, commit: await runGit(repositoryRoot, ["rev-parse", "HEAD"]) };
 	} catch (error) {
-		await runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(repositoryRoot, configPath), relative(repositoryRoot, permissionPath), ".gitignore"]).catch(() => undefined);
+		await runGit(repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(repositoryRoot, configPath), ".gitignore"]).catch(() => undefined);
 		if (previousConfig === undefined) await rm(configPath, { force: true });
 		else await atomicWriteFile(configPath, previousConfig);
-		if (previousPermissions === undefined) await rm(permissionPath, { force: true });
-		else await atomicWriteFile(permissionPath, previousPermissions);
 		if (previousIgnore === undefined) await rm(ignorePath, { force: true });
 		else await atomicWriteFile(ignorePath, previousIgnore);
 		throw error instanceof HarnessError ? error : new HarnessError("CONFIG_INVALID", error instanceof Error ? error.message : String(error));

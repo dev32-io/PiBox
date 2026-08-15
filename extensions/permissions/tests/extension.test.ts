@@ -74,14 +74,17 @@ test("workflow confirmation is extension-owned and does not change mode by itsel
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });
 
-test("workflow confirmation survives session reload", async (t) => {
-	const h = await harness(t);
-	await h.handlers.get("session_start")?.({}, h.ctx);
-	await h.handlers.get("session_shutdown")?.({}, h.ctx);
-	await h.handlers.get("session_start")?.({}, h.ctx);
-	h.setConfirm(true);
-	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:checkout"), true);
-	await h.handlers.get("session_shutdown")?.({}, h.ctx);
+test("workflow confirmation is rebound by the replacement extension after reload", async (t) => {
+	const beforeReload = await harness(t);
+	await beforeReload.handlers.get("session_start")?.({}, beforeReload.ctx);
+	await beforeReload.handlers.get("session_shutdown")?.({ reason: "reload" }, beforeReload.ctx);
+	await assert.rejects(confirmWorkflowBypass(beforeReload.ctx, "work-item:checkout"), /permission extension is unavailable/i);
+
+	const afterReload = await harness(t);
+	await afterReload.handlers.get("session_start")?.({ reason: "reload" }, afterReload.ctx);
+	afterReload.setConfirm(true);
+	assert.equal(await confirmWorkflowBypass(afterReload.ctx, "work-item:checkout"), true);
+	await afterReload.handlers.get("session_shutdown")?.({}, afterReload.ctx);
 });
 
 test("headless spawned sessions inherit the parent process permission mode", async (t) => {
