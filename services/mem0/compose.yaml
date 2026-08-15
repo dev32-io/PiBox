@@ -1,0 +1,47 @@
+name: pibox-mem0
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      MEM0_TELEMETRY: "false"
+      POSTHOG_DISABLED: "true"
+      PIBOX_MEM0_API_KEY_FILE: /run/secrets/pibox_mem0_api_key
+      PIBOX_MEM0_DATABASE_URL: "postgresql://mem0:pibox-local-only@postgres:5432/mem0"
+      PIBOX_MEM0_EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5"
+      OPENAI_API_KEY: "not-used-in-infer-false-mode"
+      HF_HOME: /models
+      FASTEMBED_CACHE_PATH: /models
+      HF_HUB_OFFLINE: "1"
+    ports:
+      - "127.0.0.1:6001:8000"
+    volumes:
+      - "${HOME}/.pi/pibox/services/mem0/history:/app/history"
+      - "${HOME}/.pi/pibox/services/mem0/api-key:/run/secrets/pibox_mem0_api_key:ro"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg17-bookworm@sha256:40b404964359299eefdd5f8518facf1886c562848cf4de13b6eaf91cb70c2b87
+    environment:
+      POSTGRES_DB: mem0
+      POSTGRES_USER: mem0
+      POSTGRES_PASSWORD: pibox-local-only
+    volumes:
+      - "${HOME}/.pi/pibox/services/mem0/postgres:/var/lib/postgresql/data"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mem0 -d mem0"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+

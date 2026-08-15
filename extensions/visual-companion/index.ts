@@ -6,8 +6,9 @@ import { relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { createVisualCompanionBackend, type VisualCompanionBackend } from "./backend.mjs";
 import { createArchitectureViewer } from "../../skills/architecture-visualizer/scripts/server.mjs";
+import { registerService, setServiceSnapshot } from "../service-adapter/registry.js";
 
-const STATUS_KEY = "visual-companion";
+const SERVICE_ID = "visual-companion";
 
 const parameters = Type.Object({
 	action: StringEnum(["start", "stop"] as const, { description: "Start/show a visual companion or stop the session backend." }),
@@ -19,16 +20,11 @@ export type VisualCompanionInput = Static<typeof parameters>;
 
 type CompanionState = "starting" | "running" | "error" | "stopped";
 
-function statusText(ctx: ExtensionContext, state: CompanionState, port?: number): string | undefined {
-	if (state === "stopped") return undefined;
-	if (state === "starting") return `${ctx.ui.theme.fg("warning", "◌")} ${ctx.ui.theme.fg("dim", "Visual companion starting")}`;
-	if (state === "error") return `${ctx.ui.theme.fg("error", "!")} ${ctx.ui.theme.fg("error", "Visual companion error")}`;
-	return `${ctx.ui.theme.fg("success", "●")} ${ctx.ui.theme.fg("dim", `Visual companion · localhost:${port ?? "—"}`)}`;
-}
-
 function setState(ctx: ExtensionContext, state: CompanionState, port?: number): void {
-	if (!ctx.hasUI) return;
-	ctx.ui.setStatus(STATUS_KEY, statusText(ctx, state, port));
+	setServiceSnapshot(SERVICE_ID, {
+		state,
+		...(port ? { detail: `localhost:${port}` } : {}),
+	}, ctx);
 }
 
 function resolveArtifact(cwd: string, input: string): string {
@@ -60,6 +56,17 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	let backend: VisualCompanionBackend | undefined;
 	let activeViewer: string | undefined;
 	let activeArtifact: string | undefined;
+	let operationTail: Promise<void> = Promise.resolve();
+	let closing = false;
+
+	const serial = async <T>(operation: () => Promise<T>): Promise<T> => {
+		const previous = operationTail;
+		let release!: () => void;
+		operationTail = new Promise<void>((resolve) => { release = resolve; });
+		await previous;
+		try { return await operation(); }
+		finally { release(); }
+	};
 
 	const close = async (ctx?: ExtensionContext) => {
 		const current = backend;
@@ -73,6 +80,19 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 		}
 	};
 
+	const unregisterService = registerService({
+		id: SERVICE_ID,
+		name: "Visual companion",
+		order: 30,
+		internal: true,
+		stayAlive: false,
+		singleton: true,
+		perSession: true,
+	}, {
+		health: async () => backend ? { state: "running", detail: `localhost:${backend.port}` } : { state: "stopped" },
+		stop: async ({ ctx }) => serial(async () => { await close(ctx); return { state: "stopped" }; }),
+	});
+
 	pi.registerTool({
 		name: "visual_companion",
 		label: "Visual Companion",
@@ -81,6 +101,8 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 		promptGuidelines: ["Use visual_companion after a visualization skill writes its JSON artifact; update the artifact directly for live rerendering, and stop the companion when it is no longer needed."],
 		parameters,
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
+			return serial(async () => {
+			if (closing) throw new Error("The visual companion session is shutting down.");
 			if (input.action === "stop") {
 				const wasRunning = !!backend;
 				await close(ctx);
@@ -98,7 +120,14 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 			setState(ctx, "starting");
 			try {
 				const reused = !!backend;
-				backend ??= await createVisualCompanionBackend({ viewers: [createArchitectureViewer()], port: 0 });
+				if (!backend) {
+					const created = await createVisualCompanionBackend({ viewers: [createArchitectureViewer()], port: 0 });
+					if (closing || signal?.aborted) {
+						await created.close();
+						throw new Error("The visual companion start was cancelled during session shutdown.");
+					}
+					backend = created;
+				}
 				const shown = backend.show({ viewerId, artifactPath });
 				activeViewer = viewerId;
 				activeArtifact = artifactPath;
@@ -122,12 +151,20 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 					},
 				};
 			} catch (error) {
-				setState(ctx, "error");
+				setState(ctx, closing ? "stopped" : "error");
 				throw error;
 			}
+			});
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => setState(ctx, "stopped"));
-	pi.on("session_shutdown", async (_event, ctx) => close(ctx));
+	pi.on("session_start", (_event, ctx) => {
+		closing = false;
+		setState(ctx, "stopped");
+	});
+	pi.on("session_shutdown", async (_event, ctx) => {
+		closing = true;
+		await serial(() => close(ctx));
+		unregisterService();
+	});
 }

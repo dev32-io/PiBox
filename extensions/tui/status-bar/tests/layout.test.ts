@@ -34,7 +34,7 @@ test("selects explicit responsive modes", () => {
 });
 
 test("every status layout stays within terminal width", () => {
-	for (const width of [44, 60, 72, 90, 110, 140]) {
+	for (const width of [1, 2, 44, 60, 72, 90, 110, 140]) {
 		const lines = renderStatusBar(width, data);
 		assert.equal(lines.length, 4);
 		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
@@ -56,22 +56,22 @@ test("bypass permission mode is rendered before thinking", () => {
 	assert.match(row, /⚠ Permissions: BYPASS │ Thinking: MEDIUM/);
 });
 
-test("visual companion status appears on an optional row below thinking", () => {
-	const lines = renderStatusBar(120, { ...data, visualCompanionStatus: "● Visual companion · localhost:4318" });
+test("services share one optional row below thinking", () => {
+	const lines = renderStatusBar(120, { ...data, serviceStatuses: ["● Mem0", "● SearXNG", "○ Visual companion"] });
 	assert.equal(lines.length, 5);
 	assert.match(lines[3] ?? "", /Thinking: MEDIUM/);
-	assert.match(lines[4] ?? "", /Visual companion/);
+	assert.match(lines[4] ?? "", /● Mem0 │ ● SearXNG │ ○ Visual companion/);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
 });
 
-test("subagent dashboard stacks one running agent per footer row", () => {
+test("subagent dashboard stacks below the compact service row", () => {
 	const lines = renderStatusBar(120, {
 		...data,
-		visualCompanionStatus: "● Visual companion · localhost:4318",
+		serviceStatuses: ["● Mem0", "● SearXNG", "○ Visual companion"],
 		subagentStatuses: ["• general-purpose running · background · openai-codex/gpt-5.6-luna#max · 12s", "• explorer running · background · medium tier · 4s"],
 	});
 	assert.equal(lines.length, 7);
-	assert.match(lines[4] ?? "", /Visual companion/);
+	assert.match(lines[4] ?? "", /Mem0 │ ● SearXNG │ ○ Visual companion/);
 	assert.match(lines[5] ?? "", /general-purpose running/);
 	assert.match(lines[6] ?? "", /explorer running/);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 120);

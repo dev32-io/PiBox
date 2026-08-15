@@ -83,9 +83,8 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	assert.equal(definition.name, "visual_companion");
 	assert.match(definition.description, /single.*session/i);
 	assert.deepEqual([...events.keys()], ["session_start", "session_shutdown"]);
-	const result = await definition.execute("stop", { action: "stop" }, undefined, undefined, {
-		hasUI: false,
-		cwd: process.cwd(),
-	});
+	const ctx = { hasUI: false, cwd: process.cwd() };
+	const result = await definition.execute("stop", { action: "stop" }, undefined, undefined, ctx);
 	assert.match(result.content[0].text, /already stopped/);
+	await events.get("session_shutdown")?.({ reason: "quit" }, ctx);
 });

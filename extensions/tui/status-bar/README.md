@@ -1,6 +1,6 @@
 # PiBox status bar
 
-A Pikit-spaced footer adapted to `rattle`, with an upper model/project/Git/context row, full-width divider, and lower thinking/token/cache/cost row. When the session-scoped visual-companion backend is active, an additional state row appears below Thinking.
+A Pikit-spaced footer adapted to `rattle`, with an upper model/project/Git/context row, full-width divider, and lower thinking/token/cache/cost row. Registered local services share one compact ordered state row below Thinking.
 
 Formatting intentionally includes:
 
@@ -11,6 +11,6 @@ Formatting intentionally includes:
 - Thin-block cyan/blue context gauge
 - Leading and trailing row padding
 
-Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups.
+Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups. The service row retains the same leading/trailing padding and width-safe truncation as the former visual-companion row; segments use `│` separators. A dim `○` means intentionally stopped, not failed.
 
 Git status uses one asynchronous `git status --porcelain=v2 --branch` process every 10 seconds, with a three-second timeout, single-flight protection, failure backoff, cached rendering, and early refresh after file/Git-related activity. No subprocess runs from `render()`.

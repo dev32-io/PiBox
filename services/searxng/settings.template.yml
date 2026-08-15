@@ -1,0 +1,15 @@
+use_default_settings: true
+
+general:
+  instance_name: "PiBox SearXNG"
+
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: "__PIBOX_SEARXNG_SECRET__"
+  limiter: false
+  image_proxy: true

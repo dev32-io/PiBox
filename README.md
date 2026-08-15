@@ -13,6 +13,8 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **Context rules** — Claude-compatible path-scoped instructions loaded only after matching files are read, from `.claude/rules/` or `.pi/rules/`.
 - **Workflow** — collaborative story shaping, capability-backed delivery planning, delegated worktrees, runtime-owned final verification, and recovery. See [docs/workflow.md](docs/workflow.md).
 - **Architecture visualizer skill** — agent-authored JSON rendered as a live, interactive local browser diagram with deterministic automatic layouts.
+- **Local service adapter** — lazy, health-checked lifecycle management for shared Mem0 and SearXNG services plus the session-scoped visual companion.
+- **Repository memory** — explicit curated Mem0 writes, bounded recall, and an advisory `/memory-audit` with no silent mutation.
 
 ## Install and verify
 
@@ -72,9 +74,13 @@ Use strict types at public boundaries.
 
 Project rules live under `.claude/rules/` or `.pi/rules/`; user rules live under `~/.claude/rules/` or `~/.pi/agent/rules/`. Rule and skill reads use compact `Loaded …` transcript rows. See [extensions/rule/README.md](extensions/rule/README.md).
 
+## Local services and memory
+
+`/services` reports the machine-scoped Mem0 and SearXNG services alongside the session-scoped visual companion. Services start lazily, use independent health probes, and never update during startup. `/memory-start`, `/memory-stop`, and `/memory-status` manage Mem0 directly; `/memory-audit` performs bounded advisory review without changing records. See [extensions/service-adapter/README.md](extensions/service-adapter/README.md) and [extensions/memory-adapter/README.md](extensions/memory-adapter/README.md).
+
 ## Architecture visualizer
 
-Invoke `/skill:architecture-visualizer` to explore a codebase and create a live visual explanation. The skill writes a flexible JSON document while its local renderer owns layout, grouping, arrows, and interaction. The `visual_companion` tool starts or stops one random-port loopback backend per Pi session; updating the JSON during later conversation automatically refreshes the open page. Session shutdown closes the in-process server, and its listener/watchers are unreferenced so they cannot keep Pi alive after an abrupt quit. Future visualizers can register with the same backend.
+Invoke `/skill:architecture-visualizer` to explore a codebase and create a live visual explanation. The skill writes a flexible JSON document while its local renderer owns layout, grouping, arrows, and interaction. The `visual_companion` tool starts or stops one random-port loopback backend per Pi session; updating the JSON during later conversation automatically refreshes the open page. Session shutdown closes the in-process server, and its listener/watchers are unreferenced so they cannot keep Pi alive after an abrupt quit. The footer includes it in the compact service row, using a neutral dim `○` while intentionally stopped.
 
 ## Sound feedback
 

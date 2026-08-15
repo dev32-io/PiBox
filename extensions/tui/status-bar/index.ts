@@ -33,7 +33,10 @@ export default function statusBar(pi: ExtensionAPI): void {
 			return {
 				render(width: number): string[] {
 					const extensionStatuses = footerData.getExtensionStatuses();
-					const visualCompanionStatus = extensionStatuses.get("visual-companion");
+					const serviceStatuses = [...extensionStatuses.entries()]
+						.filter(([key, value]) => key.startsWith("service:") && !!value)
+						.sort(([left], [right]) => left.localeCompare(right))
+						.map(([, value]) => value);
 					const permissionMode = extensionStatuses.get("permission-mode") === "bypass" ? "bypass" : "enforce";
 					const subagentStatuses = extensionStatuses.get("subagent-dashboard")?.split("\n").filter(Boolean);
 					return renderStatusBar(width, {
@@ -51,7 +54,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 							behind: 0,
 						},
 						config,
-						...(visualCompanionStatus ? { visualCompanionStatus } : {}),
+						...(serviceStatuses.length ? { serviceStatuses } : {}),
 						...(subagentStatuses?.length ? { subagentStatuses } : {}),
 					});
 				},

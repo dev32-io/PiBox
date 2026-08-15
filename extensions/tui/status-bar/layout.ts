@@ -15,7 +15,7 @@ export interface StatusRenderData {
 	metrics: SessionMetrics;
 	git: GitSnapshot;
 	config: StatusBarConfig;
-	visualCompanionStatus?: string;
+	serviceStatuses?: string[];
 	subagentStatuses?: string[];
 }
 
@@ -44,6 +44,7 @@ function separator(theme: Theme): string {
 
 function buildRow(leftParts: string[], rightParts: string[], width: number): string {
 	if (width <= 0) return "";
+	if (width < 2) return " ".repeat(width);
 	const contentWidth = Math.max(0, width - 2);
 	const left = leftParts.filter(Boolean).join(" ");
 	const right = rightParts.filter(Boolean).join(" ");
@@ -172,7 +173,7 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
 	const row2 = buildRow([permissionSegment(data), divider, thinkingSegment(data)], row2Right, width);
 	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
-	if (data.visualCompanionStatus) rows.push(buildRow([data.visualCompanionStatus], [], width));
+	if (data.serviceStatuses?.length) rows.push(buildRow([data.serviceStatuses.join(` ${divider} `)], [], width));
 	for (const status of data.subagentStatuses ?? []) rows.push(buildRow([status], [], width));
 	return rows;
 }
