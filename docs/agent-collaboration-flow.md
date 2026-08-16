@@ -111,7 +111,7 @@ Make the high-level story executable in technical terms and optimize delivery th
 - Draft tracer-bullet contributions: each task delivers a narrow end-to-end behavior with its focused tests, is independently demoable or verifiable, and fits one fresh worker context.
 - Keep setup and layers with the behavior that needs them; use preparatory or expand–migrate–contract tasks only when vertical slices cannot remain coherent.
 - Write the complete draft atomically with explicit identity: create a new plan when the user says new/fresh/separate/ignore previous, and update only an explicitly selected existing plan revision.
-- Encode execution as ordered stages: blockers live in earlier stages, while tasks in one stage form the independent parallel frontier.
+- Encode execution as ordered stages: blockers live in earlier stages, while tasks in one stage form the independent concurrent set.
 - Let runtime derive mechanics: singleton stages execute on the feature branch; multi-task stages use per-task worktrees and an atomic merge barrier.
 - Define resource claims, intermediate states, integration expectations, and recovery boundaries only where they constrain safe execution.
 - Assign one semantic capability tier after decomposition; let harness configuration resolve its ordered concrete `provider/model#effort` pairs.

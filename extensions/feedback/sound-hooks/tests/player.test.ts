@@ -33,7 +33,8 @@ test("arbitrates delayed success, response overlap, and error preemption with fa
 		clearTimeout(handle) { timers.delete(handle as number); },
 	}, 100);
 	assert.equal(arbiter.request("success", "workflow-1"), true);
-	assert.equal(arbiter.request("success", "workflow-1"), false, "duplicate terminal events coalesce");
+	assert.equal(arbiter.request("success", "workflow-1"), true, "another completion resets the debounce window");
+	assert.equal(timers.size, 1, "the burst retains one pending sound");
 	assert.equal(arbiter.request("response", "turn-1"), false, "response completion waits behind workflow success");
 	assert.deepEqual(played, []);
 	for (const callback of timers.values()) callback();

@@ -144,7 +144,7 @@ test("emits workflow feedback when a task contribution completes", async () => {
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.deepEqual(feedback, [{ type: "task-completed", workflowRef: "test:workflow", stepRef: "test:task", kind: "task", title: "Implement feedback", detail: "Contribution completed.", toStatus: "integrated", terminal: true }]);
+	assert.deepEqual(feedback, [{ type: "task-completed", workflowRef: "test:workflow", stepRef: "test:task", kind: "task", title: "Implement feedback", detail: "Contribution completed.", toStatus: "contribution_complete", terminal: true }]);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

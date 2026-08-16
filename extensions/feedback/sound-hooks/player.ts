@@ -28,7 +28,7 @@ export class AudioArbiter {
 	private active: { kind: AudioKind; playback: Playback } | undefined;
 	private pending: { kind: AudioKind; key: string; handle: unknown } | undefined;
 	private readonly delayMs: number;
-	constructor(private readonly play: (kind: AudioKind) => Playback | undefined, private readonly timers: AudioScheduler, delayMs = 120) { this.delayMs = delayMs; }
+	constructor(private readonly play: (kind: AudioKind) => Playback | undefined, private readonly timers: AudioScheduler, delayMs = 5_000) { this.delayMs = delayMs; }
 	request(kind: AudioKind, key: string = kind): boolean {
 		if (kind === "error") {
 			if (this.pending) this.timers.clearTimeout(this.pending.handle);
@@ -38,7 +38,8 @@ export class AudioArbiter {
 		}
 		if (kind === "response" && (this.pending?.kind === "success" || this.active?.kind === "success")) return false;
 		if (kind === "success") {
-			if (this.pending?.kind === "success" && this.pending.key === key) return false;
+			// Debounce a burst of canonical contributions: every new completion
+			// resets the quiet-period timer and the burst produces one sound.
 			if (this.pending) this.timers.clearTimeout(this.pending.handle);
 			const handle = this.timers.setTimeout(() => { this.pending = undefined; this.begin("success"); }, this.delayMs);
 			this.pending = { kind, key, handle };

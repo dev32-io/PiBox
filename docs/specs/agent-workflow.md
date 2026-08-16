@@ -510,7 +510,7 @@ The planner drafts tracer-bullet contributions rather than horizontal implementa
 
 The planner writes the complete draft atomically, reads the whole plan graph at the exact written revision back, and only then performs one lightweight self-review with fresh eyes: map each binding criterion and constraint to an owning task and proof, find vague placeholders, and verify dependencies, stages, references, and produced/consumed interfaces agree across the graph. If needed, it applies one revision-pinned surgical edit without rewriting unchanged resources and does not repeat the review. Planner-facing writes default harness-owned lifecycle and schema boilerplate, but task briefs and acceptance contracts remain structured because they are injected into implementation context. A stronger tier or deep deliberation never compensates for avoidable task scope.
 
-Tasks in one execution stage are the parallel frontier. They cannot depend on one another and must have compatible resource claims. Blocked work belongs in a later stage. The extension derives execution mechanics from topology: singleton stages run directly on the feature branch; multi-task stages start isolated worktrees from one pinned base and cross one atomic merge-and-check barrier.
+Tasks in one execution stage are the concurrent set. They cannot depend on one another and must have compatible resource claims. Blocked work belongs in a later stage. The extension derives execution mechanics from topology: singleton stages run directly on the feature branch; multi-task stages start isolated worktrees from one pinned base and cross one atomic merge-and-check barrier.
 
 ### 9.5 Optional plan critic
 
@@ -753,7 +753,7 @@ A worker's structured handoff establishes that its assigned contribution is comp
 
 ### 13.2 Execution stages and integration units
 
-Ordered execution stages are the scheduler topology. Each singleton stage executes directly on the feature branch; every multi-task stage is one parallel frontier whose tasks start from a pinned common base and cross an atomic merge barrier. Integration units remain semantic verification groupings and may span one or more stages.
+Ordered execution stages are the scheduler topology. Each singleton stage executes directly on the feature branch; every multi-task stage is one concurrent set whose tasks start from a pinned common base and cross an atomic merge barrier. Integration units remain semantic verification groupings and may span one or more stages.
 
 The planner may group related tasks into an integration unit:
 

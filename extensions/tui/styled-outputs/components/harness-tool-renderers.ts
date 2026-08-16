@@ -80,7 +80,10 @@ class HarnessCallComponent implements Component {
 	) {}
 
 	render(width: number): string[] {
-		const label = callLabel(this.name, this.args);
+		const rawLabel = callLabel(this.name, this.args);
+		// Harness arguments are model-controlled and may contain newlines. Keep the
+		// transcript row single-line and bounded without changing the tool payload.
+		const label = { action: compact(rawLabel.action, 72), ...(rawLabel.target ? { target: compact(rawLabel.target, 96) } : {}) };
 		const icon = this.partial
 			? this.theme.fg("warning", currentSubagentPulseDot())
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
@@ -120,9 +123,11 @@ function scalar(value: unknown): string | undefined {
 
 function itemLabel(item: any): string {
 	if (!item || typeof item !== "object") return compact(String(item));
-	const ref = scalar(item.ref) ?? scalar(item.id) ?? scalar(item.name) ?? scalar(item.type) ?? "resource";
-	const title = scalar(item.title) ?? scalar(item.summary) ?? scalar(item.role);
-	const state = scalar(item.state) ?? scalar(item.status) ?? scalar(item.verdict) ?? scalar(item.action);
+	const ref = compact(scalar(item.ref) ?? scalar(item.id) ?? scalar(item.name) ?? scalar(item.type) ?? "resource", 72);
+	const titleValue = scalar(item.title) ?? scalar(item.summary) ?? scalar(item.role);
+	const stateValue = scalar(item.state) ?? scalar(item.status) ?? scalar(item.verdict) ?? scalar(item.action);
+	const title = titleValue ? compact(titleValue, 120) : undefined;
+	const state = stateValue ? compact(stateValue, 48) : undefined;
 	return [ref, title && title !== ref ? title : undefined, state].filter(Boolean).join(" · ");
 }
 
@@ -148,7 +153,8 @@ function appendTreeRows(container: Container, rows: string[], theme: Theme, expa
 	const shown = expanded ? rows : rows.slice(0, collapsedLimit);
 	shown.forEach((row, index) => {
 		const last = index === shown.length - 1 && shown.length === rows.length;
-		container.addChild(new Text(`${theme.fg("dim", last ? "└─" : "├─")} ${theme.fg("muted", row)}`, 0, 0));
+		const rendered = expanded ? row : compact(row, 180);
+		container.addChild(new Text(`${theme.fg("dim", last ? "└─" : "├─")} ${theme.fg("muted", rendered)}`, 0, 0));
 	});
 	if (rows.length > shown.length) {
 		const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";

@@ -100,7 +100,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /task_clarify.*escape hatch/is);
 	assert.match(delivery, /planning critique is optional[\s\S]+user explicitly requests it/i);
 	assert.match(delivery, /`subagent_spawn` with `plan-critic`/i);
-	assert.match(delivery, /Tasks in one stage are the parallel frontier/i);
+	assert.match(delivery, /Tasks in one stage are the concurrent set/i);
 	assert.match(delivery, /runtime derives repository versus worktree isolation/i);
 	assert.match(delivery, /`medium` is the hard default/i);
 	assert.match(delivery, /Use `medium` by default/i);

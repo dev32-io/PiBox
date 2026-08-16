@@ -89,27 +89,37 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const deliverBackgroundSubagentResult = (agent: string, settled: WorkflowRunResult) => {
-		const content = renderBuiltInPrompt("background-subagent-result", {
-			agent,
-			state: settled.state,
-			summary: settled.summary || "The subagent returned no report.",
-		});
 		try {
-			pi.sendMessage({ customType: "pibox-subagent-result", content, display: false, details: settled }, { deliverAs: "followUp", triggerTurn: true });
+			const summary = bounded(settled.summary || "The subagent returned no report.", 1200);
+			const content = renderBuiltInPrompt("background-subagent-result", { agent: bounded(agent, 120), state: settled.state, summary });
+			// Keep the canonical report in the adapter; the follow-up is deliberately a
+			// small attention packet so a verbose child cannot consume the main context.
+			pi.sendMessage({ customType: "pibox-subagent-result", content, display: false, details: { ref: settled.ref, state: settled.state, summary, attention: settled.attention === true } }, { deliverAs: "followUp", triggerTurn: true });
 		} catch {
 			// The durable subagent record remains available after session replacement or shutdown.
 		}
 	};
 
+	function bounded(value: unknown, limit = 700): string {
+		return String(value ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, limit);
+	}
+	const boundedNotice = (event: WorkflowNotice & { cause?: string; attempt?: number; iteration?: number; correlationId?: string }): WorkflowNotice & { cause?: string; attempt?: number; iteration?: number; correlationId?: string } => ({
+		...event,
+		title: bounded(event.title, 180),
+		...(event.detail ? { detail: bounded(event.detail) } : {}),
+		...(event.nextAction ? { nextAction: bounded(event.nextAction, 240) } : {}),
+	});
+
 	const sendEvent = (event: WorkflowNotice & { cause?: string; attempt?: number; iteration?: number; correlationId?: string }) => {
-		notices.set(event.workflowRef, event);
+		const safe = boundedNotice(event);
+		notices.set(safe.workflowRef, safe);
 		if (sessionCtx) renderDashboard(sessionCtx);
+		// Routine lifecycle is a widget concern. Only actionable attention steers the
+		// orchestrator; this prevents a busy run from growing the main transcript.
+		if (!safe.attention) return;
 		try {
-			// Keep workflow plumbing out of chat history; attention still steers the orchestrator.
-			const detail = [event.detail, event.cause ? `Cause: ${event.cause}` : undefined, event.nextAction ? `Next: ${event.nextAction}` : undefined].filter(Boolean).join("\n");
-			pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow ${event.attention ? "attention" : "event"}]\n${event.title}${detail ? `\n${detail}` : ""}`, display: false, details: event }, event.attention
-				? { deliverAs: "steer", triggerTurn: true }
-				: { deliverAs: "steer", triggerTurn: false });
+			const detail = [safe.detail, safe.cause ? `Cause: ${bounded(safe.cause, 120)}` : undefined, safe.nextAction ? `Next: ${safe.nextAction}` : undefined].filter(Boolean).join("\n");
+			pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow attention]\n${safe.title}${detail ? `\n${detail}` : ""}`, display: false, details: safe }, { deliverAs: "steer", triggerTurn: true });
 		} catch {
 			// A replacement or closing session will reconcile from durable adapter state.
 		}
@@ -140,13 +150,30 @@ export default function workflows(pi: ExtensionAPI): void {
 			const stageSteps = snapshot.steps.filter((step) => stage.nodes.some((node) => step.ref.endsWith(`/${node}`)));
 			const primary = stageSteps.reduce<WorkflowStep | undefined>((best, step) => !best || stateRank(step.status) > stateRank(best.status) ? step : best, undefined);
 			const stageStatus = primary?.status ?? "pending";
-			const stageIcon = stateIcon(stageStatus, primary?.kind ?? "task");
-			const label = stage.group === "runtime" ? "Runtime verification" : `Stage ${stage.index + 1} · ${stage.id}${stage.parallel ? " · parallel frontier" : ""}`;
-			const stageColor: "error" | "accent" | "muted" | "success" = stageStatus === "attention" ? "error" : stageStatus === "running" || stageStatus === "ready" ? "accent" : stageStatus === "done" ? "success" : "muted";
-			lines.push(ctx.ui.theme.fg(stageColor, `${stageIcon} ${label}`));
-			for (const step of stageSteps) {
-				const color: "success" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" || step.status === "ready" ? "accent" : "muted";
-				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind)} `)}${step.title}`);
+			const reviewSteps = stageSteps.filter((step) => step.kind === "evaluation");
+			const reviewActive = reviewSteps.some((step) => step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref));
+			const implementationActive = !reviewActive && stageSteps.some((step) => step.kind !== "evaluation" && (step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref)));
+			const lifecycle = stageStatus === "attention" ? "attention" : stageStatus === "done" ? "complete" : implementationActive ? "implementing" : reviewActive ? "reviewing" : stageStatus === "running" ? "active" : stageStatus === "ready" ? "ready" : "queued";
+			const topology = stage.parallel ? "⇉" : "→";
+			const stageColor: "error" | "accent" | "muted" | "success" = stageStatus === "attention" ? "error" : implementationActive || reviewActive ? "accent" : stageStatus === "done" ? "success" : "muted";
+			const title = stage.group === "runtime" ? "Runtime verification" : `Stage ${stage.index + 1} · ${stage.id}`;
+			lines.push(ctx.ui.theme.fg(stageColor, `${stateIcon(stageStatus, primary?.kind ?? "task")} ${topology} ${title} · ${lifecycle} · ${stageSteps.filter((step) => step.kind === "task").length} task${stageSteps.filter((step) => step.kind === "task").length === 1 ? "" : "s"}`));
+			// Only the implementation slice is expanded. Reviews and repairs are a
+			// compact sequence of explicit checkpoints, and a passed stage stays closed.
+			if (implementationActive) {
+				for (const step of stageSteps.filter((candidate) => candidate.kind !== "evaluation")) {
+					const kind = step.kind === "task" ? "contribution" : step.kind === "merge" ? "merge/check" : step.kind;
+					const color: "success" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" || step.status === "ready" ? "accent" : "muted";
+					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind)} `)}${kind} · ${step.title}`);
+				}
+			} else if (reviewActive) {
+				let reviewNumber = 0;
+				for (const step of reviewSteps) {
+					const isFix = /fixing/i.test(step.detail ?? "");
+					const number = Math.max(1, Number((step.detail ?? step.title).match(/(?:iteration|#)\s*(\d+)/i)?.[1] ?? (++reviewNumber)));
+					const label = `${isFix ? "Fix" : "Review"} #${number}`;
+					lines.push(`  ${ctx.ui.theme.fg(step.status === "attention" ? "error" : step.status === "done" ? "success" : "accent", `${stateIcon(step.status, step.kind)} `)}${label}`);
+				}
 			}
 		}
 		return lines;
@@ -210,8 +237,10 @@ export default function workflows(pi: ExtensionAPI): void {
 			const terminalSnapshot = workflowRef ? await adapter.snapshot(workflowRef, ctx).catch(() => undefined) : undefined;
 			const terminalStep = terminalSnapshot?.steps.find((candidate) => candidate.ref === step.ref);
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
-			if (workflowRef && (step.kind === "task" || step.kind === "evaluation") && settled.state === "completed" && !attention && terminalStep?.status === "done") {
-				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: step.kind === "evaluation" ? "passed" : "integrated", terminal: true });
+			const contributionCompleted = step.kind === "task" && (terminalStep?.kind === "merge" || terminalStep?.status === "done");
+			const evaluationCompleted = step.kind === "evaluation" && terminalStep?.status === "done";
+			if (workflowRef && settled.state === "completed" && !attention && (contributionCompleted || evaluationCompleted)) {
+				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: contributionCompleted ? "contribution_complete" : "passed", terminal: true });
 			}
 			if (attention) {
 				if (workflowRef) {
@@ -449,7 +478,17 @@ export default function workflows(pi: ExtensionAPI): void {
 		async execute(_id, _params, _signal, _update, ctx) {
 			const agents = (await Promise.all(adapters.map((adapter) => adapter.listSubagents(ctx)))).flat();
 			const messages = (await Promise.all(adapters.map((adapter) => adapter.listMessages(ctx)))).flat();
-			return result(agents.length ? JSON.stringify({ agents, openMessages: messages }, null, 2) : "No subagents recorded.", { agents, openMessages: messages });
+			const brief = (value: unknown): Record<string, unknown> => {
+				if (!value || typeof value !== "object") return { value: bounded(value, 160) };
+				const source = value as Record<string, unknown>;
+				const out: Record<string, unknown> = {};
+				for (const key of ["id", "agentId", "name", "state", "status", "workflowRef", "messageId", "kind", "title", "summary", "updatedAt"]) if (source[key] !== undefined) out[key] = typeof source[key] === "string" ? bounded(source[key], 180) : source[key];
+				return out;
+			};
+			const compactAgents = agents.slice(0, 12).map(brief);
+			const compactMessages = messages.slice(0, 12).map(brief);
+			const payload = { agents: compactAgents, openMessages: compactMessages, counts: { agents: agents.length, openMessages: messages.length } };
+			return result(agents.length || messages.length ? JSON.stringify(payload, null, 2) : "No subagents recorded.", payload);
 		},
 	});
 
