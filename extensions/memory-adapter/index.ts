@@ -14,9 +14,6 @@ const USER_ID = "pibox";
 const DEFAULT_RECALL_LIMIT = 5;
 const MAX_RECALL_LIMIT = 10;
 const MAX_AUDIT_CANDIDATES = 50;
-const MAX_ALWAYS_POLICIES = 20;
-const MAX_INJECTED_MEMORY_CHARS = 6_000;
-const ALWAYS_INJECT_TYPES = new Set(["project-policy"]);
 
 const parameters = Type.Object({
 	action: StringEnum(["status", "remember", "recall", "list", "get", "update", "delete", "history", "audit"] as const),
@@ -73,26 +70,6 @@ function formatRecords(records: MemoryRecord[]): string {
 	return records.map((record) => `- ${record.id}: ${record.memory}`).join("\n");
 }
 
-function isActiveMemory(record: MemoryRecord, now = Date.now()): boolean {
-	if (record.metadata?.status !== "active") return false;
-	const expiration = record.expiration_date ?? (typeof record.metadata?.expires_at === "string" ? record.metadata.expires_at : undefined);
-	return !expiration || Date.parse(expiration) > now;
-}
-
-export function buildInjectedMemory(semantic: MemoryRecord[], repositoryRecords: MemoryRecord[]): string | undefined {
-	const policies = repositoryRecords
-		.filter((record) => isActiveMemory(record) && ALWAYS_INJECT_TYPES.has(String(record.metadata?.type ?? "")))
-		.slice(0, MAX_ALWAYS_POLICIES);
-	const policyIds = new Set(policies.map(({ id }) => id));
-	const relevant = semantic.filter((record) => isActiveMemory(record) && !policyIds.has(record.id));
-	if (!policies.length && !relevant.length) return undefined;
-	const sections = [
-		policies.length ? `Always-applicable repository policies:\n${policies.map(({ id, memory }) => `- [${id}] ${memory}`).join("\n")}` : undefined,
-		relevant.length ? `Potentially relevant repository knowledge:\n${relevant.map(({ id, memory }) => `- [${id}] ${memory}`).join("\n")}` : undefined,
-	].filter(Boolean);
-	return `Repository memory follows. Apply always-applicable policies unless the user overrides them. Other memories may be stale; current source and reviewed contracts outrank memory.\n\n${sections.join("\n\n")}`.slice(0, MAX_INJECTED_MEMORY_CHARS);
-}
-
 async function deterministicAudit(pi: ExtensionAPI, records: MemoryRecord[], scope: RepositoryScope): Promise<Array<{ id: string; memory: string; reasons: string[]; metadata?: Record<string, unknown> }>> {
 	const now = Date.now();
 	const staleBefore = now - 90 * 24 * 60 * 60 * 1_000;
@@ -129,7 +106,6 @@ async function deterministicAudit(pi: ExtensionAPI, records: MemoryRecord[], sco
 
 export default function memoryAdapter(pi: ExtensionAPI): void {
 	const scopes = new Map<string, Promise<Omit<RepositoryScope, "commit">>>();
-	const policyRecords = new Map<string, Promise<MemoryRecord[]>>();
 	const getScope = async (cwd: string): Promise<RepositoryScope> => {
 		const key = resolve(cwd);
 		let pending = scopes.get(key);
@@ -165,7 +141,6 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 			validateEvidencePaths(repository, input.evidencePaths);
 			const metadata = memoryMetadata(repository, input);
 			const records = await mem0.add(input.memory.trim(), USER_ID, metadata, input.expiresAt, signal);
-			policyRecords.delete(repository.repoId);
 			return { text: records.length ? `Stored memory ${records.map(({ id }) => id).join(", ")}.` : "Stored the memory.", details: { records, metadata } };
 		}
 		if (input.action === "recall") {
@@ -205,11 +180,9 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 				schema_version: SCHEMA_VERSION,
 			};
 			const result = await mem0.update(input.id, input.memory.trim(), metadata, USER_ID, repository.repoId, signal);
-			policyRecords.delete(repository.repoId);
 			return { text: `Updated memory ${input.id}.`, details: { result, metadata } };
 		}
 		await mem0.delete(input.id, USER_ID, repository.repoId, signal);
-		policyRecords.delete(repository.repoId);
 		return { text: `Deleted memory ${input.id}.`, details: { id: input.id } };
 	};
 
@@ -278,36 +251,21 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		if (!event.prompt.trim()) return;
+		if (!event.prompt.trim() || getService("mem0")?.snapshot.state !== "running") return;
 		try {
-			const mem0 = client();
-			// Service registry snapshots can lag an external start or extension reload.
-			// Probe the local service directly, but never auto-start it for passive recall.
-			if (!await mem0.health()) return;
 			const repository = await getScope(ctx.cwd);
-			let pendingPolicies = policyRecords.get(repository.repoId);
-			if (!pendingPolicies) {
-				pendingPolicies = mem0.list(USER_ID, repository.repoId, { limit: 1_000 }).catch((error) => {
-					policyRecords.delete(repository.repoId);
-					throw error;
-				});
-				policyRecords.set(repository.repoId, pendingPolicies);
-			}
-			const [semantic, allRecords] = await Promise.all([
-				mem0.search(event.prompt, USER_ID, repository.repoId, DEFAULT_RECALL_LIMIT),
-				pendingPolicies,
-			]);
-			const content = buildInjectedMemory(semantic, allRecords);
-			if (!content) return;
+			const records = await client().search(event.prompt, USER_ID, repository.repoId, DEFAULT_RECALL_LIMIT);
+			if (!records.length) return;
+			const content = records.map(({ id, memory }) => `- [${id}] ${memory}`).join("\n").slice(0, 6_000);
 			return {
 				message: {
 					customType: "pibox-memory",
-					content,
+					content: `Potentially relevant repository memory follows. It may be stale; current source and reviewed contracts outrank it.\n${content}`,
 					display: false,
 				},
 			};
 		} catch { return; }
 	});
-	pi.on("session_start", () => { scopes.clear(); policyRecords.clear(); });
-	pi.on("session_shutdown", () => { scopes.clear(); policyRecords.clear(); });
+	pi.on("session_start", () => { scopes.clear(); });
+	pi.on("session_shutdown", () => { scopes.clear(); });
 }

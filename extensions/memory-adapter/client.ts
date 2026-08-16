@@ -66,7 +66,7 @@ export class Mem0Client {
 	async search(query: string, userId: string, repoId: string, limit: number, signal?: AbortSignal): Promise<MemoryRecord[]> {
 		const value = await this.request("/search", {
 			method: "POST",
-			body: JSON.stringify({ query, user_id: userId, filters: { repo_id: repoId, status: "active" }, limit }),
+			body: JSON.stringify({ query, user_id: userId, filters: { repo_id: repoId }, limit }),
 		}, signal);
 		return recordsFrom(value).slice(0, limit);
 	}

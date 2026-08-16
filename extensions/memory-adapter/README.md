@@ -11,7 +11,7 @@ The memory adapter uses a shared, loopback-only Mem0 OSS service for repository-
 /memory-audit
 ```
 
-The `memory_adapter` tool supports `status`, `remember`, `recall`, `list`, `get`, `update`, `delete`, `history`, and advisory `audit` actions. Writes always use `infer=false`; PiBox does not capture turns or tool results automatically. When Mem0 is already healthy, PiBox injects active `project-policy` records on every turn plus up to five semantically relevant active records, with a combined 6,000-character cap. Passive recall probes Mem0 directly rather than trusting a potentially stale service-registry snapshot, but never auto-starts the service.
+The `memory_adapter` tool supports `status`, `remember`, `recall`, `list`, `get`, `update`, `delete`, `history`, and advisory `audit` actions. Writes always use `infer=false`; PiBox does not capture turns or tool results automatically. Recall can be injected before a turn only when Mem0 is already healthy, and is capped at five records and 6,000 characters.
 
 Every curated record carries `repo_id`, type, source, evidence paths, verified commit/date, status, and schema version. Current source and reviewed repository contracts outrank recalled memory.
 
