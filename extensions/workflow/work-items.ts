@@ -57,7 +57,7 @@ async function validateEvidenceSource(repositoryRoot: string, source: string): P
 	const lexical = resolve(repositoryRoot, source);
 	const absolute = await realpath(lexical).catch(() => undefined);
 	if (!absolute) throw new HarnessError("INVALID_ARTIFACT", `Evidence file does not exist: ${source}`);
-	const allowedRoots = await Promise.all([repositoryRoot, tmpdir()].map((root) => realpath(root).catch(() => resolve(root))));
+	const allowedRoots = await Promise.all([repositoryRoot, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => resolve(root))));
 	if (!allowedRoots.some((root) => absolute !== root && absolute.startsWith(`${root}${sep}`))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source resolves outside the repository or operating-system temporary directory: ${source}`);
 	if (SENSITIVE_EVIDENCE_NAME.test(basename(absolute)) || SENSITIVE_EVIDENCE_NAME.test(basename(lexical))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source looks sensitive: ${source}. Provide a sanitized minimal artifact instead.`);
 	const content = await readFile(absolute);
