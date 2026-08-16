@@ -48,6 +48,9 @@ export default function permissions(pi: ExtensionAPI): void {
 		getMode: () => mode,
 		setMode,
 		async confirmWorkflowStart(ctx, ref) {
+			// Bypass already represents an explicit session-owner authorization. This
+			// is also how approved headless parent sessions pass authority to children.
+			if (mode === "bypass") return true;
 			if (ctx.mode !== "tui" || !ctx.hasUI) return false;
 			const permissionLine = renderPermissionMode("bypass", ctx.ui.theme);
 			const choice = await ctx.ui.select(

@@ -115,6 +115,7 @@ test("headless spawned sessions inherit the parent process permission mode", asy
 	h.ctx.hasUI = false;
 	await h.handlers.get("session_start")?.({}, h.ctx);
 	assert.equal(currentPermissionMode(), "bypass");
+	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:headless"), true);
 	assert.equal(await h.handlers.get("tool_call")?.({ toolName: "bash", input: { command: "sudo reboot" } }, h.ctx), undefined);
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });

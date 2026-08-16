@@ -74,7 +74,7 @@ export async function createRoutineModelFixture(root: string): Promise<RoutineMo
 async function piTurn(fixture: RoutineModelFixture, prompt: string): Promise<void> {
 	const args = ["-p", "--approve", "--session-dir", fixture.sessionDir, "--session-id", fixture.sessionId, "--provider", PROVIDER, "--model", MODEL, "--thinking", EFFORT, prompt];
 	await new Promise<void>((resolve, reject) => {
-		const child = spawn("pi", args, { cwd: fixture.root, stdio: ["ignore", "pipe", "pipe"] });
+		const child = spawn("pi", args, { cwd: fixture.root, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, PIBOX_PERMISSION_MODE: "bypass" } });
 		let stdout = ""; let stderr = "";
 		child.stdout.on("data", (chunk) => { stdout += chunk.toString(); }); child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
 		const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`Pi turn timed out.\nstdout:\n${stdout}\nstderr:\n${stderr}`)); }, 600_000); timer.unref();
