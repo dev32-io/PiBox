@@ -51,7 +51,7 @@ test("registers the generalized workflow and subagent surface", async () => {
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_status", "subagent_control", "subagent_respond", "subagent_spawn"]);
 	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
-	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /tier.*model.*effort.*strict/);
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /tier.*tierJustification.*model.*effort.*strict/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*TUI confirmation.*permission bypass mode/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
@@ -144,7 +144,7 @@ test("emits workflow feedback when a task contribution completes", async () => {
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.deepEqual(feedback, [{ type: "task-completed", workflowRef: "test:workflow", stepRef: "test:task", title: "Implement feedback", detail: "Contribution completed." }]);
+	assert.deepEqual(feedback, [{ type: "task-completed", workflowRef: "test:workflow", stepRef: "test:task", kind: "task", title: "Implement feedback", detail: "Contribution completed.", toStatus: "integrated", terminal: true }]);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -162,7 +162,7 @@ test("emits workflow error feedback when a step pauses for attention", async () 
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.deepEqual(feedback, [{ type: "error", workflowRef: "test:workflow", stepRef: "test:task", title: "Blocked feedback", detail: "Needs user attention." }]);
+	assert.deepEqual(feedback, [{ type: "error", workflowRef: "test:workflow", stepRef: "test:task", kind: "task", title: "Blocked feedback", detail: "Needs user attention.", cause: "step-attention", nextAction: "Resolve the step and resume or decide at its checkpoint." }]);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -292,7 +292,10 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	const widget = f.widget() as ((...args: any[]) => any);
-	const rendered = widget?.({}, f.ctx.ui.theme).render(70) as string[];
+	let invalidations = 0;
+	const rendered = widget?.({ requestRender: () => { invalidations++; } }, f.ctx.ui.theme).render(70) as string[];
+	await new Promise((resolve) => setTimeout(resolve, 120));
+	assert.ok(invalidations > 0, "fast visual timer requests real TUI redraws");
 	assert.equal(rendered.some((line) => /\b(running|merging)\b/.test(line)), false);
 	const icons = rendered.slice(1).map((line) => line.trimStart()[0]);
 	assert.equal(new Set(icons).size, 3, "task, merge, and evaluation activity have distinct animated icon families");

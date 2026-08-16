@@ -39,14 +39,14 @@ Do not define implementation tasks, stages, assignments, capability tiers, workt
 
 ## Validate, Then Persist
 
-Before writing resources, present a compact story/design checkpoint and ask whether it represents the user's intent. Prior agreement to “build,” “shape,” or “plan” does not approve this unseen checkpoint.
+Before writing resources, present a compact story/design checkpoint **and a conservative touched-area E2E matrix**. The matrix must list substantive structured cases with stable IDs, one classification (golden-path, edge, failure, or recovery), journey, setup, actions, expected outcomes, evidence, and safety notes where suitable. This is the last collaborative checkpoint: explicitly discuss and finalize the matrix with the user, including what is deliberately excluded, then ask whether the complete checkpoint represents the user's intent. Prior agreement to “build,” “shape,” or “plan” does not approve this unseen checkpoint.
 
 After the user validates the checkpoint:
 
 1. Create or update the work item with `resource_write`.
-2. Write only the specification, design, and rare decision artifacts the story needs.
+2. Write only the specification, design, conservative touched-area `e2e-matrix`, and rare decision artifacts the story needs. Persist the exact user-approved matrix content; do not summarize or replace its cases.
 3. Read each written artifact ref back individually and check for placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between acceptance and design. A compact work-item read is not a substitute for reading its child artifacts.
-4. Correct only the affected resource.
+4. Correct only the affected resource. Include the persisted e2e-matrix in the story review checkpoint and resource refs.
 
 Use these author-facing shapes; the resource API translates them to canonical storage.
 
@@ -112,6 +112,34 @@ Use these author-facing shapes; the resource API translates them to canonical st
       "failureAndRecovery": ["Validation failures return without persistence."],
       "verification": ["Command tests prove success, rejection, and duplicate-submission behavior."],
       "alternatives": ["Direct component persistence was rejected because it couples UI and storage."]
+    }
+  }
+}
+```
+
+**Approved E2E matrix artifact:**
+
+```json
+{
+  "type": "artifact",
+  "parent": "work-item:checkout",
+  "value": {
+    "id": "checkout-e2e",
+    "kind": "e2e-matrix",
+    "title": "Checkout E2E matrix",
+    "content": {
+      "scope": ["Touched checkout submission and visible rejection paths"],
+      "cases": [{
+        "id": "E2E-001",
+        "classification": "golden-path",
+        "journey": "Customer completes checkout",
+        "setup": ["Use a disposable customer and valid cart"],
+        "actions": ["Open checkout", "Submit the valid cart"],
+        "expectedOutcomes": ["One order is created", "Confirmation shows its identifier"],
+        "evidence": ["Visible confirmation and persisted disposable order"],
+        "safety": ["Remove disposable state; retain no customer secrets"]
+      }],
+      "safety": ["Never exercise live settlement"]
     }
   }
 }

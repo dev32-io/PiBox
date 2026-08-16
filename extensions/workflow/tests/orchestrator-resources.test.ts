@@ -62,6 +62,16 @@ test("uses a self-contained task contract without eagerly loading story artifact
 	assert.doesNotMatch(packet, /Broad story intent|Optional broader design/);
 });
 
+test("includes the exact E2E matrix only for E2E reviewer context", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "matrix-context", title: "Matrix context", kind: "story", intent: "Exercise matrix context." });
+	await store.putArtifact({ workItemId: "matrix-context", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Approved Matrix", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "exact approved content", setup: ["Prepare fixture"], actions: ["Run journey"], expectedOutcomes: ["Journey succeeds"], evidence: ["Record observable result"] }] }, operation: "create" });
+	const e2e: EvaluationManifest = { schemaVersion: 1, id: "final-e2e", type: "e2e", scope: { workItem: "matrix-context" }, status: "planned", required: true, attempt: 0, methods: [] };
+	const review: EvaluationManifest = { ...e2e, id: "review", type: "combined-review" };
+	assert.match(await buildReviewPersistentContext(store, "matrix-context", e2e), /exact approved content/);
+	assert.doesNotMatch(await buildReviewPersistentContext(store, "matrix-context", review), /exact approved content/);
+});
+
 test("builds durable reviewer context from scoped tasks and full plan artifacts", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "review-context", title: "Review context", kind: "change", intent: "Ship plan-conformant behavior." });

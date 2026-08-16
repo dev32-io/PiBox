@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Code review against specifications and acceptance contracts
 tools: [read, grep, find, bash]
-tier: high
+tier: medium
 ---
 
 # Code Review

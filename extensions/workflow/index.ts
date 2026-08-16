@@ -99,6 +99,7 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 			agent: Type.String({ description: "Configured agent definition, normally implementer" }),
 			tier: CAPABILITY_TIER,
 			rationale: Type.String({ description: "Why this task needs the selected capability tier after decomposition" }),
+			tierJustification: Type.Optional(Type.String({ description: "Required by policy for high/max: why medium is insufficient, irreducible ambiguity, and why further decomposition is unsafe or incoherent" })),
 		}, { additionalProperties: false }),
 	}, { additionalProperties: false }),
 	assembly: Type.Object({ stageId: Type.Optional(Type.String()), integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId" })), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
@@ -106,6 +107,7 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 }, { additionalProperties: false });
 const EVALUATION_MANIFEST_RESOURCE = Type.Object({
 	schemaVersion: Type.Literal(1), id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
+	stageId: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())),
 	scope: Type.Union([Type.Object({ task: Type.String() }, { additionalProperties: false }), Type.Object({ integrationUnit: Type.String() }, { additionalProperties: false }), Type.Object({ workItem: Type.String() }, { additionalProperties: false })]),
 	status: Type.Literal("planned"), required: Type.Boolean(), attempt: Type.Literal(0), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String({ description: "Qualified artifact-id#AC-NNN reference; omit when no specification criterion applies" }))),
 }, { additionalProperties: false });
@@ -122,7 +124,13 @@ const WORK_ITEM_RESOURCE_BODY = Type.Union([
 	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, narrativeSchemaVersion: Type.Literal(2), intentSections: INTENT_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, intent: Type.String() }, { additionalProperties: false }),
 ]);
+const E2E_MATRIX_SECTIONS = Type.Object({
+	scope: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+	cases: Type.Array(Type.Object({ id: Type.String({ pattern: "^E2E-[0-9]{3}$" }), classification: Type.Union([Type.Literal("golden-path"), Type.Literal("edge"), Type.Literal("failure"), Type.Literal("recovery")]), journey: Type.String({ minLength: 1 }), setup: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }), actions: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }), expectedOutcomes: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }), evidence: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }), safety: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })) }, { additionalProperties: false }), { minItems: 1 }),
+	safety: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })), notes: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+}, { additionalProperties: false });
 const ARTIFACT_RESOURCE_BODY = Type.Union([
+	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("e2e-matrix"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: E2E_MATRIX_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("spec"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: SPEC_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("design"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: DESIGN_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String({ description: "Bare kebab-case artifact id; no type prefix or colon" }), type: Type.Literal("decision"), narrativeSchemaVersion: Type.Literal(2), title: Type.String(), sections: DECISION_SECTIONS }, { additionalProperties: false }),
@@ -162,6 +170,7 @@ const PLAN_WORK_ITEM = Type.Object({
 	intentSections: INTENT_SECTIONS,
 }, { additionalProperties: false });
 const PLAN_ARTIFACT = Type.Union([
+	Type.Object({ id: Type.String(), type: Type.Literal("e2e-matrix"), title: Type.Optional(Type.String()), sections: E2E_MATRIX_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String(), type: Type.Literal("spec"), title: Type.Optional(Type.String()), sections: SPEC_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String(), type: Type.Literal("design"), title: Type.Optional(Type.String()), sections: DESIGN_SECTIONS }, { additionalProperties: false }),
 	Type.Object({ id: Type.String(), type: Type.Literal("decision"), title: Type.Optional(Type.String()), sections: DECISION_SECTIONS }, { additionalProperties: false }),
@@ -172,7 +181,8 @@ const SELF_CONTAINED_PLAN_TASK = Type.Object({
 	goal: Type.String({ description: "The independently useful contribution this task delivers" }),
 	context: Type.Optional(Type.Array(Type.String({ description: "Only story or technical context the executor needs to understand this task" }))),
 	included: Type.Array(Type.String({ description: "Concrete behavior and implementation boundary owned by this task" })),
-	work: Type.Optional(Type.Array(Type.String({ description: "Required implementation work when it is not obvious from the included boundary" }))),
+	work: Type.Optional(Type.Array(Type.String({ description: "Ordered required implementation and test steps" }))),
+	requiredWork: Type.Optional(Type.Array(Type.String({ description: "Alias for ordered required implementation and test steps" }))),
 	excluded: Type.Optional(Type.Array(Type.String())),
 	interfaces: Type.Optional(Type.Array(Type.String({ description: "Interfaces, dependencies, or handoffs that constrain this task" }))),
 	constraints: Type.Optional(Type.Array(Type.String())),
@@ -187,7 +197,7 @@ const SELF_CONTAINED_PLAN_TASK = Type.Object({
 	resourceClaims: Type.Optional(Type.Array(Type.String())),
 	assignment: Type.Optional(Type.Object({
 		agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER),
-		rationale: Type.Optional(Type.String()),
+		rationale: Type.Optional(Type.String()), tierJustification: Type.Optional(Type.String()),
 	}, { additionalProperties: false })),
 	verification: Type.Optional(Type.Object({
 		timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])),
@@ -198,7 +208,7 @@ const LEGACY_PLAN_TASK = Type.Object({
 	id: Type.String(), title: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())),
 	references: Type.Optional(Type.Object({ specs: Type.Optional(Type.Array(Type.String())), designs: Type.Optional(Type.Array(Type.String())), decisions: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false })),
 	stageId: Type.Optional(Type.String()), intermediateState: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("partial")])), resourceClaims: Type.Optional(Type.Array(Type.String())),
-	assignment: Type.Optional(Type.Object({ agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })),
+	assignment: Type.Optional(Type.Object({ agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER), rationale: Type.Optional(Type.String()), tierJustification: Type.Optional(Type.String()) }, { additionalProperties: false })),
 	verification: Type.Optional(Type.Object({ timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])), methods: Type.Optional(Type.Array(Type.String())), taskChecks: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })),
 	briefSections: Type.Object({ contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()), requiredWork: Type.Optional(Type.Array(Type.String())), integrationExpectation: Type.Optional(Type.String()), boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
 	acceptanceSections: Type.Object({ deliverables: Type.Optional(Type.Array(Type.String())), criterionContributions: Type.Array(Type.Object({ criteria: Type.Array(Type.String()), contribution: Type.String() }, { additionalProperties: false })), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
@@ -207,6 +217,7 @@ const PLAN_TASK = Type.Union([SELF_CONTAINED_PLAN_TASK, LEGACY_PLAN_TASK]);
 const PLAN_INTEGRATION_UNIT = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String()), intermediatePolicy: Type.Optional(Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")])) }, { additionalProperties: false });
 const PLAN_EVALUATION = Type.Object({
 	id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
+	stageId: Type.Optional(Type.String({ description: "Explicit execution stage for this planner graph node" })), dependsOn: Type.Optional(Type.Array(Type.String({ description: "True task or evaluation blockers" }))),
 	scope: Type.Optional(Type.Union([Type.Object({ task: Type.String() }, { additionalProperties: false }), Type.Object({ integrationUnit: Type.String() }, { additionalProperties: false }), Type.Object({ workItem: Type.String() }, { additionalProperties: false })])),
 	required: Type.Optional(Type.Boolean()), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
@@ -265,7 +276,7 @@ const CREATE_RESOURCE_PARAMETERS = Type.Union([
 ]);
 const APPLY_CHANGE_PARAMETERS = Type.Object({
 	authority: MUTATION_AUTHORITY,
-	executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("restart-affected"), Type.Literal("pause-affected")]),
+	executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("pause-affected")]),
 	operations: Type.Array(Type.Union([
 		...CREATE_OPERATION_VARIANTS,
 		...PATCH_OPERATION_VARIANTS,
@@ -289,7 +300,7 @@ const COMPACT_CREATE_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYP
 const COMPACT_PATCH_PARAMETERS = Type.Object({ resource: CANONICAL_RESOURCE_TYPE, ref: Type.String(), patch: OPEN_OBJECT, authority: MUTATION_AUTHORITY }, { additionalProperties: false });
 const COMPACT_APPLY_CHANGE_PARAMETERS = Type.Object({
 	authority: MUTATION_AUTHORITY,
-	executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("restart-affected"), Type.Literal("pause-affected")]),
+	executionDisposition: Type.Union([Type.Literal("continue"), Type.Literal("resume-requesting-agent"), Type.Literal("pause-affected")]),
 	operations: Type.Array(Type.Object({ method: Type.Union([Type.Literal("create"), Type.Literal("patch"), Type.Literal("delete")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String()), ref: Type.Optional(Type.String()), body: Type.Optional(OPEN_OBJECT), patch: Type.Optional(OPEN_OBJECT) }, { additionalProperties: false })),
 	response: Type.Optional(Type.Object({ agentId: Type.String(), messageId: Type.String(), text: Type.String() }, { additionalProperties: false })),
 }, { additionalProperties: false });
@@ -616,6 +627,43 @@ export default function workflow(pi: ExtensionAPI): void {
 		}
 	};
 
+	const launchManagedIntegrationRepair = async (ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal) => {
+		requireTrusted(ctx);
+		const runtime = await runtimeFor(ctx);
+		const item = await runtime.workItems.read(workItemId);
+		const task = await runtime.workItems.readTask(workItemId, taskIds[0]!);
+		const agentDefinition = runtime.config.agents["repair-implementer"];
+		if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", "Missing repair-implementer agent definition");
+		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
+		const resolution = resolveHarnessModel(runtime.config, available, { tier: "medium" });
+		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No medium repair model is available");
+		const prompt = `Resolve the rolled-back Git integration conflict for stage ${stageId} (${taskIds.join(", ")}). The feature branch is clean and contributor branches remain intact. Reproduce the stage merge from those branches, resolve only the resulting conflicts, commit the integrated result, run the declared checks, and report exact commands and results. Private conflict evidence is retained at ${evidencePath}; inspect only the bounded portions needed for the resolution and do not copy it into reports. Do not alter task topology or spawn another agent.`;
+		const launched = await runtime.coordinator.launch({
+			operationId: `integration-repair:${workItemId}:${stageId}`, role: "repair-implementer", task: prompt,
+			assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt }, cwd: runtime.identity.root,
+			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+			tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
+			workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"),
+			persistentContext: `${await buildTaskPersistentContext(runtime.workItems, workItemId, task)}\n\n${prompt}`,
+			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
+			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
+		});
+		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Integration repair agent failed");
+		await assertCleanRepository(runtime.identity.root);
+		const integratedCommit = await runGit(runtime.identity.root, ["rev-parse", "HEAD"]);
+		for (const taskId of taskIds) {
+			const contribution = await runtime.workItems.readTask(workItemId, taskId);
+			if (!contribution.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Integration repair lost completed commit for ${taskId}`);
+			await runGit(runtime.identity.root, ["merge-base", "--is-ancestor", contribution.runtime.completedCommit, integratedCommit]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Integration repair commit does not contain ${taskId} contribution ${contribution.runtime!.completedCommit}`); });
+		}
+		const manager = new WorktreeManager(runtime.identity);
+		const checks = await manager.runStageChecks(workItemId, stageId, taskIds);
+		for (const taskId of taskIds) await runtime.workItems.updateTask(workItemId, taskId, { status: "merged", runtime: { mergedCommit: integratedCommit } });
+		await manager.clearConflict(workItemId, evidencePath);
+		await runtime.workItems.refreshReadyTasks(workItemId);
+		return textResult(`Managed integration repair for ${item.id}/${stageId} completed at ${integratedCommit.slice(0, 12)} with ${checks.length} harness check(s).`, { agentId: launched.agent.id, stageId, taskIds, integratedCommit, checks });
+	};
+
 	const launchManagedRepair = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
 		requireTrusted(ctx);
 		const runtime = await runtimeFor(ctx);
@@ -706,11 +754,11 @@ export default function workflow(pi: ExtensionAPI): void {
 			if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "protocol_failed", { error: "Missing or invalid evaluation_complete handoff" }).catch(() => undefined);
 			return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, agentId: logicalAgentId, direct });
 		}
-		const recorded = await runtime.mutex.run(`evaluation:${evaluation.id}:${created.record.id}`, async () => {
+		await runtime.mutex.run(`evaluation-loop:${evaluation.id}:${created.record.id}`, async () => {
 			await assertCleanRepository(runtime.identity.root);
 			await runtime.workItems.updateEvaluationLoop(item.id, evaluation.id, { state: evaluation.loop?.state === "rereviewing" ? "rereviewing" : "reviewing", ...(logicalAgentId ? { reviewerAgentId: logicalAgentId } : {}), reviewedCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]) });
-			return runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
 		});
+		const recorded = await runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
 		await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
 		await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, agentId: logicalAgentId, verdict: handoff.verdict });
 		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
@@ -785,6 +833,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			launchTask: launchManagedTask,
 			launchEvaluation: launchManagedEvaluation,
 			launchRepair: launchManagedRepair,
+			launchIntegrationRepair: launchManagedIntegrationRepair,
 			spawnSubagent: spawnDynamicSubagent,
 			listSpawnableAgents,
 			async reconcileReported(runtime) {
@@ -815,7 +864,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "resource_read",
 		label: "Read Resource",
-		description: "Read one structured canonical resource. A work-item ref returns its compact manifest and child refs; read each artifact, task, integration unit, or evaluation ref for complete content.",
+		description: "Read one structured canonical resource. A work-item ref returns its compact manifest and child refs; read each artifact (including e2e-matrix), task, integration unit, or evaluation ref for complete content.",
 		promptSnippet: "Read one complete structured workflow resource",
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
@@ -837,7 +886,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "resource_write",
 		label: "Write Resource",
-		description: "Create or update one structured canonical resource. Create with type, optional parent, and value; update with ref and value. Tasks and evaluations accept self-contained ticket-like values. Artifacts use kind spec/design/decision plus content; specification aliases spec. IDs may be omitted for titled child resources.",
+		description: "Create or update one structured canonical resource. Create with type, optional parent, and value; update with ref and value. Tasks and evaluations accept self-contained ticket-like values. Artifacts use kind spec/design/decision/e2e-matrix plus content or schema-v2 sections; specification aliases spec. IDs may be omitted for titled child resources.",
 		promptSnippet: "Create or update one structured story, task, integration-unit, or evaluation resource",
 		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {

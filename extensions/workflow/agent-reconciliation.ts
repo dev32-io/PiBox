@@ -51,12 +51,20 @@ export async function reconcileReportedAgents(input: {
 				const run = await runs.read(agent.runId);
 				const handoff = await runs.readEvaluationHandoff(agent.runId);
 				if (!handoff) { result.pending.push(agent.id); continue; }
-				await input.mutex.run(`reconcile-evaluation:${agent.id}`, async () => {
-					const current = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
-					const alreadyRecorded = current.attempt >= run.attempt && current.result?.verdict === handoff.verdict;
-					if (!alreadyRecorded) await input.workItems.recordEvaluation({ workItemId: agent.workItemId!, evaluationId: agent.evaluationId!, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
-					if (run.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
-				});
+				const current = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
+				// The run attempt is allocated before the child starts. If canonical state
+				// already reached that attempt, recovery must not count it again—even if a
+				// process died after committing the manifest but before its run receipt.
+				const alreadyRecorded = current.attempt >= run.attempt;
+				if (!alreadyRecorded) await input.workItems.recordEvaluation({ workItemId: agent.workItemId!, evaluationId: agent.evaluationId!, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
+				if (run.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
+				const settled = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
+				// A failed review is a checkpoint, not the end of the logical reviewer.
+				// Keep it reported so a later repair/re-review can reuse its identity.
+				if (settled.loop?.state === "awaiting_manager" || settled.loop?.state === "fixing" || settled.loop?.state === "rereviewing") {
+					result.pending.push(agent.id);
+					continue;
+				}
 				await input.registry.transition(agent.id, "completed", { summary: `Evaluation ${agent.evaluationId}: ${handoff.verdict}` });
 				result.completed.push(agent.id);
 				continue;

@@ -1,6 +1,6 @@
 import { HarnessError } from "./errors.js";
 
-export type NarrativeArtifactType = "intent" | "spec" | "design" | "decision" | "taskBrief" | "taskAcceptance";
+export type NarrativeArtifactType = "intent" | "spec" | "design" | "decision" | "e2e-matrix" | "taskBrief" | "taskAcceptance";
 export type SemanticSections = Record<string, unknown>;
 
 const PLACEHOLDER = /^(?:n\/?a|none|tbd|todo|placeholder|coming soon)[.!]?$/i;
@@ -10,6 +10,7 @@ const PROFILES: Record<NarrativeArtifactType, { required: string[]; optional: st
 	spec: { required: ["context", "requiredBehaviors", "acceptanceCriteria"], optional: ["domainLanguage", "actors", "scenarios", "constraints", "edgeCases", "assumptions", "outOfScope", "openQuestions"] },
 	design: { required: ["designGoal", "chosenApproach", "verificationBoundaries"], optional: ["componentsAndInterfaces", "dataAndControlFlow", "failureAndRecovery", "securityAndPrivacy", "compatibilityAndMigration", "alternativesConsidered", "openQuestions"] },
 	decision: { required: ["decision", "context", "rationale", "consequences"], optional: ["alternativesConsidered", "revisitWhen"] },
+	"e2e-matrix": { required: ["cases"], optional: ["scope", "safety", "notes"] },
 	taskBrief: { required: ["contributionGoal", "boundaryIncluded", "requiredWork", "integrationExpectation"], optional: ["context", "boundaryExcluded", "interfacesAndDependencies", "constraints", "risksAndUncertainties"] },
 	// Legacy contracts use criterionContributions; new contracts carry direct,
 	// self-contained acceptance statements. Deliverables is the common anchor.
@@ -21,6 +22,7 @@ const HEADINGS: Record<string, string> = {
 	context: "Context", domainLanguage: "Domain Language", actors: "Actors", requiredBehaviors: "Required Behaviors", acceptanceCriteria: "Acceptance Criteria", scenarios: "Scenarios", constraints: "Constraints", edgeCases: "Edge Cases", assumptions: "Assumptions", outOfScope: "Out of Scope", openQuestions: "Open Questions",
 	designGoal: "Design Goal", chosenApproach: "Chosen Approach", componentsAndInterfaces: "Components and Interfaces", dataAndControlFlow: "Data and Control Flow", failureAndRecovery: "Failure and Recovery", securityAndPrivacy: "Security and Privacy", compatibilityAndMigration: "Compatibility and Migration", verificationBoundaries: "Verification Boundaries", alternativesConsidered: "Alternatives Considered",
 	decision: "Decision", rationale: "Rationale", consequences: "Consequences", revisitWhen: "Revisit When",
+	cases: "Cases", scope: "Scope", safety: "Safety", notes: "Notes",
 	contributionGoal: "Contribution Goal", boundaryIncluded: "Boundary — Included", boundaryExcluded: "Boundary — Excluded", requiredWork: "Required Work", interfacesAndDependencies: "Interfaces and Dependencies", integrationExpectation: "Integration Expectation", risksAndUncertainties: "Risks and Uncertainties",
 	deliverables: "Deliverables", acceptance: "Acceptance", criterionContributions: "Criterion Contributions", boundaryProof: "Boundary Proof", expectedIntermediateState: "Expected Intermediate State", integrationProof: "Integration Proof",
 };
@@ -46,6 +48,36 @@ function renderObject(value: unknown): string {
 	return Object.entries(value).map(([key, entry]) => `**${key.replace(/([A-Z])/g, " $1").replace(/^./, (char) => char.toUpperCase())}:** ${typeof entry === "string" ? entry : JSON.stringify(entry)}`).join("; ");
 }
 
+function validateE2EMatrixCases(value: unknown): Array<Record<string, unknown>> {
+	if (!Array.isArray(value) || value.length === 0) throw new HarnessError("INVALID_ARTIFACT", "e2e-matrix requires at least one substantive case");
+	const required = ["id", "classification", "journey", "setup", "actions", "expectedOutcomes", "evidence"];
+	const allowed = new Set([...required, "safety"]);
+	const ids = new Set<string>();
+	return value.map((entry) => {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new HarnessError("INVALID_ARTIFACT", "Each E2E matrix case must be a mapping");
+		const record = entry as Record<string, unknown>;
+		for (const key of Object.keys(record)) if (!allowed.has(key)) throw new HarnessError("INVALID_ARTIFACT", `E2E matrix case has unknown field: ${key}`);
+		for (const key of required) if (!isSubstantive(record[key])) throw new HarnessError("INVALID_ARTIFACT", `E2E matrix case requires substantive ${key}`);
+		const id = String(record.id);
+		if (!/^E2E-\d{3}$/.test(id)) throw new HarnessError("INVALID_ARTIFACT", "E2E matrix case IDs must match E2E-NNN");
+		if (ids.has(id)) throw new HarnessError("INVALID_ARTIFACT", `Duplicate E2E matrix case ID: ${id}`);
+		ids.add(id);
+		if (!["golden-path", "edge", "failure", "recovery"].includes(String(record.classification))) throw new HarnessError("INVALID_ARTIFACT", `Invalid E2E matrix classification for ${id}`);
+		for (const key of ["setup", "actions", "expectedOutcomes", "evidence", "safety"]) if (record[key] !== undefined && (!Array.isArray(record[key]) || !isSubstantive(record[key]))) throw new HarnessError("INVALID_ARTIFACT", `E2E matrix case ${id} field ${key} must be a substantive list`);
+		return record;
+	});
+}
+
+function renderE2ECases(value: unknown): string {
+	return validateE2EMatrixCases(value).map((entry) => {
+		const lines = [`### ${entry.id} — ${entry.journey}`, "", `**Classification:** ${entry.classification}`];
+		for (const [key, heading] of [["setup", "Setup"], ["actions", "Actions"], ["expectedOutcomes", "Expected Outcomes"], ["evidence", "Evidence"], ["safety", "Safety"]] as const) {
+			if (entry[key] !== undefined) lines.push("", `#### ${heading}`, "", renderValue(entry[key]));
+		}
+		return lines.join("\n");
+	}).join("\n\n");
+}
+
 export function renderArtifact(type: NarrativeArtifactType, title: string, sections: SemanticSections): string {
 	const profile = PROFILES[type];
 	const allowed = new Set([...profile.required, ...profile.optional, "additionalSections"]);
@@ -54,15 +86,18 @@ export function renderArtifact(type: NarrativeArtifactType, title: string, secti
 	for (const [key, value] of Object.entries(sections)) {
 		if (key !== "additionalSections" && value !== undefined && !isSubstantive(value)) throw new HarnessError("INVALID_ARTIFACT", `${type} field ${key} is empty or placeholder content`);
 	}
+	if (type === "e2e-matrix") validateE2EMatrixCases(sections.cases);
 	const lines = [`# ${title.trim()}`, ""];
 	for (const key of [...profile.required, ...profile.optional]) {
 		if (sections[key] === undefined) continue;
-		const body = key === "acceptanceCriteria" && Array.isArray(sections[key])
-			? sections[key].map((criterion) => {
-				const value = criterion as { id?: unknown; statement?: unknown };
-				return `- **${String(value.id)}:** ${String(value.statement)}`;
-			}).join("\n")
-			: renderValue(sections[key]);
+		const body = type === "e2e-matrix" && key === "cases"
+			? renderE2ECases(sections[key])
+			: key === "acceptanceCriteria" && Array.isArray(sections[key])
+				? sections[key].map((criterion) => {
+					const value = criterion as { id?: unknown; statement?: unknown };
+					return `- **${String(value.id)}:** ${String(value.statement)}`;
+				}).join("\n")
+				: renderValue(sections[key]);
 		lines.push(`## ${HEADINGS[key]}`, "", body, "");
 	}
 	const additional = sections.additionalSections;

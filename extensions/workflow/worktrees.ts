@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
 import { parse, stringify } from "yaml";
@@ -280,6 +280,41 @@ export class WorktreeManager {
 		return removable;
 	}
 
+	/** Return private conflict evidence captured after the canonical checkout was rolled back clean. */
+	async activeConflict(workItemId: string): Promise<{ stageId: string; taskIds: string[]; evidencePath: string } | undefined> {
+		const root = join(this.identity.root, ".git", "pibox-conflicts", safeSegment(workItemId));
+		const entries = (await readdir(root).catch(() => [])).filter((entry) => entry.endsWith(".txt")).sort();
+		const evidencePath = entries.length ? join(root, entries[entries.length - 1]!) : undefined;
+		if (!evidencePath) return undefined;
+		const content = await readFile(evidencePath, "utf8");
+		const stageId = content.match(/^stage: ([^\\n]+)/m)?.[1];
+		const taskIds = content.match(/^tasks: ([^\\n]*)/m)?.[1]?.split(", ").filter(Boolean) ?? [];
+		return stageId ? { stageId, taskIds, evidencePath } : undefined;
+	}
+
+	async runStageChecks(workItemId: string, stageId: string, taskIds: string[]): Promise<IntegrationResult["checks"]> {
+		const item = await this.workItems.read(workItemId);
+		const tasks = await Promise.all(taskIds.map((taskId) => this.workItems.readTask(workItemId, taskId)));
+		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
+		const commands = stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
+		const results: IntegrationResult["checks"] = [];
+		for (const command of commands) {
+			const result = await runShell(command, this.identity.root);
+			results.push({ command, ...result });
+			if (result.code !== 0) throw new HarnessError("GIT_OPERATION_FAILED", `Post-repair check failed: ${command}\n${result.stderr || result.stdout}`);
+		}
+		return results;
+	}
+
+	async clearConflict(workItemId: string, evidencePath: string): Promise<void> {
+		const conflictRoot = join(this.identity.root, ".git", "pibox-conflicts", safeSegment(workItemId));
+		const expected = join(conflictRoot, evidencePath.slice(conflictRoot.length + 1));
+		if (expected !== evidencePath || !evidencePath.startsWith(`${conflictRoot}/`)) throw new HarnessError("INVALID_ARTIFACT", "Conflict evidence path escapes its private work-item root");
+		await rm(evidencePath, { force: true });
+		const remaining = await readdir(conflictRoot).catch(() => []);
+		if (remaining.length === 0) await rm(conflictRoot, { recursive: true, force: true });
+	}
+
 	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId);
@@ -326,10 +361,26 @@ export class WorktreeManager {
 			const integratedCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 			for (const task of pending) await this.workItems.updateTask(workItemId, task.id, { status: "merged", runtime: { mergedCommit: integratedCommit } });
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			const status = await runGit(this.identity.root, ["status", "--porcelain=v1", "--untracked-files=all"]).catch(() => "");
+			const conflicted = /(^|\\n)UU |(^|\\n)AA |(^|\\n)DD |(^|\\n)AU |(^|\\n)UA /.test(status) || message.includes("CONFLICT");
+			if (conflicted) {
+				// Capture the failed merge before restoring the canonical branch. Contributor
+				// branches remain intact, so a harness-owned repair can reproduce the merge
+				// without exposing users to a dirty or half-merged feature branch.
+				const evidencePath = join(this.identity.root, ".git", "pibox-conflicts", safeSegment(workItemId), `${safeSegment(topology.stageId)}-${Date.now()}.txt`);
+				await mkdir(dirname(evidencePath), { recursive: true });
+				const diff = await runGit(this.identity.root, ["diff", "--cc"]).catch(() => "");
+				await writeFile(evidencePath, `stage: ${topology.stageId}\ntasks: ${taskIds.join(", ")}\nbase: ${baseCommit}\nstatus:\n${status}\nconflict:\n${message}\ncombined diff:\n${diff}`, "utf8");
+				await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
+				await runGit(this.identity.root, ["reset", "--hard", baseCommit]);
+				throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${topology.stageId} integration conflict requires managed repair. The feature branch was restored clean; contributor branches and private evidence are preserved at ${evidencePath}. Resume through the harness repair path.`, { conflict: true, stageId: topology.stageId, taskIds, evidencePath, baseCommit });
+			}
+			// Non-conflict failures retain the prior atomic rollback behavior.
 			await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
 			await runGit(this.identity.root, ["reset", "--hard", baseCommit]).catch(() => undefined);
 			if (error instanceof HarnessError) throw error;
-			throw new HarnessError("GIT_OPERATION_FAILED", `Atomic stage merge failed for ${topology.stageId}: ${error instanceof Error ? error.message : String(error)}`);
+			throw new HarnessError("GIT_OPERATION_FAILED", `Atomic stage merge failed for ${topology.stageId}: ${message}`);
 		}
 		if (topology.stageSize > 1) await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(workItemId, topology.stageId)]).catch(() => undefined);
 		await this.workItems.refreshReadyTasks(workItemId);

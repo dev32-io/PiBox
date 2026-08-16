@@ -9,6 +9,15 @@ const spec = {
 	outOfScope: ["Project-owned documentation."],
 };
 
+test("renders a structured schema-v2 E2E matrix with exact case fields", () => {
+	const content = renderArtifact("e2e-matrix", "Checkout E2E Matrix", {
+		scope: ["Checkout touched area"],
+		cases: [{ id: "E2E-001", classification: "golden-path", journey: "Customer completes checkout", setup: ["Seed valid cart"], actions: ["Submit checkout"], expectedOutcomes: ["Order confirmation is shown"], evidence: ["Confirmation screenshot and order id"], safety: ["Use disposable data"] }],
+	});
+	assert.match(content, /## Cases[\s\S]+E2E-001[\s\S]+golden-path/);
+	assert.match(content, /Expected Outcomes/);
+});
+
 test("renders schema-v2 semantic sections in stable Markdown", () => {
 	const content = renderArtifact("spec", "Artifact contract", spec);
 	assert.match(content, /^# Artifact contract/);

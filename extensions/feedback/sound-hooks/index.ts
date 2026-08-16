@@ -12,7 +12,7 @@ import {
 	soundHooksConfig,
 	type SoundTheme,
 } from "./config.js";
-import { playSound } from "./player.js";
+import { AudioArbiter, startSound, type AudioKind, type Playback } from "./player.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -39,14 +39,19 @@ export default function soundHooks(pi: ExtensionAPI): void {
 	let theme: SoundTheme | undefined;
 	let completedSuccessfully = false;
 	let interactive = false;
-
-	const playFeedback = (event: typeof RESPONSE_COMPLETE_EVENT | typeof WORKFLOW_TASK_COMPLETED_EVENT | typeof WORKFLOW_ERROR_EVENT) => {
-		if (!interactive || !theme) return;
+	const arbiter = new AudioArbiter((kind: AudioKind): Playback | undefined => {
+		if (!interactive || !theme) return undefined;
 		const config = soundHooksConfig();
-		if (!config.enabled || config.theme !== theme.id) return;
+		if (!config.enabled || config.theme !== theme.id) return undefined;
+		const event = kind === "response" ? RESPONSE_COMPLETE_EVENT : kind === "success" ? WORKFLOW_TASK_COMPLETED_EVENT : WORKFLOW_ERROR_EVENT;
 		const soundFile = resolveSoundFile(config.soundRoot, theme, event);
-		if (!soundFile || !existsSync(soundFile)) return;
-		playSound(soundFile);
+		if (!soundFile || !existsSync(soundFile)) return undefined;
+		return startSound(soundFile, process.platform);
+	}, { setTimeout: (callback, delay) => setTimeout(callback, delay), clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) });
+
+	const playFeedback = (event: typeof RESPONSE_COMPLETE_EVENT | typeof WORKFLOW_TASK_COMPLETED_EVENT | typeof WORKFLOW_ERROR_EVENT, key?: string) => {
+		const kind: AudioKind = event === RESPONSE_COMPLETE_EVENT ? "response" : event === WORKFLOW_TASK_COMPLETED_EVENT ? "success" : "error";
+		arbiter.request(kind, key ?? event);
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -65,15 +70,18 @@ export default function soundHooks(pi: ExtensionAPI): void {
 	});
 
 	pi.on("agent_settled", () => {
-		if (completedSuccessfully) playFeedback(RESPONSE_COMPLETE_EVENT);
+		if (completedSuccessfully) playFeedback(RESPONSE_COMPLETE_EVENT, "turn");
 	});
 
 	pi.events.on(WORKFLOW_FEEDBACK_EVENT, (value: unknown) => {
-		const feedbackEvent = feedbackEventForWorkflow(value as WorkflowFeedbackEvent);
-		if (feedbackEvent) playFeedback(feedbackEvent);
+		const workflowEvent = value as WorkflowFeedbackEvent;
+		if (workflowEvent.type === "task-completed" && workflowEvent.terminal !== true) return;
+		const feedbackEvent = feedbackEventForWorkflow(workflowEvent);
+		if (feedbackEvent) playFeedback(feedbackEvent, workflowEvent.correlationId ?? workflowEvent.workflowRef);
 	});
 
 	pi.on("session_shutdown", () => {
+		arbiter.reset();
 		theme = undefined;
 		interactive = false;
 	});

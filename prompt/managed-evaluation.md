@@ -1,3 +1,3 @@
 {{phase}} boundary {{evaluationId}} ({{evaluationType}}) for work item {{workItemId}}.
 
-Judge the checked-out implementation against the persistent review context in your system prompt. Collect fresh evidence without changing the evaluated work. Place generated runtime evidence outside the repository and reference its absolute path.
+Judge the checked-out implementation against the persistent review context in your system prompt. For final E2E, follow the exact persisted matrix and any manager guidance; do not invent or omit cases. Collect fresh evidence without changing the evaluated work. Submit only sanitized, minimal evidence: never copy credentials, private transcripts, tokens, keys, .env files, or unrelated logs. Place generated runtime evidence outside the repository and reference its absolute path. PiBox fails closed on obvious sensitive material but cannot perfectly redact arbitrary secrets.

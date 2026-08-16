@@ -18,7 +18,7 @@ const SUBAGENT_STATUS_KEY = "subagent-dashboard";
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
-type WorkflowNotice = { title: string; detail?: string; attention: boolean };
+type WorkflowNotice = { workflowRef: string; title: string; detail?: string; attention: boolean; kind?: string; fromStatus?: string; toStatus?: string; nextAction?: string };
 type RunningSubagentStatus = {
 	agent: string;
 	mode: "background" | "foreground";
@@ -46,7 +46,10 @@ export default function workflows(pi: ExtensionAPI): void {
 	let frame = 0;
 	let subagentPulseFrame = 0;
 	let sessionCtx: ExtensionContext | undefined;
-	let latestNotice: WorkflowNotice | undefined;
+	let visualTimer: NodeJS.Timeout | undefined;
+	let dashboardTui: { requestRender?: () => void } | undefined;
+	let dashboardInvalidate: (() => void) | undefined;
+	const notices = new Map<string, WorkflowNotice>();
 	const runningSubagents = new Map<string, RunningSubagentStatus>();
 
 	const adapterFor = (ref: string): WorkflowAdapter => {
@@ -98,12 +101,13 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 	};
 
-	const sendEvent = (title: string, detail?: string, attention = false) => {
-		latestNotice = { title, ...(detail ? { detail } : {}), attention };
+	const sendEvent = (event: WorkflowNotice & { cause?: string; attempt?: number; iteration?: number; correlationId?: string }) => {
+		notices.set(event.workflowRef, event);
 		if (sessionCtx) renderDashboard(sessionCtx);
 		try {
 			// Keep workflow plumbing out of chat history; attention still steers the orchestrator.
-			pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow ${attention ? "attention" : "event"}]\n${title}${detail ? `\n${detail}` : ""}`, display: false }, attention
+			const detail = [event.detail, event.cause ? `Cause: ${event.cause}` : undefined, event.nextAction ? `Next: ${event.nextAction}` : undefined].filter(Boolean).join("\n");
+			pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow ${event.attention ? "attention" : "event"}]\n${event.title}${detail ? `\n${detail}` : ""}`, display: false, details: event }, event.attention
 				? { deliverAs: "steer", triggerTurn: true }
 				: { deliverAs: "steer", triggerTurn: false });
 		} catch {
@@ -111,39 +115,56 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 	};
 
+	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
+	const stateIcon = (status: WorkflowStep["status"], kind: string): string => {
+		if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? DEFAULT_RUNNING_FRAMES; return frames[frame % frames.length]!; }
+		return status === "attention" ? "!" : status === "ready" ? "○" : status === "pending" ? "□" : status === "done" ? "✓" : "–";
+	};
+
 	const rawTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
 		const done = snapshot.steps.filter((step) => step.status === "done").length;
 		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 		for (const step of snapshot.steps) {
-			let icon: string;
-			let color: "success" | "warning" | "error" | "muted" | "accent" = "muted";
-			if (step.status === "done") { icon = "✓"; color = "success"; }
-			else if (step.status === "running") {
-				const frames = RUNNING_FRAMES[step.kind] ?? DEFAULT_RUNNING_FRAMES;
-				icon = frames[frame % frames.length]!;
-				color = "accent";
-			}
-			else if (step.status === "attention") { icon = step.detail?.includes("fail") ? "×" : "!"; color = step.detail?.includes("fail") ? "error" : "warning"; }
-			else if (step.status === "cancelled") icon = "–";
-			else icon = "○";
+			const icon = stateIcon(step.status, step.kind);
+			const color: "success" | "warning" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" ? "accent" : "muted";
 			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}`);
+		}
+		return lines;
+	};
+
+	const stageTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
+		if (!snapshot.stages?.length) return rawTaskLines(snapshot, ctx);
+		const done = snapshot.steps.filter((step) => step.status === "done").length;
+		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
+		for (const stage of snapshot.stages) {
+			const stageSteps = snapshot.steps.filter((step) => stage.nodes.some((node) => step.ref.endsWith(`/${node}`)));
+			const primary = stageSteps.reduce<WorkflowStep | undefined>((best, step) => !best || stateRank(step.status) > stateRank(best.status) ? step : best, undefined);
+			const stageStatus = primary?.status ?? "pending";
+			const stageIcon = stateIcon(stageStatus, primary?.kind ?? "task");
+			const label = stage.group === "runtime" ? "Runtime verification" : `Stage ${stage.index + 1} · ${stage.id}${stage.parallel ? " · parallel frontier" : ""}`;
+			const stageColor: "error" | "accent" | "muted" | "success" = stageStatus === "attention" ? "error" : stageStatus === "running" || stageStatus === "ready" ? "accent" : stageStatus === "done" ? "success" : "muted";
+			lines.push(ctx.ui.theme.fg(stageColor, `${stageIcon} ${label}`));
+			for (const step of stageSteps) {
+				const color: "success" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" || step.status === "ready" ? "accent" : "muted";
+				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind)} `)}${step.title}`);
+			}
 		}
 		return lines;
 	};
 
 	const dashboardLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number): string[] => {
 		const innerWidth = Math.max(1, width - 2);
-		const tasks = rawTaskLines(snapshot, ctx);
+		const tasks = stageTaskLines(snapshot, ctx);
 		const separatorWidth = 3;
 		const naturalTaskWidth = Math.max(...tasks.map((task) => visibleWidth(task)));
 		const maxTaskWidth = Math.max(28, Math.floor(innerWidth * 0.58));
 		const compactTaskWidth = Math.min(naturalTaskWidth, maxTaskWidth);
 		const availableEventWidth = innerWidth - compactTaskWidth - separatorWidth;
-		const showNotice = Boolean(latestNotice && innerWidth >= 72 && availableEventWidth >= 22);
+		const notice = currentRef ? notices.get(currentRef) : undefined;
+		const showNotice = Boolean(notice && innerWidth >= 72 && availableEventWidth >= 22);
 		const taskWidth = showNotice ? compactTaskWidth : innerWidth;
 		const eventWidth = showNotice ? availableEventWidth : 0;
 		const separator = ctx.ui.theme.fg("borderMuted", " │ ");
-		const notice = latestNotice;
 		return tasks.map((task, index) => {
 			const left = truncateToWidth(task, taskWidth, "…");
 			let content = left;
@@ -159,35 +180,52 @@ export default function workflows(pi: ExtensionAPI): void {
 		});
 	};
 
+	const startVisualTimer = () => {
+		if (visualTimer || !sessionCtx) return;
+		visualTimer = setInterval(() => {
+			const visibleActive = Boolean(currentRef && currentSnapshot && (active.has(currentRef) || currentSnapshot.steps.some((step) => step.status === "running" || inFlight.has(step.ref))));
+			if (!visibleActive) { clearInterval(visualTimer); visualTimer = undefined; return; }
+			frame++;
+			dashboardInvalidate?.();
+			dashboardTui?.requestRender?.();
+		}, 90);
+		visualTimer.unref();
+	};
+
 	const renderDashboard = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI || !currentSnapshot) { ctx.ui.setWidget("pibox-workflow", undefined); return; }
-		ctx.ui.setWidget("pibox-workflow", (_tui, _theme) => ({
-			render(width: number) { return dashboardLines(currentSnapshot!, ctx, width); },
-			invalidate() {},
-		}));
+		startVisualTimer();
+		ctx.ui.setWidget("pibox-workflow", (tui, _theme) => {
+			dashboardTui = tui as unknown as { requestRender?: () => void };
+			const component = { render(width: number) { return dashboardLines(currentSnapshot!, ctx, width); }, invalidate() {} };
+			dashboardInvalidate = component.invalidate;
+			return component;
+		});
 	};
 
 	const settleStep = async (adapter: WorkflowAdapter, step: WorkflowStep, promise: Promise<WorkflowRunResult>, ctx: ExtensionContext, workflowRef?: string) => {
 		try {
 			const settled = await promise;
 			const attention = Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed");
-			sendEvent(`${step.title} · ${settled.state}`, settled.summary, attention);
-			if (workflowRef && step.kind === "task" && settled.state === "completed" && !attention) {
-				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, title: step.title, detail: settled.summary });
+			const terminalSnapshot = workflowRef ? await adapter.snapshot(workflowRef, ctx).catch(() => undefined) : undefined;
+			const terminalStep = terminalSnapshot?.steps.find((candidate) => candidate.ref === step.ref);
+			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
+			if (workflowRef && (step.kind === "task" || step.kind === "evaluation") && settled.state === "completed" && !attention && terminalStep?.status === "done") {
+				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: step.kind === "evaluation" ? "passed" : "integrated", terminal: true });
 			}
 			if (attention) {
 				if (workflowRef) {
 					active.set(workflowRef, "paused"); persist(workflowRef, "paused");
-					sendFeedback({ type: "error", workflowRef, stepRef: step.ref, title: step.title, detail: settled.summary });
+					sendFeedback({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, cause: "step-attention", nextAction: "Resolve the step and resume or decide at its checkpoint." });
 				}
 			}
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			if (workflowRef) {
 				active.set(workflowRef, "paused"); persist(workflowRef, "paused");
-				sendFeedback({ type: "error", workflowRef, stepRef: step.ref, title: step.title, detail });
+				sendFeedback({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 			}
-			sendEvent(`${step.title} · failed`, detail, true);
+			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · failed`, detail, attention: true, kind: step.kind, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 		} finally {
 			inFlight.delete(step.ref);
 			await tick(ctx);
@@ -197,7 +235,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const startStep = (adapter: WorkflowAdapter, step: WorkflowStep, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult> => {
 		if (inFlight.has(step.ref)) throw new Error(`Step is already running: ${step.ref}`);
 		inFlight.add(step.ref);
-		sendEvent(`Starting ${step.title}`);
+		sendEvent({ workflowRef: step.ref.split("/")[0]!, title: `Starting ${step.title}`, attention: false, kind: step.kind, toStatus: "running" });
 		return adapter.runStep(step.ref, ctx, signal);
 	};
 
@@ -230,8 +268,8 @@ export default function workflows(pi: ExtensionAPI): void {
 					if (state === "running") {
 						const detail = error instanceof Error ? error.message : String(error);
 						active.set(ref, "paused"); persist(ref, "paused");
-						sendFeedback({ type: "error", workflowRef: ref, title: ref, detail });
-						sendEvent(`${ref} · attention`, detail, true);
+						sendFeedback({ type: "error", workflowRef: ref, title: ref, detail, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
+						sendEvent({ workflowRef: ref, title: `${ref} · attention`, detail, attention: true, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
 					}
 					continue;
 				}
@@ -243,18 +281,19 @@ export default function workflows(pi: ExtensionAPI): void {
 				// An adapter snapshot can briefly observe canonical settlement between child exit
 				// and runStep completion. The in-flight promise remains authoritative until it
 				// settles; only attention with no active step should pause the workflow.
-				if (snapshot.status === "attention" && !snapshot.steps.some((step) => inFlight.has(step.ref))) {
+				const hasIndependentReadyWork = snapshot.steps.some((step) => step.status === "ready" && !inFlight.has(step.ref));
+				if (snapshot.status === "attention" && !snapshot.steps.some((step) => inFlight.has(step.ref)) && !hasIndependentReadyWork) {
 					active.set(ref, "paused"); persist(ref, "paused");
 					const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
 					const detail = attentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
 					const checkpoint = attentionSteps.find((step) => step.kind === "evaluation");
 					const guidance = `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref} to request changes, retry the same reviewer, continue, skip, or accept non-blocking risk. Do not manipulate Git or task state manually.` : ""}`;
-					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref } : {}), title: snapshot.title, detail: guidance });
-					sendEvent(`${snapshot.title} · attention`, guidance, true);
+					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref, kind: attentionSteps[0].kind } : {}), title: snapshot.title, detail: guidance, cause: "checkpoint-required", nextAction: checkpoint ? "Use workflow_checkpoint to decide the review outcome." : "Resolve the attention state and resume." });
+					sendEvent({ workflowRef: ref, title: `${snapshot.title} · attention`, detail: guidance, attention: true, cause: "checkpoint-required", nextAction: checkpoint ? "Use workflow_checkpoint to decide the review outcome." : "Resolve the attention state and resume." });
 					continue;
 				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
-					active.delete(ref); persist(ref, "stopped"); sendEvent(`${snapshot.title} · complete`, "Finished all workflow steps.");
+					active.delete(ref); persist(ref, "stopped"); sendEvent({ workflowRef: ref, title: `${snapshot.title} · complete`, detail: "Finished all workflow steps.", attention: false, toStatus: "integrated", cause: "workflow-terminal" });
 					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? renderBuiltInPrompt("default-workflow-completion", { workflowRef: ref });
 					try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* session recovery can inspect canonical completion state */ }
 					continue;
@@ -266,8 +305,8 @@ export default function workflows(pi: ExtensionAPI): void {
 			}
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			if (currentRef) sendFeedback({ type: "error", workflowRef: currentRef, title: "Workflow runner", detail });
-			sendEvent("Workflow runner · attention", detail, true);
+			if (currentRef) sendFeedback({ type: "error", workflowRef: currentRef, title: "Workflow runner", detail, cause: "runner-exception" });
+			sendEvent({ workflowRef: currentRef ?? "workflow", title: "Workflow runner · attention", detail, attention: true, cause: "runner-exception" });
 		} finally { ticking = false; }
 	};
 
@@ -280,6 +319,13 @@ export default function workflows(pi: ExtensionAPI): void {
 				const confirmed = await confirmWorkflowBypass(ctx, params.ref);
 				if (!confirmed) return result(`Workflow start cancelled. ${params.ref} was not launched and permission mode was not changed.`, { ref: params.ref, cancelled: true });
 				const adapter = adapterFor(params.ref);
+				const preflight = await adapter.preflightWorkflow?.(params.ref, ctx);
+				if (preflight && !preflight.ok) {
+					const detail = preflight.detail ?? "Workflow preflight failed. Resolve the declared prerequisites and retry.";
+					sendFeedback({ type: "error", workflowRef: params.ref, title: "Workflow preflight · attention", detail, cause: "preflight-failed", nextAction: "Configure the declared prerequisites without guessing values, then retry workflow_start." });
+					sendEvent({ workflowRef: params.ref, title: "Workflow preflight · attention", detail, attention: true, cause: "preflight-failed", nextAction: "Configure the declared prerequisites, then retry workflow_start." });
+					return result(detail, { ref: params.ref, attention: true, preflight });
+				}
 				await adapter.prepareWorkflow?.(params.ref, ctx);
 				const snapshot = await adapter.snapshot(params.ref, ctx);
 				activateWorkflowBypass();
@@ -332,7 +378,8 @@ export default function workflows(pi: ExtensionAPI): void {
 				agent: Type.String({ description: `Exact configured agent name. Available agents: ${catalog.length > 0 ? catalog.map((agent) => agent.name).join(", ") : "resolved at session start"}` }),
 				task: Type.String({ description: "Complete assignment prompt for the child" }),
 				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
-				tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const)),
+				tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const, { description: "Defaults to medium; high/max require tierJustification" })),
+				tierJustification: Type.Optional(Type.String({ description: "For high/max: why medium is insufficient, the irreducible ambiguity, and why more decomposition is unsafe or incoherent" })),
 				model: Type.Optional(Type.String({ description: "Exceptional configured concrete model override; normally omit to use agent policy" })),
 				effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
 				strict: Type.Optional(Type.Boolean()),
@@ -340,13 +387,14 @@ export default function workflows(pi: ExtensionAPI): void {
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const adapter = dynamicAdapter();
 				const mode = params.mode ?? "background";
+				if ((params.tier === "high" || params.tier === "max") && (!params.tierJustification || params.tierJustification.trim().length < 20)) throw new Error(`${params.tier} routing requires a substantive tierJustification explaining why medium is insufficient, the irreducible ambiguity, and why further decomposition is unsafe or incoherent`);
 				const request: DynamicSubagentRequest = {
 					operationId: toolCallId, agent: params.agent, task: params.task,
-					...(params.tier ? { tier: params.tier } : {}),
+					tier: params.tier ?? "medium",
+					...(params.tierJustification ? { tierJustification: params.tierJustification } : {}),
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}), ...(params.strict !== undefined ? { strict: params.strict } : {}),
 				};
-				const catalogTier = catalog.find((agent) => agent.name === params.agent)?.tier;
-				const tier = params.tier ?? catalogTier;
+				const tier = params.tier ?? "medium";
 				let resolvedStatus: DynamicSubagentStarted | undefined;
 				if (mode === "background") {
 					runningSubagents.set(toolCallId, { agent: params.agent, mode, startedAt: Date.now(), ...(tier ? { tier } : {}) });
@@ -464,6 +512,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		renderDashboard(ctx);
 		renderSubagentStatus();
 		timer = setInterval(() => { if (sessionCtx) void tick(sessionCtx); }, 500); timer.unref();
+		startVisualTimer();
 		subagentPulseTimer = setInterval(() => {
 			if (runningSubagents.size === 0) return;
 			subagentPulseFrame++;
@@ -475,11 +524,15 @@ export default function workflows(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (timer) clearInterval(timer);
 		if (subagentPulseTimer) clearInterval(subagentPulseTimer);
+		if (visualTimer) clearInterval(visualTimer);
 		timer = undefined;
+		visualTimer = undefined;
 		subagentPulseTimer = undefined;
 		runningSubagents.clear();
 		if (ctx.hasUI) ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
 		sessionCtx = undefined;
+		dashboardInvalidate = undefined;
+		dashboardTui = undefined;
 		ctx.ui.setWidget("pibox-workflow", undefined);
 	});
 }

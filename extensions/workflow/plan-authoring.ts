@@ -11,6 +11,12 @@ function strings(value: unknown): string[] {
 	return Array.isArray(value) ? value as string[] : [];
 }
 
+function assertTierJustification(tier: unknown, justification: unknown): void {
+	if ((tier === "high" || tier === "max") && (typeof justification !== "string" || justification.trim().length < 20)) {
+		throw new HarnessError("INVALID_ARTIFACT", `${String(tier)} routing requires a substantive tierJustification explaining why medium is insufficient, the irreducible ambiguity, and why further decomposition is unsafe or incoherent`);
+	}
+}
+
 function titleFromId(value: unknown): string {
 	return String(value).split("-").map((part) => part ? `${part[0]!.toUpperCase()}${part.slice(1)}` : part).join(" ");
 }
@@ -36,10 +42,11 @@ function normalizeDelivery(value: unknown): PlanAuthoringRecord {
 	};
 }
 
-function artifactKind(value: unknown): "spec" | "design" | "decision" | undefined {
+function artifactKind(value: unknown): "spec" | "design" | "decision" | "e2e-matrix" | undefined {
 	if (value === "spec" || value === "specification") return "spec";
 	if (value === "design" || value === "technical-design") return "design";
 	if (value === "decision" || value === "adr") return "decision";
+	if (value === "e2e-matrix") return "e2e-matrix";
 	return undefined;
 }
 
@@ -74,13 +81,15 @@ function sectionArrayContent(value: unknown): { general: string[]; actors: strin
 export function normalizeResourceArtifact(value: unknown): PlanAuthoringRecord {
 	const artifact = record(value);
 	const kind = artifactKind(artifact.kind ?? artifact.type ?? artifact.artifactType);
-	if (!kind) throw new HarnessError("INVALID_ARTIFACT", "Artifact kind must be spec, design, or decision (specification is accepted as an alias)");
+	if (!kind) throw new HarnessError("INVALID_ARTIFACT", "Artifact kind must be spec, design, decision, or e2e-matrix (specification is accepted as an alias)");
 	const authored = artifact.content ?? artifact.sections;
 	const source = record(authored);
 	const grouped = sectionArrayContent(authored);
 	const title = artifact.title ?? titleFromId(artifact.id);
 	let sections: PlanAuthoringRecord;
-	if (kind === "spec") {
+	if (kind === "e2e-matrix") {
+		sections = source;
+	} else if (kind === "spec") {
 		const behaviors = strings(source.behaviors ?? source.requiredBehaviors ?? source.requirements);
 		const requiredBehaviors = behaviors.length ? behaviors : grouped.general;
 		sections = {
@@ -140,6 +149,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 		const assignment = record(task.assignment);
 		const verification = record(task.verification);
 		const tier = assignment.tier ?? "medium";
+		assertTierJustification(tier, assignment.tierJustification);
 		const stageId = task.stageId ?? task.id;
 		const included = strings(brief.boundaryIncluded);
 		const goal = brief.contributionGoal;
@@ -147,7 +157,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 			manifest: {
 				schemaVersion: 1, id: task.id, title: task.title ?? titleFromId(task.id), status: "draft", dependsOn: strings(task.dependsOn),
 				references: { specs: references.specs === undefined ? qualifiedSpecificationIds(acceptance.criterionContributions) : strings(references.specs), designs: strings(references.designs), decisions: strings(references.decisions) },
-				execution: { resourceClaims: strings(task.resourceClaims), assignment: { agent: assignment.agent ?? assignment.role ?? "implementer", tier, rationale: assignment.rationale ?? `Default ${tier} routing for a bounded contribution.` } },
+				execution: { resourceClaims: strings(task.resourceClaims), assignment: { agent: assignment.agent ?? assignment.role ?? "implementer", tier, rationale: assignment.rationale ?? `Default ${tier} routing for a bounded contribution.`, ...(assignment.tierJustification !== undefined ? { tierJustification: assignment.tierJustification } : {}) } },
 				assembly: { stageId, intermediateState: task.intermediateState ?? "complete" },
 				verification: { timing: verification.timing ?? "task", methods: strings(verification.methods), taskChecks: strings(verification.taskChecks), rationale: verification.rationale ?? "Verify the contribution at its declared task boundary." },
 			},
@@ -159,6 +169,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 	const assignment = record(task.assignment);
 	const verification = record(task.verification);
 	const tier = assignment.tier ?? "medium";
+	assertTierJustification(tier, assignment.tierJustification);
 	const stageId = task.stageId ?? task.id;
 	const included = strings(task.included);
 	const goal = task.goal;
@@ -177,6 +188,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 					agent: assignment.agent ?? assignment.role ?? "implementer",
 					tier,
 					rationale: assignment.rationale ?? `Default ${tier} routing for a bounded contribution.`,
+					...(assignment.tierJustification !== undefined ? { tierJustification: assignment.tierJustification } : {}),
 				},
 			},
 			assembly: {
@@ -195,7 +207,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 			contributionGoal: goal,
 			...(task.context !== undefined ? { context: task.context } : {}),
 			boundaryIncluded: included,
-			requiredWork: task.work ?? included,
+			requiredWork: task.requiredWork ?? task.work ?? included,
 			integrationExpectation: task.integrationExpectation ?? `Deliver this contribution for integration in stage ${String(stageId)}.`,
 			...(task.excluded !== undefined ? { boundaryExcluded: task.excluded } : {}),
 			...(task.interfaces !== undefined ? { interfacesAndDependencies: task.interfaces } : strings(task.dependsOn).length ? { interfacesAndDependencies: strings(task.dependsOn).map((id) => `Consumes the completed contribution from task ${id}.`) } : {}),
@@ -223,6 +235,8 @@ export function normalizePlanEvaluation(value: unknown, workItemId: string): Pla
 			schemaVersion: 1,
 			id: evaluation.id,
 			type: evaluation.type,
+			...(evaluation.stageId !== undefined ? { stageId: evaluation.stageId } : {}),
+			...(evaluation.dependsOn !== undefined ? { dependsOn: strings(evaluation.dependsOn) } : {}),
 			scope: evaluation.scope ?? { workItem: workItemId },
 			status: "planned",
 			required: evaluation.required ?? true,
@@ -281,11 +295,11 @@ function definedEntries(value: PlanAuthoringRecord): PlanAuthoringRecord {
 const EDIT_FIELDS: Record<Exclude<CanonicalResourceType, "work-item">, { create: string[]; update: string[] }> = {
 	artifact: { create: ["id", "type", "title", "sections"], update: ["type", "title", "sections"] },
 	task: {
-		create: ["id", "title", "goal", "context", "included", "work", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
-		update: ["title", "goal", "context", "included", "work", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
+		create: ["id", "title", "goal", "context", "included", "work", "requiredWork", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
+		update: ["title", "goal", "context", "included", "work", "requiredWork", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
 	},
 	"integration-unit": { create: ["id", "tasks", "intermediatePolicy"], update: ["tasks", "intermediatePolicy"] },
-	evaluation: { create: ["id", "type", "scope", "required", "methods", "criteria"], update: ["type", "scope", "required", "methods", "criteria"] },
+	evaluation: { create: ["id", "type", "scope", "stageId", "dependsOn", "required", "methods", "criteria"], update: ["type", "scope", "stageId", "dependsOn", "required", "methods", "criteria"] },
 };
 
 function assertEditFields(type: CanonicalResourceType, action: "create" | "update", input: PlanAuthoringRecord): void {
@@ -293,7 +307,7 @@ function assertEditFields(type: CanonicalResourceType, action: "create" | "updat
 	const unknown = Object.keys(input).filter((key) => !allowed.has(key));
 	if (unknown.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for ${type} has unknown field(s): ${unknown.join(", ")}`);
 	if (type === "task" && input.assignment !== undefined) {
-		const unknownAssignment = Object.keys(record(input.assignment)).filter((key) => !["agent", "role", "tier", "rationale"].includes(key));
+		const unknownAssignment = Object.keys(record(input.assignment)).filter((key) => !["agent", "role", "tier", "rationale", "tierJustification"].includes(key));
 		if (unknownAssignment.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for task has unknown assignment field(s): ${unknownAssignment.join(", ")}`);
 	}
 	if (type === "task" && input.verification !== undefined) {

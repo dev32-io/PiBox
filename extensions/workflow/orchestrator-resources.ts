@@ -327,7 +327,7 @@ export class OrchestratorResourceService {
 		if (!parent) throw new HarnessError("INVALID_ARTIFACT", `${type} creation requires a work-item parent`);
 		const parentRef = parseResourceRef(parent);
 		if (parentRef.type !== "work-item") throw new HarnessError("INVALID_ARTIFACT", "Parent must be a work item");
-		if (type === "artifact") return this.store.putArtifact({ workItemId: parentRef.id, id: string(body.id, "id"), type: body.type as "spec" | "design" | "decision", operation: "create", authority, ...(body.content ? { content: body.content as string } : {}), ...(body.sections ? { sections: object(body.sections, "sections") } : {}), ...(body.title ? { title: body.title as string } : {}), ...(body.narrativeSchemaVersion ? { narrativeSchemaVersion: body.narrativeSchemaVersion as 1 | 2 } : {}) });
+		if (type === "artifact") return this.store.putArtifact({ workItemId: parentRef.id, id: string(body.id, "id"), type: body.type as "spec" | "design" | "decision" | "e2e-matrix", operation: "create", authority, ...(body.content ? { content: body.content as string } : {}), ...(body.sections ? { sections: object(body.sections, "sections") } : {}), ...(body.title ? { title: body.title as string } : {}), ...(body.narrativeSchemaVersion ? { narrativeSchemaVersion: body.narrativeSchemaVersion as 1 | 2 } : {}) });
 		if (type === "task") {
 			const manifest = object(body.manifest, "manifest") as unknown as TaskManifest;
 			this.validateTaskAssignment(manifest);
@@ -350,7 +350,7 @@ export class OrchestratorResourceService {
 			if (Object.keys(patch).some((key) => key !== "links")) {
 				let renderedContent = (patch.content as string | undefined) ?? current.content;
 				if (patch.title !== undefined && patch.sections === undefined) renderedContent = renderedContent.replace(/^# .+$/m, `# ${patch.title as string}`);
-				result = await this.store.putArtifact({ workItemId: item.id, id: parsedRef.id, type: (patch.type ?? current.metadata.type) as "spec" | "design" | "decision", operation: "update", authority: context.authority, narrativeSchemaVersion: (patch.narrativeSchemaVersion ?? current.metadata.narrativeSchemaVersion ?? 1) as 1 | 2, ...(patch.sections !== undefined ? { sections: object(patch.sections, "sections") } : { renderedContent }), ...(patch.title !== undefined ? { title: patch.title as string } : {}) });
+				result = await this.store.putArtifact({ workItemId: item.id, id: parsedRef.id, type: (patch.type ?? current.metadata.type) as "spec" | "design" | "decision" | "e2e-matrix", operation: "update", authority: context.authority, narrativeSchemaVersion: (patch.narrativeSchemaVersion ?? current.metadata.narrativeSchemaVersion ?? 1) as 1 | 2, ...(patch.sections !== undefined ? { sections: object(patch.sections, "sections") } : { renderedContent }), ...(patch.title !== undefined ? { title: patch.title as string } : {}) });
 			}
 			if (patch.links !== undefined) result = await this.store.linkArtifact(item.id, parsedRef.id, patch.links as string[], context.authority, true);
 			return result;

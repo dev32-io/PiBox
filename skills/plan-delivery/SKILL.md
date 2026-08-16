@@ -11,17 +11,17 @@ Turn a coherent story into a small set of self-contained implementation tickets.
 
 Enter only after the user has reviewed the persisted story checkpoint and explicitly asks to plan or continue. A prior end-to-end request does not skip that review gate.
 
-Read the compact work item, then read each intent, specification, design, and decision child ref with `resource_read`. Treat those resources as the product contract: planning normally reads them and writes tasks, stages, and evaluations only. If repository evidence exposes a product-contract problem, discuss it with the user and update only the affected story resource before continuing.
+Read the compact work item, then read each intent, specification, design, decision, and `e2e-matrix` child ref with `resource_read`. Treat those resources as the product contract: the approved E2E matrix is binding verification context. Planning normally reads them and writes one unified staged graph of implementation and focused evaluation nodes only. If repository evidence exposes a product-contract problem, discuss it with the user and update only the affected story resource before continuing.
 
 ## Plan the Delivery
 
-1. **Locate the seams** — Inspect only enough repository structure and behavior to identify implementation boundaries, compatibility constraints, migration needs, and meaningful verification. Set the work item's delivery contract with `resource_write`: `feature` for capabilities/refactors or `fix` for defects, and `create` from `develop` or `continue` on the explicitly current feature/fix branch.
-2. **Cut tracer bullets** — Define the smallest independently useful contributions that pass through every layer and focused test their behavior needs. Every completed task must leave a runnable, demonstrable behavior—not merely scaffolding, domain types, storage, API plumbing, or UI components waiting for a later task. In a greenfield repository, combine setup with the first user-visible vertical slice. Use a preparatory task only when no safe vertical slice can keep the branch green, and state why.
-3. **Write complete tickets** — Give each task its outcome, necessary context, included and excluded boundary, required work, interfaces, constraints, observable acceptance, proof, checks, and integration expectation. Include the relevant requirement directly; do not make the worker dereference specification or design IDs to understand the assignment.
-4. **Arrange delivery** — Declare blockers and stages only where sequencing matters. Tasks in one stage are the parallel frontier and must not depend on each other or claim the same shared resource. The runtime derives repository versus worktree isolation from the reviewed stage graph.
-5. **Route capability** — Choose one tier after the task boundary is settled. Use `medium` by default; use `low` for mechanical work, `high` for difficult integration or state/control flow, and `max` only for architecture, security, privacy, irreversible, or unusually high-blast-radius work. Each tier is an ordered list of concrete `provider/model#effort` pairs resolved by the harness.
-6. **Plan proof** — Ensure every binding story criterion is implemented and verified somewhere in the task set. Keep this coverage at the assembled-plan level rather than encoding artifact references into each task. Add focused deterministic, regression, migration, or independent review evaluations only where their risk justifies them. The runtime owns final whole-branch journey verification and the final branch review; do not create either in the delivery plan.
-7. **Write resources** — Use `resource_write` to create or update one task or evaluation at a time; task `stageId` records stage membership. Creation uses `type`, `parent`, and `value`; updates use `ref` and `value`. Do not read a separate schema or resend unchanged intent, specification, or design resources.
+1. **Map the seams first** — Inspect the repository before naming tickets. Record the relevant module/file responsibilities, current entry points, data/control flow, compatibility constraints, migration needs, and meaningful proof seams in your planning notes. This map is an input to decomposition, not a ticket for reconnaissance. Set the work item's delivery contract with `resource_write`: `feature` for capabilities/refactors or `fix` for defects, and `create` from `develop` or `continue` on the explicitly current feature/fix branch.
+2. **Cut tracer bullets and decompose vertical slices** — Cut the smallest coherent, independently useful slices that pass through every layer and focused test their behavior needs. Every completed task must leave a runnable, demonstrable behavior—not merely scaffolding, domain types, storage, API plumbing, or UI components waiting for a later task. In a greenfield repository, combine setup with the first user-visible vertical slice. Use a preparatory task only when no safe vertical slice can keep the branch green, and state the concrete reason. Split work when it contains multiple independently reviewable outcomes, distinct state machines, or separate domains; do not split merely to increase task count. Prefactor-only work is an exception when the seam is required to make the first slice safe, and expand–migrate–contract is an exception when compatibility requires ordered intermediate states.
+3. **Write complete tickets for one fresh worker** — Each ticket must be executable in one fresh worker context without reconstructing its assignment from artifact references. Give it one contribution goal, context, included and excluded boundary, and explicit ordered concrete implementation/test steps in `requiredWork` (or the equivalent structured required-work field). State interfaces consumed and produced, constraints, observable acceptance, the proof seam that demonstrates it, checks, and integration expectation. Include relevant requirements directly; `task_clarify` is an escape hatch for a genuine uncertainty, not a substitute for a complete contract.
+4. **Arrange delivery for parallelism** — Parallel is the default: put independent implementation and evaluation nodes in the same stage and declare only true blockers in `dependsOn` (a required predecessor/interface, compatibility migration order, or unavoidable shared resource). Do not serialize work for convenience or model strength. Nodes in one stage are the parallel frontier; they must not depend on each other or claim incompatible shared resources; the runtime derives repository versus worktree isolation from the reviewed stage graph.
+5. **Route capability after decomposition** — Choose one tier only after boundaries and stages are settled. Use `medium` by default; `medium` is the hard default for managed tasks and dynamic subagents; use `low` only for genuinely mechanical low-risk work. High/max require a substantive justification answering all three questions: why medium is insufficient for this specific bounded task, what irreducible ambiguity or complexity remains, and why further decomposition would be unsafe, incoherent, or destroy the required seam. `max` is exceptional and user-requested, reserved for architecture, security, privacy, irreversible, or unusually high-blast-radius work. Record the justification in the assignment when high/max is selected. Each tier is an ordered list of concrete `provider/model#effort` pairs resolved by the harness.
+6. **Plan proof** — Preserve every approved E2E matrix case exactly, map planned work and proof seams to each case, and ensure every binding story criterion is implemented and verified somewhere in the task set. The matrix is verification context, not planner-authored gates: never rewrite, replace, or expand it into final gates. Keep this coverage at the assembled-plan level rather than encoding artifact references into each task. Add focused deterministic, regression, migration, or independent review evaluations only where their risk justifies them; avoid artificial task or evaluation quotas. The runtime owns final whole-branch journey verification and the final branch review; do not create either in the delivery plan.
+7. **Write resources** — Use `resource_write` to create or update one implementation or evaluation node at a time; both use `stageId` for explicit stage membership and `dependsOn` for true graph edges. Creation uses `type`, `parent`, and `value`; updates use `ref` and `value`. Do not read a separate schema or resend unchanged intent, specification, or design resources.
 8. **Review the durable plan** — Use `resource_list` to inventory the assembled plan and `resource_read` to inspect each complete task. Check coverage, vagueness, consistency, dependency order, parallel safety, and whether every ticket fits one fresh worker context. Correct only the affected resource with `resource_write`.
 9. **Submit for review** — Call `workflow_transition` with `submit` only after the durable resources are coherent. Submission is a user review handoff, not execution authorization. A separate planning critique is optional and runs only when the user explicitly requests it; use `subagent_spawn` with `plan-critic` without delaying ordinary plans.
 
@@ -59,11 +59,18 @@ Create one self-contained task. Use this shape as a guide and omit optional fiel
       "Return the created order or the command's typed validation failure",
       "Add focused tests for successful and rejected submission"
     ],
+    "requiredWork": [
+      "1. Trace the existing checkout command and preserve its input/result interface.",
+      "2. Connect valid submission to order creation and return the created identifier.",
+      "3. Preserve typed validation failure without creating an order.",
+      "4. Add and run focused success and rejection tests."
+    ],
     "excluded": [
       "Payment settlement and receipt delivery"
     ],
     "interfaces": [
-      "Preserve the existing CheckoutCommand input and result types"
+      "Consumes the existing CheckoutCommand input and validation result; produces the created order identifier or typed failure.",
+      "Proof seam: the command boundary and focused tests demonstrate both outcomes."
     ],
     "acceptance": [
       "A valid checkout creates one order and returns its identifier",
@@ -83,7 +90,7 @@ Create one self-contained task. Use this shape as a guide and omit optional fiel
 }
 ```
 
-Create a risk-warranted focused evaluation with the same ticket-like style:
+Create a risk-warranted focused evaluation node in the same staged graph (not a separate evaluations bucket):
 
 ```json
 {
@@ -91,7 +98,9 @@ Create a risk-warranted focused evaluation with the same ticket-like style:
   "parent": "work-item:checkout",
   "value": {
     "id": "checkout-idempotency-regression",
-    "kind": "regression",
+    "type": "regression",
+    "stageId": "verification",
+    "dependsOn": ["submit-checkout"],
     "title": "Verify checkout idempotency",
     "context": ["Run after checkout submission is integrated."],
     "criteria": ["Repeated submission creates exactly one order."],

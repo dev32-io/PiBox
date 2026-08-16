@@ -93,7 +93,7 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 		low: ["openai-codex/gpt-5.6-luna#medium"],
 	});
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
-	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "high");
+	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "medium");
 	const policy = await readFile(join(root, ".pi", "harness.yaml"), "utf8");
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);

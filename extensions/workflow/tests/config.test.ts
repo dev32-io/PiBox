@@ -26,7 +26,8 @@ test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.equal(generalPurpose?.canDelegate, false);
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "mcp:playwright"]);
-	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "high");
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "medium");
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents["repair-implementer"]?.tier, "medium");
 });
 
 test("merges maps recursively and replaces arrays", () => {

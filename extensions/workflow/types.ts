@@ -15,7 +15,7 @@ export interface WorkItemDelivery {
 }
 export type WorkItemPhase = "planning" | "execution" | "evaluation" | "complete";
 export type WorkItemState = "active" | "waiting_user" | "paused" | "postponed" | "blocked" | "failed" | "complete" | "archived";
-export type ExecutionDisposition = "continue" | "resume-requesting-agent" | "restart-affected" | "pause-affected";
+export type ExecutionDisposition = "continue" | "resume-requesting-agent" | "pause-affected";
 
 /** Mutation rationale and provenance retained for audit; this is not an execution gate. */
 export interface MutationAuthority {
@@ -75,7 +75,7 @@ export interface LoadedHarnessConfig {
 
 export interface ArtifactIndexEntry {
 	id: string;
-	type: "intent" | "spec" | "design" | "decision" | "outcome";
+	type: "intent" | "spec" | "design" | "decision" | "e2e-matrix" | "outcome";
 	path: string;
 	status: string;
 	tags?: string[];
@@ -127,6 +127,8 @@ export interface TaskManifest {
 				agent: string;
 				tier: CapabilityTier;
 				rationale: string;
+				/** Required by planning policy for high/max routing; optional for compatibility. */
+				tierJustification?: string;
 			}
 			| {
 				/** Legacy assignment retained only so existing plans remain readable and replannable. */
@@ -166,6 +168,8 @@ export interface TaskManifest {
 		baseCommit?: string;
 		completedCommit?: string;
 		mergedCommit?: string;
+		/** Set by harness when a stage merge is left conflicted for managed repair. */
+		integrationConflict?: { stageId: string; taskIds: string[]; evidencePath: string; recordedAt: string };
 		lastRunId?: string;
 	};
 }
@@ -197,6 +201,9 @@ export interface EvaluationManifest {
 	schemaVersion: 1;
 	id: string;
 	type: "deterministic" | "spec-review" | "quality-review" | "combined-review" | "regression" | "e2e";
+	/** Explicit planner graph membership and true cross-node blockers. Legacy scope remains supported. */
+	stageId?: string;
+	dependsOn?: string[];
 	scope: { task?: string; integrationUnit?: string; workItem?: string };
 	/** Planner checkpoints are selective; final E2E and branch review are harness defaults. */
 	checkpoint?: "planned" | "final-e2e" | "final-review";
@@ -232,7 +239,7 @@ export interface WorkItemIndex {
 	artifacts: ArtifactIndexEntry[];
 	tasks: Array<{ id: string; path: string }>;
 	/** Ordered workflow stages. Tasks within one stage form a deliberate concurrency batch and merge in listed order. */
-	executionStages?: Array<{ id: string; tasks: string[]; checks?: string[] }>;
+	executionStages?: Array<{ id: string; tasks: string[]; nodes?: Array<{ kind: "task" | "evaluation"; id: string }>; checks?: string[] }>;
 	/** Legacy schema-v1 grouping, migrated to executionStages when the latter is absent. */
 	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
 	delivery?: WorkItemDelivery;

@@ -8,8 +8,18 @@ export interface WorkflowFeedbackEvent {
 	type: "task-completed" | "error";
 	workflowRef: string;
 	stepRef?: string;
+	kind?: string;
 	title: string;
 	detail?: string;
+	fromStatus?: string;
+	toStatus?: string;
+	cause?: string;
+	attempt?: number;
+	iteration?: number;
+	nextAction?: string;
+	/** Correlates workflow feedback with the turn that caused it when available. */
+	correlationId?: string;
+	terminal?: boolean;
 }
 
 export type WorkflowStepStatus = "pending" | "ready" | "running" | "done" | "attention" | "cancelled";
@@ -25,11 +35,21 @@ export interface WorkflowStep {
 	detail?: string;
 }
 
+export interface WorkflowStageSnapshot {
+	id: string;
+	index: number;
+	nodes: string[];
+	parallel: boolean;
+	group?: "planner" | "runtime";
+}
+
 export interface WorkflowSnapshot {
 	ref: string;
 	title: string;
 	status: "ready" | "running" | "paused" | "attention" | "done";
 	steps: WorkflowStep[];
+	/** Stage-aware rendering metadata; absent on third-party/legacy adapters. */
+	stages?: WorkflowStageSnapshot[];
 }
 
 export interface WorkflowRunResult {
@@ -61,14 +81,24 @@ export interface DynamicSubagentRequest {
 	agent: string;
 	task: string;
 	tier?: "low" | "medium" | "high" | "max";
+	tierJustification?: string;
 	model?: string;
 	effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	strict?: boolean;
 }
 
+export interface WorkflowPreflight {
+	ok: boolean;
+	detail?: string;
+	missingCommands?: string[];
+	missingEnvironment?: string[];
+}
+
 export interface WorkflowAdapter {
 	id: string;
 	canHandle(ref: string): boolean;
+	/** Cheap, side-effect-free validation performed before any worker is launched. */
+	preflightWorkflow?(ref: string, ctx: ExtensionContext): Promise<WorkflowPreflight>;
 	prepareWorkflow?(ref: string, ctx: ExtensionContext): Promise<void>;
 	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;

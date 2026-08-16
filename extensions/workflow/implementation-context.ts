@@ -100,6 +100,14 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 		const artifact = await store.readArtifact(workItemId, entry.id);
 		artifacts.push(`### ${entry.type}: ${entry.id}\n\n${body(artifact.content)}`);
 	}
+	// The matrix is binding only for managed E2E evaluation. Keep the exact
+	// persisted Markdown (rather than a planner/model reconstruction) so it
+	// survives compaction and resumed reviewer sessions; code reviews do not
+	// receive this unrelated context.
+	if (evaluation.type === "e2e") {
+		const matrix = await store.readE2EMatrix(workItemId);
+		if (matrix) artifacts.push(`### e2e-matrix: ${matrix.metadata.id}\n\n${matrix.content.trim()}`);
+	}
 	return `${renderBuiltInPrompt("review-context", {
 		workItem: `${item.id} — ${item.title}\nPlanning revision: ${item.planning.revision}`,
 		evaluation: `\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,

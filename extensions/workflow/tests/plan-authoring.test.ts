@@ -56,6 +56,7 @@ test("expands concise self-contained task contracts", () => {
 			goal: "Implement behavior.",
 			context: ["The worker must receive a complete assignment without dereferencing story artifacts."],
 			included: ["One vertical slice"],
+			requiredWork: ["1. Implement the slice.", "2. Add and run the focused test."],
 			acceptance: ["The worker receives the complete task contract."],
 			checks: ["npm test -- behavior"],
 		}],
@@ -71,12 +72,19 @@ test("expands concise self-contained task contracts", () => {
 	assert.equal(task.manifest.assembly.stageId, "implement-behavior");
 	assert.equal(task.manifest.references, undefined);
 	assert.deepEqual(task.manifest.verification.taskChecks, ["npm test -- behavior"]);
-	assert.deepEqual(task.briefSections.requiredWork, ["One vertical slice"]);
+	assert.deepEqual(task.briefSections.requiredWork, ["1. Implement the slice.", "2. Add and run the focused test."]);
 	assert.match(task.briefSections.integrationExpectation, /implement-behavior/);
 	assert.deepEqual(task.acceptanceSections.deliverables, ["Implement behavior."]);
 	assert.deepEqual(task.acceptanceSections.acceptance, ["The worker receives the complete task contract."]);
 	assert.deepEqual(plan.integrationUnits, []);
 	assert.deepEqual(plan.evaluations, []);
+});
+
+test("requires explicit justification for high and max planner routing", () => {
+	assert.throws(() => normalizePlanBundle({
+		workItem: { id: "high-plan", title: "High plan", delivery: { branchType: "feature" }, intentSections: { problem: "Complexity.", desiredOutcome: "Bounded work.", scopeIncluded: ["One slice"], successSignals: ["Tests"] } },
+		tasks: [{ id: "high-task", goal: "Do the bounded work.", included: ["One vertical slice"], acceptance: ["The slice works."], assignment: { tier: "high" } }],
+	}), /tierJustification/);
 });
 
 test("keeps legacy artifact-referenced task plans readable", () => {

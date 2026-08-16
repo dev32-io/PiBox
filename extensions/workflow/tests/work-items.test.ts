@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
+import { validateExecutionTopology } from "../execution-topology.js";
 import { RepositoryMutex } from "../idempotency.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { parseTaskManifest, parseWorkItemIndex, WorkItemStore } from "../work-items.js";
@@ -101,6 +102,12 @@ test("workflow start begins execution and activates draft tasks according to dep
 	assert.equal((await store.readTask("activation", "first")).status, "ready");
 	assert.equal((await store.readTask("activation", "second")).status, "blocked");
 	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("rejects a new final E2E launch without a matrix while preserving legacy E2E stories", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "new-no-matrix", title: "New", kind: "story", intent: "Needs journeys." });
+	await assert.rejects(store.ensureFinalEvaluations("new-no-matrix"), /without an e2e-matrix artifact/);
 });
 
 test("adopts a legacy work-item journey evaluation instead of inserting a duplicate final gate", async (t) => {
@@ -207,6 +214,18 @@ verification: { timing: task, methods: [], taskChecks: [], rationale: Historical
 	assert.equal("model" in manifest.execution.assignment ? manifest.execution.assignment.model : undefined, "luna");
 });
 
+test("validates evaluation-only stages and rejects forward evaluation blockers", () => {
+	const item = { executionStages: [{ id: "review", tasks: [], nodes: [{ kind: "evaluation", id: "review" }] }], integrationUnits: [] } as any;
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "review", type: "combined-review", stageId: "review", scope: { workItem: "graph" }, status: "planned", required: true, attempt: 0, methods: [] };
+	assert.doesNotThrow(() => validateExecutionTopology(item, [], [evaluation]));
+	const forward = { executionStages: [{ id: "first", tasks: [], nodes: [{ kind: "evaluation", id: "first" }] }, { id: "later", tasks: [], nodes: [{ kind: "evaluation", id: "later" }] }], integrationUnits: [] } as any;
+	const first = { ...evaluation, id: "first", stageId: "first", dependsOn: ["later"] };
+	const later = { ...evaluation, id: "later", stageId: "later" };
+	assert.throws(() => validateExecutionTopology(forward, [], [first, later]), /blockers must be placed in an earlier execution stage/);
+	const { stageId: _stageId, ...unstaged } = evaluation;
+	assert.throws(() => validateExecutionTopology({ executionStages: [], integrationUnits: [] } as any, [], [{ ...unstaged, dependsOn: ["missing"] }]), /has no execution stage/);
+});
+
 test("rejects same-stage blockers and conflicting parallel resource claims on submit", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "bad-topology", title: "Bad topology", kind: "change", intent: "Reject unsafe stage topology." });
@@ -215,8 +234,21 @@ test("rejects same-stage blockers and conflicting parallel resource claims on su
 	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("second", ["first"], "other"), brief: "Second", acceptance: "Second accepted" });
 	await assert.rejects(store.submitPlanning("bad-topology"), /blockers must be placed in an earlier execution stage/);
 	const second = await store.readTaskContract("bad-topology", "second"); second.manifest.dependsOn = []; second.manifest.execution.resourceClaims = ["shared"];
-	await store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { rationale: "repair fixture" } });
-	await assert.rejects(store.submitPlanning("bad-topology"), /conflicting resource claim shared/);
+	await assert.rejects(store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { rationale: "repair fixture" } }), /conflicting resource claim shared/);
+});
+
+test("revising a singleton task preserves stage order and rolls back invalid topology", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "singleton-order", title: "Singleton order", kind: "change", intent: "Preserve execution order." });
+	const manifest = (id: string, stageId: string): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "fixture" } }, assembly: { stageId, intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
+	await store.defineTask({ workItemId: "singleton-order", manifest: manifest("first", "first-stage"), brief: "First", acceptance: "First" });
+	await store.defineTask({ workItemId: "singleton-order", manifest: manifest("second", "second-stage"), brief: "Second", acceptance: "Second" });
+	const contract = await store.readTaskContract("singleton-order", "first");
+	contract.manifest.title = "First revised";
+	const revised = await store.reviseTask({ workItemId: "singleton-order", manifest: contract.manifest, brief: contract.brief, acceptance: contract.acceptance, authority: { rationale: "fixture" } });
+	assert.deepEqual(revised.executionStages?.map((stage) => stage.id), ["first-stage", "second-stage"]);
+	assert.deepEqual(revised.executionStages?.map((stage) => stage.tasks), [["first"], ["second"]]);
+	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
 test("legacy approval metadata is readable and normalized away", async (t) => {

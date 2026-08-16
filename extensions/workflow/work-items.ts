@@ -1,16 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { tmpdir } from "node:os";
 import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { validateExecutionTopology } from "./execution-topology.js";
+import { RepositoryMutex } from "./idempotency.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import { isTierTaskAssignment, type DeliveryBranchMode, type DeliveryBranchType, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions" } as const;
-type MutableArtifactType = keyof typeof ARTIFACT_DIRECTORIES;
+const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions", "e2e-matrix": "e2e-matrix" } as const;
+export type MutableArtifactType = keyof typeof ARTIFACT_DIRECTORIES;
 
 function collectQualifiedCriteria(value: unknown, found = new Set<string>()): string[] {
 	if (typeof value === "string") {
@@ -45,6 +47,23 @@ function ensureInside(root: string, path: string): void {
 	if (rel === ".." || rel.startsWith(`..${sep}`) || rel === "") {
 		throw new HarnessError("INVALID_ARTIFACT", `Path escapes its managed root: ${path}`);
 	}
+}
+
+const SENSITIVE_EVIDENCE_NAME = /(^|[._-])(env|credentials?|secrets?|private|token|password|passwd|api[-_]?key|transcript|session)([._-]|$)|\.(pem|key|p12|pfx)$/i;
+const SENSITIVE_EVIDENCE_CONTENT = /(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[^\s]+)/i;
+
+async function validateEvidenceSource(repositoryRoot: string, source: string): Promise<string> {
+	const lexical = resolve(repositoryRoot, source);
+	const absolute = await realpath(lexical).catch(() => undefined);
+	if (!absolute) throw new HarnessError("INVALID_ARTIFACT", `Evidence file does not exist: ${source}`);
+	const allowedRoots = await Promise.all([repositoryRoot, tmpdir()].map((root) => realpath(root).catch(() => resolve(root))));
+	if (!allowedRoots.some((root) => absolute !== root && absolute.startsWith(`${root}${sep}`))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source resolves outside the repository or operating-system temporary directory: ${source}`);
+	if (SENSITIVE_EVIDENCE_NAME.test(basename(absolute)) || SENSITIVE_EVIDENCE_NAME.test(basename(lexical))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source looks sensitive: ${source}. Provide a sanitized minimal artifact instead.`);
+	const content = await readFile(absolute);
+	// Fail closed only on obvious credential/private-transcript indicators. PiBox does
+	// not claim to redact arbitrary secrets; callers must curate minimal evidence.
+	if (SENSITIVE_EVIDENCE_CONTENT.test(content.subarray(0, 128 * 1024).toString("utf8"))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source contains an obvious credential or private material: ${source}. Supply sanitized minimal evidence.`);
+	return absolute;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -96,12 +115,14 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	}
 	if (index.integrationUnits === undefined) index.integrationUnits = [];
 	if (!Array.isArray(index.integrationUnits)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid integration units`);
-	if (index.executionStages === undefined) index.executionStages = index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
-	if (!Array.isArray(index.executionStages)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid execution stages`);
+	// Do not materialize the compatibility projection in memory: a read of a
+	// schema-v1 artifact must not cause its canonical index to be rewritten.
+	if (index.executionStages !== undefined && !Array.isArray(index.executionStages)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid execution stages`);
 	const scheduled = new Set<string>();
-	for (const stage of index.executionStages) {
-		if (!stage || typeof stage.id !== "string" || !ID_PATTERN.test(stage.id) || !Array.isArray(stage.tasks) || stage.tasks.length === 0 || stage.tasks.some((id) => typeof id !== "string" || scheduled.has(id))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid or duplicate execution-stage tasks`);
+	for (const stage of index.executionStages ?? []) {
+		if (!stage || typeof stage.id !== "string" || !ID_PATTERN.test(stage.id) || !Array.isArray(stage.tasks) || (!stage.tasks.length && !stage.nodes?.length) || stage.tasks.some((id) => typeof id !== "string" || scheduled.has(id))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid or duplicate execution-stage tasks`);
 		stage.tasks.forEach((id) => scheduled.add(id));
+		if (stage.nodes !== undefined && (!Array.isArray(stage.nodes) || stage.nodes.some((node) => !node || !["task", "evaluation"].includes(node.kind) || typeof node.id !== "string"))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid staged nodes`);
 	}
 	const artifactIds = new Set<string>();
 	for (const artifact of index.artifacts) {
@@ -308,6 +329,7 @@ export class WorkItemStore {
 	}): Promise<WorkItemIndex> {
 		validateId(input.id, "Artifact id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
+		if (input.type === "e2e-matrix" && (narrativeSchemaVersion !== 2 || input.renderedContent !== undefined || input.content !== undefined)) throw new HarnessError("INVALID_ARTIFACT", "e2e-matrix artifacts require validated schema-v2 sections");
 		const content = input.renderedContent ?? (narrativeSchemaVersion === 2
 			? (() => {
 				if (!input.sections) throw new HarnessError("INVALID_ARTIFACT", `${input.type} schema-v2 mutation requires semantic sections`);
@@ -326,13 +348,16 @@ export class WorkItemStore {
 		ensureInside(root, artifactPath);
 		const relativePath = relative(root, artifactPath);
 		const existing = index.artifacts.find((artifact) => artifact.id === input.id);
+		if (input.type === "e2e-matrix" && existing && (index.tasks.length > 0 || index.evaluations.length > 0)) throw new HarnessError("CAPABILITY_DENIED", "The approved e2e-matrix is immutable after delivery planning begins; return to story shaping before changing it");
+		const existingMatrix = index.artifacts.find((artifact) => artifact.type === "e2e-matrix" && artifact.id !== input.id);
+		if (input.type === "e2e-matrix" && existingMatrix) throw new HarnessError("INVALID_ARTIFACT", `Work item already has an e2e-matrix artifact: ${existingMatrix.id}`);
 		if (existing && (existing.type !== input.type || existing.path !== relativePath)) {
 			throw new HarnessError("INVALID_ARTIFACT", `Artifact id already belongs to ${existing.path}`);
 		}
 		if (input.operation === "create" && existing) throw new HarnessError("INVALID_ARTIFACT", `Artifact already exists: ${input.id}`);
 		if (input.operation === "update" && !existing) throw new HarnessError("INVALID_ARTIFACT", `Artifact does not exist: ${input.id}`);
 		if (!existing) {
-			index.artifacts.push({ id: input.id, type: input.type, path: relativePath, status: "draft", narrativeSchemaVersion });
+			index.artifacts.push({ id: input.id, type: input.type, path: relativePath, status: input.type === "e2e-matrix" ? "approved" : "draft", narrativeSchemaVersion });
 		} else if (existing.narrativeSchemaVersion !== narrativeSchemaVersion) {
 			existing.narrativeSchemaVersion = narrativeSchemaVersion;
 		}
@@ -363,6 +388,7 @@ export class WorkItemStore {
 		assertContractMutable(index);
 		if (artifactId === "intent" || artifactId === "outcome") throw new HarnessError("CAPABILITY_DENIED", `Artifact ${artifactId} cannot be deleted`);
 		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
+		if (artifact?.type === "e2e-matrix" && (index.tasks.length > 0 || index.evaluations.length > 0)) throw new HarnessError("CAPABILITY_DENIED", "The approved e2e-matrix is immutable after delivery planning begins; return to story shaping before removing it");
 		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
 		for (const task of index.tasks) {
 			const manifest = await this.readTask(workItemId, task.id);
@@ -455,6 +481,7 @@ export class WorkItemStore {
 		const acceptancePath = join(taskRoot, "acceptance.md");
 		await mkdir(taskRoot, { recursive: true });
 		index.tasks.push({ id: input.manifest.id, path: relative(root, manifestPath) });
+		index.executionStages ??= index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
 		const stageId = input.manifest.assembly.stageId ?? input.manifest.assembly.integrationUnit!;
 		const stage = index.executionStages!.find((item) => item.id === stageId);
 		if (stage) stage.tasks.push(input.manifest.id);
@@ -494,6 +521,7 @@ export class WorkItemStore {
 			for (const id of ids) if (!index.artifacts.some((artifact) => artifact.id === id && artifact.type === expectedType)) throw new HarnessError("INVALID_ARTIFACT", `Unknown ${expectedType} reference: ${id}`);
 		}
 		if (narrativeSchemaVersion === 2) await this.validateCriterionReferences(index, collectQualifiedCriteria(input.acceptanceSections));
+		index.executionStages ??= index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
 		const taskRoot = dirname(join(root, catalog.path));
 		const manifestPath = join(taskRoot, "task.yaml");
 		const briefPath = join(taskRoot, "brief.md");
@@ -502,12 +530,24 @@ export class WorkItemStore {
 		const previous = await Promise.all([manifestPath, briefPath, acceptancePath, indexPath].map((path) => readFile(path, "utf8")));
 		const current = parseTaskManifest(previous[0]!, manifestPath);
 		const revised: TaskManifest = { ...input.manifest, status: current.status, ...(current.runtime ? { runtime: current.runtime } : {}) };
-		for (const stage of index.executionStages!) stage.tasks = stage.tasks.filter((id) => id !== revised.id);
-		index.executionStages = index.executionStages!.filter((stage) => stage.tasks.length > 0);
 		const stageId = revised.assembly.stageId ?? revised.assembly.integrationUnit!;
-		let stage = index.executionStages.find((candidate) => candidate.id === stageId);
-		if (!stage) { stage = { id: stageId, tasks: [] }; index.executionStages.push(stage); }
-		stage.tasks.push(revised.id);
+		// Build and validate the complete candidate graph before changing the in-memory
+		// index. In particular, a singleton task must not be removed/re-added: that
+		// used to move its stage (and therefore execution order) on every revision.
+		const nextStages = index.executionStages!.map((stage) => ({ ...stage, tasks: [...stage.tasks] }));
+		const currentStage = nextStages.find((stage) => stage.tasks.includes(revised.id));
+		if (currentStage?.id !== stageId) {
+			for (const stage of nextStages) stage.tasks = stage.tasks.filter((id) => id !== revised.id);
+			const target = nextStages.find((stage) => stage.id === stageId);
+			if (target) target.tasks.push(revised.id);
+			else nextStages.push({ id: stageId, tasks: [revised.id] });
+		}
+		const candidateStages = nextStages.filter((stage) => stage.tasks.length > 0);
+		const candidate = { ...index, executionStages: candidateStages };
+		const candidateTasks = await Promise.all(index.tasks.map((entry) => entry.id === revised.id ? revised : this.readTask(input.workItemId, entry.id)));
+		const candidateEvaluations = await Promise.all(index.evaluations.map((entry) => this.readEvaluation(input.workItemId, entry.id)));
+		validateExecutionTopology(candidate, candidateTasks, candidateEvaluations);
+		index.executionStages = candidateStages;
 		advanceContractRevision(index, input.authority);
 		try {
 			await atomicWriteFile(manifestPath, stringify(revised));
@@ -538,6 +578,7 @@ export class WorkItemStore {
 		const indexPath = join(root, "index.yaml");
 		const previousIndex = await readFile(indexPath, "utf8");
 		const backup = join(this.artifactRoot, `.${workItemId}-${taskId}.delete-${randomUUID()}`);
+		index.executionStages ??= index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
 		index.tasks = index.tasks.filter((task) => task.id !== taskId);
 		for (const stage of index.executionStages!) stage.tasks = stage.tasks.filter((id) => id !== taskId);
 		index.executionStages = index.executionStages!.filter((stage) => stage.tasks.length > 0);
@@ -645,14 +686,32 @@ export class WorkItemStore {
 		if (manifest.scope.task && !index.tasks.some((task) => task.id === manifest.scope.task)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation task scope: ${manifest.scope.task}`);
 		if (manifest.scope.integrationUnit && !index.integrationUnits.some((unit) => unit.id === manifest.scope.integrationUnit)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation integration-unit scope: ${manifest.scope.integrationUnit}`);
 		if (manifest.scope.workItem && manifest.scope.workItem !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Evaluation work-item scope must be ${workItemId}`);
+		if (manifest.stageId) validateId(manifest.stageId, "Evaluation stage id");
+		for (const dependency of manifest.dependsOn ?? []) if (!index.tasks.some((task) => task.id === dependency) && !index.evaluations.some((evaluation) => evaluation.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation dependency: ${dependency}`);
+		if (manifest.dependsOn?.includes(manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${manifest.id} cannot depend on itself`);
 		if (index.evaluations.some((item) => item.id === manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Evaluation already exists: ${manifest.id}`);
 		const evaluationRoot = join(root, "evaluations", manifest.id);
 		const manifestPath = join(evaluationRoot, "evaluation.yaml");
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
 		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
-		advanceContractRevision(index, authority);
+		// New graphs keep typed nodes beside the schema-v1 task list. Legacy indexes
+		// intentionally remain task-only until a planner explicitly creates a graph node.
+		const stageId = manifest.stageId ?? (manifest.scope.integrationUnit ? manifest.scope.integrationUnit : undefined);
+		if (index.executionStages && stageId) {
+			const stage = index.executionStages.find((candidate) => candidate.id === stageId);
+			if (stage) {
+				stage.nodes ??= stage.tasks.map((id) => ({ kind: "task" as const, id }));
+				if (!stage.nodes.some((node) => node.kind === "evaluation" && node.id === manifest.id)) stage.nodes.push({ kind: "evaluation", id: manifest.id });
+			} else index.executionStages.push({ id: stageId, tasks: [], nodes: [{ kind: "evaluation", id: manifest.id }] });
+		}
 		const evaluation: EvaluationManifest = { ...manifest, checkpoint: manifest.checkpoint ?? "planned", loop: manifest.loop ?? { state: "planned", iteration: 0, maxIterations: 2 } };
+		if (manifest.stageId) {
+			const tasks = await Promise.all(index.tasks.map((entry) => this.readTask(workItemId, entry.id)));
+			const evaluations = await Promise.all(index.evaluations.filter((entry) => entry.id !== manifest.id).map((entry) => this.readEvaluation(workItemId, entry.id)));
+			validateExecutionTopology(index, tasks, [...evaluations, evaluation]);
+		}
+		advanceContractRevision(index, authority);
 		try {
 			await mkdir(evaluationRoot, { recursive: true });
 			await atomicWriteFile(manifestPath, stringify(evaluation));
@@ -676,6 +735,8 @@ export class WorkItemStore {
 		if (manifest.scope.task && !index.tasks.some((task) => task.id === manifest.scope.task)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation task scope: ${manifest.scope.task}`);
 		if (manifest.scope.integrationUnit && !index.integrationUnits.some((unit) => unit.id === manifest.scope.integrationUnit)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation integration-unit scope: ${manifest.scope.integrationUnit}`);
 		if (manifest.scope.workItem && manifest.scope.workItem !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Evaluation work-item scope must be ${workItemId}`);
+		if (manifest.stageId) validateId(manifest.stageId, "Evaluation stage id");
+		for (const dependency of manifest.dependsOn ?? []) if (dependency !== manifest.id && !index.tasks.some((task) => task.id === dependency) && !index.evaluations.some((evaluation) => evaluation.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation dependency: ${dependency}`);
 		const catalog = index.evaluations.find((evaluation) => evaluation.id === manifest.id);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Evaluation does not exist: ${manifest.id}`);
 		const path = join(root, catalog.path);
@@ -684,6 +745,22 @@ export class WorkItemStore {
 		const current = parse(previousManifest) as EvaluationManifest;
 		if (current.attempt > 0 || current.result) throw new HarnessError("CAPABILITY_DENIED", `Evaluation ${manifest.id} has recorded evidence and must be superseded rather than rewritten`);
 		const revised: EvaluationManifest = { ...manifest, status: current.status, attempt: current.attempt };
+		if (index.executionStages) {
+			const oldStageId = current.stageId ?? current.scope.integrationUnit;
+			const newStageId = revised.stageId ?? revised.scope.integrationUnit;
+			const stages = index.executionStages.map((stage) => ({ ...stage, tasks: [...stage.tasks], ...(stage.nodes ? { nodes: stage.nodes.map((node) => ({ ...node })) } : {}) }));
+			if (oldStageId !== newStageId) for (const stage of stages) stage.nodes = (stage.nodes ?? stage.tasks.map((id) => ({ kind: "task" as const, id }))).filter((node) => !(node.kind === "evaluation" && node.id === revised.id));
+			if (newStageId) {
+				let target = stages.find((stage) => stage.id === newStageId);
+				if (!target) { target = { id: newStageId, tasks: [], nodes: [] }; stages.push(target); }
+				target.nodes ??= target.tasks.map((id) => ({ kind: "task" as const, id }));
+				if (!target.nodes.some((node) => node.kind === "evaluation" && node.id === revised.id)) target.nodes.push({ kind: "evaluation", id: revised.id });
+			}
+			index.executionStages = stages.filter((stage) => stage.tasks.length || stage.nodes?.length);
+			const tasks = await Promise.all(index.tasks.map((entry) => this.readTask(workItemId, entry.id)));
+			const evaluations = await Promise.all(index.evaluations.map((entry) => entry.id === revised.id ? revised : this.readEvaluation(workItemId, entry.id)));
+			validateExecutionTopology(index, tasks, evaluations);
+		}
 		advanceContractRevision(index, authority);
 		const indexPath = join(root, "index.yaml");
 		try {
@@ -711,6 +788,10 @@ export class WorkItemStore {
 		const previousIndex = await readFile(indexPath, "utf8");
 		const backup = join(this.artifactRoot, `.${workItemId}-${evaluationId}.delete-${randomUUID()}`);
 		index.evaluations = index.evaluations.filter((evaluation) => evaluation.id !== evaluationId);
+		if (index.executionStages) {
+			for (const stage of index.executionStages) if (stage.nodes) stage.nodes = stage.nodes.filter((node) => !(node.kind === "evaluation" && node.id === evaluationId));
+			index.executionStages = index.executionStages.filter((stage) => stage.tasks.length || stage.nodes?.length);
+		}
 		advanceContractRevision(index, authority);
 		try {
 			await rename(evaluationRoot, backup);
@@ -784,9 +865,20 @@ export class WorkItemStore {
 		return { metadata, content: await readFile(join(root, metadata.path), "utf8"), workItemRevision: index.planning.revision };
 	}
 
+	async readE2EMatrix(workItemId: string): Promise<{ metadata: WorkItemIndex["artifacts"][number]; content: string; workItemRevision: number } | undefined> {
+		const item = await this.read(workItemId);
+		const matrix = item.artifacts.find((artifact) => artifact.type === "e2e-matrix" && artifact.status === "approved");
+		return matrix ? this.readArtifact(workItemId, matrix.id) : undefined;
+	}
+
 	async ensureFinalEvaluations(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
 		const item = await this.read(workItemId);
 		const existing = await Promise.all(item.evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
+		// Compatibility rule: persisted stories that already carried an E2E evaluation
+		// remain runnable; all new final-E2E launches require the approved matrix.
+		if (!item.artifacts.some((artifact) => artifact.type === "e2e-matrix" && artifact.status === "approved") && !existing.some((evaluation) => evaluation.type === "e2e")) {
+			throw new HarnessError("INVALID_HANDOFF", `Work item ${workItemId} cannot launch final E2E without an e2e-matrix artifact`);
+		}
 		let finalJourney = existing.find((evaluation) => evaluation.checkpoint === "final-e2e")
 			?? existing.find((evaluation) => evaluation.type === "e2e" && evaluation.scope.workItem === workItemId);
 		if (!finalJourney) {
@@ -841,7 +933,23 @@ export class WorkItemStore {
 		return value;
 	}
 
+	/** Serialize evaluation artifact writes across processes; Git's index is shared by all workers. */
 	async recordEvaluation(input: {
+		workItemId: string;
+		evaluationId: string;
+		verdict: "pass" | "fail" | "blocked" | "not_applicable";
+		report: string;
+		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
+		findings?: NonNullable<EvaluationManifest["findings"]>;
+		residualRisks?: string[];
+	}): Promise<EvaluationManifest> {
+		// Keep the lock outside the working tree so assertCleanRepository never sees
+		// the lock itself as an uncommitted canonical artifact.
+		const lock = new RepositoryMutex(join(this.repositoryRoot, ".git", "pibox-evaluation-lock"));
+		return lock.run(`evaluation-record:${input.workItemId}:${input.evaluationId}`, () => this.recordEvaluationUnlocked(input));
+	}
+
+	private async recordEvaluationUnlocked(input: {
 		workItemId: string;
 		evaluationId: string;
 		verdict: "pass" | "fail" | "blocked" | "not_applicable";
@@ -877,9 +985,9 @@ export class WorkItemStore {
 				if (evidence.command) entry.command = evidence.command;
 				if (evidence.description) entry.description = evidence.description;
 				if (evidence.path) {
-					const source = resolve(this.repositoryRoot, evidence.path);
+					const source = await validateEvidenceSource(this.repositoryRoot, evidence.path);
 					const info = await stat(source).catch(() => undefined);
-					if (!info?.isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence file does not exist: ${evidence.path}`);
+					if (!info?.isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence path is not a regular file: ${evidence.path}`);
 					const destination = join(evidenceRoot, "files", `${indexValue + 1}-${basename(source)}`);
 					await copyFile(source, destination);
 					entry.path = relative(evidenceRoot, destination);
@@ -1026,7 +1134,8 @@ export class WorkItemStore {
 		const index = await this.read(id);
 		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before planning or execution`);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
-		validateExecutionTopology(index, tasks);
+		const evaluations = await Promise.all(index.evaluations.map((evaluation) => this.readEvaluation(id, evaluation.id)));
+		validateExecutionTopology(index, tasks, evaluations);
 		return index;
 	}
 
@@ -1042,7 +1151,8 @@ export class WorkItemStore {
 		const index = parseWorkItemIndex(previous, indexPath);
 		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before execution`);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
-		validateExecutionTopology(index, tasks);
+		const evaluations = await Promise.all(index.evaluations.map((evaluation) => this.readEvaluation(id, evaluation.id)));
+		validateExecutionTopology(index, tasks, evaluations);
 		const needsPhase = index.phase === "planning";
 		const needsActiveState = index.state !== "active";
 		if (needsPhase) index.phase = "execution";

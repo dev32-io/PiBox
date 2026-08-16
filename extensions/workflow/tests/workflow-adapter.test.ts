@@ -118,6 +118,24 @@ test("derives task, integration, and evaluation steps without mutating canonical
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "done");
 });
 
+test("derives a mixed task/evaluation staged graph from explicit true dependencies", async () => {
+	const tasks: any[] = [task("implement", "merged", [], "build")];
+	const evaluations: any = [
+		{ id: "focused-check", type: "deterministic", status: "planned", scope: { workItem: "mixed" }, stageId: "verify", dependsOn: ["implement"] },
+	];
+	const item: any = { id: "mixed", title: "Mixed", planning: { revision: 1 }, tasks: [{ id: "implement" }], executionStages: [
+		{ id: "build", tasks: ["implement"], nodes: [{ kind: "task", id: "implement" }] },
+		{ id: "verify", tasks: [], nodes: [{ kind: "evaluation", id: "focused-check" }] },
+	], integrationUnits: [], evaluations: [{ id: "focused-check" }] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readTask() { return tasks[0]; }, async readEvaluation() { return evaluations[0]; } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const snapshot = await adapter.snapshot("work-item:mixed", {} as any);
+	const evaluation = snapshot.steps.find((step) => step.ref.endsWith("evaluation:focused-check"))!;
+	assert.deepEqual(evaluation.dependsOn, ["work-item:mixed/task:implement"]);
+	assert.equal(snapshot.stages?.[1]?.parallel, false);
+	assert.equal(snapshot.stages?.[1]?.nodes[0], "evaluation:focused-check");
+});
+
 test("derives singleton repository execution and parallel stage merge barriers", async () => {
 	const tasks: any[] = [task("first", "ready", [], "serial"), task("left", "ready", ["first"], "parallel"), task("right", "ready", ["first"], "parallel")];
 	const item: any = { id: "topology", title: "Topology", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "serial", tasks: ["first"] }, { id: "parallel", tasks: ["left", "right"] }], integrationUnits: [], evaluations: [] };
@@ -192,4 +210,9 @@ test("does not render exited or reported evaluation agents as running", async ()
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "attention");
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.detail, "stale process state");
+
+	evaluation.loop = { state: "fixing", iteration: 1, maxIterations: 2 };
+	agent = { ...agent, state: "running", attempts: [{ id: "attempt", state: "running" }] };
+	snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "running", "active fixer wins over the ready loop label");
 });
