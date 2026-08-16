@@ -195,16 +195,30 @@ export interface EvaluationFinding {
 
 export type ReviewLoopState = "planned" | "reviewing" | "awaiting_manager" | "fixing" | "rereviewing" | "passed" | "skipped";
 
+export interface StageReviewPolicy {
+	/** Medium is the default. High is reserved for a substantively focused risk boundary. */
+	tier: "medium" | "high";
+	focus?: string[];
+	rationale?: string;
+}
+
+export interface ExecutionStageContract {
+	id: string;
+	tasks: string[];
+	checks?: string[];
+	review?: StageReviewPolicy;
+}
+
 export interface EvaluationManifest {
 	schemaVersion: 1;
 	id: string;
 	type: "deterministic" | "spec-review" | "quality-review" | "combined-review" | "regression" | "e2e";
-	/** Explicit planner graph membership and true cross-node blockers. Legacy scope remains supported. */
+	/** Runtime stage association or final work-item scope. */
 	stageId?: string;
 	dependsOn?: string[];
 	scope: { task?: string; integrationUnit?: string; workItem?: string };
-	/** Planner checkpoints are selective; final E2E and branch review are harness defaults. */
-	checkpoint?: "planned" | "final-e2e" | "final-review";
+	/** Every checkpoint is harness-owned. */
+	checkpoint?: "stage-review" | "final-e2e" | "final-review";
 	status: "planned" | "running" | "passed" | "failed" | "blocked" | "not_applicable";
 	required: boolean;
 	attempt: number;
@@ -237,7 +251,7 @@ export interface WorkItemIndex {
 	artifacts: ArtifactIndexEntry[];
 	tasks: Array<{ id: string; path: string }>;
 	/** Ordered workflow stages. Tasks within one stage form a deliberate concurrency batch and merge in listed order. */
-	executionStages?: Array<{ id: string; tasks: string[]; nodes?: Array<{ kind: "task" | "evaluation"; id: string }>; checks?: string[] }>;
+	executionStages?: Array<ExecutionStageContract>;
 	/** Legacy schema-v1 grouping, migrated to executionStages when the latter is absent. */
 	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
 	delivery?: WorkItemDelivery;

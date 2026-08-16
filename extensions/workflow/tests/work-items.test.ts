@@ -26,6 +26,7 @@ async function repository(t: test.TestContext): Promise<string> {
 	await writeFile(join(root, "README.md"), "# Fixture\n");
 	await git(root, "add", "README.md");
 	await git(root, "commit", "--quiet", "-m", "initial");
+	await git(root, "branch", "-M", "develop");
 	return root;
 }
 
@@ -108,23 +109,6 @@ test("rejects a new final E2E launch without a matrix while preserving legacy E2
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "new-no-matrix", title: "New", kind: "story", intent: "Needs journeys." });
 	await assert.rejects(store.ensureFinalEvaluations("new-no-matrix"), /without an e2e-matrix artifact/);
-});
-
-test("adopts a legacy work-item journey evaluation instead of inserting a duplicate final gate", async (t) => {
-	const root = await repository(t);
-	const store = new WorkItemStore(root);
-	await store.create({ id: "legacy-journey", title: "Legacy journey", kind: "change", intent: "Preserve a previously planned whole-branch journey." });
-	const legacy: EvaluationManifest = {
-		schemaVersion: 1, id: "planned-journey", type: "e2e", scope: { workItem: "legacy-journey" },
-		status: "planned", required: true, attempt: 0, methods: ["Exercise the planned journey"],
-	};
-	await store.defineEvaluation("legacy-journey", legacy);
-	const finals = await store.ensureFinalEvaluations("legacy-journey", 2);
-	const item = await store.read("legacy-journey");
-	assert.deepEqual(finals.map((evaluation) => evaluation.id), ["planned-journey", "final-branch-review"]);
-	assert.deepEqual(item.evaluations.map((evaluation) => evaluation.id), ["planned-journey", "final-branch-review"]);
-	assert.equal(item.evaluations.some((evaluation) => evaluation.id === "final-e2e"), false);
-	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
 test("renders schema-v2 intent, artifacts, and task contracts from semantic values", async (t) => {
@@ -214,16 +198,9 @@ verification: { timing: task, methods: [], taskChecks: [], rationale: Historical
 	assert.equal("model" in manifest.execution.assignment ? manifest.execution.assignment.model : undefined, "luna");
 });
 
-test("validates evaluation-only stages and rejects forward evaluation blockers", () => {
-	const item = { executionStages: [{ id: "review", tasks: [], nodes: [{ kind: "evaluation", id: "review" }] }], integrationUnits: [] } as any;
-	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "review", type: "combined-review", stageId: "review", scope: { workItem: "graph" }, status: "planned", required: true, attempt: 0, methods: [] };
-	assert.doesNotThrow(() => validateExecutionTopology(item, [], [evaluation]));
-	const forward = { executionStages: [{ id: "first", tasks: [], nodes: [{ kind: "evaluation", id: "first" }] }, { id: "later", tasks: [], nodes: [{ kind: "evaluation", id: "later" }] }], integrationUnits: [] } as any;
-	const first = { ...evaluation, id: "first", stageId: "first", dependsOn: ["later"] };
-	const later = { ...evaluation, id: "later", stageId: "later" };
-	assert.throws(() => validateExecutionTopology(forward, [], [first, later]), /blockers must be placed in an earlier execution stage/);
-	const { stageId: _stageId, ...unstaged } = evaluation;
-	assert.throws(() => validateExecutionTopology({ executionStages: [], integrationUnits: [] } as any, [], [{ ...unstaged, dependsOn: ["missing"] }]), /has no execution stage/);
+test("rejects evaluation-only planner stages", () => {
+	const item = { executionStages: [{ id: "review", tasks: [] }], integrationUnits: [] } as any;
+	assert.throws(() => validateExecutionTopology(item, [], []), /must contain at least one task/);
 });
 
 test("rejects same-stage blockers and conflicting parallel resource claims on submit", async (t) => {
@@ -249,20 +226,4 @@ test("revising a singleton task preserves stage order and rolls back invalid top
 	assert.deepEqual(revised.executionStages?.map((stage) => stage.id), ["first-stage", "second-stage"]);
 	assert.deepEqual(revised.executionStages?.map((stage) => stage.tasks), [["first"], ["second"]]);
 	assert.equal(await git(root, "status", "--porcelain"), "");
-});
-
-test("legacy approval metadata is readable and normalized away", async (t) => {
-	const legacy = `schemaVersion: 1\nid: legacy-approval\nkind: change\ntitle: Legacy approval\nphase: planning\nstate: waiting_user\nplanning:\n  revision: 3\n  status: approved\n  approvedRevision: 3\n  approvedAt: 2026-01-01T00:00:00Z\nartifacts: []\ntasks: []\nintegrationUnits: []\nevaluations: []\n`;
-	assert.deepEqual(parseWorkItemIndex(legacy).planning, { revision: 3 });
-	const root = await repository(t); const store = new WorkItemStore(root);
-	const itemRoot = store.workItemRoot("legacy-approval");
-	await mkdir(itemRoot, { recursive: true });
-	await writeFile(join(itemRoot, "index.yaml"), legacy);
-	await git(root, "add", "agent-artifacts/legacy-approval/index.yaml");
-	await git(root, "commit", "--quiet", "-m", "legacy fixture");
-	await store.beginExecution("legacy-approval");
-	const persisted = await readFile(join(itemRoot, "index.yaml"), "utf8");
-	assert.doesNotMatch(persisted, /approvedRevision|approvedAt|status: approved/);
-	assert.equal((await store.read("legacy-approval")).phase, "execution");
-	assert.equal((await store.read("legacy-approval")).state, "active");
 });

@@ -72,6 +72,23 @@ test("includes the exact E2E matrix only for E2E reviewer context", async (t) =>
 	assert.doesNotMatch(await buildReviewPersistentContext(store, "matrix-context", review), /exact approved content/);
 });
 
+test("idempotently generates one required review per execution stage before final gates", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "generated-reviews", title: "Generated reviews", kind: "story", intent: "Generate deterministic gates." });
+	await store.putArtifact({ workItemId: "generated-reviews", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Journeys", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Run", setup: ["Setup"], actions: ["Act"], expectedOutcomes: ["Pass"], evidence: ["Observe"] }] }, operation: "create" });
+	const first = task("first"); first.assembly.stageId = "delivery";
+	await store.defineTask({ workItemId: "generated-reviews", manifest: first, brief: "Implement", acceptance: "Works" });
+	await store.putExecutionStage("generated-reviews", { id: "delivery", tasks: ["first"], checks: ["npm test -- focused"], review: { tier: "high", focus: ["Concurrency state transitions and durable recovery behavior"], rationale: "Medium is insufficient because this state machine has cross-process recovery races." } }, mutation);
+	await store.ensureFinalEvaluations("generated-reviews", 2);
+	await store.ensureFinalEvaluations("generated-reviews", 2);
+	const item = await store.read("generated-reviews");
+	assert.deepEqual(item.evaluations.map(({ id }) => id), ["stage-delivery-review", "final-e2e", "final-branch-review"]);
+	const stageReview = await store.readEvaluation("generated-reviews", "stage-delivery-review");
+	assert.equal(stageReview.required, true);
+	assert.equal(stageReview.checkpoint, "stage-review");
+	assert.deepEqual(stageReview.methods, ["npm test -- focused"]);
+});
+
 test("builds durable reviewer context from scoped tasks and full plan artifacts", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "review-context", title: "Review context", kind: "change", intent: "Ship plan-conformant behavior." });
@@ -87,6 +104,22 @@ test("builds durable reviewer context from scoped tasks and full plan artifacts"
 	assert.match(packet, /Render the durable result/);
 	assert.match(packet, /durable boundary design/);
 	assert.match(packet, /across compaction and resumed attempts/i);
+});
+
+test("bounds stage review context to its tasks, story artifacts, checks, focus, and reviewed commit", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "stage-context", title: "Stage context", kind: "story", intent: "Story intent." });
+	await store.putArtifact({ workItemId: "stage-context", id: "behavior", type: "spec", content: "# Behavior\n\nRequired story behavior.", operation: "create" });
+	const first = task("first-task"); first.assembly.stageId = "first";
+	const second = task("second-task"); second.assembly.stageId = "second";
+	await store.defineTask({ workItemId: "stage-context", manifest: first, brief: "First brief", acceptance: "First acceptance" });
+	await store.defineTask({ workItemId: "stage-context", manifest: second, brief: "Second brief must be excluded", acceptance: "Second acceptance" });
+	await store.putExecutionStage("stage-context", { id: "first", tasks: ["first-task"], checks: ["npm test -- first"], review: { tier: "medium", focus: ["First-stage state transition correctness"] } }, mutation);
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "stage-first-review", type: "combined-review", checkpoint: "stage-review", stageId: "first", scope: { workItem: "stage-context" }, status: "planned", required: true, attempt: 0, methods: [] };
+	const packet = await buildReviewPersistentContext(store, "stage-context", evaluation, "a".repeat(40));
+	assert.match(packet, /first-task|First brief|Story intent|Required story behavior|npm test -- first|First-stage state transition correctness/);
+	assert.match(packet, new RegExp("a{40}"));
+	assert.doesNotMatch(packet, /second-task|Second brief/);
 });
 
 test("lists compact resource summaries without embedding complete task contracts", async (t) => {
@@ -205,7 +238,7 @@ test("writes complete plans with explicit create and revision-pinned update iden
 	firstTask.manifest.assembly = { stageId: "first-stage", intermediateState: "complete" };
 	const createPlan = {
 		workItem: { id: "fresh-plan", title: "Fresh plan", kind: "change", branchKind: "feature", intent: "Create a fresh plan." },
-		artifacts: [spec], tasks: [firstTask], integrationUnits: [{ id: "delivery", tasks: ["first-task"], intermediatePolicy: "coherent" }], evaluations: [],
+		artifacts: [spec], tasks: [firstTask], stages: [{ id: "delivery", tasks: ["first-task"], checks: ["npm test -- focused"] }],
 	};
 	const createBase = await git(root, "rev-parse", "HEAD");
 	await assert.rejects(service.transaction("harness: reject invalid complete plan", () => service.writePlan({ mode: "create", plan: { ...createPlan, workItem: { ...createPlan.workItem, id: "broken-plan" }, tasks: [{ ...firstTask, manifest: { ...firstTask.manifest, references: { specs: ["missing-spec"], designs: [], decisions: [] } } }] } }, mutation)), /Unknown spec reference/);
@@ -217,12 +250,12 @@ test("writes complete plans with explicit create and revision-pinned update iden
 	const staleRevision = created.planning.revision;
 	const secondTask = { manifest: task("second-task"), brief: "Build the replacement behavior.", acceptance: "It works better." };
 	secondTask.manifest.assembly = { stageId: "second-stage", intermediateState: "complete" };
-	const updatePlan = { ...createPlan, workItem: { ...createPlan.workItem, title: "Replaced plan" }, tasks: [secondTask], integrationUnits: [{ id: "delivery-v2", tasks: ["second-task"], intermediatePolicy: "coherent" }] };
+	const updatePlan = { ...createPlan, workItem: { ...createPlan.workItem, title: "Replaced plan" }, tasks: [secondTask], stages: [{ id: "delivery-v2", tasks: ["second-task"], review: { tier: "medium" as const } }] };
 	await service.transaction("harness: update complete plan", () => service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, mutation));
 	const updated = await store.read("fresh-plan");
 	assert.equal(updated.title, "Replaced plan");
 	assert.deepEqual(updated.tasks.map((entry) => entry.id), ["second-task"]);
-	assert.deepEqual(updated.integrationUnits.map((entry) => entry.id), ["delivery-v2"]);
+	assert.deepEqual(updated.executionStages?.map((entry) => entry.id), ["delivery-v2"]);
 	await assert.rejects(service.writePlan({ mode: "update", target: "work-item:fresh-plan", expectedRevision: staleRevision, plan: updatePlan }, mutation), /advanced from requested revision/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });

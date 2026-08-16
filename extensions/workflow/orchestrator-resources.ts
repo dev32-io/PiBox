@@ -3,10 +3,10 @@ import { join, relative } from "node:path";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import { isTierTaskAssignment, taskAgentName, type EvaluationManifest, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, taskAgentName, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
-export type CanonicalResourceType = "work-item" | "artifact" | "task" | "integration-unit" | "evaluation";
+export type CanonicalResourceType = "work-item" | "artifact" | "task" | "stage" | "evaluation";
 
 export interface ParsedResourceRef {
 	type: CanonicalResourceType;
@@ -22,8 +22,7 @@ export interface PlanBundle {
 	workItem: Record<string, unknown>;
 	artifacts: Array<Record<string, unknown>>;
 	tasks: Array<Record<string, unknown>>;
-	integrationUnits: Array<Record<string, unknown>>;
-	evaluations: Array<Record<string, unknown>>;
+	stages: Array<Record<string, unknown>>;
 }
 
 export interface PlanEdit {
@@ -32,7 +31,7 @@ export interface PlanEdit {
 	value?: Record<string, unknown>;
 }
 
-const REF = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(artifact|task|integration-unit|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*))?$/;
+const REF = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)(?:\/(artifact|task|stage|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*))?$/;
 
 export function parseResourceRef(ref: string): ParsedResourceRef {
 	const match = REF.exec(ref);
@@ -64,7 +63,7 @@ function merge<T>(base: T, patch: unknown): T {
 function allowed(type: CanonicalResourceType, finalized = false): string[] {
 	if (finalized) return ["get", "list", "reopen"];
 	if (type === "work-item") return ["get", "patch", "transition", "archive"];
-	if (type === "integration-unit") return ["get", "patch"];
+	if (type === "stage") return ["get", "patch"];
 	return ["get", "patch", "delete"];
 }
 
@@ -170,7 +169,7 @@ export class OrchestratorResourceService {
 					allowedActions: allowed(type, finalized),
 				});
 			}
-			if (type === "integration-unit") for (const unit of item.integrationUnits) results.push({ ref: `work-item:${item.id}/integration-unit:${unit.id}`, revision: item.planning.revision, id: unit.id, taskCount: unit.tasks.length, intermediatePolicy: unit.intermediatePolicy, allowedActions: allowed(type, finalized) });
+			if (type === "stage") for (const stage of item.executionStages ?? []) results.push({ ref: `work-item:${item.id}/stage:${stage.id}`, revision: item.planning.revision, id: stage.id, taskCount: stage.tasks.length, checks: stage.checks ?? [], review: stage.review ?? { tier: "medium" }, allowedActions: allowed(type, finalized) });
 			if (type === "evaluation") for (const catalog of item.evaluations) {
 				const evaluation = await this.store.readEvaluation(item.id, catalog.id);
 				results.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, revision: item.planning.revision, id: evaluation.id, type: evaluation.type, status: evaluation.status, required: evaluation.required, scope: evaluation.scope, allowedActions: allowed(type, finalized) });
@@ -195,7 +194,7 @@ export class OrchestratorResourceService {
 		for (const item of items) {
 			if (type === "artifact") for (const artifact of item.artifacts) results.push({ resource: artifact, ref: `work-item:${item.id}/artifact:${artifact.id}`, revision: item.planning.revision, allowedActions: allowed(type, Boolean(item.finalization?.locked || item.phase === "complete")) });
 			if (type === "task") for (const task of item.tasks) results.push({ resource: await this.store.readTask(item.id, task.id), ref: `work-item:${item.id}/task:${task.id}`, revision: item.planning.revision, allowedActions: allowed(type, Boolean(item.finalization?.locked || item.phase === "complete")) });
-			if (type === "integration-unit") for (const unit of item.integrationUnits) results.push({ resource: unit, ref: `work-item:${item.id}/integration-unit:${unit.id}`, revision: item.planning.revision, allowedActions: allowed(type, Boolean(item.finalization?.locked || item.phase === "complete")) });
+			if (type === "stage") for (const stage of item.executionStages ?? []) results.push({ resource: stage, ref: `work-item:${item.id}/stage:${stage.id}`, revision: item.planning.revision, allowedActions: allowed(type, Boolean(item.finalization?.locked || item.phase === "complete")) });
 			if (type === "evaluation") for (const evaluation of item.evaluations) results.push({ resource: await this.store.readEvaluation(item.id, evaluation.id), ref: `work-item:${item.id}/evaluation:${evaluation.id}`, revision: item.planning.revision, allowedActions: allowed(type, Boolean(item.finalization?.locked || item.phase === "complete")) });
 		}
 		return results;
@@ -228,10 +227,10 @@ export class OrchestratorResourceService {
 		}
 		if (parsedRef.type === "artifact") return envelope(await this.store.readArtifact(item.id, parsedRef.id));
 		if (parsedRef.type === "task") return envelope(await this.store.readTaskContract(item.id, parsedRef.id));
-		if (parsedRef.type === "integration-unit") {
-			const unit = item.integrationUnits.find((candidate) => candidate.id === parsedRef.id);
-			if (!unit) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${parsedRef.id}`);
-			return envelope(unit);
+		if (parsedRef.type === "stage") {
+			const stage = item.executionStages?.find((candidate) => candidate.id === parsedRef.id);
+			if (!stage) throw new HarnessError("INVALID_ARTIFACT", `Unknown execution stage: ${parsedRef.id}`);
+			return envelope(stage);
 		}
 		return envelope(await this.store.readEvaluation(item.id, parsedRef.id));
 	}
@@ -262,7 +261,7 @@ export class OrchestratorResourceService {
 			if (parsed.workItemId !== parsedTarget.id) throw new HarnessError("INVALID_ARTIFACT", `Plan edit ${edit.ref} is outside ${target}`);
 			if (edit.action === "delete") {
 				if (parsed.type === "work-item") throw new HarnessError("CAPABILITY_DENIED", "Surgical plan edits cannot delete the work item");
-				if (parsed.type === "integration-unit") await this.store.removeIntegrationUnit(parsed.workItemId, parsed.id, authority);
+				if (parsed.type === "stage") throw new HarnessError("CAPABILITY_DENIED", "Delete stage tasks or replace the complete plan instead");
 				else await this.delete(edit.ref, { authority });
 				continue;
 			}
@@ -290,7 +289,6 @@ export class OrchestratorResourceService {
 			if (target.id !== planId) throw new HarnessError("INVALID_ARTIFACT", `Update plan id ${planId} must match target ${target.id}`);
 			const current = await this.assertPlanEditable(target.id, input.expectedRevision);
 			for (const evaluation of current.evaluations) await this.store.removeEvaluation(target.id, evaluation.id, authority);
-			for (const unit of current.integrationUnits) await this.store.removeIntegrationUnit(target.id, unit.id, authority);
 			const remainingTaskIds = new Set(current.tasks.map((task) => task.id));
 			while (remainingTaskIds.size > 0) {
 				const manifests = await Promise.all([...remainingTaskIds].map((id) => this.store.readTask(target.id, id)));
@@ -310,8 +308,7 @@ export class OrchestratorResourceService {
 				else await this.create("artifact", input.target, artifact, authority);
 			}
 			for (const task of plan.tasks) await this.create("task", input.target, task, authority);
-			for (const unit of plan.integrationUnits) await this.create("integration-unit", input.target, unit, authority);
-			for (const evaluation of plan.evaluations) await this.create("evaluation", input.target, evaluation, authority);
+			for (const stage of plan.stages) await this.create("stage", input.target, stage, authority);
 			return this.coalesceRevision(target.id, current, authority);
 		}
 
@@ -319,8 +316,7 @@ export class OrchestratorResourceService {
 		const parent = `work-item:${planId}`;
 		for (const artifact of plan.artifacts) await this.create("artifact", parent, artifact, authority);
 		for (const task of plan.tasks) await this.create("task", parent, task, authority);
-		for (const unit of plan.integrationUnits) await this.create("integration-unit", parent, unit, authority);
-		for (const evaluation of plan.evaluations) await this.create("evaluation", parent, evaluation, authority);
+		for (const stage of plan.stages) await this.create("stage", parent, stage, authority);
 		return this.coalesceRevision(planId, undefined, authority);
 	}
 
@@ -339,8 +335,8 @@ export class OrchestratorResourceService {
 			this.validateTaskAssignment(manifest);
 			return this.store.defineTask({ workItemId: parentRef.id, manifest, authority, ...(body.brief ? { brief: body.brief as string } : {}), ...(body.acceptance ? { acceptance: body.acceptance as string } : {}), ...(body.briefSections ? { briefSections: object(body.briefSections, "briefSections") } : {}), ...(body.acceptanceSections ? { acceptanceSections: object(body.acceptanceSections, "acceptanceSections") } : {}), ...(body.narrativeSchemaVersion ? { narrativeSchemaVersion: body.narrativeSchemaVersion as 1 | 2 } : {}) });
 		}
-		if (type === "evaluation") return this.store.defineEvaluation(parentRef.id, object(body.manifest, "manifest") as unknown as EvaluationManifest, "# Evaluation\n\nPending.\n", authority);
-		if (type === "integration-unit") return this.store.putIntegrationUnit(parentRef.id, body as unknown as WorkItemIndex["integrationUnits"][number], authority);
+		if (type === "evaluation") throw new HarnessError("CAPABILITY_DENIED", "Evaluation resources are runtime-owned; planners author tasks, stages, checks, and optional stage review policy");
+		if (type === "stage") return this.store.putExecutionStage(parentRef.id, body as unknown as NonNullable<WorkItemIndex["executionStages"]>[number], authority);
 		throw new HarnessError("INVALID_ARTIFACT", `Unsupported resource type: ${type}`);
 	}
 
@@ -374,10 +370,10 @@ export class OrchestratorResourceService {
 			const structured = hasBriefSections && hasAcceptanceSections;
 			return this.store.reviseTask({ workItemId: item.id, manifest, authority: context.authority, brief: (patch.brief as string | undefined) ?? current.brief, acceptance: (patch.acceptance as string | undefined) ?? current.acceptance, ...(patch.briefSections ? { briefSections: object(patch.briefSections, "briefSections") } : {}), ...(patch.acceptanceSections ? { acceptanceSections: object(patch.acceptanceSections, "acceptanceSections") } : {}), ...(structured ? { narrativeSchemaVersion: 2 as const } : {}) });
 		}
-		if (parsedRef.type === "integration-unit") {
-			const current = item.integrationUnits.find((unit) => unit.id === parsedRef.id);
-			if (!current) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${parsedRef.id}`);
-			return this.store.putIntegrationUnit(item.id, merge(current, patch), context.authority);
+		if (parsedRef.type === "stage") {
+			const current = item.executionStages?.find((stage) => stage.id === parsedRef.id);
+			if (!current) throw new HarnessError("INVALID_ARTIFACT", `Unknown execution stage: ${parsedRef.id}`);
+			return this.store.putExecutionStage(item.id, merge(current, patch), context.authority);
 		}
 		const current = await this.store.readEvaluation(item.id, parsedRef.id);
 		return this.store.reviseEvaluation(item.id, merge(current, patch.manifest ?? patch), context.authority);
@@ -389,6 +385,6 @@ export class OrchestratorResourceService {
 		if (parsedRef.type === "artifact") return this.store.removeArtifact(parsedRef.workItemId, parsedRef.id, context.authority);
 		if (parsedRef.type === "task") return this.store.removeTask(parsedRef.workItemId, parsedRef.id, context.authority);
 		if (parsedRef.type === "evaluation") return this.store.removeEvaluation(parsedRef.workItemId, parsedRef.id, context.authority);
-		throw new HarnessError("CAPABILITY_DENIED", "Delete tasks from an integration unit by patching its task membership");
+		throw new HarnessError("CAPABILITY_DENIED", "Execution stages are updated by patching their task membership");
 	}
 }

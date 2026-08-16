@@ -65,14 +65,11 @@ export async function buildTaskPersistentContext(store: WorkItemStore, workItemI
 	})}\n`;
 }
 
-/** Build the complete plan context that every reviewer attempt keeps in its system prompt. */
-export async function buildReviewPersistentContext(store: WorkItemStore, workItemId: string, evaluation: EvaluationManifest): Promise<string> {
+/** Build the bounded authoritative context that every reviewer attempt keeps in its system prompt. */
+export async function buildReviewPersistentContext(store: WorkItemStore, workItemId: string, evaluation: EvaluationManifest, reviewedCommit?: string): Promise<string> {
 	const item = await store.read(workItemId);
-	const taskIds = evaluation.scope.task
-		? [evaluation.scope.task]
-		: evaluation.scope.integrationUnit
-			? item.integrationUnits.find((unit) => unit.id === evaluation.scope.integrationUnit)?.tasks ?? []
-			: item.tasks.map((task) => task.id);
+	const stage = evaluation.checkpoint === "stage-review" ? item.executionStages?.find((candidate) => candidate.id === evaluation.stageId) : undefined;
+	const taskIds = stage?.tasks ?? (evaluation.scope.task ? [evaluation.scope.task] : item.tasks.map((task) => task.id));
 	const tasks: string[] = [];
 	for (const taskId of taskIds) {
 		const task = await store.readTask(workItemId, taskId);
@@ -96,21 +93,25 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 		].join("\n"));
 	}
 	const artifacts: string[] = [];
-	for (const entry of item.artifacts.filter((artifact) => ["intent", "spec", "design", "decision"].includes(artifact.type))) {
+	for (const entry of item.artifacts.filter((artifact) => ["intent", "spec", "design", "decision"].includes(artifact.type) || (evaluation.type === "e2e" && artifact.type === "e2e-matrix"))) {
 		const artifact = await store.readArtifact(workItemId, entry.id);
 		artifacts.push(`### ${entry.type}: ${entry.id}\n\n${body(artifact.content)}`);
 	}
-	// The matrix is binding only for managed E2E evaluation. Keep the exact
-	// persisted Markdown (rather than a planner/model reconstruction) so it
-	// survives compaction and resumed reviewer sessions; code reviews do not
-	// receive this unrelated context.
-	if (evaluation.type === "e2e") {
-		const matrix = await store.readE2EMatrix(workItemId);
-		if (matrix) artifacts.push(`### e2e-matrix: ${matrix.metadata.id}\n\n${matrix.content.trim()}`);
+	if (stage) {
+		return `${renderBuiltInPrompt("review-context", {
+			workItem: `Stage ${stage.id}`,
+			evaluation: [
+				`Reviewed commit: ${reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded"}`,
+				`Stage checks:\n${stage.checks?.map((check) => `- ${check}`).join("\n") ?? "- None declared."}`,
+				`Review focus:\n${stage.review?.focus?.map((focus) => `- ${focus}`).join("\n") ?? "- General correctness, contract fit, regressions, maintainability, and focused proof."}`,
+			].join("\n\n"),
+			tasks: tasks.join("\n\n"),
+			artifacts: artifacts.join("\n\n") || "No story artifacts are recorded.",
+		})}\n`;
 	}
 	return `${renderBuiltInPrompt("review-context", {
-		workItem: `${item.id} — ${item.title}\nPlanning revision: ${item.planning.revision}`,
-		evaluation: `\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,
+		workItem: `${item.id} — ${item.title}`,
+		evaluation: `Reviewed commit: ${reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded"}\n\n\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,
 		tasks: tasks.join("\n\n") || "No task manifest is assigned to this evaluation boundary.",
 		artifacts: artifacts.join("\n\n") || "No specification or design artifacts are recorded.",
 	})}\n`;

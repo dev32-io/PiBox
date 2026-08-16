@@ -213,55 +213,27 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 	};
 }
 
-export function normalizePlanIntegrationUnit(value: unknown): PlanAuthoringRecord {
-	const unit = record(value);
-	return { id: unit.id, tasks: strings(unit.tasks), intermediatePolicy: unit.intermediatePolicy ?? "coherent" };
+export function normalizePlanStage(value: unknown): PlanAuthoringRecord {
+	const stage = record(value);
+	const review = stage.review === undefined ? undefined : record(stage.review);
+	if (review?.tier === "high" && ((String(review.rationale ?? "").trim().length < 20) || strings(review.focus).join(" ").trim().length < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${String(stage.id)} requires substantive rationale and focus`);
+	if (review?.tier === "max") throw new HarnessError("INVALID_ARTIFACT", "Stage review policy supports medium by default or justified high; max is not available");
+	return { id: stage.id, tasks: strings(stage.tasks), checks: strings(stage.checks), ...(review ? { review: { tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) } } : {}) };
 }
 
-export function normalizePlanEvaluation(value: unknown, workItemId: string): PlanAuthoringRecord {
-	const evaluation = record(value);
-	return {
-		manifest: {
-			schemaVersion: 1,
-			id: evaluation.id,
-			type: evaluation.type,
-			...(evaluation.stageId !== undefined ? { stageId: evaluation.stageId } : {}),
-			...(evaluation.dependsOn !== undefined ? { dependsOn: strings(evaluation.dependsOn) } : {}),
-			scope: evaluation.scope ?? { workItem: workItemId },
-			status: "planned",
-			required: evaluation.required ?? true,
-			attempt: 0,
-			methods: strings(evaluation.methods),
-			...(evaluation.criteria !== undefined ? { criteria: evaluation.criteria } : {}),
-		},
-	};
+export function normalizePlanEvaluation(_value: unknown, _workItemId: string): never {
+	throw new HarnessError("CAPABILITY_DENIED", "Delivery planners cannot create evaluation resources; author task checks and optional stage review policy instead");
 }
 
-/** Accept a ticket-like evaluation description without exposing its lifecycle manifest. */
-export function normalizeResourceEvaluation(value: unknown, workItemId: string): PlanAuthoringRecord {
-	const evaluation = record(value);
-	const type = evaluation.kind ?? evaluation.type;
-	if (type === "e2e") throw new HarnessError("INVALID_ARTIFACT", "Final whole-branch journey verification is runtime-owned and must not be created by delivery planning. Use a focused deterministic, regression, migration, or review evaluation instead.");
-	const explicitMethods = strings(evaluation.methods);
-	const context = strings(evaluation.context).map((entry) => `Context: ${entry}`);
-	const behavioralCriteria = strings(evaluation.criteria).filter((entry) => !/^[a-z0-9]+(?:-[a-z0-9]+)*#AC-\d{3}$/.test(entry)).map((entry) => `Verify: ${entry}`);
-	const checks = strings(evaluation.checks).map((entry) => `Run: ${entry}`);
-	const qualifiedCriteria = strings(evaluation.criteria).filter((entry) => /^[a-z0-9]+(?:-[a-z0-9]+)*#AC-\d{3}$/.test(entry));
-	return {
-		id: evaluation.id,
-		type,
-		scope: evaluation.scope ?? { workItem: workItemId },
-		required: evaluation.required ?? true,
-		methods: explicitMethods.length ? explicitMethods : [...context, ...behavioralCriteria, ...checks],
-		...(qualifiedCriteria.length ? { criteria: qualifiedCriteria } : {}),
-	};
+export function normalizeResourceEvaluation(_value: unknown, _workItemId: string): never {
+	throw new HarnessError("CAPABILITY_DENIED", "Delivery planners cannot create evaluation resources; use task/stage checks and optional stage review policy");
 }
 
 /** Expand the compact planner-facing shape into the complete canonical resource contracts. */
 export function normalizePlanBundle(value: unknown): PlanBundle {
 	const plan = record(value);
+	if (plan.evaluations !== undefined) throw new HarnessError("CAPABILITY_DENIED", "Workflow plans cannot contain evaluation resources");
 	const workItem = record(plan.workItem);
-	const id = String(workItem.id);
 	return {
 		workItem: {
 			id: workItem.id,
@@ -274,8 +246,7 @@ export function normalizePlanBundle(value: unknown): PlanBundle {
 		},
 		artifacts: Array.isArray(plan.artifacts) ? plan.artifacts.map(normalizePlanArtifact) : [],
 		tasks: Array.isArray(plan.tasks) ? plan.tasks.map(normalizePlanTask) : [],
-		integrationUnits: Array.isArray(plan.integrationUnits) ? plan.integrationUnits.map(normalizePlanIntegrationUnit) : [],
-		evaluations: Array.isArray(plan.evaluations) ? plan.evaluations.map((entry) => normalizePlanEvaluation(entry, id)) : [],
+		stages: Array.isArray(plan.stages) ? plan.stages.map(normalizePlanStage) : [],
 	};
 }
 
@@ -289,8 +260,8 @@ const EDIT_FIELDS: Record<Exclude<CanonicalResourceType, "work-item">, { create:
 		create: ["id", "title", "goal", "context", "included", "work", "requiredWork", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
 		update: ["title", "goal", "context", "included", "work", "requiredWork", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
 	},
-	"integration-unit": { create: ["id", "tasks", "intermediatePolicy"], update: ["tasks", "intermediatePolicy"] },
-	evaluation: { create: ["id", "type", "scope", "stageId", "dependsOn", "required", "methods", "criteria"], update: ["type", "scope", "stageId", "dependsOn", "required", "methods", "criteria"] },
+	stage: { create: ["id", "tasks", "checks", "review"], update: ["tasks", "checks", "review"] },
+	evaluation: { create: [], update: [] },
 };
 
 function assertEditFields(type: CanonicalResourceType, action: "create" | "update", input: PlanAuthoringRecord): void {
@@ -335,8 +306,8 @@ export function normalizePlanEdit(type: CanonicalResourceType, action: PlanEdit[
 	if (action === "create") {
 		if (type === "artifact") return { action, ref, value: normalizePlanArtifact(input) };
 		if (type === "task") return { action, ref, value: normalizePlanTask(input) };
-		if (type === "integration-unit") return { action, ref, value: normalizePlanIntegrationUnit(input) };
-		if (type === "evaluation") return { action, ref, value: normalizePlanEvaluation(input, workItemId) };
+		if (type === "stage") return { action, ref, value: normalizePlanStage(input) };
+		if (type === "evaluation") throw new HarnessError("CAPABILITY_DENIED", "Evaluation resources are runtime-owned");
 		return { action, ref, value: input };
 	}
 	if (type === "work-item") {
@@ -375,11 +346,7 @@ export function normalizePlanEdit(type: CanonicalResourceType, action: PlanEdit[
 		if (!hasChange(patch)) throw new HarnessError("INVALID_ARTIFACT", `Plan update for ${ref} has no changed fields`);
 		return { action, ref, value: patch };
 	}
-	if (type === "evaluation") {
-		const patch = { manifest: definedEntries(input) };
-		if (!hasChange(patch)) throw new HarnessError("INVALID_ARTIFACT", `Plan update for ${ref} has no changed fields`);
-		return { action, ref, value: patch };
-	}
+	if (type === "evaluation") throw new HarnessError("CAPABILITY_DENIED", "Evaluation resources are runtime-owned");
 	if (!hasChange(input)) throw new HarnessError("INVALID_ARTIFACT", `Plan update for ${ref} has no changed fields`);
 	return { action, ref, value: input };
 }

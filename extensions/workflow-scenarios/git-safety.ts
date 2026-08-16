@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { discoverRepository } from "../workflow/repository.js";
-import type { EvaluationManifest, TaskManifest } from "../workflow/types.js";
+import type { TaskManifest } from "../workflow/types.js";
 import { WorkItemStore } from "../workflow/work-items.js";
 import { WorktreeManager } from "../workflow/worktrees.js";
 import type { ScenarioDimension, WorkflowScenarioResult } from "./types.js";
@@ -105,16 +105,11 @@ export async function runDirtyCanonicalPreservationScenario(): Promise<WorkflowS
 export async function runFinalJourneyDedupScenario(): Promise<WorkflowScenarioResult> {
 	const f = await fixture(); const findings: string[] = [];
 	try {
-		const planned: EvaluationManifest = {
-			schemaVersion: 1, id: "planned-journey", type: "e2e", scope: { workItem: "merge-safety" },
-			status: "planned", required: true, attempt: 0, methods: ["Legacy whole-branch journey"],
-		};
-		await f.store.defineEvaluation("merge-safety", planned);
-		const finals = await f.store.ensureFinalEvaluations("merge-safety", 2);
+		await f.store.putArtifact({ workItemId: "merge-safety", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Journeys", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Merge", setup: ["Prepare"], actions: ["Merge"], expectedOutcomes: ["Integrated"], evidence: ["Observe"] }] }, operation: "create" });
+		await f.store.ensureFinalEvaluations("merge-safety", 2);
+		await f.store.ensureFinalEvaluations("merge-safety", 2);
 		const item = await f.store.read("merge-safety");
-		if (item.evaluations.some((evaluation) => evaluation.id === "final-e2e")) findings.push("Runtime inserted a duplicate final journey evaluation.");
-		if (finals[0]?.id !== "planned-journey") findings.push(`Runtime did not adopt planned-journey; selected ${finals[0]?.id ?? "none"}.`);
-		if (!item.evaluations.some((evaluation) => evaluation.id === "final-branch-review")) findings.push("Runtime did not retain the final branch review gate.");
+		for (const expected of ["stage-parallel-review", "final-e2e", "final-branch-review"]) if (item.evaluations.filter((evaluation) => evaluation.id === expected).length !== 1) findings.push(`Expected exactly one ${expected}.`);
 		return result("final-journey-dedup", findings);
 	} finally { await rm(f.parent, { recursive: true, force: true }); }
 }

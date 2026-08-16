@@ -127,10 +127,11 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
 			const evaluationById = new Map(evaluations.map((evaluation) => [evaluation.id, evaluation]));
 			const stages = orderedExecutionStages(item);
+			const stageReviews = new Map(evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review" && evaluation.stageId).map((evaluation) => [evaluation.stageId!, evaluation]));
 			const contributionStates = new Set(["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating", "merged", "integrated"]);
 			const steps: WorkflowStep[] = tasks.map((task) => {
 				const topology = taskExecutionTopology(item, task);
-				const priorStagesDone = stages.slice(0, topology.stageIndex).every((stage) => stage.nodes!.every((node) => node.kind === "task" ? ["merged", "integrated"].includes(taskById.get(node.id)?.status ?? "") : ["passed", "not_applicable"].includes(evaluationById.get(node.id)?.status ?? "")));
+				const priorStagesDone = stages.slice(0, topology.stageIndex).every((stage) => stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")) && ["passed", "not_applicable"].includes(stageReviews.get(stage.id)?.status ?? ""));
 				const dependenciesDone = task.dependsOn.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? ""));
 				const isMergeState = contributionStates.has(task.status) && !["merged", "integrated"].includes(task.status);
 				const parallelStageReadyToMerge = topology.stageSize === 1 || topology.stageTasks.every((id) => contributionStates.has(taskById.get(id)?.status ?? ""));
@@ -146,7 +147,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					title: task.title,
 					kind: isMergeState ? "merge" : "task",
 					...mapped,
-					dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(topology.stageIndex > 0 ? stages[topology.stageIndex - 1]!.tasks.map((id) => `work-item:${item.id}/task:${id}`) : [])],
+					dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(topology.stageIndex > 0 && stageReviews.get(stages[topology.stageIndex - 1]!.id) ? [`work-item:${item.id}/evaluation:${stageReviews.get(stages[topology.stageIndex - 1]!.id)!.id}`] : [])],
 					parallelism: isMergeState ? "serial" : topology.parallelism,
 					resourceClaims: isMergeState || topology.isolation === "repository" ? ["working-branch"] : task.execution.resourceClaims,
 				};
@@ -154,21 +155,16 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const finalJourneyRefs = evaluations
 				.filter((evaluation) => evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id))
 				.map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
-			const plannerEvaluationRefs = evaluations
-				.filter((evaluation) => !["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") && !(evaluation.type === "e2e" && evaluation.scope.workItem === item.id))
-				.map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
+			const stageReviewRefs = evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review").map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
 			for (const evaluation of evaluations) {
 				const explicitStage = evaluation.stageId ? stages.find((stage) => stage.id === evaluation.stageId) : undefined;
-				const legacyStage = evaluation.scope.integrationUnit ? stages.find((stage) => stage.id === evaluation.scope.integrationUnit) : undefined;
-				const explicitDependencies = evaluation.dependsOn?.map((id) => id.includes(":") ? id : (tasks.some((task) => task.id === id) ? `work-item:${item.id}/task:${id}` : `work-item:${item.id}/evaluation:${id}`)) ?? [];
-				const dependencies = explicitDependencies.length ? explicitDependencies : evaluation.checkpoint === "final-e2e"
-					? [...tasks.map((task) => `work-item:${item.id}/task:${task.id}`), ...plannerEvaluationRefs]
-					: evaluation.scope.task ? [`work-item:${item.id}/task:${evaluation.scope.task}`]
-					: explicitStage ? stages.slice(0, stages.indexOf(explicitStage)).flatMap((stage) => stage.nodes!.map((node) => `${node.kind === "task" ? `work-item:${item.id}/task` : `work-item:${item.id}/evaluation`}:${node.id}`))
-					: legacyStage ? legacyStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
-					: evaluation.checkpoint === "final-review"
-						? finalJourneyRefs.filter((ref) => ref !== `work-item:${item.id}/evaluation:${evaluation.id}`)
-						: tasks.map((task) => `work-item:${item.id}/task:${task.id}`);
+				const dependencies = evaluation.checkpoint === "stage-review" && explicitStage
+					? explicitStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
+					: evaluation.checkpoint === "final-e2e"
+						? stageReviewRefs
+						: evaluation.checkpoint === "final-review"
+							? finalJourneyRefs.filter((candidate) => candidate !== `work-item:${item.id}/evaluation:${evaluation.id}`)
+							: [];
 				const dependencySteps = dependencies.map((dependency) => steps.find((step) => step.ref === dependency));
 				const dependenciesDone = dependencySteps.every((step) => step?.status === "done");
 				const dependencyAttention = dependencySteps.find((step) => step?.status === "attention" || step?.status === "cancelled");
@@ -190,10 +186,10 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const blocking = open.filter((finding) => finding.blocking);
 				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? 2}; allowed actions: ${blocking.length ? "request_changes, retry, continue" : "continue, accept_risk, retry"}${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
-				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${evaluation.checkpoint ? "Review loop" : "Evaluate"} ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), dependsOn: dependencies, parallelism: explicitStage ? (explicitStage.nodes!.length > 1 ? "allowed" : "serial") : "allowed", resourceClaims: [] });
+				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
-			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: stage.nodes!.map((node) => `${node.kind}:${node.id}`), parallel: stage.nodes!.length > 1, group: "planner" as const }));
+			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: stage.tasks.length > 1, group: "planner" as const }));
 			const runtimeNodes = evaluations.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => `evaluation:${evaluation.id}`);
 			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])] };
 		},
@@ -237,23 +233,35 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			if (!match || match[2] !== "evaluation") throw new Error(`Checkpoint decision requires an evaluation step ref: ${ref}`);
 			const [, workItemId, , evaluationId] = match;
 			const runtime = await options.runtimeFor(ctx);
+			const evaluation = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
+			const loop = evaluation.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? 2 };
+			const openFindings = (evaluation.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
+			const blockingFindings = openFindings.filter((finding) => finding.blocking);
+			if (action === "request_changes") {
+				if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${evaluationId}`);
+				if (evaluation.checkpoint === "final-review" && blockingFindings.length === 0) throw new Error("Final branch review has no blocking findings; non-blocking findings may only be accepted as residual risk.");
+				if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
+				if (loop.iteration >= loop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
+				const nextIteration = loop.iteration + 1;
+				await runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", managerPrompt: prompt }));
+				try {
+					await options.launchRepair(ctx, workItemId!, evaluationId!);
+				} catch (error) {
+					await runtime.mutex.run(`checkpoint-rollback:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "awaiting_manager", iteration: loop.iteration, managerPrompt: prompt }, evaluation.status));
+					throw error;
+				}
+				await runtime.mutex.run(`checkpoint-repair:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "rereviewing", iteration: nextIteration }, "planned"));
+				const rereview = await options.launchEvaluation(ctx, workItemId!, evaluationId!);
+				return { repairIteration: nextIteration, rereview: rereview.details ?? rereview.content };
+			}
 			return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
-				const evaluation = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
-				const loop = evaluation.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? 2 };
-				const openFindings = (evaluation.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
-				const blockingFindings = openFindings.filter((finding) => finding.blocking);
-				if (action === "request_changes") {
-					if (evaluation.checkpoint === "final-review" && blockingFindings.length === 0) throw new Error("Final branch review has no blocking findings; non-blocking findings may only be accepted as residual risk.");
-					if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
-					if (loop.iteration >= loop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
-					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", iteration: loop.iteration + 1, managerPrompt: prompt });
+				if (action === "retry") return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "rereviewing", ...(prompt ? { managerPrompt: prompt } : {}) }, "planned");
+				if (action === "skip") {
+					if (evaluation.checkpoint === "stage-review") throw new Error("Required stage reviews cannot be skipped");
+					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "skipped", ...(prompt ? { managerPrompt: prompt } : {}) }, "not_applicable");
 				}
-				if (action === "retry") {
-					if (loop.iteration >= loop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
-					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "rereviewing", iteration: loop.iteration + 1, ...(prompt ? { managerPrompt: prompt } : {}) });
-				}
-				if (action === "skip") return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "skipped", ...(prompt ? { managerPrompt: prompt } : {}) }, "not_applicable");
 				if (action === "accept_risk") {
+					if (evaluation.attempt < 1) throw new Error("Risk cannot be accepted before an evaluation attempt records findings");
 					if (blockingFindings.length > 0) throw new Error(`Cannot accept risk while blocking findings remain: ${blockingFindings.map((finding) => finding.id).join(", ")}`);
 					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "passed", ...(prompt ? { managerPrompt: prompt } : {}) }, "passed");
 				}

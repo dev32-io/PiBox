@@ -14,7 +14,7 @@ This is the authoritative plan context for the current review loop and remains i
 
 {{tasks}}
 
-## Full Specification and Design
+## Story Artifacts
 
 {{artifacts}}
 

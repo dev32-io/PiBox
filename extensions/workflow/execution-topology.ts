@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
-import type { EvaluationManifest, TaskManifest, WorkItemIndex } from "./types.js";
+import type { EvaluationManifest, ExecutionStageContract, TaskManifest, WorkItemIndex } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -16,21 +16,9 @@ export interface TaskExecutionTopology {
 	parallelism: "serial" | "allowed";
 }
 
-export type StagedNode = { kind: "task" | "evaluation"; id: string };
-export type ExecutionStage = { id: string; tasks: string[]; nodes?: StagedNode[]; checks?: string[] };
-
-/** Normalize both the unified graph and schema-v1 task-only stages without persisting it. */
-export function orderedExecutionStages(item: WorkItemIndex): ExecutionStage[] {
-	const raw = (item.executionStages ?? item.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }))) as ExecutionStage[];
-	return raw.map((stage) => ({
-		...stage,
-		tasks: [...stage.tasks],
-		nodes: stage.nodes ? stage.nodes.map((node) => ({ ...node })) : stage.tasks.map((id) => ({ kind: "task" as const, id })),
-	}));
-}
-
-export function stageNodes(stage: ExecutionStage): StagedNode[] {
-	return stage.nodes ?? stage.tasks.map((id) => ({ kind: "task", id }));
+/** Return the planner-authored task stages in durable order. */
+export function orderedExecutionStages(item: WorkItemIndex): ExecutionStageContract[] {
+	return (item.executionStages ?? []).map((stage) => ({ ...stage, tasks: [...stage.tasks], ...(stage.checks ? { checks: [...stage.checks] } : {}), ...(stage.review ? { review: { ...stage.review, ...(stage.review.focus ? { focus: [...stage.review.focus] } : {}) } } : {}) }));
 }
 
 function retainedRuntimeIsolation(item: WorkItemIndex, task: TaskManifest): TaskExecutionIsolation | undefined {
@@ -88,50 +76,34 @@ export async function preflightTaskChecks(item: WorkItemIndex, tasks: TaskManife
 export function validateExecutionTopology(item: WorkItemIndex, tasks: TaskManifest[], evaluations: EvaluationManifest[] = []): void {
 	const stages = orderedExecutionStages(item);
 	const taskById = new Map(tasks.map((task) => [task.id, task]));
-	const evaluationById = new Map(evaluations.map((evaluation) => [evaluation.id, evaluation]));
-	const stageByNode = new Map<string, number>();
-	const key = (kind: StagedNode["kind"], id: string) => `${kind}:${id}`;
+	const stageByTask = new Map<string, number>();
 
 	for (const [stageIndex, stage] of stages.entries()) {
-		const nodes = stageNodes(stage);
-		if (nodes.length === 0) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} must contain at least one task or evaluation`);
+		if (stage.tasks.length === 0) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} must contain at least one task`);
+		if (stage.review?.tier === "high" && ((stage.review.focus?.join(" ").trim().length ?? 0) < 20 || (stage.review.rationale?.trim().length ?? 0) < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${stage.id} requires substantive rationale and focus`);
 		const claims = new Map<string, string>();
-		for (const node of nodes) {
-			if (node.kind === "task" && !taskById.has(node.id)) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} references unknown task ${node.id}`);
-			if (node.kind === "evaluation" && !evaluationById.has(node.id)) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} references unknown evaluation ${node.id}`);
-			const nodeKey = key(node.kind, node.id);
-			if (stageByNode.has(nodeKey)) throw new HarnessError("INVALID_ARTIFACT", `${node.kind} ${node.id} appears in more than one execution stage`);
-			stageByNode.set(nodeKey, stageIndex);
-			if (node.kind !== "task" || nodes.length === 1) continue;
-			for (const claim of taskById.get(node.id)!.execution.resourceClaims) {
+		for (const taskId of stage.tasks) {
+			if (!taskById.has(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} references unknown task ${taskId}`);
+			if (stageByTask.has(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${taskId} appears in more than one execution stage`);
+			stageByTask.set(taskId, stageIndex);
+			if (stage.tasks.length === 1) continue;
+			for (const claim of taskById.get(taskId)!.execution.resourceClaims) {
 				const owner = claims.get(claim);
-				if (owner) throw new HarnessError("INVALID_ARTIFACT", `Parallel stage ${stage.id} has conflicting resource claim ${claim} in ${owner} and ${node.id}`);
-				claims.set(claim, node.id);
+				if (owner) throw new HarnessError("INVALID_ARTIFACT", `Parallel stage ${stage.id} has conflicting resource claim ${claim} in ${owner} and ${taskId}`);
+				claims.set(claim, taskId);
 			}
 		}
 	}
 
 	for (const task of tasks) {
-		const taskStage = stageByNode.get(key("task", task.id));
+		const taskStage = stageByTask.get(task.id);
 		if (taskStage === undefined) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} is not assigned to an execution stage`);
 		for (const dependency of task.dependsOn) {
-			const dependencyStage = stageByNode.get(key("task", dependency));
+			const dependencyStage = stageByTask.get(dependency);
 			if (dependencyStage === undefined) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} depends on unknown or unscheduled task ${dependency}`);
 			if (dependencyStage >= taskStage) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} depends on ${dependency}, but blockers must be placed in an earlier execution stage`);
 		}
 	}
-	for (const evaluation of evaluations) {
-		const declaresStage = Boolean(evaluation.stageId || evaluation.scope.integrationUnit);
-		if ((evaluation.dependsOn?.length ?? 0) > 0 && !declaresStage) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${evaluation.id} declares graph blockers but has no execution stage`);
-		if (!declaresStage) continue;
-		const evaluationStage = stageByNode.get(key("evaluation", evaluation.id));
-		if (evaluationStage === undefined) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${evaluation.id} is not assigned to its declared execution stage`);
-		for (const dependency of evaluation.dependsOn ?? []) {
-			const explicit = dependency.match(/^(task|evaluation):(.+)$/);
-			const candidates = explicit ? [key(explicit[1] as StagedNode["kind"], explicit[2]!)] : [key("task", dependency), key("evaluation", dependency)].filter((candidate) => stageByNode.has(candidate));
-			if (candidates.length !== 1) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${evaluation.id} dependency ${dependency} is unknown or ambiguous`);
-			const dependencyStage = stageByNode.get(candidates[0]!);
-			if (dependencyStage === undefined || dependencyStage >= evaluationStage) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${evaluation.id} depends on ${dependency}, but blockers must be placed in an earlier execution stage`);
-		}
-	}
+	// Evaluations are runtime-owned gates and are deliberately outside the planner graph.
+	void evaluations;
 }

@@ -52,10 +52,26 @@ export const resumeAfterRepairScenario: WorkflowScenarioDefinition = {
 	expect: { terminal: "complete", started: ["implement", "verify"], completed: ["implement", "verify"], attempts: { implement: 2, verify: 1 }, workflowControls: 1, maxPeakConcurrency: 1 },
 };
 
+export const stageReviewGateScenario: WorkflowScenarioDefinition = {
+	id: "stage-review-gates-next-stage",
+	title: "Each stage review gates the next stage",
+	description: "A harness-generated review follows each execution stage and the next stage cannot start before that review passes.",
+	categories: ["evaluation", "stage-gate", "topology"],
+	steps: [
+		{ id: "stage-one-task", delayMs: 5 },
+		{ id: "stage-one-review", kind: "evaluation", dependsOn: ["stage-one-task"], delayMs: 5 },
+		{ id: "stage-two-task", dependsOn: ["stage-one-review"], delayMs: 5 },
+		{ id: "stage-two-review", kind: "evaluation", dependsOn: ["stage-two-task"], delayMs: 5 },
+		{ id: "final-e2e", kind: "evaluation", dependsOn: ["stage-two-review"], delayMs: 5 },
+		{ id: "final-branch-review", kind: "evaluation", dependsOn: ["final-e2e"], delayMs: 5 },
+	],
+	expect: { terminal: "complete", started: ["stage-one-task", "stage-one-review", "stage-two-task", "stage-two-review", "final-e2e", "final-branch-review"], completed: ["stage-one-task", "stage-one-review", "stage-two-task", "stage-two-review", "final-e2e", "final-branch-review"], maxPeakConcurrency: 1 },
+};
+
 export const reviewRepairScenario: WorkflowScenarioDefinition = {
 	id: "review-repair-loop",
-	title: "Blocking review receives focused changes and re-review",
-	description: "A failed review pauses at an actionable checkpoint, receives a focused repair prompt, and passes on the retained second review attempt.",
+	title: "Blocking stage review receives focused changes and automatic re-review",
+	description: "A failed stage review pauses at an actionable checkpoint, receives a focused repair prompt, and passes on the retained second reviewer attempt without a separate resume.",
 	categories: ["evaluation", "repair", "checkpoint"],
 	steps: [
 		{ id: "implement", delayMs: 5 },
@@ -78,4 +94,4 @@ export const acceptResidualRiskScenario: WorkflowScenarioDefinition = {
 	expect: { terminal: "complete", completed: ["implement", "final-review"], attempts: { implement: 1, "final-review": 1 }, workflowControls: 1, maxPeakConcurrency: 1 },
 };
 
-export const coreScenarios = [mixedTopologyScenario, resourceCollisionScenario, blockingFailureScenario, resumeAfterRepairScenario, reviewRepairScenario, acceptResidualRiskScenario];
+export const coreScenarios = [mixedTopologyScenario, resourceCollisionScenario, blockingFailureScenario, resumeAfterRepairScenario, stageReviewGateScenario, reviewRepairScenario, acceptResidualRiskScenario];

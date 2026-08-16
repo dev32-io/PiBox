@@ -87,11 +87,12 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /Every completed task must leave a runnable, demonstrable behavior/i);
 	assert.match(delivery, /greenfield repository[\s\S]+setup with the first user-visible vertical slice/i);
 	assert.match(delivery, /one fresh worker/i);
-	assert.match(delivery, /Use `resource_write` to create or update one implementation or evaluation node at a time/i);
+	assert.match(delivery, /Use `resource_write` to create or update tasks and stages/i);
 	assert.match(delivery, /complete rendered task contract in persistent context/i);
 	assert.match(delivery, /Use `resource_list` to inventory[\s\S]+`resource_read` to inspect each complete task/i);
 	assert.match(delivery, /Check coverage, vagueness, consistency/i);
-	assert.match(delivery, /runtime owns final whole-branch journey verification and the final branch review/i);
+	assert.match(delivery, /runtime also owns final whole-branch journey verification and final branch review/i);
+	assert.match(delivery, /Never create an evaluation resource/i);
 	assert.match(delivery, /approved E2E matrix is binding verification context/i);
 	assert.match(delivery, /Preserve every approved E2E matrix case exactly/i);
 	assert.match(delivery, /Correct only the affected resource with `resource_write`/i);
@@ -99,7 +100,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /task_clarify.*escape hatch/is);
 	assert.match(delivery, /planning critique is optional[\s\S]+user explicitly requests it/i);
 	assert.match(delivery, /`subagent_spawn` with `plan-critic`/i);
-	assert.match(delivery, /Nodes in one stage are the parallel frontier/i);
+	assert.match(delivery, /Tasks in one stage are the parallel frontier/i);
 	assert.match(delivery, /runtime derives repository versus worktree isolation/i);
 	assert.match(delivery, /`medium` is the hard default/i);
 	assert.match(delivery, /Use `medium` by default/i);

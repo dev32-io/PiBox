@@ -71,6 +71,25 @@ test("renders a review-fix loop as one checkpoint step with phase and iteration"
 	assert.equal(snapshot.steps[0]!.status, "ready");
 });
 
+test("request_changes launches repair and automatic re-review without consuming a failed repair launch", async () => {
+	let evaluation: any = { id: "stage-delivery-review", checkpoint: "stage-review", status: "failed", attempt: 1, findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "awaiting_manager", iteration: 0, maxIterations: 2, reviewerAgentId: "reviewer" } };
+	const updates: any[] = [];
+	const runtime: any = {
+		config: { limits: { repairRounds: 2 } },
+		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any, status?: string) { evaluation = { ...evaluation, ...(status ? { status } : {}), loop: { ...evaluation.loop, ...update } }; updates.push(structuredClone(evaluation.loop)); return evaluation; } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	let repairAttempts = 0; let reviews = 0;
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => { reviews++; return { content: [{ type: "text", text: "passed" }], details: { agentId: "reviewer" } }; }, launchRepair: async () => { repairAttempts++; if (repairAttempts === 1) throw new Error("launch failed"); return { content: [{ type: "text", text: "fixed" }], details: { agentId: "fixer" } }; } });
+	await assert.rejects(adapter.controlCheckpoint!("work-item:example/evaluation:stage-delivery-review", "request_changes", "Fix F1", {} as any), /launch failed/);
+	assert.equal(evaluation.loop.iteration, 0);
+	assert.equal(evaluation.loop.state, "awaiting_manager");
+	await adapter.controlCheckpoint?.("work-item:example/evaluation:stage-delivery-review", "request_changes", "Fix F1", {} as any);
+	assert.equal(evaluation.loop.iteration, 1);
+	assert.equal(reviews, 1, "successful repair immediately re-reviews");
+	assert.ok(updates.some((loop) => loop.state === "rereviewing"));
+});
+
 test("stop ignores reported agents whose process already exited", async () => {
 	const reported = { id: "reviewer", workItemId: "example", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited" }] };
 	let reads = 0;
@@ -88,7 +107,7 @@ test("stop ignores reported agents whose process already exited", async () => {
 
 test("derives task, integration, and evaluation steps without mutating canonical state", async () => {
 	let tasks: any[] = [task("first", "ready"), task("second", "blocked", ["first"])];
-	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };
+	let evaluation: any = { id: "stage-delivery-review", checkpoint: "stage-review", stageId: "delivery", status: "planned", scope: { workItem: "example" }, loop: { state: "planned", iteration: 0, maxIterations: 2 } };
 	let agents: any[] = [];
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, delivery: { workingBranch: "feature/example", createdFromCommit: "a".repeat(40) }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
 	const runtime: any = {
@@ -118,33 +137,36 @@ test("derives task, integration, and evaluation steps without mutating canonical
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "done");
 });
 
-test("derives a mixed task/evaluation staged graph from explicit true dependencies", async () => {
+test("places the harness review after its stage tasks", async () => {
 	const tasks: any[] = [task("implement", "merged", [], "build")];
-	const evaluations: any = [
-		{ id: "focused-check", type: "deterministic", status: "planned", scope: { workItem: "mixed" }, stageId: "verify", dependsOn: ["implement"] },
-	];
-	const item: any = { id: "mixed", title: "Mixed", planning: { revision: 1 }, tasks: [{ id: "implement" }], executionStages: [
-		{ id: "build", tasks: ["implement"], nodes: [{ kind: "task", id: "implement" }] },
-		{ id: "verify", tasks: [], nodes: [{ kind: "evaluation", id: "focused-check" }] },
-	], integrationUnits: [], evaluations: [{ id: "focused-check" }] };
-	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readTask() { return tasks[0]; }, async readEvaluation() { return evaluations[0]; } }, agents: { async list() { return []; } } };
+	const evaluation: any = { id: "stage-build-review", type: "combined-review", checkpoint: "stage-review", status: "planned", scope: { workItem: "mixed" }, stageId: "build", loop: { state: "planned", iteration: 0, maxIterations: 2 } };
+	const item: any = { id: "mixed", title: "Mixed", planning: { revision: 1 }, tasks: [{ id: "implement" }], executionStages: [{ id: "build", tasks: ["implement"] }], integrationUnits: [], evaluations: [{ id: evaluation.id }] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readTask() { return tasks[0]; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return []; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const snapshot = await adapter.snapshot("work-item:mixed", {} as any);
-	const evaluation = snapshot.steps.find((step) => step.ref.endsWith("evaluation:focused-check"))!;
-	assert.deepEqual(evaluation.dependsOn, ["work-item:mixed/task:implement"]);
-	assert.equal(snapshot.stages?.[1]?.parallel, false);
-	assert.equal(snapshot.stages?.[1]?.nodes[0], "evaluation:focused-check");
+	const review = snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-build-review"))!;
+	assert.deepEqual(review.dependsOn, ["work-item:mixed/task:implement"]);
+	assert.equal(review.status, "ready");
+	assert.deepEqual(snapshot.stages?.[0]?.nodes, ["task:implement", "evaluation:stage-build-review"]);
 });
 
-test("derives singleton repository execution and parallel stage merge barriers", async () => {
+test("gates each stage on its harness review while preserving parallel merge barriers", async () => {
 	const tasks: any[] = [task("first", "ready", [], "serial"), task("left", "ready", ["first"], "parallel"), task("right", "ready", ["first"], "parallel")];
-	const item: any = { id: "topology", title: "Topology", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "serial", tasks: ["first"] }, { id: "parallel", tasks: ["left", "right"] }], integrationUnits: [], evaluations: [] };
-	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); } }, agents: { async list() { return []; } } };
+	const reviews: any[] = [
+		{ id: "stage-serial-review", checkpoint: "stage-review", stageId: "serial", status: "planned", scope: { workItem: "topology" }, loop: { state: "planned", iteration: 0, maxIterations: 2 } },
+		{ id: "stage-parallel-review", checkpoint: "stage-review", stageId: "parallel", status: "planned", scope: { workItem: "topology" }, loop: { state: "planned", iteration: 0, maxIterations: 2 } },
+	];
+	const item: any = { id: "topology", title: "Topology", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "serial", tasks: ["first"] }, { id: "parallel", tasks: ["left", "right"] }], integrationUnits: [], evaluations: reviews.map(({ id }) => ({ id })) };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation(_w: string, id: string) { return reviews.find((entry) => entry.id === id); } }, agents: { async list() { return []; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:topology", {} as any);
 	const first = snapshot.steps.find((step) => step.ref.endsWith("task:first"))!;
 	assert.equal(first.parallelism, "serial"); assert.deepEqual(first.resourceClaims, ["working-branch"]);
 	tasks[0].status = "merged";
+	snapshot = await adapter.snapshot("work-item:topology", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.status, "pending", "next stage waits for review");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-serial-review"))?.status, "ready");
+	reviews[0].status = "passed"; reviews[0].loop.state = "passed";
 	snapshot = await adapter.snapshot("work-item:topology", {} as any);
 	for (const id of ["left", "right"]) { const step = snapshot.steps.find((candidate) => candidate.ref.endsWith(`task:${id}`))!; assert.equal(step.status, "ready"); assert.equal(step.parallelism, "allowed"); assert.deepEqual(step.resourceClaims, [id]); }
 	tasks[1].status = "contribution_complete";

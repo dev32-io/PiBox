@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizePlanBundle, normalizePlanEdit, normalizeResourceArtifact, normalizeResourceEvaluation } from "../plan-authoring.js";
+import { normalizePlanBundle, normalizePlanEdit, normalizePlanStage, normalizeResourceArtifact, normalizeResourceEvaluation } from "../plan-authoring.js";
 
 test("accepts concise author-facing specification artifacts", () => {
 	const artifact = normalizeResourceArtifact({
@@ -28,19 +28,15 @@ test("accepts concise author-facing design artifacts", () => {
 	assert.deepEqual(artifact.sections.chosenApproach, ["Use one reducer."]);
 });
 
-test("accepts focused ticket-like evaluation resources", () => {
-	const evaluation = normalizeResourceEvaluation({ id: "checkout-idempotency", kind: "regression", context: ["Run after checkout integration."], criteria: ["Repeated checkout creates one order."], checks: ["npm test -- checkout-idempotency"] }, "checkout") as any;
-	assert.equal(evaluation.type, "regression");
-	assert.deepEqual(evaluation.scope, { workItem: "checkout" });
-	assert.deepEqual(evaluation.methods, ["Context: Run after checkout integration.", "Verify: Repeated checkout creates one order.", "Run: npm test -- checkout-idempotency"]);
-	assert.equal(evaluation.criteria, undefined);
+test("prohibits planner-authored evaluation resources", () => {
+	assert.throws(() => normalizeResourceEvaluation({ id: "planner-check", kind: "regression" }, "checkout"), /cannot create evaluation/i);
+	assert.throws(() => normalizePlanBundle({ workItem: { id: "checkout" }, tasks: [], stages: [], evaluations: [] }), /cannot contain evaluation/i);
 });
 
-test("reserves final whole-branch journey verification for the runtime", () => {
-	assert.throws(
-		() => normalizeResourceEvaluation({ id: "planner-final", kind: "e2e", criteria: ["Whole journey passes."] }, "checkout"),
-		/runtime-owned/i,
-	);
+test("normalizes medium stage review and requires substantive high policy", () => {
+	assert.deepEqual(normalizePlanStage({ id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { focus: ["Checkout correctness"] } }), { id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { tier: "medium", focus: ["Checkout correctness"] } });
+	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "high", focus: ["bugs"], rationale: "hard" } }), /substantive rationale and focus/i);
+	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "max" } }), /max is not available/i);
 });
 
 test("expands concise self-contained task contracts", () => {
@@ -77,8 +73,7 @@ test("expands concise self-contained task contracts", () => {
 	assert.match(task.briefSections.integrationExpectation, /implement-behavior/);
 	assert.deepEqual(task.acceptanceSections.deliverables, ["Implement behavior."]);
 	assert.deepEqual(task.acceptanceSections.acceptance, ["The worker receives the complete task contract."]);
-	assert.deepEqual(plan.integrationUnits, []);
-	assert.deepEqual(plan.evaluations, []);
+	assert.deepEqual(plan.stages, []);
 });
 
 test("requires explicit justification for high and max planner routing", () => {

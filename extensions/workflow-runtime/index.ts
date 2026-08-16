@@ -354,7 +354,7 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "workflow_checkpoint", label: "Decide Workflow Checkpoint",
-		description: "Apply the main orchestrator's decision at an actionable review/fix checkpoint. Use request_changes with a live repair prompt, retry to re-run the same reviewer, continue after an accepted clean state, skip only when justified, or accept_risk for non-blocking findings.",
+		description: "Apply a review-loop decision. request_changes starts or reconciles the persistent fixer and automatically re-runs the same persistent reviewer after a successful fix; no separate resume is needed. Failed repair launch/reconciliation does not consume an iteration. retry re-runs review without repair; accept_risk is only for non-blocking findings.",
 		parameters: Type.Object({ ref: Type.String({ description: "Exact evaluation step ref" }), action: StringEnum(["continue", "retry", "request_changes", "skip", "accept_risk"] as const), prompt: Type.Optional(Type.String()) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const adapter = adapterFor(params.ref);
@@ -363,7 +363,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const workflowRef = params.ref.split("/evaluation:")[0]!;
 			active.set(workflowRef, "running"); currentRef = workflowRef; persist(workflowRef, "running");
 			await tick(ctx);
-			return result(`${params.action} recorded for ${params.ref}.`, decision);
+			return result(params.action === "request_changes" ? `Repair and automatic re-review completed for ${params.ref}.` : `${params.action} recorded for ${params.ref}.`, decision);
 		},
 	});
 

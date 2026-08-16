@@ -18,7 +18,7 @@ import { resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildReviewPersistentContext, buildTaskPersistentContext } from "./implementation-context.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType, type PlanEdit } from "./orchestrator-resources.js";
-import { normalizePlanArtifact, normalizePlanBundle, normalizePlanEdit, normalizePlanEvaluation, normalizePlanIntegrationUnit, normalizePlanTask, normalizeResourceArtifact, normalizeResourceEvaluation } from "./plan-authoring.js";
+import { normalizePlanArtifact, normalizePlanBundle, normalizePlanEdit, normalizePlanStage, normalizePlanTask, normalizeResourceArtifact } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
 import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
@@ -80,7 +80,8 @@ const boundedStructuredResult = (value: unknown, label: string) => {
 	const slice = sliceText(serialized, { limit: 12_000 });
 	return textResult(`${slice.text}${slice.page.hasMore ? `\n[${label} truncated at 12,000 characters; list and read individual child resources for the remainder.]` : ""}`, { label, page: slice.page });
 };
-const CANONICAL_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("evaluation")]);
+const CANONICAL_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("stage"), Type.Literal("evaluation")]);
+const AUTHORABLE_RESOURCE_TYPE = Type.Union([Type.Literal("work-item"), Type.Literal("artifact"), Type.Literal("task"), Type.Literal("stage")]);
 const LISTABLE_RESOURCE_TYPE = Type.Union([CANONICAL_RESOURCE_TYPE, Type.Literal("agent"), Type.Literal("message"), Type.Literal("run")]);
 const MUTATION_AUTHORITY = Type.Object({
 	rationale: Type.String(),
@@ -104,12 +105,6 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 	}, { additionalProperties: false }),
 	assembly: Type.Object({ stageId: Type.Optional(Type.String()), integrationUnit: Type.Optional(Type.String({ description: "Legacy alias for stageId" })), intermediateState: Type.Union([Type.Literal("complete"), Type.Literal("partial")]) }, { additionalProperties: false }),
 	verification: Type.Object({ timing: Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")]), methods: Type.Array(Type.String()), taskChecks: Type.Array(Type.String()), rationale: Type.String() }, { additionalProperties: false }),
-}, { additionalProperties: false });
-const EVALUATION_MANIFEST_RESOURCE = Type.Object({
-	schemaVersion: Type.Literal(1), id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
-	stageId: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())),
-	scope: Type.Union([Type.Object({ task: Type.String() }, { additionalProperties: false }), Type.Object({ integrationUnit: Type.String() }, { additionalProperties: false }), Type.Object({ workItem: Type.String() }, { additionalProperties: false })]),
-	status: Type.Literal("planned"), required: Type.Boolean(), attempt: Type.Literal(0), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String({ description: "Qualified artifact-id#AC-NNN reference; omit when no specification criterion applies" }))),
 }, { additionalProperties: false });
 const INTENT_SECTIONS = Type.Object({ problem: Type.String(), desiredOutcome: Type.String(), scopeIncluded: Type.Array(Type.String()), successSignals: Type.Array(Type.String()), scopeExcluded: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
 const WORKING_BRANCH_AUTHORING = { workingBranch: Type.Optional(Type.String({ description: "Explicit feature/<name> or fix/<name>; defaults to <branchKind>/<work-item-id>" })), branchKind: Type.Optional(Type.Union([Type.Literal("feature"), Type.Literal("fix")])) };
@@ -140,14 +135,12 @@ const TASK_RESOURCE_BODY = Type.Union([
 	Type.Object({ manifest: TASK_MANIFEST_RESOURCE, brief: Type.String(), acceptance: Type.String() }, { additionalProperties: false }),
 	Type.Object({ manifest: TASK_MANIFEST_RESOURCE, narrativeSchemaVersion: Type.Literal(2), briefSections: TASK_BRIEF_SECTIONS, acceptanceSections: TASK_ACCEPTANCE_SECTIONS }, { additionalProperties: false }),
 ]);
-const INTEGRATION_UNIT_RESOURCE_BODY = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String({ description: "Bare task id in this work item, not a resource reference" })), intermediatePolicy: Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")]) }, { additionalProperties: false });
-const EVALUATION_RESOURCE_BODY = Type.Object({ manifest: EVALUATION_MANIFEST_RESOURCE }, { additionalProperties: false });
+const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { minItems: 1 }), checks: Type.Optional(Type.Array(Type.String())), review: Type.Optional(Type.Object({ tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
 const CANONICAL_PLAN_BUNDLE = Type.Object({
 	workItem: WORK_ITEM_RESOURCE_BODY,
 	artifacts: Type.Array(ARTIFACT_RESOURCE_BODY),
 	tasks: Type.Array(TASK_RESOURCE_BODY),
-	integrationUnits: Type.Array(INTEGRATION_UNIT_RESOURCE_BODY),
-	evaluations: Type.Array(EVALUATION_RESOURCE_BODY),
+	stages: Type.Array(PLAN_STAGE),
 }, { additionalProperties: false });
 
 // Planner-facing authoring contracts omit harness-owned lifecycle and schema
@@ -211,19 +204,11 @@ const LEGACY_PLAN_TASK = Type.Object({
 	acceptanceSections: Type.Object({ deliverables: Type.Optional(Type.Array(Type.String())), criterionContributions: Type.Array(Type.Object({ criteria: Type.Array(Type.String()), contribution: Type.String() }, { additionalProperties: false })), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
 }, { additionalProperties: false });
 const PLAN_TASK = Type.Union([SELF_CONTAINED_PLAN_TASK, LEGACY_PLAN_TASK]);
-const PLAN_INTEGRATION_UNIT = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String()), intermediatePolicy: Type.Optional(Type.Union([Type.Literal("coherent"), Type.Literal("partial-allowed")])) }, { additionalProperties: false });
-const PLAN_EVALUATION = Type.Object({
-	id: Type.String(), type: Type.Union([Type.Literal("deterministic"), Type.Literal("spec-review"), Type.Literal("quality-review"), Type.Literal("combined-review"), Type.Literal("regression"), Type.Literal("e2e")]),
-	stageId: Type.Optional(Type.String({ description: "Explicit execution stage for this planner graph node" })), dependsOn: Type.Optional(Type.Array(Type.String({ description: "True task or evaluation blockers" }))),
-	scope: Type.Optional(Type.Union([Type.Object({ task: Type.String() }, { additionalProperties: false }), Type.Object({ integrationUnit: Type.String() }, { additionalProperties: false }), Type.Object({ workItem: Type.String() }, { additionalProperties: false })])),
-	required: Type.Optional(Type.Boolean()), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String())),
-}, { additionalProperties: false });
 const PLAN_BUNDLE = Type.Object({
 	workItem: PLAN_WORK_ITEM,
 	artifacts: Type.Optional(Type.Array(PLAN_ARTIFACT)),
 	tasks: Type.Array(PLAN_TASK),
-	integrationUnits: Type.Optional(Type.Array(PLAN_INTEGRATION_UNIT)),
-	evaluations: Type.Optional(Type.Array(PLAN_EVALUATION)),
+	stages: Type.Array(PLAN_STAGE),
 }, { additionalProperties: false });
 const PLAN_EDIT = Type.Object({
 	action: Type.Union([Type.Literal("create"), Type.Literal("update"), Type.Literal("delete")]),
@@ -242,8 +227,7 @@ const CREATE_OPERATION_VARIANTS = [
 	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("artifact"), parent: Type.String(), body: ARTIFACT_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("task"), parent: Type.String(), body: TASK_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("integration-unit"), parent: Type.String(), body: INTEGRATION_UNIT_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("evaluation"), parent: Type.String(), body: EVALUATION_RESOURCE_BODY, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("create"), resource: Type.Literal("stage"), parent: Type.String(), body: PLAN_STAGE, authority: Type.Optional(MUTATION_AUTHORITY) }, { additionalProperties: false }),
 ] as const;
 const TASK_MANIFEST_PATCH = Type.Object({ title: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())), references: Type.Optional(Type.Record(Type.String(), Type.Unknown())), execution: Type.Optional(Type.Record(Type.String(), Type.Unknown())), assembly: Type.Optional(Type.Record(Type.String(), Type.Unknown())), verification: Type.Optional(Type.Record(Type.String(), Type.Unknown())) }, { additionalProperties: false });
 const TASK_PATCH_BODY = Type.Object({
@@ -254,22 +238,19 @@ const PATCH_RESOURCE_PARAMETERS = Type.Union([
 	Type.Object({ resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("artifact"), ref: Type.String(), patch: Type.Object({ type: Type.Optional(Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")])), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), title: Type.Optional(Type.String()), content: Type.Optional(Type.String()), sections: Type.Optional(Type.Record(Type.String(), Type.Unknown())), links: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("task"), ref: Type.String(), patch: TASK_PATCH_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("integration-unit"), ref: Type.String(), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("evaluation"), ref: Type.String(), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("stage"), ref: Type.String(), patch: Type.Partial(PLAN_STAGE), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 ]);
 const PATCH_OPERATION_VARIANTS = [
 	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("artifact"), ref: Type.String(), patch: Type.Record(Type.String(), Type.Unknown()) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("task"), ref: Type.String(), patch: TASK_PATCH_BODY }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("integration-unit"), ref: Type.String(), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY) }, { additionalProperties: false }),
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("evaluation"), ref: Type.String(), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("stage"), ref: Type.String(), patch: Type.Partial(PLAN_STAGE) }, { additionalProperties: false }),
 ] as const;
 const CREATE_RESOURCE_PARAMETERS = Type.Union([
 	Type.Object({ resource: Type.Literal("work-item"), body: WORK_ITEM_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("artifact"), parent: Type.String(), body: ARTIFACT_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("task"), parent: Type.String(), body: TASK_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("integration-unit"), parent: Type.String(), body: INTEGRATION_UNIT_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
-	Type.Object({ resource: Type.Literal("evaluation"), parent: Type.String(), body: EVALUATION_RESOURCE_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("stage"), parent: Type.String(), body: PLAN_STAGE, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 ]);
 const APPLY_CHANGE_PARAMETERS = Type.Object({
 	authority: MUTATION_AUTHORITY,
@@ -315,7 +296,7 @@ function idFromTitle(value: unknown): string | undefined {
 }
 
 function compactResourceBody(resource: CanonicalResourceType, value: Record<string, unknown>, parent?: string): Record<string, unknown> {
-	const withId = value.id === undefined && (resource === "artifact" || resource === "task" || resource === "evaluation")
+	const withId = value.id === undefined && (resource === "artifact" || resource === "task" || resource === "stage")
 		? { ...value, id: idFromTitle(value.title) }
 		: value;
 	if (resource === "artifact") {
@@ -324,13 +305,8 @@ function compactResourceBody(resource: CanonicalResourceType, value: Record<stri
 		return normalizePlanArtifact(authored);
 	}
 	if (resource === "task") { assertExactSchema(PLAN_TASK, withId, "task"); return normalizePlanTask(withId); }
-	if (resource === "integration-unit") { assertExactSchema(PLAN_INTEGRATION_UNIT, withId, "integration unit"); return normalizePlanIntegrationUnit(withId); }
-	if (resource === "evaluation") {
-		if (!parent) throw new HarnessError("INVALID_ARTIFACT", "Evaluation creation requires a work-item parent");
-		const authored = normalizeResourceEvaluation(withId, parseResourceRef(parent).workItemId);
-		assertExactSchema(PLAN_EVALUATION, authored, "evaluation");
-		return normalizePlanEvaluation(authored, parseResourceRef(parent).workItemId);
-	}
+	if (resource === "stage") { assertExactSchema(PLAN_STAGE, withId, "stage"); return normalizePlanStage(withId); }
+	if (resource === "evaluation") throw new HarnessError("CAPABILITY_DENIED", "Evaluation resources are runtime-owned");
 	assertExactSchema(RESOURCE_WORK_ITEM, withId, "work item");
 	return { id: withId.id, title: withId.title, kind: withId.kind ?? "story", ...(withId.workingBranch ? { workingBranch: withId.workingBranch } : {}), ...(withId.branchKind ? { branchKind: withId.branchKind } : {}), narrativeSchemaVersion: 2, intentSections: withId.intentSections };
 }
@@ -339,7 +315,7 @@ function createdResourceRef(resource: CanonicalResourceType, parent: string | un
 	if (resource === "work-item") return `work-item:${body.id}`;
 	if (!parent) throw new HarnessError("INVALID_ARTIFACT", `${resource} creation requires parent`);
 	const workItemId = parseResourceRef(parent).workItemId;
-	const id = resource === "task" || resource === "evaluation" ? body.manifest?.id : body.id;
+	const id = resource === "task" ? body.manifest?.id : body.id;
 	if (typeof id !== "string") throw new HarnessError("INVALID_ARTIFACT", `${resource} body is missing its id`);
 	return `work-item:${workItemId}/${resource}:${id}`;
 }
@@ -675,11 +651,12 @@ export default function workflow(pi: ExtensionAPI): void {
 		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No repair model is available");
 		const existing = loop.fixerAgentId ? await runtime.agents.get(loop.fixerAgentId).catch(() => undefined) : undefined;
+		const repairIteration = loop.iteration + 1;
 		const persistentContext = await buildReviewPersistentContext(runtime.workItems, workItemId, evaluation);
 		const launched = await runtime.coordinator.launch({
-			operationId: `repair:${workItemId}:${evaluationId}:${loop.iteration}`, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
-			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }),
-			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: loop.iteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
+			operationId: `repair:${workItemId}:${evaluationId}:${repairIteration}`, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
+			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }),
+			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
 			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
 			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
@@ -688,7 +665,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
 		await assertCleanRepository(runtime.identity.root);
 		await runtime.mutex.run(`repair-settled:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "rereviewing", fixerAgentId: launched.agent.id }, "planned"));
-		return textResult(`Repair iteration ${loop.iteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: launched.agent.id, iteration: loop.iteration });
+		return textResult(`Repair iteration ${repairIteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: launched.agent.id, iteration: repairIteration });
 	};
 
 	const launchManagedEvaluation = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
@@ -700,7 +677,8 @@ export default function workflow(pi: ExtensionAPI): void {
 		const agentName = evaluation.type === "e2e" ? "e2e-tester" : "code-reviewer";
 		const agentDefinition = runtime.config.agents[agentName];
 		if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", `Missing evaluator agent definition: ${agentName}`);
-		const routing = { tier: agentDefinition.tier! };
+		const stagePolicy = evaluation.checkpoint === "stage-review" ? item.executionStages?.find((stage) => stage.id === evaluation.stageId)?.review : undefined;
+		const routing = { tier: evaluation.checkpoint === "stage-review" ? (stagePolicy?.tier ?? "medium") : agentDefinition.tier! };
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
@@ -713,13 +691,14 @@ export default function workflow(pi: ExtensionAPI): void {
 			requestedModel: routing.tier, resolvedProvider: resolution.model.provider,
 			resolvedModel: resolution.model.id, resolvedEffort: resolution.effort,
 		});
+		const reviewedCommit = await runGit(runtime.identity.root, ["rev-parse", "HEAD"]);
 		const prompt = renderBuiltInPrompt("managed-evaluation", {
 			phase: evaluation.loop?.state === "rereviewing" ? `Re-review iteration ${evaluation.loop.iteration}` : "Evaluate",
 			evaluationId: evaluation.id,
 			evaluationType: evaluation.type,
 			workItemId: item.id,
 		});
-		const persistentContext = await buildReviewPersistentContext(runtime.workItems, item.id, evaluation);
+		const persistentContext = await buildReviewPersistentContext(runtime.workItems, item.id, evaluation, reviewedCommit);
 		let logicalAgentId: string | undefined = evaluation.loop?.reviewerAgentId;
 		const runEvaluator = async (taskPrompt: string) => {
 			const coordinated = await runtime.coordinator.launch({
@@ -753,7 +732,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		}
 		await runtime.mutex.run(`evaluation-loop:${evaluation.id}:${created.record.id}`, async () => {
 			await assertCleanRepository(runtime.identity.root);
-			await runtime.workItems.updateEvaluationLoop(item.id, evaluation.id, { state: evaluation.loop?.state === "rereviewing" ? "rereviewing" : "reviewing", ...(logicalAgentId ? { reviewerAgentId: logicalAgentId } : {}), reviewedCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]) });
+			await runtime.workItems.updateEvaluationLoop(item.id, evaluation.id, { state: evaluation.loop?.state === "rereviewing" ? "rereviewing" : "reviewing", ...(logicalAgentId ? { reviewerAgentId: logicalAgentId } : {}), reviewedCommit });
 		});
 		const recorded = await runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
 		await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
@@ -843,14 +822,14 @@ export default function workflow(pi: ExtensionAPI): void {
 		name: "resource_list",
 		label: "List Resources",
 		description: "List concise canonical resource summaries. Filter by type or parent work item, then use resource_read for one complete resource.",
-		promptSnippet: "List structured story, task, integration-unit, or evaluation resources",
+		promptSnippet: "List structured story, task, or stage resources",
 		parameters: Type.Object({ type: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String({ description: "Work-item ref whose children should be listed" })), query: Type.Optional(Type.String()) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			try {
 				const runtime = await runtimeFor(ctx);
 				const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
 				const workItemId = params.parent ? parseResourceRef(params.parent).workItemId : undefined;
-				const types: CanonicalResourceType[] = params.type ? [params.type as CanonicalResourceType] : ["work-item", "artifact", "task", "integration-unit", "evaluation"];
+				const types: CanonicalResourceType[] = params.type ? [params.type as CanonicalResourceType] : ["work-item", "artifact", "task", "stage", "evaluation"];
 				const resources = (await Promise.all(types.map((type) => service.listSummaries(type, workItemId)))).flat();
 				const filtered = params.query ? resources.filter((resource) => JSON.stringify(resource).toLowerCase().includes(params.query!.toLowerCase())) : resources;
 				return boundedStructuredResult({ count: filtered.length, resources: filtered }, "resource list");
@@ -871,7 +850,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				const parsed = parseResourceRef(params.ref);
 				if (parsed.type === "work-item") {
 					const resource = await service.summary(params.ref);
-					const childTypes: CanonicalResourceType[] = ["artifact", "task", "integration-unit", "evaluation"];
+					const childTypes: CanonicalResourceType[] = ["artifact", "task", "stage", "evaluation"];
 					const children = (await Promise.all(childTypes.map((type) => service.listSummaries(type, parsed.workItemId)))).flat();
 					return boundedStructuredResult({ resource, children }, params.ref);
 				}
@@ -883,9 +862,9 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "resource_write",
 		label: "Write Resource",
-		description: "Create or update one structured canonical resource. Initial work-item creation requires clean develop and creates/checks out feature/<id> by default (or fix/<id> via branchKind, or an explicit workingBranch) before the canonical write; later mutations are bound to that branch. Create with type, optional parent, and value; update with ref and value. Tasks and evaluations accept self-contained ticket-like values. Artifacts use kind spec/design/decision/e2e-matrix plus content or schema-v2 sections; specification aliases spec. IDs may be omitted for titled child resources.",
-		promptSnippet: "Create or update one structured story, task, integration-unit, or evaluation resource",
-		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
+		description: "Create or update one planner-owned resource: story artifacts, self-contained tasks, ordered stages, stage checks, and optional medium/high stage review policy. Evaluation resources are harness-owned and cannot be created here.",
+		promptSnippet: "Create or update one structured story, task, or stage resource; never create evaluations",
+		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(AUTHORABLE_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
 				requireTrusted(ctx);
@@ -902,9 +881,7 @@ export default function workflow(pi: ExtensionAPI): void {
 						const parsed = parseResourceRef(params.ref);
 						const authoredValue = parsed.type === "artifact"
 							? (() => { const normalized = normalizeResourceArtifact({ ...params.value, id: parsed.id }); return { type: normalized.type, title: normalized.title, sections: normalized.sections }; })()
-							: parsed.type === "evaluation"
-								? normalizeResourceEvaluation({ ...params.value, id: parsed.id }, parsed.workItemId)
-								: params.value;
+							: params.value;
 						const edit = normalizePlanEdit(parsed.type, "update", params.ref, authoredValue, parsed.workItemId);
 						result = await service.transaction(`harness: write ${params.ref}`, () => service.patch(params.ref!, edit.value, { authority }));
 						ref = params.ref;
@@ -1041,7 +1018,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_plan_write",
 		label: "Write Complete Workflow Plan",
-		description: "Write a structured workflow plan. Use create for a new/fresh/separate plan, update only for an explicit complete replacement, and revision-pinned edit for surgical self-review corrections without resending unchanged content. basedOn is read-only. Harness-owned defaults keep create/update compact; task brief and acceptance structure stays mandatory. Read workflow_schema operation=plan-write for exact fields.",
+		description: "Write tasks and ordered stages for a workflow plan. Stage checks and optional medium/high review policy are planner-owned; all evaluation resources are harness-owned. Use create, complete update, or revision-pinned surgical edit. Read workflow_schema operation=plan-write for exact fields.",
 		parameters: COMPACT_PLAN_WRITE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
