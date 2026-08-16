@@ -76,7 +76,7 @@ Project rules live under `.claude/rules/` or `.pi/rules/`; user rules live under
 
 ## Local services and memory
 
-`/services` reports the machine-scoped Mem0 and SearXNG services alongside the session-scoped visual companion. Services start lazily, use independent health probes, and never update during startup. `/memory-start`, `/memory-stop`, and `/memory-status` manage Mem0 directly; `/memory-audit` performs bounded advisory review without changing records. See [extensions/service-adapter/README.md](extensions/service-adapter/README.md) and [extensions/memory-adapter/README.md](extensions/memory-adapter/README.md).
+`/services` reports the machine-scoped Mem0 and SearXNG services alongside the session-scoped visual companion. Services start lazily, use independent health probes, and never update during startup. `/memory-start`, `/memory-stop`, and `/memory-status` manage Mem0 directly; automatic recall injects scored repository memories ephemerally into main-agent and spawned-subagent runs; `/memory-debug` explains the latest selection; and `/memory-audit` performs bounded advisory review without changing records. See [extensions/service-adapter/README.md](extensions/service-adapter/README.md) and [extensions/memory-adapter/README.md](extensions/memory-adapter/README.md).
 
 ## Architecture visualizer
 

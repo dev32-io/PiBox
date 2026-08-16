@@ -5,12 +5,26 @@ export interface MemoryRecord {
 	created_at?: string;
 	updated_at?: string;
 	expiration_date?: string;
+	score?: number;
+	score_details?: Record<string, unknown> | null;
 }
 
 export interface Mem0ClientOptions {
 	baseUrl: string;
 	apiKey?: string;
 	timeoutMs?: number;
+}
+
+export function loopbackMem0Url(value: string): string {
+	let url: URL;
+	try { url = new URL(value); }
+	catch { throw new Error(`Invalid PIBOX_MEM0_URL: ${value}`); }
+	const hostname = url.hostname.toLowerCase();
+	if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]", "::1"].includes(hostname)) {
+		throw new Error("PIBOX_MEM0_URL must use HTTP(S) on a loopback host.");
+	}
+	if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("PIBOX_MEM0_URL must be a loopback origin without credentials, path, query, or fragment.");
+	return url.toString().replace(/\/$/, "");
 }
 
 function recordsFrom(value: unknown): MemoryRecord[] {
@@ -42,7 +56,7 @@ export class Mem0Client {
 		headers.set("accept", "application/json");
 		if (init.body) headers.set("content-type", "application/json");
 		if (this.apiKey) headers.set("x-api-key", this.apiKey);
-		const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal: combined });
+		const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal: combined, redirect: "manual" });
 		const text = await response.text();
 		if (!response.ok) throw new Error(`Mem0 ${response.status}: ${text.slice(0, 500)}`);
 		return text ? JSON.parse(text) : undefined;
@@ -50,7 +64,7 @@ export class Mem0Client {
 
 	async health(signal?: AbortSignal): Promise<boolean> {
 		try {
-			const response = await fetch(`${this.baseUrl}/health`, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) });
+			const response = await fetch(`${this.baseUrl}/health`, { redirect: "manual", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) });
 			return response.ok;
 		} catch { return false; }
 	}

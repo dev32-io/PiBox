@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import workflow from "../index.js";
+import workflow, { WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
+
+test("loads workflow and memory context hooks explicitly in spawned agents", () => {
+	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 2);
+	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[0] ?? "", /workflow\/index\.ts$/);
+	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[1] ?? "", /memory-adapter\/index\.ts$/);
+});
 
 test("registers the resource API and hides legacy planning tools from the main session", async () => {
 	const tools: string[] = [];

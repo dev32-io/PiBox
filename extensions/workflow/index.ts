@@ -34,6 +34,8 @@ import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironme
 import { resourceDisplayDiff } from "./resource-diff.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
+const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
+export const WORKFLOW_CHILD_EXTENSION_PATHS = [WORKFLOW_EXTENSION_PATH, MEMORY_EXTENSION_PATH] as const;
 
 const WORKER_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_TASK_TOOL_GROUP]);
 const EVALUATOR_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_EVALUATION_TOOL_GROUP]);
@@ -365,7 +367,10 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager
 		operations: new IdempotencyStore(identity.privateRoot),
 		mutex: new RepositoryMutex(identity.privateRoot),
 		agents,
-		coordinator: new LaunchCoordinator(agents, mainAgentId, undefined, [WORKFLOW_EXTENSION_PATH]),
+		// Memory retrieval is an agent-context capability, not an orchestrator-only
+		// tool. Load its hooks explicitly so managed and dynamically spawned agents
+		// receive the same repository-scoped recall pipeline as the main session.
+		coordinator: new LaunchCoordinator(agents, mainAgentId, undefined, [...WORKFLOW_CHILD_EXTENSION_PATHS]),
 		sessionId,
 		mainAgentId,
 	};
