@@ -7,14 +7,14 @@ import { WorkItemStore } from "../workflow/work-items.js";
 
 const exec = promisify(execFile);
 
-/** A task-level contradiction that the orchestrator can resolve from settled story intent. */
+/** A subordinate task contradiction with exactly one resolution in reviewed story authority. */
 export async function createChangeRequestModelFixture(root: string): Promise<RoutineModelFixture> {
 	const fixture = await createRoutineModelFixture(root);
 	const store = new WorkItemStore(root);
 	await store.reviseWorkItem({
 		workItemId: fixture.workItemId,
 		title: "Preserve record identity during serialization",
-		intent: "Persisted records retain their stable `id` across serialize/deserialize round trips so references remain valid.",
+		intent: "Every serialized Record payload includes its stable `id`, and direct serialize/deserialize round trips preserve that value exactly so references remain valid.",
 		authority: { rationale: "Create benchmark change-request intent", sources: ["benchmark:change-request"] },
 	});
 	await store.putArtifact({
@@ -22,7 +22,7 @@ export async function createChangeRequestModelFixture(root: string): Promise<Rou
 		id: "record-identity",
 		type: "spec",
 		operation: "create",
-		content: "# Record identity\n\nA Record is identified by its stable `id`. Serialization and deserialization must preserve that identity exactly. Omitting the identifier without another durable identity channel violates the product contract.\n",
+		content: "# Record identity\n\nA Record is identified by its stable `id`. The approved serialized representation MUST contain an own `id` property with that exact value, and deserialization MUST preserve it. Alternate identity channels, omission, redaction, replacement, or regeneration are outside the approved contract. A subordinate task clause that requires omitting `id` is a task defect and must be removed without changing this specification.\n",
 	});
 	const manifest = await store.readTask(fixture.workItemId, fixture.taskId);
 	await store.reviseTask({
