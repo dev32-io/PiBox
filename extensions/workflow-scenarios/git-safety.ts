@@ -32,10 +32,10 @@ async function fixture() {
 	await git(root, "add", "."); await git(root, "commit", "--quiet", "-m", "initial"); await git(root, "branch", "-M", "develop");
 	const identity = await discoverRepository(root, join(parent, "home"));
 	const store = new WorkItemStore(root);
-	await store.create({ id: "merge-safety", title: "Merge safety", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Exercise atomic parallel integration" });
+	await store.create({ id: "merge-safety", title: "Merge safety", kind: "change", branchKind: "feature", intent: "Exercise atomic parallel integration" });
 	for (const id of ["left", "right"]) await store.defineTask({ workItemId: "merge-safety", manifest: task(id), brief: `${id} contribution`, acceptance: `${id} accepted` });
 	await store.submitPlanning("merge-safety");
-	const manager = new WorktreeManager(identity); await manager.prepareFeatureBranch("merge-safety");
+	const manager = new WorktreeManager(identity); await manager.validateWorkingBranch("merge-safety");
 	const allocations = new Map<string, Awaited<ReturnType<WorktreeManager["allocate"]>>>();
 	for (const id of ["left", "right"]) {
 		const allocation = await manager.allocate("merge-safety", await store.readTask("merge-safety", id));

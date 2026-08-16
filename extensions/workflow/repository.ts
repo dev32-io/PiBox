@@ -54,7 +54,7 @@ export async function discoverRepository(cwd: string, home = homedir()): Promise
 
 export async function assertCleanRepository(root: string): Promise<void> {
 	const status = await runGit(root, ["status", "--porcelain=v1", "--untracked-files=all"]);
-	if (status) throw new HarnessError("DIRTY_CANONICAL_BRANCH", "Canonical feature branch has uncommitted changes", { status });
+	if (status) throw new HarnessError("DIRTY_CANONICAL_BRANCH", "Canonical working branch has uncommitted changes", { status });
 }
 
 export async function atomicWriteFile(path: string, content: string, mode?: number): Promise<void> {

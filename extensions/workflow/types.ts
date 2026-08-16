@@ -1,17 +1,15 @@
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export type WorkItemKind = "change" | "story";
-export type DeliveryBranchType = "feature" | "fix";
-export type DeliveryBranchMode = "create" | "continue";
+export type WorkingBranchKind = "feature" | "fix";
 
 export interface WorkItemDelivery {
-	/** Optional only for legacy work items whose recorded branch remains authoritative. */
-	branchType?: DeliveryBranchType;
-	/** Optional only for legacy work items whose recorded branch remains authoritative. */
-	branchMode?: DeliveryBranchMode;
-	baseBranch: string;
-	featureBranch?: string;
-	startedAt?: string;
+	/** The sole user-facing branch identity for this work item. */
+	workingBranch: string;
+	/** Immutable harness-owned anchor captured before the working branch is created. */
+	createdFromCommit: string;
+	/** Immutable harness-owned anchor captured when execution first starts. */
+	executionStartCommit?: string;
 }
 export type WorkItemPhase = "planning" | "execution" | "evaluation" | "complete";
 export type WorkItemState = "active" | "waiting_user" | "paused" | "postponed" | "blocked" | "failed" | "complete" | "archived";

@@ -16,7 +16,7 @@ async function repository(t: test.TestContext): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "pibox-resource-api-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	await git(root, "init", "--quiet"); await git(root, "config", "user.name", "Resource Test"); await git(root, "config", "user.email", "resource@example.test");
-	await writeFile(join(root, "README.md"), "# Fixture\n"); await git(root, "add", "."); await git(root, "commit", "--quiet", "-m", "initial");
+	await writeFile(join(root, "README.md"), "# Fixture\n"); await git(root, "add", "."); await git(root, "commit", "--quiet", "-m", "initial"); await git(root, "branch", "-M", "develop");
 	return root;
 }
 function task(id = "build-app"): TaskManifest {
@@ -204,7 +204,7 @@ test("writes complete plans with explicit create and revision-pinned update iden
 	const firstTask = { manifest: task("first-task"), brief: "Build the first behavior.", acceptance: "It works." };
 	firstTask.manifest.assembly = { stageId: "first-stage", intermediateState: "complete" };
 	const createPlan = {
-		workItem: { id: "fresh-plan", title: "Fresh plan", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Create a fresh plan." },
+		workItem: { id: "fresh-plan", title: "Fresh plan", kind: "change", branchKind: "feature", intent: "Create a fresh plan." },
 		artifacts: [spec], tasks: [firstTask], integrationUnits: [{ id: "delivery", tasks: ["first-task"], intermediatePolicy: "coherent" }], evaluations: [],
 	};
 	const createBase = await git(root, "rev-parse", "HEAD");

@@ -43,7 +43,7 @@ Before writing resources, present a compact story/design checkpoint **and a cons
 
 After the user validates the checkpoint:
 
-1. Create or update the work item with `resource_write`.
+1. Create or update the work item with `resource_write`. Initial creation must occur from a clean `develop` checkout; it prepares and binds `feature/<work-item-id>` before writing. For defect work, pass `branchKind: "fix"`; pass `workingBranch` only when an explicit matching feature/fix name is required. Subsequent story mutations stay on that bound branch.
 2. Write only the specification, design, conservative touched-area `e2e-matrix`, and rare decision artifacts the story needs. Persist the exact user-approved matrix content; do not summarize or replace its cases.
 3. Read each written artifact ref back individually and check for placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between acceptance and design. A compact work-item read is not a substitute for reading its child artifacts.
 4. Correct only the affected resource. Include the persisted e2e-matrix in the story review checkpoint and resource refs.
@@ -58,6 +58,7 @@ Use these author-facing shapes; the resource API translates them to canonical st
   "value": {
     "id": "checkout",
     "title": "Reliable checkout",
+    "branchKind": "feature",
     "intentSections": {
       "problem": "Customers cannot reliably complete checkout.",
       "desiredOutcome": "A valid checkout consistently produces an order.",

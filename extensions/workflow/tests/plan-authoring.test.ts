@@ -47,7 +47,7 @@ test("expands concise self-contained task contracts", () => {
 	const plan = normalizePlanBundle({
 		workItem: {
 			id: "compact-plan", title: "Compact plan",
-			delivery: { branchType: "feature" },
+			branchKind: "feature",
 			intentSections: { problem: "Plans are verbose.", desiredOutcome: "Compact writes.", scopeIncluded: ["Planning"], successSignals: ["Structured output"] },
 		},
 		artifacts: [{ id: "behavior", type: "spec", sections: { context: "One behavior.", requiredBehaviors: ["Stay structured."], acceptanceCriteria: [{ id: "AC-001", statement: "The worker receives structured context." }] } }],
@@ -62,7 +62,8 @@ test("expands concise self-contained task contracts", () => {
 		}],
 	});
 	assert.equal(plan.workItem.kind, "story");
-	assert.deepEqual(plan.workItem.delivery, { branchType: "feature", branchMode: "create", baseBranch: "develop" });
+	assert.equal(plan.workItem.branchKind, "feature");
+	assert.equal(plan.workItem.delivery, undefined);
 	assert.equal(plan.workItem.narrativeSchemaVersion, 2);
 	const task = plan.tasks[0] as any;
 	assert.equal(task.narrativeSchemaVersion, 2);
@@ -82,14 +83,14 @@ test("expands concise self-contained task contracts", () => {
 
 test("requires explicit justification for high and max planner routing", () => {
 	assert.throws(() => normalizePlanBundle({
-		workItem: { id: "high-plan", title: "High plan", delivery: { branchType: "feature" }, intentSections: { problem: "Complexity.", desiredOutcome: "Bounded work.", scopeIncluded: ["One slice"], successSignals: ["Tests"] } },
+		workItem: { id: "high-plan", title: "High plan", branchKind: "feature", intentSections: { problem: "Complexity.", desiredOutcome: "Bounded work.", scopeIncluded: ["One slice"], successSignals: ["Tests"] } },
 		tasks: [{ id: "high-task", goal: "Do the bounded work.", included: ["One vertical slice"], acceptance: ["The slice works."], assignment: { tier: "high" } }],
 	}), /tierJustification/);
 });
 
 test("keeps legacy artifact-referenced task plans readable", () => {
 	const plan = normalizePlanBundle({
-		workItem: { id: "legacy-plan", title: "Legacy plan", delivery: { branchType: "feature" }, intentSections: { problem: "Legacy task.", desiredOutcome: "Remain readable.", scopeIncluded: ["Compatibility"], successSignals: ["Normalization succeeds"] } },
+		workItem: { id: "legacy-plan", title: "Legacy plan", branchKind: "feature", intentSections: { problem: "Legacy task.", desiredOutcome: "Remain readable.", scopeIncluded: ["Compatibility"], successSignals: ["Normalization succeeds"] } },
 		artifacts: [{ id: "behavior", type: "spec", sections: { context: "Legacy behavior.", requiredBehaviors: ["Remain compatible."], acceptanceCriteria: [{ id: "AC-001", statement: "The task remains readable." }] } }],
 		tasks: [{ id: "legacy-task", briefSections: { contributionGoal: "Keep compatibility.", boundaryIncluded: ["Legacy task"] }, acceptanceSections: { criterionContributions: [{ criteria: ["behavior#AC-001"], contribution: "Preserve behavior." }], boundaryProof: ["Compatibility test passes"] } }],
 	});

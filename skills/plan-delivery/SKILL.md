@@ -15,7 +15,7 @@ Read the compact work item, then read each intent, specification, design, decisi
 
 ## Plan the Delivery
 
-1. **Map the seams first** — Inspect the repository before naming tickets. Record the relevant module/file responsibilities, current entry points, data/control flow, compatibility constraints, migration needs, and meaningful proof seams in your planning notes. This map is an input to decomposition, not a ticket for reconnaissance. Set the work item's delivery contract with `resource_write`: `feature` for capabilities/refactors or `fix` for defects, and `create` from `develop` or `continue` on the explicitly current feature/fix branch.
+1. **Map the seams first** — Inspect the repository before naming tickets. Record the relevant module/file responsibilities, current entry points, data/control flow, compatibility constraints, migration needs, and meaningful proof seams in your planning notes. This map is an input to decomposition, not a ticket for reconnaissance. Confirm the work item's immutable `workingBranch` binding and remain on it; delivery planning never creates, switches, or rewrites branches.
 2. **Cut tracer bullets and decompose vertical slices** — Cut the smallest coherent, independently useful slices that pass through every layer and focused test their behavior needs. Every completed task must leave a runnable, demonstrable behavior—not merely scaffolding, domain types, storage, API plumbing, or UI components waiting for a later task. In a greenfield repository, combine setup with the first user-visible vertical slice. Use a preparatory task only when no safe vertical slice can keep the branch green, and state the concrete reason. Split work when it contains multiple independently reviewable outcomes, distinct state machines, or separate domains; do not split merely to increase task count. Prefactor-only work is an exception when the seam is required to make the first slice safe, and expand–migrate–contract is an exception when compatibility requires ordered intermediate states.
 3. **Write complete tickets for one fresh worker** — Each ticket must be executable in one fresh worker context without reconstructing its assignment from artifact references. Give it one contribution goal, context, included and excluded boundary, and explicit ordered concrete implementation/test steps in `requiredWork` (or the equivalent structured required-work field). State interfaces consumed and produced, constraints, observable acceptance, the proof seam that demonstrates it, checks, and integration expectation. Include relevant requirements directly; `task_clarify` is an escape hatch for a genuine uncertainty, not a substitute for a complete contract.
 4. **Arrange delivery for parallelism** — Parallel is the default: put independent implementation and evaluation nodes in the same stage and declare only true blockers in `dependsOn` (a required predecessor/interface, compatibility migration order, or unavoidable shared resource). Do not serialize work for convenience or model strength. Nodes in one stage are the parallel frontier; they must not depend on each other or claim incompatible shared resources; the runtime derives repository versus worktree isolation from the reviewed stage graph.
@@ -27,19 +27,7 @@ Read the compact work item, then read each intent, specification, design, decisi
 
 ## Resource Examples
 
-Set delivery without rewriting the story:
-
-```json
-{
-  "ref": "work-item:checkout",
-  "value": {
-    "delivery": {
-      "branchType": "feature",
-      "branchMode": "create"
-    }
-  }
-}
-```
+The work item's `workingBranch` was established during initial story creation. Do not write branch lifecycle fields during planning.
 
 Create one self-contained task. Use this shape as a guide and omit optional fields that add no information:
 

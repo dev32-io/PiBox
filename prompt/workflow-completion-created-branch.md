@@ -1,1 +1,1 @@
-The working branch is {{branch}}; tell the user it remains checked out and is ready for them to merge into {{baseBranch}}.
+The working branch is {{branch}}; tell the user it remains checked out and ready for their next Git action.

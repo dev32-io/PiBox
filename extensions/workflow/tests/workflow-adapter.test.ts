@@ -32,14 +32,14 @@ test("workflow preparation serializes branch setup, execution state, and task ac
 		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { insideMutex = true; try { return await operation(); } finally { insideMutex = false; } } },
 		agents: { async list() { return []; } },
 	};
-	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), prepareFeatureBranch: async () => { calls.push(`branch:${insideMutex}`); } });
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), validateWorkingBranch: async () => { calls.push(`branch:${insideMutex}`); } });
 	await adapter.prepareWorkflow?.("work-item:example", {} as any);
 	assert.deepEqual(calls, ["submit:true", "branch:true", "begin:true", "final:true", "activate:true"]);
 });
 
 test("resume prepares stopped tasks from current dependency state", async () => {
 	const tasks: any[] = [task("first", "integrated"), task("second", "cancelled", ["first"]), task("third", "failed", ["second"])];
-	const item: any = { id: "example", planning: { revision: 1 }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
+	const item: any = { id: "example", planning: { revision: 1 }, delivery: { workingBranch: "feature/example", createdFromCommit: "a".repeat(40) }, tasks: tasks.map(({ id }) => ({ id })), integrationUnits: [], evaluations: [] };
 	const updates: Array<[string, string]> = [];
 	const runtime: any = {
 		identity: { root: "/repo" },
@@ -55,7 +55,7 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { return operation(); } },
 		agents: { async list() { return []; } },
 	};
-	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), prepareFeatureBranch: async () => {} });
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), validateWorkingBranch: async () => {} });
 	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
 	assert.deepEqual(updates, [["second", "ready"], ["third", "blocked"]]);
 });
@@ -90,7 +90,7 @@ test("derives task, integration, and evaluation steps without mutating canonical
 	let tasks: any[] = [task("first", "ready"), task("second", "blocked", ["first"])];
 	let evaluation: any = { id: "review", status: "planned", scope: { integrationUnit: "delivery" } };
 	let agents: any[] = [];
-	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, delivery: { baseBranch: "main", featureBranch: "feature/example" }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, delivery: { workingBranch: "feature/example", createdFromCommit: "a".repeat(40) }, tasks: [{ id: "first" }, { id: "second" }], executionStages: [{ id: "delivery", tasks: ["first", "second"] }], integrationUnits: [{ id: "delivery", tasks: ["first", "second"] }], evaluations: [{ id: "review" }] };
 	const runtime: any = {
 		identity: { root: "/repo" },
 		workItems: { async read() { return item; }, async activateDraftTasks() { throw new Error("snapshot must be read-only"); }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } },
@@ -143,7 +143,7 @@ test("derives singleton repository execution and parallel stage merge barriers",
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:topology", {} as any);
 	const first = snapshot.steps.find((step) => step.ref.endsWith("task:first"))!;
-	assert.equal(first.parallelism, "serial"); assert.deepEqual(first.resourceClaims, ["feature-branch"]);
+	assert.equal(first.parallelism, "serial"); assert.deepEqual(first.resourceClaims, ["working-branch"]);
 	tasks[0].status = "merged";
 	snapshot = await adapter.snapshot("work-item:topology", {} as any);
 	for (const id of ["left", "right"]) { const step = snapshot.steps.find((candidate) => candidate.ref.endsWith(`task:${id}`))!; assert.equal(step.status, "ready"); assert.equal(step.parallelism, "allowed"); assert.deepEqual(step.resourceClaims, [id]); }

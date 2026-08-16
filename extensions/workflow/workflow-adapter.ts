@@ -27,7 +27,7 @@ export interface HarnessWorkflowAdapterOptions {
 	launchIntegrationRepair?(ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
-	prepareFeatureBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
+	validateWorkingBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
 }
 
@@ -87,8 +87,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const runtime = await options.runtimeFor(ctx);
 			await runtime.mutex.run(`workflow-begin:${match[1]}`, async () => {
 				await runtime.workItems.submitPlanning(match[1]!);
-				if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, match[1]!);
-				else await new WorktreeManager(runtime.identity).prepareFeatureBranch(match[1]!);
+				if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, match[1]!);
+				else await new WorktreeManager(runtime.identity).validateWorkingBranch(match[1]!);
 				await runtime.workItems.beginExecution(match[1]!);
 				await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? 2);
 				await runtime.workItems.activateDraftTasks(match[1]!);
@@ -106,11 +106,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				worktreeGuidance: worktrees.length
 					? renderBuiltInPrompt("workflow-completion-worktrees-retained", { count: worktrees.length, modified: modifiedWorktrees ? ` (${modifiedWorktrees} modified)` : "" })
 					: readBuiltInPrompt("workflow-completion-worktrees-none"),
-				branchGuidance: item.delivery?.branchMode === "continue"
-					? renderBuiltInPrompt("workflow-completion-continued-branch", { branch: item.delivery.featureBranch ?? "the recorded ongoing branch" })
-					: item.delivery?.featureBranch
-						? renderBuiltInPrompt("workflow-completion-created-branch", { branch: item.delivery.featureBranch, baseBranch: item.delivery.baseBranch })
-						: readBuiltInPrompt("workflow-completion-unknown-branch"),
+				branchGuidance: item.delivery?.workingBranch
+					? renderBuiltInPrompt("workflow-completion-created-branch", { branch: item.delivery.workingBranch })
+					: readBuiltInPrompt("workflow-completion-unknown-branch"),
 			});
 		},
 		async snapshot(ref, ctx): Promise<WorkflowSnapshot> {
@@ -150,7 +148,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					...mapped,
 					dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(topology.stageIndex > 0 ? stages[topology.stageIndex - 1]!.tasks.map((id) => `work-item:${item.id}/task:${id}`) : [])],
 					parallelism: isMergeState ? "serial" : topology.parallelism,
-					resourceClaims: isMergeState || topology.isolation === "repository" ? ["feature-branch"] : task.execution.resourceClaims,
+					resourceClaims: isMergeState || topology.isolation === "repository" ? ["working-branch"] : task.execution.resourceClaims,
 				};
 			});
 			const finalJourneyRefs = evaluations
@@ -216,7 +214,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const task = await runtime.workItems.readTask(workItemId!, id!);
 				if (["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) {
 					const merged = await runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
-					return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the feature branch as ${merged.commit.slice(0, 12)}.` };
+					return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the working branch as ${merged.commit.slice(0, 12)}.` };
 				}
 				const launched = await options.launchTask(ctx, workItemId!, id!);
 				const run = launched.details?.run; const state = run?.state === "completed" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
@@ -269,8 +267,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			if (action === "resume") {
 				const item = await runtime.mutex.run(`workflow-begin:${workItemId}`, async () => {
 					await runtime.workItems.submitPlanning(workItemId);
-					if (options.prepareFeatureBranch) await options.prepareFeatureBranch(runtime, workItemId);
-					else await new WorktreeManager(runtime.identity).prepareFeatureBranch(workItemId);
+					if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, workItemId);
+					else await new WorktreeManager(runtime.identity).validateWorkingBranch(workItemId);
 					const begun = await runtime.workItems.beginExecution(workItemId);
 					await runtime.workItems.ensureFinalEvaluations(workItemId, runtime.config?.limits.repairRounds ?? 2);
 					await runtime.workItems.activateDraftTasks(workItemId);

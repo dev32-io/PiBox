@@ -56,7 +56,7 @@ export async function createRoutineModelFixture(root: string): Promise<RoutineMo
 	await writeFile(join(root, "README.md"), "# Workflow model benchmark fixture\n\nImplement the reviewed slug behavior through the managed workflow.\n");
 	await git(root, "add", "."); await git(root, "commit", "--quiet", "-m", "model benchmark fixture");
 	const store = new WorkItemStore(root); const workItemId = "routine-slugify";
-	await store.create({ id: workItemId, title: "Stable slug formatting", kind: "change", delivery: { branchType: "feature", branchMode: "create", baseBranch: "develop" }, intent: "Normalize display text into stable lowercase URL-safe slugs." });
+	await store.create({ id: workItemId, title: "Stable slug formatting", kind: "change", branchKind: "feature", intent: "Normalize display text into stable lowercase URL-safe slugs." });
 	await store.putArtifact({ workItemId, id: "slugify-e2e-matrix", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Slugify E2E matrix", sections: { scope: ["Touched slug normalization behavior"], cases: [{ id: "E2E-001", classification: "golden-path", journey: "Normalize representative display text", setup: ["Use the repository fixture"], actions: ["Run npm test"], expectedOutcomes: ["Representative text and repeated separators normalize exactly as specified"], evidence: ["Node test output and inspected exported behavior"], safety: ["Use only fixture input"] }] }, operation: "create" });
 	const manifest: TaskManifest = {
 		schemaVersion: 1, id: "implement-slugify", title: "Implement stable slug formatting", status: "draft", dependsOn: [],

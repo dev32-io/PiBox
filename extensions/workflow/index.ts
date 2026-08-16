@@ -112,7 +112,7 @@ const EVALUATION_MANIFEST_RESOURCE = Type.Object({
 	status: Type.Literal("planned"), required: Type.Boolean(), attempt: Type.Literal(0), methods: Type.Array(Type.String()), criteria: Type.Optional(Type.Array(Type.String({ description: "Qualified artifact-id#AC-NNN reference; omit when no specification criterion applies" }))),
 }, { additionalProperties: false });
 const INTENT_SECTIONS = Type.Object({ problem: Type.String(), desiredOutcome: Type.String(), scopeIncluded: Type.Array(Type.String()), successSignals: Type.Array(Type.String()), scopeExcluded: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
-const DELIVERY_CONTRACT = Type.Object({ branchType: Type.Union([Type.Literal("feature"), Type.Literal("fix")]), branchMode: Type.Union([Type.Literal("create"), Type.Literal("continue")]), baseBranch: Type.Literal("develop"), featureBranch: Type.Optional(Type.String({ description: "Required for continue; optional for create, which defaults to <branchType>/<work-item-id>" })) }, { additionalProperties: false });
+const WORKING_BRANCH_AUTHORING = { workingBranch: Type.Optional(Type.String({ description: "Explicit feature/<name> or fix/<name>; defaults to <branchKind>/<work-item-id>" })), branchKind: Type.Optional(Type.Union([Type.Literal("feature"), Type.Literal("fix")])) };
 const SPEC_SECTIONS = Type.Object({ context: Type.String(), domainLanguage: Type.Optional(Type.Array(Type.String())), actors: Type.Optional(Type.Array(Type.String())), requiredBehaviors: Type.Array(Type.String()), acceptanceCriteria: Type.Array(Type.Object({ id: Type.String({ description: "AC-NNN" }), statement: Type.String() }, { additionalProperties: false })), scenarios: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), edgeCases: Type.Optional(Type.Array(Type.String())), assumptions: Type.Optional(Type.Array(Type.String())), outOfScope: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
 const DESIGN_SECTIONS = Type.Object({ designGoal: Type.String(), chosenApproach: Type.Array(Type.String()), verificationBoundaries: Type.Array(Type.String()), componentsAndInterfaces: Type.Optional(Type.Array(Type.String())), dataAndControlFlow: Type.Optional(Type.Array(Type.String())), failureAndRecovery: Type.Optional(Type.Array(Type.String())), securityAndPrivacy: Type.Optional(Type.Array(Type.String())), compatibilityAndMigration: Type.Optional(Type.Array(Type.String())), alternativesConsidered: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.Unknown())) }, { additionalProperties: false });
 const DECISION_SECTIONS = Type.Object({ decision: Type.String(), context: Type.String(), rationale: Type.String(), consequences: Type.Array(Type.String()), alternativesConsidered: Type.Optional(Type.Array(Type.String())), revisitWhen: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
@@ -121,8 +121,8 @@ const LEGACY_TASK_ACCEPTANCE_SECTIONS = Type.Object({ deliverables: Type.Array(T
 const SELF_CONTAINED_TASK_ACCEPTANCE_SECTIONS = Type.Object({ deliverables: Type.Array(Type.String()), acceptance: Type.Array(Type.String()), boundaryProof: Type.Optional(Type.Array(Type.String())), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false });
 const TASK_ACCEPTANCE_SECTIONS = Type.Union([SELF_CONTAINED_TASK_ACCEPTANCE_SECTIONS, LEGACY_TASK_ACCEPTANCE_SECTIONS]);
 const WORK_ITEM_RESOURCE_BODY = Type.Union([
-	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, narrativeSchemaVersion: Type.Literal(2), intentSections: INTENT_SECTIONS }, { additionalProperties: false }),
-	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), delivery: DELIVERY_CONTRACT, intent: Type.String() }, { additionalProperties: false }),
+	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), ...WORKING_BRANCH_AUTHORING, narrativeSchemaVersion: Type.Literal(2), intentSections: INTENT_SECTIONS }, { additionalProperties: false }),
+	Type.Object({ id: Type.String(), title: Type.String(), kind: Type.Union([Type.Literal("change"), Type.Literal("story")]), ...WORKING_BRANCH_AUTHORING, intent: Type.String() }, { additionalProperties: false }),
 ]);
 const E2E_MATRIX_SECTIONS = Type.Object({
 	scope: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
@@ -156,17 +156,14 @@ const RESOURCE_WORK_ITEM = Type.Object({
 	id: Type.String({ description: "Bare kebab-case work-item id" }),
 	title: Type.String(),
 	kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])),
+	...WORKING_BRANCH_AUTHORING,
 	intentSections: INTENT_SECTIONS,
 }, { additionalProperties: false });
 const PLAN_WORK_ITEM = Type.Object({
 	id: Type.String({ description: "Bare kebab-case work-item id" }),
 	title: Type.String(),
 	kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])),
-	delivery: Type.Object({
-		branchType: Type.Union([Type.Literal("feature"), Type.Literal("fix")]),
-		branchMode: Type.Optional(Type.Union([Type.Literal("create"), Type.Literal("continue")])),
-		featureBranch: Type.Optional(Type.String({ description: "Required only when branchMode=continue" })),
-	}, { additionalProperties: false }),
+	...WORKING_BRANCH_AUTHORING,
 	intentSections: INTENT_SECTIONS,
 }, { additionalProperties: false });
 const PLAN_ARTIFACT = Type.Union([
@@ -254,14 +251,14 @@ const TASK_PATCH_BODY = Type.Object({
 	brief: Type.Optional(Type.String()), acceptance: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), briefSections: Type.Optional(TASK_BRIEF_SECTIONS), acceptanceSections: Type.Optional(TASK_ACCEPTANCE_SECTIONS),
 }, { additionalProperties: false });
 const PATCH_RESOURCE_PARAMETERS = Type.Union([
-	Type.Object({ resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), delivery: Type.Optional(DELIVERY_CONTRACT), intent: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
+	Type.Object({ resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("artifact"), ref: Type.String(), patch: Type.Object({ type: Type.Optional(Type.Union([Type.Literal("spec"), Type.Literal("design"), Type.Literal("decision")])), narrativeSchemaVersion: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2)])), title: Type.Optional(Type.String()), content: Type.Optional(Type.String()), sections: Type.Optional(Type.Record(Type.String(), Type.Unknown())), links: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("task"), ref: Type.String(), patch: TASK_PATCH_BODY, authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("integration-unit"), ref: Type.String(), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 	Type.Object({ resource: Type.Literal("evaluation"), ref: Type.String(), patch: Type.Object({ manifest: Type.Partial(EVALUATION_MANIFEST_RESOURCE) }, { additionalProperties: false }), authority: MUTATION_AUTHORITY }, { additionalProperties: false }),
 ]);
 const PATCH_OPERATION_VARIANTS = [
-	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), delivery: Type.Optional(DELIVERY_CONTRACT), intent: Type.Optional(Type.String()), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }) }, { additionalProperties: false }),
+	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("work-item"), ref: Type.String(), patch: Type.Object({ title: Type.Optional(Type.String()), kind: Type.Optional(Type.Union([Type.Literal("change"), Type.Literal("story")])), intent: Type.Optional(Type.String()), intentSections: Type.Optional(INTENT_SECTIONS) }, { additionalProperties: false }) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("artifact"), ref: Type.String(), patch: Type.Record(Type.String(), Type.Unknown()) }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("task"), ref: Type.String(), patch: TASK_PATCH_BODY }, { additionalProperties: false }),
 	Type.Object({ method: Type.Literal("patch"), resource: Type.Literal("integration-unit"), ref: Type.String(), patch: Type.Partial(INTEGRATION_UNIT_RESOURCE_BODY) }, { additionalProperties: false }),
@@ -335,7 +332,7 @@ function compactResourceBody(resource: CanonicalResourceType, value: Record<stri
 		return normalizePlanEvaluation(authored, parseResourceRef(parent).workItemId);
 	}
 	assertExactSchema(RESOURCE_WORK_ITEM, withId, "work item");
-	return { id: withId.id, title: withId.title, kind: withId.kind ?? "story", narrativeSchemaVersion: 2, intentSections: withId.intentSections };
+	return { id: withId.id, title: withId.title, kind: withId.kind ?? "story", ...(withId.workingBranch ? { workingBranch: withId.workingBranch } : {}), ...(withId.branchKind ? { branchKind: withId.branchKind } : {}), narrativeSchemaVersion: 2, intentSections: withId.intentSections };
 }
 
 function createdResourceRef(resource: CanonicalResourceType, parent: string | undefined, body: Record<string, any>): string {
@@ -637,7 +634,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 		const resolution = resolveHarnessModel(runtime.config, available, { tier: "medium" });
 		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No medium repair model is available");
-		const prompt = `Resolve the rolled-back Git integration conflict for stage ${stageId} (${taskIds.join(", ")}). The feature branch is clean and contributor branches remain intact. Reproduce the stage merge from those branches, resolve only the resulting conflicts, commit the integrated result, run the declared checks, and report exact commands and results. Private conflict evidence is retained at ${evidencePath}; inspect only the bounded portions needed for the resolution and do not copy it into reports. Do not alter task topology or spawn another agent.`;
+		const prompt = `Resolve the rolled-back Git integration conflict for stage ${stageId} (${taskIds.join(", ")}). The working branch is clean and contributor branches remain intact. Reproduce the stage merge from those branches, resolve only the resulting conflicts, commit the integrated result, run the declared checks, and report exact commands and results. Private conflict evidence is retained at ${evidencePath}; inspect only the bounded portions needed for the resolution and do not copy it into reports. Do not alter task topology or spawn another agent.`;
 		const launched = await runtime.coordinator.launch({
 			operationId: `integration-repair:${workItemId}:${stageId}`, role: "repair-implementer", task: prompt,
 			assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt }, cwd: runtime.identity.root,
@@ -886,7 +883,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "resource_write",
 		label: "Write Resource",
-		description: "Create or update one structured canonical resource. Create with type, optional parent, and value; update with ref and value. Tasks and evaluations accept self-contained ticket-like values. Artifacts use kind spec/design/decision/e2e-matrix plus content or schema-v2 sections; specification aliases spec. IDs may be omitted for titled child resources.",
+		description: "Create or update one structured canonical resource. Initial work-item creation requires clean develop and creates/checks out feature/<id> by default (or fix/<id> via branchKind, or an explicit workingBranch) before the canonical write; later mutations are bound to that branch. Create with type, optional parent, and value; update with ref and value. Tasks and evaluations accept self-contained ticket-like values. Artifacts use kind spec/design/decision/e2e-matrix plus content or schema-v2 sections; specification aliases spec. IDs may be omitted for titled child resources.",
 		promptSnippet: "Create or update one structured story, task, integration-unit, or evaluation resource",
 		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(CANONICAL_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
@@ -1259,7 +1256,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "task_integrate",
 		label: "Merge Workflow Task",
-		description: "Compatibility merge capability. Merge one accepted task contribution into the checked-out feature branch and run its declared post-merge checks.",
+		description: "Compatibility merge capability. Merge one accepted task contribution into the checked-out working branch and run its declared post-merge checks.",
 		parameters: Type.Object({ workItemId: Type.String(), integrationUnit: Type.String({ description: "Legacy parameter containing the task id to merge." }), checks: Type.Optional(Type.Array(Type.String({ description: "Optional shell-command override; omitted uses the task manifest's declared checks." }))) }),
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -1269,7 +1266,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					const manager = new WorktreeManager(runtime.identity);
 					const integrated = await manager.mergeTask(params.workItemId, params.integrationUnit, params.checks);
 					await runtime.events.append("task.merged", integrated);
-					return textResult(`Merged ${integrated.taskId} into the feature branch as ${integrated.commit.slice(0, 12)}.`, integrated);
+					return textResult(`Merged ${integrated.taskId} into the working branch as ${integrated.commit.slice(0, 12)}.`, integrated);
 				});
 			} catch (error) {
 				throw new Error(describeHarnessError(error));

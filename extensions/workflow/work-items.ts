@@ -8,7 +8,7 @@ import { HarnessError } from "./errors.js";
 import { validateExecutionTopology } from "./execution-topology.js";
 import { RepositoryMutex } from "./idempotency.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
-import { isTierTaskAssignment, type DeliveryBranchMode, type DeliveryBranchType, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions", "e2e-matrix": "e2e-matrix" } as const;
@@ -34,12 +34,13 @@ function validateId(id: string, label: string): void {
 	if (!ID_PATTERN.test(id)) throw new HarnessError("INVALID_ARTIFACT", `${label} must be a kebab-case identifier`);
 }
 
+const WORKING_BRANCH_PATTERN = /^(feature|fix)\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const PROTECTED_BRANCHES = new Set(["develop", "main", "master"]);
+
 function validateDelivery(delivery: WorkItemDelivery): void {
-	if (delivery.baseBranch !== "develop") throw new HarnessError("INVALID_ARTIFACT", "New delivery contracts must use develop as baseBranch");
-	if (!delivery.branchType || !(["feature", "fix"] as DeliveryBranchType[]).includes(delivery.branchType)) throw new HarnessError("INVALID_ARTIFACT", "Delivery branchType must be feature or fix");
-	if (!delivery.branchMode || !(["create", "continue"] as DeliveryBranchMode[]).includes(delivery.branchMode)) throw new HarnessError("INVALID_ARTIFACT", "Delivery branchMode must be create or continue");
-	if (delivery.branchMode === "continue" && !delivery.featureBranch?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Continued delivery requires featureBranch");
-	if (delivery.featureBranch && !new RegExp(`^${delivery.branchType}/[a-z0-9]+(?:-[a-z0-9]+)*$`).test(delivery.featureBranch)) throw new HarnessError("INVALID_ARTIFACT", `Delivery branch must match ${delivery.branchType}/<kebab-case-name>`);
+	if (!WORKING_BRANCH_PATTERN.test(delivery.workingBranch) || PROTECTED_BRANCHES.has(delivery.workingBranch)) throw new HarnessError("INVALID_ARTIFACT", "workingBranch must match feature/<kebab-case-name> or fix/<kebab-case-name>");
+	if (!/^[0-9a-f]{40,64}$/.test(delivery.createdFromCommit)) throw new HarnessError("INVALID_ARTIFACT", "delivery.createdFromCommit must be a harness-owned Git commit anchor");
+	if (delivery.executionStartCommit !== undefined && !/^[0-9a-f]{40,64}$/.test(delivery.executionStartCommit)) throw new HarnessError("INVALID_ARTIFACT", "delivery.executionStartCommit must be a harness-owned Git commit anchor");
 }
 
 function ensureInside(root: string, path: string): void {
@@ -104,14 +105,8 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid catalogs`);
 	}
 	if (index.delivery !== undefined) {
-		const typedDelivery = index.delivery.branchType !== undefined || index.delivery.branchMode !== undefined;
-		if (typedDelivery && (!index.delivery.branchType || !index.delivery.branchMode)) throw new HarnessError("INVALID_ARTIFACT", `${source} delivery branchType and branchMode must be declared together`);
-		if (typedDelivery && index.delivery.baseBranch !== "develop") throw new HarnessError("INVALID_ARTIFACT", `${source} delivery must use develop as its base branch`);
-		if (index.delivery.branchType !== undefined && !["feature", "fix"].includes(index.delivery.branchType)) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid delivery branch type`);
-		if (index.delivery.branchMode !== undefined && !["create", "continue"].includes(index.delivery.branchMode)) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid delivery branch mode`);
-		if (index.delivery.featureBranch !== undefined && (typeof index.delivery.featureBranch !== "string" || !index.delivery.featureBranch.trim())) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid delivery branch`);
-		if (index.delivery.branchMode === "continue" && !index.delivery.featureBranch) throw new HarnessError("INVALID_ARTIFACT", `${source} continued delivery requires an explicit featureBranch`);
-		if (!typedDelivery && !index.delivery.featureBranch) throw new HarnessError("INVALID_ARTIFACT", `${source} legacy delivery requires a recorded featureBranch`);
+		try { validateDelivery(index.delivery); }
+		catch (error) { throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid working-branch delivery contract: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 	if (index.integrationUnits === undefined) index.integrationUnits = [];
 	if (!Array.isArray(index.integrationUnits)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid integration units`);
@@ -225,13 +220,55 @@ export class WorkItemStore {
 		return indexes;
 	}
 
+	async findDelivery(id: string): Promise<WorkItemDelivery | undefined> {
+		const indexPath = relative(this.repositoryRoot, join(this.workItemRoot(id), "index.yaml"));
+		const branches = (await runGit(this.repositoryRoot, ["for-each-ref", "--format=%(refname:short)", "refs/heads/feature", "refs/heads/fix"])).split("\n").filter(Boolean);
+		for (const branch of branches) {
+			const candidate = await runGit(this.repositoryRoot, ["show", `${branch}:${indexPath}`]).then((content) => parse(content) as { id?: string; delivery?: WorkItemDelivery }, () => undefined);
+			if (candidate?.id === id && candidate.delivery?.workingBranch === branch) return candidate.delivery;
+		}
+		return undefined;
+	}
+
 	async read(id: string): Promise<WorkItemIndex> {
 		const path = join(this.workItemRoot(id), "index.yaml");
-		if (!(await pathExists(path))) throw new HarnessError("WORK_ITEM_NOT_FOUND", `Work item does not exist: ${id}`);
+		if (!(await pathExists(path))) {
+			const delivery = await this.findDelivery(id);
+			if (delivery) throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is bound to ${delivery.workingBranch}; switch to that branch intentionally before reading or mutating it`);
+			throw new HarnessError("WORK_ITEM_NOT_FOUND", `Work item does not exist: ${id}`);
+		}
 		return parseWorkItemIndex(await readFile(path, "utf8"), path);
 	}
 
-	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
+	private async currentBranch(): Promise<string> {
+		return runGit(this.repositoryRoot, ["branch", "--show-current"]);
+	}
+
+	private async assertWorkingBranch(index: WorkItemIndex): Promise<void> {
+		if (!index.delivery) throw new HarnessError("INVALID_ARTIFACT", `Work item ${index.id} has no workingBranch contract`);
+		const current = await this.currentBranch();
+		if (current !== index.delivery.workingBranch) throw new HarnessError("CAPABILITY_DENIED", `Work item ${index.id} is bound to ${index.delivery.workingBranch}; current branch is ${current || "detached HEAD"}`);
+	}
+
+	private async prepareWorkingBranch(id: string, requested: string | undefined, kind: WorkingBranchKind | undefined): Promise<WorkItemDelivery> {
+		await assertCleanRepository(this.repositoryRoot);
+		const current = await this.currentBranch();
+		if (current !== "develop") throw new HarnessError("CAPABILITY_DENIED", `New work item ${id} must be created from clean develop; current branch is ${current || "detached HEAD"}`);
+		const inferredKind = requested?.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
+		const branchKind = kind ?? inferredKind ?? "feature";
+		if (branchKind !== "feature" && branchKind !== "fix") throw new HarnessError("INVALID_ARTIFACT", "branchKind must be feature or fix");
+		const workingBranch = requested ?? `${branchKind}/${id}`;
+		if (!WORKING_BRANCH_PATTERN.test(workingBranch) || !workingBranch.startsWith(`${branchKind}/`) || PROTECTED_BRANCHES.has(workingBranch)) throw new HarnessError("INVALID_ARTIFACT", `workingBranch must match ${branchKind}/<kebab-case-name>`);
+		const exists = await runGit(this.repositoryRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${workingBranch}`]).then(() => true, () => false);
+		if (exists) throw new HarnessError("GIT_OPERATION_FAILED", `Working branch already exists: ${workingBranch}`);
+		const hasOrigin = await runGit(this.repositoryRoot, ["remote", "get-url", "origin"]).then(() => true, () => false);
+		if (hasOrigin) await runGit(this.repositoryRoot, ["pull", "--ff-only", "origin", "develop"]);
+		const createdFromCommit = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+		await runGit(this.repositoryRoot, ["switch", "-c", workingBranch]);
+		return { workingBranch, createdFromCommit };
+	}
+
+	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
 		validateId(input.id, "Work-item id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		const intent = narrativeSchemaVersion === 2
@@ -242,10 +279,14 @@ export class WorkItemStore {
 			})()
 			: input.intent;
 		if (!input.title.trim() || !intent?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Title and intent must not be empty");
+		if (input.delivery && (input.workingBranch || input.branchKind)) throw new HarnessError("INVALID_ARTIFACT", "Creation accepts either a canonical delivery contract or working-branch authoring hints, not both");
 		if (input.delivery) validateDelivery(input.delivery);
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.id);
 		if (await pathExists(root)) throw new HarnessError("WORK_ITEM_EXISTS", `Work item already exists: ${input.id}`);
+		const requestedBranch = input.delivery?.workingBranch ?? input.workingBranch;
+		const inferredKind = requestedBranch?.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
+		const delivery = await this.prepareWorkingBranch(input.id, requestedBranch, input.branchKind ?? inferredKind);
 
 		const temporary = join(this.artifactRoot, `.${input.id}.tmp-${randomUUID()}`);
 		await mkdir(temporary, { recursive: true });
@@ -262,7 +303,7 @@ export class WorkItemStore {
 				artifacts: [{ id: "intent", type: "intent", path: "intent.md", status: "draft", narrativeSchemaVersion }],
 				tasks: [],
 				integrationUnits: [],
-				...(input.delivery ? { delivery: input.delivery } : {}),
+				delivery,
 				evaluations: [],
 			};
 			await writeFile(join(temporary, "index.yaml"), stringify(index), "utf8");
@@ -285,6 +326,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		const indexPath = join(root, "index.yaml");
 		const intentPath = join(root, "intent.md");
@@ -295,7 +337,10 @@ export class WorkItemStore {
 			index.title = input.title.trim();
 		}
 		if (input.kind !== undefined) index.kind = input.kind;
-		if (input.delivery !== undefined) { validateDelivery(input.delivery); index.delivery = input.delivery; }
+		if (input.delivery !== undefined) {
+			validateDelivery(input.delivery);
+			if (!index.delivery || stringify(input.delivery) !== stringify(index.delivery)) throw new HarnessError("CAPABILITY_DENIED", "The harness-owned working-branch contract is immutable after work-item creation");
+		}
 		if (input.intent !== undefined || input.intentSections !== undefined) {
 			const version = input.narrativeSchemaVersion ?? index.artifacts.find((artifact) => artifact.id === "intent")?.narrativeSchemaVersion ?? 1;
 			const content = version === 2 ? renderArtifact("intent", `Intent: ${index.title}`, input.intentSections ?? {}) : input.intent;
@@ -342,6 +387,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		const directory = ARTIFACT_DIRECTORIES[input.type];
 		const artifactPath = join(root, directory, `${input.id}.md`);
@@ -385,6 +431,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		if (artifactId === "intent" || artifactId === "outcome") throw new HarnessError("CAPABILITY_DENIED", `Artifact ${artifactId} cannot be deleted`);
 		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
@@ -417,6 +464,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
 		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
@@ -460,6 +508,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		if (index.tasks.some((task) => task.id === input.manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Task already exists: ${input.manifest.id}`);
 		if (input.manifest.id !== input.manifest.id.toLowerCase()) throw new HarnessError("INVALID_ARTIFACT", "Task id must be lowercase");
@@ -512,6 +561,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		const catalog = index.tasks.find((task) => task.id === input.manifest.id);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Task does not exist: ${input.manifest.id}`);
@@ -566,6 +616,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
@@ -601,6 +652,7 @@ export class WorkItemStore {
 	async readTaskContract(workItemId: string, taskId: string): Promise<{ manifest: TaskManifest; brief: string; acceptance: string; workItemRevision: number }> {
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		const taskRoot = dirname(join(root, catalog.path));
@@ -611,6 +663,7 @@ export class WorkItemStore {
 		validateId(taskId, "Task id");
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		return parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path);
@@ -624,6 +677,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		const path = join(root, catalog.path);
@@ -647,6 +701,7 @@ export class WorkItemStore {
 	async activateDraftTasks(workItemId: string): Promise<TaskManifest[]> {
 		await assertCleanRepository(this.repositoryRoot);
 		const item = await this.read(workItemId);
+		await this.assertWorkingBranch(item);
 		const drafts = (await Promise.all(item.tasks.map((catalog) => this.readTask(workItemId, catalog.id)))).filter((task) => task.status === "draft");
 		if (drafts.length === 0) return [];
 		const files = drafts.map((task) => ({
@@ -681,6 +736,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		await this.validateCriterionReferences(index, manifest.criteria ?? []);
 		if (manifest.scope.task && !index.tasks.some((task) => task.id === manifest.scope.task)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation task scope: ${manifest.scope.task}`);
@@ -730,6 +786,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		await this.validateCriterionReferences(index, manifest.criteria ?? []);
 		if (manifest.scope.task && !index.tasks.some((task) => task.id === manifest.scope.task)) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation task scope: ${manifest.scope.task}`);
@@ -778,6 +835,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		const catalog = index.evaluations.find((evaluation) => evaluation.id === evaluationId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
@@ -813,6 +871,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		if (unit.tasks.length === 0) throw new HarnessError("INVALID_ARTIFACT", `Integration unit ${unit.id} must contain at least one task`);
 		if (new Set(unit.tasks).size !== unit.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Integration unit ${unit.id} contains duplicate task ids`);
@@ -837,6 +896,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		if (!index.integrationUnits.some((unit) => unit.id === unitId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${unitId}`);
 		for (const evaluation of index.evaluations) {
@@ -911,6 +971,7 @@ export class WorkItemStore {
 	async updateEvaluationLoop(workItemId: string, evaluationId: string, update: Partial<NonNullable<EvaluationManifest["loop"]>>, status?: EvaluationManifest["status"]): Promise<EvaluationManifest> {
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		const catalog = index.evaluations.find((entry) => entry.id === evaluationId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
 		const path = join(root, catalog.path);
@@ -926,6 +987,7 @@ export class WorkItemStore {
 		validateId(evaluationId, "Evaluation id");
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		const catalog = index.evaluations.find((evaluation) => evaluation.id === evaluationId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
 		const value = parse(await readFile(join(root, catalog.path), "utf8")) as EvaluationManifest;
@@ -962,6 +1024,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
+		await this.assertWorkingBranch(index);
 		if (index.phase === "complete") throw new HarnessError("INVALID_HANDOFF", `Work item is already complete: ${input.workItemId}`);
 		const catalog = index.evaluations.find((evaluation) => evaluation.id === input.evaluationId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${input.evaluationId}`);
@@ -1042,6 +1105,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
 		for (const task of index.tasks) {
 			if (!["merged", "integrated"].includes((await this.readTask(workItemId, task.id)).status)) {
 				throw new HarnessError("INVALID_HANDOFF", `Task is not merged: ${task.id}`);
@@ -1106,6 +1170,7 @@ export class WorkItemStore {
 		const indexPath = join(root, "index.yaml");
 		const previous = await readFile(indexPath, "utf8");
 		const index = parseWorkItemIndex(previous, indexPath);
+		await this.assertWorkingBranch(index);
 		if (index.finalization?.locked && action !== "reopen") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before transition`);
 		if (action === "postpone") index.state = "postponed";
 		if (action === "resume") index.state = "active";
@@ -1132,6 +1197,7 @@ export class WorkItemStore {
 	async submitPlanning(id: string): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const index = await this.read(id);
+		await this.assertWorkingBranch(index);
 		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before planning or execution`);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
 		const evaluations = await Promise.all(index.evaluations.map((evaluation) => this.readEvaluation(id, evaluation.id)));
@@ -1149,15 +1215,18 @@ export class WorkItemStore {
 		const rawIndex = parse(previous) as { planning?: Record<string, unknown> };
 		const hadLegacyApprovalMetadata = ["status", "approvedRevision", "approvedAt", "contractDigest", "approvalAmendments"].some((key) => rawIndex.planning?.[key] !== undefined);
 		const index = parseWorkItemIndex(previous, indexPath);
+		await this.assertWorkingBranch(index);
 		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before execution`);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
 		const evaluations = await Promise.all(index.evaluations.map((evaluation) => this.readEvaluation(id, evaluation.id)));
 		validateExecutionTopology(index, tasks, evaluations);
 		const needsPhase = index.phase === "planning";
 		const needsActiveState = index.state !== "active";
+		const needsExecutionAnchor = Boolean(index.delivery && !index.delivery.executionStartCommit);
 		if (needsPhase) index.phase = "execution";
 		if (needsActiveState) index.state = "active";
-		if (needsPhase || needsActiveState || hadLegacyApprovalMetadata) {
+		if (needsExecutionAnchor) index.delivery!.executionStartCommit = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+		if (needsPhase || needsActiveState || needsExecutionAnchor || hadLegacyApprovalMetadata) {
 			await atomicWriteFile(indexPath, stringify(index));
 			try {
 				await this.commit([indexPath], `harness(${id}): begin execution`);

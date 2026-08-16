@@ -37,7 +37,7 @@ function retainedRuntimeIsolation(item: WorkItemIndex, task: TaskManifest): Task
 	if (task.runtime?.executionMode) return task.runtime.executionMode;
 	if (!task.runtime?.branch) return undefined;
 	if (task.runtime.branch.startsWith("harness/")) return "worktree";
-	if (item.delivery?.featureBranch && task.runtime.branch === item.delivery.featureBranch) return "repository";
+	if (item.delivery?.workingBranch && task.runtime.branch === item.delivery.workingBranch) return "repository";
 	return undefined;
 }
 

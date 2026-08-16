@@ -32,16 +32,6 @@ function qualifiedSpecificationIds(value: unknown): string[] {
 	return [...ids];
 }
 
-function normalizeDelivery(value: unknown): PlanAuthoringRecord {
-	const delivery = record(value);
-	return {
-		branchType: delivery.branchType,
-		branchMode: delivery.branchMode ?? "create",
-		baseBranch: "develop",
-		...(delivery.featureBranch !== undefined ? { featureBranch: delivery.featureBranch } : {}),
-	};
-}
-
 function artifactKind(value: unknown): "spec" | "design" | "decision" | "e2e-matrix" | undefined {
 	if (value === "spec" || value === "specification") return "spec";
 	if (value === "design" || value === "technical-design") return "design";
@@ -277,7 +267,8 @@ export function normalizePlanBundle(value: unknown): PlanBundle {
 			id: workItem.id,
 			title: workItem.title,
 			kind: workItem.kind ?? "story",
-			delivery: normalizeDelivery(workItem.delivery),
+			...(workItem.workingBranch !== undefined ? { workingBranch: workItem.workingBranch } : {}),
+			...(workItem.branchKind !== undefined ? { branchKind: workItem.branchKind } : {}),
 			narrativeSchemaVersion: 2,
 			intentSections: workItem.intentSections,
 		},
@@ -303,7 +294,7 @@ const EDIT_FIELDS: Record<Exclude<CanonicalResourceType, "work-item">, { create:
 };
 
 function assertEditFields(type: CanonicalResourceType, action: "create" | "update", input: PlanAuthoringRecord): void {
-	const allowed = new Set(type === "work-item" ? ["title", "kind", "delivery", "intentSections"] : EDIT_FIELDS[type][action]);
+	const allowed = new Set(type === "work-item" ? ["title", "kind", "intentSections"] : EDIT_FIELDS[type][action]);
 	const unknown = Object.keys(input).filter((key) => !allowed.has(key));
 	if (unknown.length) throw new HarnessError("INVALID_ARTIFACT", `Plan ${action} for ${type} has unknown field(s): ${unknown.join(", ")}`);
 	if (type === "task" && input.assignment !== undefined) {
@@ -352,7 +343,6 @@ export function normalizePlanEdit(type: CanonicalResourceType, action: PlanEdit[
 		const patch = definedEntries({
 			title: input.title,
 			kind: input.kind,
-			...(input.delivery !== undefined ? { delivery: normalizeDelivery(input.delivery) } : {}),
 			...(input.intentSections !== undefined ? { narrativeSchemaVersion: 2, intentSections: input.intentSections } : {}),
 		});
 		if (!hasChange(patch)) throw new HarnessError("INVALID_ARTIFACT", `Plan update for ${ref} has no changed fields`);
