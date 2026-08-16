@@ -156,7 +156,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				.filter((evaluation) => evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id))
 				.map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
 			const stageReviewRefs = evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review").map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
-			for (const evaluation of evaluations) {
+			const evaluationOrder = (evaluation: typeof evaluations[number]): number => evaluation.checkpoint === "stage-review" ? 0 : evaluation.checkpoint === "final-e2e" ? 1 : evaluation.checkpoint === "final-review" ? 2 : 0;
+			for (const evaluation of [...evaluations].sort((left, right) => evaluationOrder(left) - evaluationOrder(right))) {
 				const explicitStage = evaluation.stageId ? stages.find((stage) => stage.id === evaluation.stageId) : undefined;
 				const dependencies = evaluation.checkpoint === "stage-review" && explicitStage
 					? explicitStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
