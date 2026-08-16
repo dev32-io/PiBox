@@ -66,7 +66,8 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const persist = (ref: string, state: "running" | "paused" | "stopped") => {
-		pi.appendEntry("pibox-workflow", { ref, state, at: new Date().toISOString() });
+		try { pi.appendEntry("pibox-workflow", { ref, state, at: new Date().toISOString() }); }
+		catch { /* Session replacement leaves adapter-owned durable state authoritative. */ }
 	};
 
 	const sendFeedback = (event: WorkflowFeedbackEvent) => {
