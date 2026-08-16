@@ -70,7 +70,8 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const sendFeedback = (event: WorkflowFeedbackEvent) => {
-		pi.events.emit(WORKFLOW_FEEDBACK_EVENT, event);
+		try { pi.events.emit(WORKFLOW_FEEDBACK_EVENT, event); }
+		catch { /* Session replacement leaves durable workflow state authoritative. */ }
 	};
 
 	const renderSubagentStatus = () => {
