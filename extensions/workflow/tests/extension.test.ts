@@ -90,6 +90,8 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.deepEqual(Object.keys(completionSchema.properties ?? {}), ["workItemId", "outcomeSections", "outcome"]);
 	assert.equal(completionSchema.anyOf, undefined, "completion arguments remain discoverable to strict local servers");
 	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);
+	assert.match(descriptions.get("task_request_change") ?? "", /consult the one relevant canonical source[\s\S]+smallest safe amendment/i);
+	assert.match(descriptions.get("task_blocked") ?? "", /external blocker[\s\S]+cannot be resolved through a task-contract amendment/i);
 	assert.deepEqual(events, ["tool_call", "before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });

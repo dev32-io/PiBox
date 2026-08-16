@@ -102,7 +102,7 @@ export async function runRoutineModelScenario(fixture: RoutineModelFixture): Pro
 		const gatesSettled = evaluations.length > 0 && evaluations.every((evaluation) => ["passed", "not_applicable"].includes(evaluation.status));
 		await piTurn(fixture, gatesSettled
 			? `All required gates for work-item:${fixture.workItemId} appear settled. Reconcile durable state, apply the completion gate, and produce the outcome briefing if completion is valid.`
-			: `Continue supervising work-item:${fixture.workItemId} from durable workflow state. Advance routine settled work automatically. If an actionable checkpoint or critical decision exists, report it instead of bypassing it.`);
+			: `Continue supervising work-item:${fixture.workItemId} from durable workflow state. Advance routine settled work automatically. Apply the workflow-run management protocol to blocking worker messages: amend and resume defects settled by canonical authority, but report genuinely user-owned decisions instead of bypassing them.`);
 		await new Promise((resolve) => setTimeout(resolve, 1_000));
 	}
 	return observeRoutineModelScenario(fixture);

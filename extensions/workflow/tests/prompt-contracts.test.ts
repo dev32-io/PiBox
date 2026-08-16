@@ -31,7 +31,11 @@ test("agent definitions stay generic while workflow protocols remain launch-time
 		assert.match(body, /^# .+/);
 		assert.match(body, /## Completion/);
 	}
-	assert.match(await readFile(join(root, "prompt/workflow-task-agent.md"), "utf8"), /task_complete/);
+	const task = await readFile(join(root, "prompt/workflow-task-agent.md"), "utf8");
+	assert.match(task, /task_complete/);
+	assert.match(task, /Read the one relevant canonical resource with `task_clarify`[\s\S]+use `task_request_change`/i);
+	assert.match(task, /conflicting clauses[\s\S]+smallest safe contract correction/i);
+	assert.match(task, /same logical worker/i);
 	const review = await readFile(join(root, "prompt/workflow-review-agent.md"), "utf8");
 	assert.match(review, /persistent review context/i);
 	assert.match(review, /Do not call `evaluation_context` as a prerequisite/i);
@@ -110,6 +114,12 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /no separate approval command is required/i);
 	assert.match(run, /clear user request to execute the reviewed workflow is the sole execution gate/i);
 	assert.match(run, /call `workflow_start` directly/i);
+	assert.match(run, /## Management Protocol/i);
+	assert.match(run, /Settled by canonical authority[\s\S]+Genuinely user-owned/i);
+	assert.match(run, /one atomic `workflow_apply_change` call/i);
+	assert.match(run, /`resume-requesting-agent`[\s\S]+`restart-affected`/i);
+	assert.match(run, /include the tool's `response` object with the exact agent\/message IDs/i);
+	assert.match(run, /Do not make a separate `subagent_respond` call/i);
 	assert.match(run, /call `work_item_complete` with the bare work-item ID/i);
 	assert.match(run, /Do not report[\s\S]+pre-gate absence of `outcome\.md` as a deviation/i);
 	assert.match(critic, /Upstream premises/i);

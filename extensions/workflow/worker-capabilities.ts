@@ -118,7 +118,11 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		pi.registerTool({
 			name,
 			label: name.split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" "),
-			description: name === "task_report_decision" ? "Persist a non-blocking delegated decision for the orchestrator and final handoff." : "Persist a blocking request for the orchestrator, checkpoint safe work, and end this process attempt.",
+			description: name === "task_report_decision"
+				? "Persist a non-blocking delegated decision for the orchestrator and final handoff."
+				: name === "task_request_change"
+					? "Persist a blocking task-contract change request and end this process attempt. First consult the one relevant canonical source; identify the conflicting clauses, cite source observations in evidence, and recommend the smallest safe amendment. The orchestrator will classify authority, amend atomically when settled, or escalate a genuinely user-owned decision."
+					: "Persist an external blocker that cannot be resolved through a task-contract amendment, checkpoint safe work, and end this process attempt.",
 			parameters: Type.Object({ summary: Type.String(), rationale: Type.String(), evidence: Type.Optional(Type.Array(Type.Object({ source: Type.String(), observation: Type.String() }))), options: Type.Optional(Type.Array(Type.String())), recommendation: Type.Optional(Type.String()) }),
 			async execute(toolCallId, params, _signal, _update, ctx) {
 				try {
