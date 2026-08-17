@@ -38,6 +38,14 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
 });
 
+test("renders distillation calls with scope-specific titles", () => {
+	assert.equal(isHarnessTool("distill_prepare"), true);
+	assert.deepEqual(lines(renderHarnessToolCall("distill_prepare", {
+		baseline: "v1.0",
+		target: "main",
+	}, theme, false, false)), ["✓ Preview distillation v1.0..main"]);
+});
+
 test("renders memory calls with action-specific titles", () => {
 	assert.equal(isHarnessTool("memory_adapter"), true);
 	assert.deepEqual(lines(renderHarnessToolCall("memory_adapter", {

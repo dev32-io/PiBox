@@ -38,6 +38,7 @@
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
       "./extensions/rule/index.ts",
+      "./extensions/distill/index.ts",
       "./extensions/service-adapter/index.ts",
       "./extensions/memory-adapter/index.ts",
       "./extensions/visual-companion/index.ts",

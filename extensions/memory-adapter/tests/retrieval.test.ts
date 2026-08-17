@@ -48,8 +48,10 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	});
 
 	const handlers = new Map<string, (...args: any[]) => any>();
+	const bus = new Map<string, (value: unknown) => void>();
 	const pi = {
 		registerTool() {}, registerCommand() {}, sendUserMessage() {}, sendMessage() {},
+		events: { on(name: string, handler: (value: unknown) => void) { bus.set(name, handler); }, emit(name: string, value: unknown) { bus.get(name)?.(value); } },
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		async exec(_command: string, args: string[]) {
 			if (args.includes("--show-toplevel")) return { code: 0, stdout: `${root}\n`, stderr: "" };
@@ -84,4 +86,10 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	assert.equal(searches, 1, "tool-loop model calls reuse the run-scoped retrieval");
 	await handlers.get("agent_settled")?.({}, ctx);
 	assert.equal(await handlers.get("context")?.({ messages: original }, ctx), undefined);
+	let provider: any;
+	bus.get("pibox:distill:discover-knowledge-providers")?.({ register(value: unknown) { provider = value; } });
+	assert.equal(provider.id, "mem0");
+	const compared = await provider.search("interrupted playback", { cwd: root, limit: 3 });
+	assert.equal(compared[0]?.id, "audio-contract");
+	assert.deepEqual(compared[0]?.evidence, ["audio.ts"]);
 });

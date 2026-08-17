@@ -15,6 +15,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **Architecture visualizer skill** — agent-authored JSON rendered as a live, interactive local browser diagram with deterministic automatic layouts.
 - **Local service adapter** — lazy, health-checked lifecycle management for shared Mem0 and SearXNG services plus the session-scoped visual companion.
 - **Repository memory** — explicit curated Mem0 writes, bounded recall, and an advisory `/memory-audit` with no silent mutation.
+- **Knowledge distillation** — `/distill` resolves arbitrary code/time/workflow/session ranges into local evidence packets and user-reviewed promotion or demotion proposals without depending on one memory backend.
 
 ## Install and verify
 
@@ -77,6 +78,10 @@ Project rules live under `.claude/rules/` or `.pi/rules/`; user rules live under
 ## Local services and memory
 
 `/services` reports the machine-scoped Mem0 and SearXNG services alongside the session-scoped visual companion. Services start lazily, use independent health probes, and never update during startup. `/memory-start`, `/memory-stop`, and `/memory-status` manage Mem0 directly; automatic recall injects scored repository memories ephemerally into main-agent and spawned-subagent runs; `/memory-debug` explains the latest selection; and `/memory-audit` performs bounded advisory review without changing records. See [extensions/service-adapter/README.md](extensions/service-adapter/README.md) and [extensions/memory-adapter/README.md](extensions/memory-adapter/README.md).
+
+## Knowledge distillation
+
+`/distill` previews an exact immutable scope before collecting bounded Git, workflow, guidance, session, and subagent-report evidence under ignored `.pibox/distill/`. Dedicated read-only distillers produce proposals; optional providers such as Mem0 support claim comparison; instruction promotion is exceptional, example-free, and measured for always-loaded context cost. See [extensions/distill/README.md](extensions/distill/README.md).
 
 ## Architecture visualizer
 

@@ -7,7 +7,7 @@ const EXACT_HARNESS_TOOLS = new Set([
 ]);
 
 export function isHarnessTool(name: string): boolean {
-	return EXACT_HARNESS_TOOLS.has(name) || /^(resource|workflow|subagent|task|evaluation)_/.test(name);
+	return EXACT_HARNESS_TOOLS.has(name) || /^(resource|workflow|subagent|task|evaluation|distill)_/.test(name);
 }
 
 function words(value: string): string {
@@ -27,6 +27,12 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 			? { action: "Update resource", target: args.ref }
 			: { action: "Create resource", target: [args.type, args.value?.title ?? args.value?.id, args.parent].filter(Boolean).join(" · ") };
 		case "resource_delete": return { action: "Delete resource", target: args.ref };
+		case "distill_prepare": return { action: "Preview distillation", target: [args.baseline && `${args.baseline}..`, args.target ?? "HEAD", args.since && `since ${args.since}`].filter(Boolean).join("") };
+		case "distill_collect": return { action: "Collect distillation", target: compact(args.previewToken, 12) };
+		case "distill_read": return { action: args.runId ? "Read distillation" : "List distillations", target: [args.runId, args.path].filter(Boolean).join(" · ") };
+		case "distill_record": return { action: `Record distillation ${args.category ?? "artifact"}`, target: [args.runId, args.id].filter(Boolean).join(" · ") };
+		case "distill_compare": return { action: "Compare distilled knowledge", target: `${args.claims?.length ?? 0} claim(s)` };
+		case "distill_instruction_check": return { action: "Measure instruction burden", target: args.targetPath };
 		case "memory_adapter": {
 			switch (args.action) {
 				case "status": return { action: "Inspect memory status" };

@@ -8,6 +8,7 @@ import { loopbackMem0Url, Mem0Client, type MemoryRecord } from "./client.js";
 import { deriveRepositoryScope, type RepositoryScope } from "./scope.js";
 import { getService, operateService } from "../service-adapter/registry.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
+import { DISTILL_KNOWLEDGE_DISCOVERY_EVENT, type DistillKnowledgeDiscovery } from "../distill/provider.js";
 
 const SCHEMA_VERSION = 1;
 const USER_ID = "pibox";
@@ -385,6 +386,27 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 				},
 			};
 		},
+	});
+
+	pi.events.on(DISTILL_KNOWLEDGE_DISCOVERY_EVENT, (value: unknown) => {
+		const event = value as DistillKnowledgeDiscovery;
+		event.register({
+			id: "mem0",
+			locality: "local",
+			description: "Repository-scoped local Mem0 memories",
+			async search(query, options) {
+				const mem0 = client();
+				if (!await mem0.health(options.signal)) return [];
+				const repository = await getScope(options.cwd);
+				const records = await mem0.search(query, USER_ID, repository.repoId, Math.min(options.limit, MAX_RECALL_LIMIT), options.signal);
+				return records.filter((record) => record.metadata?.status === "active").map((record) => ({
+					provider: "mem0", id: record.id, kind: typeof record.metadata?.type === "string" ? record.metadata.type : "memory",
+					content: record.memory,
+					evidence: Array.isArray(record.metadata?.evidence_paths) ? record.metadata.evidence_paths.filter((path): path is string => typeof path === "string") : [],
+					metadata: { ...(record.metadata ?? {}), ...(typeof record.score === "number" ? { score: record.score } : {}) },
+				}));
+			},
+		});
 	});
 
 	pi.registerCommand("memory-status", {
