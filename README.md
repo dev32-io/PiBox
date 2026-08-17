@@ -7,8 +7,8 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **`rattle` theme** — cool-steel colors for Pi.
 - **TUI extensions** — responsive status bar, refined chat input with a clickable fullscreen return-to-bottom action, compact tool previews/diffs, animated working status, and startup display.
 - **Repository permissions** — Claude Code-style `.pi/permissions.yaml` rules with enforced/bypass modes, inherited child state, and `Shift+Tab` switching.
-- **`/effort`** — choose a reasoning effort supported by the active model; non-reasoning models safely use `off`.
-- **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints.
+- **`/effort`** — choose a reasoning effort supported by the active model; local-LLM endpoints expose `off`, `low`, `medium`, `high`, and `xhigh` and start at `off` unless explicitly configured.
+- **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints, variable Codex subscription-usage status, and transparent same-tier provider fallback for spawned agents.
 - **Sound hooks** — optional response, workflow task-completion, and workflow-attention feedback using user-supplied audio.
 - **Context rules** — Claude-compatible path-scoped instructions loaded only after matching files are read, from `.claude/rules/` or `.pi/rules/`.
 - **Workflow** — collaborative story shaping, capability-backed delivery planning, delegated worktrees, runtime-owned final verification, and recovery. See [docs/workflow.md](docs/workflow.md).
@@ -40,7 +40,7 @@ pi --no-extensions \
 
 ## Effort defaults
 
-The default is `medium`; unsupported levels are safely clamped for each model. User configuration loads first and repository configuration overrides it:
+The general default is `medium`; `local-llm` defaults to `off`. Unsupported levels are safely clamped for each model. User configuration loads first and repository configuration overrides it:
 
 - `~/.pi/agent/pibox/effort.yaml`
 - `.pi/pibox-effort.yaml`
@@ -51,7 +51,13 @@ models:
   openai-codex/gpt-5.6-luna: high
 ```
 
-Use `/effort` to select a compatible level interactively, or `/effort high` directly. PiBox uses `Shift+Tab` for permission mode instead of effort cycling; set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding.
+Use `/effort` to select a compatible level interactively, or `/effort high` directly. A per-model entry overrides the local-LLM `off` default. PiBox uses `Shift+Tab` for permission mode instead of effort cycling; set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding.
+
+## Provider capacity and usage
+
+Spawned agents traverse the ordered, usable routes in their selected `modelTiers` entry. Rate/subscription limits, authentication failures, exhausted provider retries, and bounded transport/server failures place the failed provider on cooldown and transparently continue with the next same-tier provider. Foreground calls remain pending; failed intermediate output is not sent to the main session. Strict concrete-model requests never fall back, and context, cancellation, protocol, tool, or implementation failures do not trigger a provider change.
+
+When the active `openai-codex` model uses OAuth subscription authentication, PiBox reads the account's variable rate-limit windows and appends concise percentage/reset information after the existing context gauge. Zero, one, or multiple windows are supported; the entire appended area is hidden when reliable usage is unavailable or does not fit. Ollama Cloud currently exposes no reliable account-quota API, so its integration records `429`/`Retry-After` capacity signals without displaying fabricated quota percentages.
 
 ## Repository permissions
 

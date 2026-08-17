@@ -696,7 +696,7 @@ At spawn time:
 4. Filter against Pi's live registry, auth, scoped models, and exact effort support.
 5. Record the requested tier, every attempted pair, and actual provider/model/effort.
 
-Fallback is visible and remains inside the same capability tier. There is no automatic capability downgrade or effort clamping. Provider/auth/capacity recovery may resume on another valid same-tier pair; implementation or protocol failure does not by itself justify changing effort.
+Fallback remains inside the same capability tier and the final route plus private attempt lineage stay auditable. There is no automatic capability downgrade or effort clamping. Provider/auth/capacity/transport recovery restarts the same logical child session and workspace on the next valid same-tier pair while a foreground caller remains pending; intermediate provider-failure output is not injected into the main session. Context overflow, cancellation, implementation, tool, and protocol failure do not justify changing providers or effort.
 
 A strict override can prohibit fallback:
 

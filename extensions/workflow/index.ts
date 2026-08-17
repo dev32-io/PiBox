@@ -581,7 +581,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				baseCommit: allocation.baseCommit,
 				executionMode: allocation.isolation,
 				planningRevision: item.planning.revision,
-				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, requested: plannedRouting.tier },
+				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, requested: plannedRouting.tier },
 				...(agentPolicy.prompt && resolveConfiguredPath(runtime.identity.root, agentPolicy.prompt)
 					? { agentPrompt: readFileSync(resolveConfiguredPath(runtime.identity.root, agentPolicy.prompt) as string, "utf8") }
 					: {}),
@@ -595,8 +595,9 @@ export default function workflow(pi: ExtensionAPI): void {
 				...(onUpdate ? { onUpdate } : {}),
 			});
 			await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
+			const settledRoute = `${launched.run.resolvedProvider ?? resolution.model.provider}/${launched.run.resolvedModel ?? resolution.model.id}#${launched.run.resolvedEffort ?? resolution.effort}`;
 			return textResult(
-				`Task ${task.id} settled as ${launched.run.state} on ${resolution.model.provider}/${resolution.model.id}#${resolution.effort} for ${plannedRouting.tier}${resolution.fallbackUsed ? " (visible same-tier fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
+				`Task ${task.id} settled as ${launched.run.state} on ${settledRoute} for ${plannedRouting.tier}${resolution.fallbackUsed ? " (visible same-tier fallback)" : ""}.${launched.handoff ? `\n${launched.handoff.summary}` : launched.finalText ? `\n${launched.finalText}` : ""}`,
 				launched,
 			);
 		} catch (error) {
@@ -620,7 +621,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const launched = await runtime.coordinator.launch({
 			operationId: `integration-repair:${workItemId}:${stageId}`, role: "repair-implementer", task: prompt,
 			assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt }, cwd: runtime.identity.root,
-			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
 			tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
 			workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"),
 			persistentContext: `${await buildTaskPersistentContext(runtime.workItems, workItemId, task)}\n\n${prompt}`,
@@ -663,7 +664,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			operationId: `repair:${workItemId}:${evaluationId}:${repairIteration}`, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
 			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }),
 			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
-			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
+			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
 			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
 			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
@@ -710,7 +711,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			const coordinated = await runtime.coordinator.launch({
 				operationId: created.record.id, ...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}), role: agentName, task: taskPrompt,
 				assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
-				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_EVALUATION_TOOL_GROUP]),
 				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-review-agent"), persistentContext,
 				env: { ...mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
@@ -719,16 +720,31 @@ export default function workflow(pi: ExtensionAPI): void {
 				...(signal ? { signal } : {}),
 			});
 			logicalAgentId = coordinated.agent.id;
+			if (coordinated.result.provider !== resolution.model.provider || coordinated.result.model !== resolution.model.id || coordinated.result.effort !== resolution.effort) {
+				await runs.update(created.record.id, {
+					resolvedProvider: coordinated.result.provider,
+					resolvedModel: coordinated.result.model,
+					resolvedEffort: coordinated.result.effort,
+				}, "run.provider_fallback");
+			}
 			for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
 			return coordinated.result;
 		};
 		let direct = await runEvaluator(prompt);
 		await runs.flushTranscript(created.record.id);
+		if (logicalAgentId && (await runtime.agents.get(logicalAgentId)).state === "waiting_capacity") {
+			await runs.update(created.record.id, { state: "waiting_capacity", exitCode: direct.exitCode, error: direct.stderr || "Every configured provider route is temporarily unavailable" }, "run.waiting_capacity");
+			return textResult(`WAITING_CAPACITY: Evaluator ${evaluation.id} exhausted its currently available provider routes.`, { runId: created.record.id, agentId: logicalAgentId, direct });
+		}
 		let handoff = await runs.readEvaluationHandoff(created.record.id);
 		if (!handoff && direct.exitCode === 0) {
 			await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
 			direct = await runEvaluator(`${readBuiltInPrompt("evaluation-protocol-nudge")}\n\n${prompt}`);
 			await runs.flushTranscript(created.record.id);
+			if (logicalAgentId && (await runtime.agents.get(logicalAgentId)).state === "waiting_capacity") {
+				await runs.update(created.record.id, { state: "waiting_capacity", exitCode: direct.exitCode, error: direct.stderr || "Every configured provider route is temporarily unavailable" }, "run.waiting_capacity");
+				return textResult(`WAITING_CAPACITY: Evaluator ${evaluation.id} exhausted its currently available provider routes.`, { runId: created.record.id, agentId: logicalAgentId, direct });
+			}
 			handoff = await runs.readEvaluationHandoff(created.record.id);
 		}
 		if (!handoff || handoff.runId !== created.record.id || handoff.evaluationId !== evaluation.id) {
@@ -770,7 +786,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
 				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}), ...(request.strict !== undefined ? { strict: request.strict } : {}) }, cwd: runtime.identity.root,
-				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort,
+				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workspace: runtime.identity.root,
 				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
@@ -785,10 +801,11 @@ export default function workflow(pi: ExtensionAPI): void {
 			});
 			const direct = launched.result;
 			await runtime.events.append("subagent.settled", { agentId: launched.agent.id, role: request.agent, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });
+			const waitingCapacity = launched.agent.state === "waiting_capacity";
 			return {
 				ref: `agent:${launched.agent.id}`,
-				state: direct.exitCode === 0 ? "completed" : "failed",
-				summary: direct.text || direct.stderr || `Subagent exited ${direct.exitCode}.`, agentId: launched.agent.id,
+				state: waitingCapacity ? "blocked" : direct.exitCode === 0 ? "completed" : "failed",
+				summary: direct.text || direct.stderr || (waitingCapacity ? "Every configured provider route is temporarily unavailable." : `Subagent exited ${direct.exitCode}.`), agentId: launched.agent.id,
 				...(direct.exitCode === 0 ? {} : { attention: true }),
 			};
 		} catch (error) {

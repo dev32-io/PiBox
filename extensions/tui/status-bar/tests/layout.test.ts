@@ -41,6 +41,29 @@ test("every status layout stays within terminal width", () => {
 	}
 });
 
+test("renders variable provider windows after unchanged context", () => {
+	const text = renderStatusBar(160, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [
+		{ usedPercent: 70, resetAt: Date.now() + 60 * 60_000 },
+		{ usedPercent: 85, resetAt: Date.now() + 24 * 60 * 60_000 },
+	] } }).join("\n");
+	assert.match(text, /42\.0% \/ 100k │ 70%/);
+	assert.match(text, /85%/);
+});
+
+test("renders a single returned window without reserving text for a missing short window", () => {
+	const text = renderStatusBar(160, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [{ usedPercent: 92 }] } }).join("\n");
+	assert.match(text, /\/ 100k │ 92%/);
+	assert.doesNotMatch(text, /—|5h|7d/);
+});
+
+test("hides quota when it cannot fit or no reliable windows exist", () => {
+	assert.doesNotMatch(renderStatusBar(72, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [{ usedPercent: 70 }] } }).join("\n"), /70%/);
+	assert.deepEqual(
+		renderStatusBar(160, { ...data, usage: { provider: "ollama-cloud", observedAt: Date.now(), windows: [] } }),
+		renderStatusBar(160, data),
+	);
+});
+
 test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
 	assert.match(text, /42\.0%/);

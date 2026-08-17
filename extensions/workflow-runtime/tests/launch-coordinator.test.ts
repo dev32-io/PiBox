@@ -73,3 +73,40 @@ test("resumes a waiting assignment as another process attempt under the same slo
 	assert.equal(sessionFile, join(registry.root, "agents", original.id, "pi-session.jsonl"));
 	assert.equal(await registry.activeCount(), 0);
 });
+
+test("falls back through ordered routes without changing logical agent or Pi session", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-fallback-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-fallback");
+	await registry.initialize("main:session-fallback");
+	const limited = join(root, "limited.mjs");
+	const success = join(root, "success.mjs");
+	await writeFile(limited, `console.error('HTTP 429 Retry-After: 1'); process.exit(1);\n`);
+	await writeFile(success, `console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'ok'}]}}));\n`);
+	const { ProviderCooldowns } = await import("../../provider-fallback/index.js");
+	const seen: string[] = [];
+	const updates: string[] = [];
+	const sessions: string[] = [];
+	const coordinator = new LaunchCoordinator(registry, "main:session-fallback", (args) => {
+		const route = args[args.indexOf("--model") + 1]!;
+		seen.push(route);
+		sessions.push(args[args.indexOf("--session") + 1]!);
+		return { command: process.execPath, args: [route === "bad/one" ? limited : success] };
+	}, [], new ProviderCooldowns());
+	const result = await coordinator.launch({ operationId: "fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "bad", model: "one", effort: "low", providerCandidates: [{ provider: "bad", model: "one", effort: "low" }, { provider: "good", model: "two", effort: "low" }], tools: [], onText: (text) => updates.push(text) });
+	assert.equal(result.result.text, "ok");
+	assert.deepEqual(seen, ["bad/one", "good/two"]);
+	assert.deepEqual(updates, ["ok"]);
+	assert.equal(new Set(sessions).size, 1);
+	assert.equal(result.agent.provider, "good");
+	assert.equal(result.agent.attempts.length, 2);
+});
+
+test("does not fallback non-provider failures", async (t) => {
+ const root = await mkdtemp(join(tmpdir(), "pibox-launch-no-fallback-")); t.after(() => rm(root, { recursive: true, force: true }));
+ const registry = new SessionAgentRegistry(root, "session-no-fallback"); await registry.initialize("main:session-no-fallback");
+ const fake = join(root, "protocol.mjs"); await writeFile(fake, `console.error('protocol tool failure'); process.exit(1);\n`); let calls = 0;
+ const coordinator = new LaunchCoordinator(registry, "main:session-no-fallback", () => { calls += 1; return { command: process.execPath, args: [fake] }; });
+ const result = await coordinator.launch({ operationId: "no-fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "one", model: "one", effort: "low", providerCandidates: [{ provider: "one", model: "one", effort: "low" }, { provider: "two", model: "two", effort: "low" }], tools: [] });
+ assert.equal(calls, 1); assert.equal(result.agent.state, "failed");
+});

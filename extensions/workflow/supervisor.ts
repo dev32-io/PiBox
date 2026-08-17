@@ -19,6 +19,7 @@ export interface LaunchModel {
 	provider: string;
 	model: string;
 	effort: string;
+	providerCandidates?: Array<{ provider: string; model: string; effort: string }>;
 	requested: string;
 }
 
@@ -134,6 +135,7 @@ export class SubagentSupervisor {
 					provider: options.model.provider,
 					model: options.model.model,
 					effort: options.model.effort,
+					...(options.model.providerCandidates ? { providerCandidates: options.model.providerCandidates } : {}),
 					tools: resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]),
 					...(options.agentPrompt ? { agentPrompt: options.agentPrompt } : { promptPath: join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`) }),
 					additionalPrompt: readBuiltInPrompt("workflow-task-agent"),
@@ -158,6 +160,13 @@ export class SubagentSupervisor {
 					...(options.onUpdate ? { onText: (text: string) => options.onUpdate?.({ content: [{ type: "text", text }], details: { runId: created.record.id, state: "running" } }) } : {}),
 				});
 				logicalAgentId = coordinated.agent.id;
+				if (coordinated.result.provider !== options.model.provider || coordinated.result.model !== options.model.model || coordinated.result.effort !== options.model.effort) {
+					await runs.update(created.record.id, {
+						resolvedProvider: coordinated.result.provider,
+						resolvedModel: coordinated.result.model,
+						resolvedEffort: coordinated.result.effort,
+					}, "run.provider_fallback");
+				}
 				for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
 				await runs.flushTranscript(created.record.id);
 				execution = { exitCode: coordinated.result.exitCode, stderr: coordinated.result.stderr, finalText: coordinated.result.text };
@@ -194,6 +203,11 @@ export class SubagentSupervisor {
 				if (logical && (logical.state === "waiting_decision" || logical.state === "blocked")) {
 					const run = await runs.update(created.record.id, { state: "interrupted", error: logical.summary ?? `Agent is ${logical.state}` }, `run.${logical.state}`);
 					await updateTask(`run-${logical.state}:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "blocked" }));
+					return { run, stderr, finalText };
+				}
+				if (logical?.state === "waiting_capacity") {
+					const run = await runs.update(created.record.id, { state: "waiting_capacity", exitCode: execution.exitCode, error: logical.error ?? "Every configured provider route is temporarily unavailable" }, "run.waiting_capacity");
+					await updateTask(`run-waiting-capacity:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "ready" }));
 					return { run, stderr, finalText };
 				}
 				if (logical && (logical.state === "paused" || logical.state === "cancelled")) {

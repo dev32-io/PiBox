@@ -5,11 +5,13 @@ import type { GitSnapshot } from "./git.js";
 import type { SessionMetrics } from "./metrics.js";
 import { renderPermissionMode } from "../../permissions/display.js";
 import { formatCwd, formatGit } from "./segments/format.js";
+import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
 
 export interface StatusRenderData {
 	ctx: ExtensionContext;
+	usage?: UsageSnapshot;
 	theme: Theme;
 	thinkingLevel: string;
 	permissionMode: "enforce" | "bypass";
@@ -109,6 +111,16 @@ function contextSegment(data: StatusRenderData, mode: LayoutMode): string {
 	return `${gauge(percent, gaugeWidth, data.theme, data.config)} ${data.theme.fg(color, `${percent.toFixed(1)}%`)} ${data.theme.fg("dim", `/ ${formatTokens(contextWindow)}`)}`;
 }
 
+function quotaSegment(data: StatusRenderData, mode: LayoutMode, width: number, context: string): string {
+	if (!data.usage?.windows.length || mode === "narrow") return "";
+	if ((mode === "medium" && width < 100) || (mode === "wide" && width < 120)) return "";
+	const text = formatUsageSnapshot(data.usage);
+	// Never let buildRow partially truncate the optional quota area. The existing
+	// context segment remains complete and the entire suffix disappears instead.
+	if (visibleWidth(context) + visibleWidth(text) + 3 > Math.max(0, width - 2)) return "";
+	return data.usage.stale ? data.theme.fg("dim", text) : data.theme.fg("muted", text);
+}
+
 function modelSegment(data: StatusRenderData): string {
 	const model = data.ctx.model;
 	if (!model) return data.theme.fg("warning", "no-model");
@@ -169,7 +181,9 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const divider = separator(data.theme);
 	const piMark = data.theme.fg("accent", hasNerdFonts() ? "" : "π");
 	const row1Left = [piMark, divider, modelSegment(data), divider, pathSegment(data, mode), gitSegment(data)];
-	const row1 = buildRow(row1Left, [contextSegment(data, mode)], width);
+	const context = contextSegment(data, mode);
+	const quota = quotaSegment(data, mode, width, context);
+	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
 	const row2 = buildRow([permissionSegment(data), divider, thinkingSegment(data)], row2Right, width);
 	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];

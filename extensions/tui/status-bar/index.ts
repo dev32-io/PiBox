@@ -4,6 +4,7 @@ import { DEFAULT_STATUS_BAR_CONFIG, normalizeStatusBarConfig } from "./config.js
 import { GitPoller } from "./git.js";
 import { renderStatusBar } from "./layout.js";
 import { collectSessionMetrics } from "./metrics.js";
+import { readUsageStatus, USAGE_STATUS_PREFIX } from "../../providers/shared/usage.js";
 
 export default function statusBar(pi: ExtensionAPI): void {
 	const config = normalizeStatusBarConfig(DEFAULT_STATUS_BAR_CONFIG);
@@ -38,9 +39,12 @@ export default function statusBar(pi: ExtensionAPI): void {
 						.sort(([left], [right]) => left.localeCompare(right))
 						.map(([, value]) => value);
 					const permissionMode = extensionStatuses.get("permission-mode") === "bypass" ? "bypass" : "enforce";
+					const provider = ctx.model?.provider;
+					const usage = provider ? readUsageStatus(extensionStatuses.get(`${USAGE_STATUS_PREFIX}${provider}`)) : undefined;
 					const subagentStatuses = extensionStatuses.get("subagent-dashboard")?.split("\n").filter(Boolean);
 					return renderStatusBar(width, {
 						ctx,
+						...(usage ? { usage } : {}),
 						theme,
 						thinkingLevel: pi.getThinkingLevel(),
 						permissionMode,

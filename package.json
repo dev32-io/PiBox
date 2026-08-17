@@ -35,6 +35,7 @@
   "pi": {
     "extensions": [
       "./extensions/permissions/index.ts",
+      "./extensions/provider-fallback/index.ts",
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
       "./extensions/rule/index.ts",
@@ -44,6 +45,7 @@
       "./extensions/visual-companion/index.ts",
       "./extensions/feedback/sound-hooks/index.ts",
       "./extensions/providers/ollama-cloud/index.ts",
+      "./extensions/providers/codex-usage/index.ts",
       "./extensions/providers/local-llm/index.ts",
       "./extensions/tui/chat-input/index.ts",
       "./extensions/tui/effort/index.ts",

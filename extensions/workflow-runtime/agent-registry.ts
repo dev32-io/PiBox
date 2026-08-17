@@ -33,7 +33,7 @@ export function isAgentProcessActive(agent: SessionAgentRecord): boolean {
 const TRANSITIONS: Record<AgentState, ReadonlySet<AgentState>> = {
 	reserved: new Set(["launching", "waiting_model", "waiting_capacity", "failed", "cancelled"]),
 	launching: new Set(["running", "waiting_model", "waiting_capacity", "interrupted", "failed", "cancelled"]),
-	running: new Set(["waiting_decision", "blocked", "paused", "interrupted", "recovery_required", "reported", "failed", "protocol_failed", "cancelled"]),
+	running: new Set(["waiting_model", "waiting_capacity", "waiting_decision", "blocked", "paused", "interrupted", "recovery_required", "reported", "failed", "protocol_failed", "cancelled"]),
 	waiting_model: new Set(["launching", "cancelled", "failed"]),
 	waiting_capacity: new Set(["launching", "cancelled", "failed"]),
 	waiting_decision: new Set(["launching", "cancelled", "failed"]),
@@ -41,7 +41,7 @@ const TRANSITIONS: Record<AgentState, ReadonlySet<AgentState>> = {
 	paused: new Set(["launching", "cancelled", "failed"]),
 	interrupted: new Set(["launching", "recovery_required", "reported", "cancelled", "failed"]),
 	recovery_required: new Set(["launching", "reported", "cancelled", "failed"]),
-	reported: new Set(["launching", "blocked", "interrupted", "completed", "protocol_failed", "failed", "cancelled"]),
+	reported: new Set(["launching", "waiting_model", "waiting_capacity", "blocked", "interrupted", "completed", "protocol_failed", "failed", "cancelled"]),
 	completed: new Set(),
 	failed: new Set(),
 	protocol_failed: new Set(),
@@ -58,6 +58,9 @@ export interface AgentScope {
 
 export interface ProcessAttempt {
 	id: string;
+	provider?: string;
+	model?: string;
+	effort?: string;
 	sequence: number;
 	state: "launching" | "running" | "exited" | "failed";
 	pid?: number;
@@ -226,11 +229,12 @@ export class SessionAgentRegistry {
 		})).agent;
 	}
 
-	async startAttempt(agentId: string): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
+	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");
 			const now = new Date().toISOString();
-			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now };
+			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now, ...(route ?? {}) };
+			if (route) { agent.provider = route.provider; agent.model = route.model; agent.effort = route.effort; }
 			agent.state = "launching";
 			agent.currentAttemptId = attempt.id;
 			agent.attempts.push(attempt);

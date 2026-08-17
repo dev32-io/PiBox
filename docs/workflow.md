@@ -170,7 +170,7 @@ limits:
 
 Relative prompt and skill paths are resolved first under `<repository>/.pi/`, then under `~/.pi/agent/harness/`. Built-in reusable agent definitions live in `agent-definitions/`; editable harness prompt fragments live in `prompt/`. Put tool declarations and MCP selectors in those Markdown definitions, not harness policy.
 
-Task plans select only `low | medium | high | max`. Each tier is an ordered list of `provider/model#effort` entries, so model capability and reasoning cost are tuned together in policy rather than guessed independently by the planner. Fallback is visible and remains inside the requested tier; unsupported or unavailable pairs are skipped in order, and an exhausted tier enters `waiting_model` without silent downgrade or effort clamping. Free-form `subagent_spawn` may still honor an explicit user-selected model and effort.
+Task plans select only `low | medium | high | max`. Each tier is an ordered list of `provider/model#effort` entries, so model capability and reasoning cost are tuned together in policy rather than guessed independently by the planner. Unsupported or unavailable pairs are skipped in order. If a launched provider later exhausts rate/subscription capacity, authentication, bounded transport retries, or server availability, the common child coordinator keeps the same logical agent/session/workspace and transparently tries the next usable same-tier provider. Intermediate failure output is retained privately rather than returned to a waiting foreground caller. Context, cancellation, protocol, tool, and implementation failures do not change providers; strict concrete overrides do not fall back. An exhausted tier enters `waiting_model` or `waiting_capacity` without capability downgrade or effort clamping.
 
 ## Durable state
 
@@ -194,7 +194,7 @@ These records include append-only events, run projections, transcripts, checkpoi
 - Dirty canonical state fails loudly; the workflow never auto-stashes or auto-commits unrelated work.
 - Worker and evaluator subprocesses receive only their declared active tools and run-scoped credentials.
 - V1 capability scoping is not an OS sandbox. A role with `bash` still has operating-system access available to that process.
-- Detached execution, automatic delayed capacity resume, and cross-provider checkpoint restart remain deferred in the internal backlog.
+- Detached execution and automatic delayed resume after every same-tier provider is cooling down remain deferred in the internal backlog.
 
 ## Verification
 

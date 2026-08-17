@@ -28,6 +28,7 @@ test("falls back visibly within the ordered model-effort list", () => {
 		assert.equal(result.model.id, "gpt-5.6-sol");
 		assert.equal(result.effort, "medium");
 		assert.equal(result.fallbackUsed, true);
+		assert.deepEqual(result.candidates, [{ provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" }]);
 		assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["model_missing", "selected"]);
 	}
 });
@@ -40,6 +41,16 @@ test("strict concrete override does not silently fall back", () => {
 	});
 	assert.equal(result.status, "waiting_model");
 	assert.equal(result.attempts.length, 1);
+});
+
+test("strict concrete selection exposes no runtime fallback candidates", () => {
+	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, [model("openai-codex", "gpt-5.6-sol")], {
+		tier: "high",
+		override: { model: "gpt-5.6-sol", effort: "high" },
+		strict: true,
+	});
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") assert.deepEqual(result.candidates, [{ provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" }]);
 });
 
 test("skips a configured pair when its effort is unsupported", () => {

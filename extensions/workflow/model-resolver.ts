@@ -34,6 +34,8 @@ export interface ResolvedHarnessModel {
 	model: Model<Api>;
 	effort: ModelThinkingLevel;
 	fallbackUsed: boolean;
+	/** Ordered usable same-tier routes for the launch coordinator. */
+	candidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }>;
 	attempts: ModelAttempt[];
 }
 
@@ -94,6 +96,7 @@ export function resolveHarnessModel(
 	request: ModelResolutionRequest,
 ): HarnessModelResolution {
 	const attempts: ModelAttempt[] = [];
+	const resolvedCandidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }> = [];
 	const requested = { tier: request.tier, ...(request.override ? { override: request.override } : {}) };
 	const configured = candidates(config, request);
 	const overrideConfigured = request.override
@@ -114,6 +117,12 @@ export function resolveHarnessModel(
 			continue;
 		}
 		attempts.push({ provider: route.provider, model: route.model, effort, status: "selected" });
+		resolvedCandidates.push({ provider: route.provider, model: route.model, effort });
+		// Candidates are assembled below; the first usable route remains the public selection.
+		for (const remaining of configured.slice(index + 1)) {
+			const alternate = availableModels.find((item) => item.provider === remaining.route.provider && item.id === remaining.route.model);
+			if (alternate && supportsEffort(alternate, remaining.effort)) resolvedCandidates.push({ provider: remaining.route.provider, model: remaining.route.model, effort: remaining.effort });
+		}
 		return {
 			status: "resolved",
 			requested,
@@ -121,6 +130,7 @@ export function resolveHarnessModel(
 			model,
 			effort,
 			fallbackUsed: index > 0 || Boolean(request.override && !candidate.override),
+			candidates: resolvedCandidates,
 			attempts,
 		};
 	}

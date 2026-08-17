@@ -2,12 +2,30 @@ import { createProvider, openAICompletionsApi, type ApiKeyCredential, type Model
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverOpenAIModels } from "../shared/openai-compatible.js";
 import { OLLAMA_CLOUD_MODEL_METADATA } from "./model-metadata.js";
+import { clearUsage, publishUsage } from "../shared/usage.js";
 
 const PROVIDER_ID = "ollama-cloud";
 const BASE_URL = "https://ollama.com/v1";
 
+export function retryAfterTimestamp(headers: Record<string, string>, now = Date.now()): number | undefined {
+	const value = Object.entries(headers).find(([name]) => name.toLowerCase() === "retry-after")?.[1];
+	if (!value) return undefined;
+	if (/^\d+(?:\.\d+)?$/.test(value)) return now + Number(value) * 1000;
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? timestamp : undefined;
+}
+
 export default function ollamaCloudProvider(pi: ExtensionAPI): void {
 	const loginModels: Model<"openai-completions">[] = [];
+	// Capacity is intentionally separate from quota: Ollama does not expose a
+	// reliable account limit, so request-token usage is never rendered as quota.
+	pi.on("after_provider_response", (event, ctx) => {
+		if (ctx.model?.provider !== PROVIDER_ID || event.status !== 429) return;
+		const retryAfterAt = retryAfterTimestamp(event.headers);
+		publishUsage(ctx, { provider: PROVIDER_ID, windows: [], observedAt: Date.now(), capacity: retryAfterAt !== undefined ? { retryAfterAt } : {} });
+	});
+	pi.on("session_shutdown", (_event, ctx) => clearUsage(ctx, PROVIDER_ID));
+
 	pi.registerProvider(
 		createProvider({
 			id: PROVIDER_ID,

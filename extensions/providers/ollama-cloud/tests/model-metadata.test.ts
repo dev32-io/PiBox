@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { toPiModels } from "../../shared/openai-compatible.js";
+import { retryAfterTimestamp } from "../index.js";
 import { OLLAMA_CLOUD_MODEL_METADATA } from "../model-metadata.js";
 
 const options = {
@@ -29,6 +30,11 @@ test("maps Ollama Cloud IDs to library context and modality metadata", () => {
 	assert.deepEqual(models[1]?.input, ["text", "image"]);
 	assert.equal(models[2]?.contextWindow, 1_048_576);
 	assert.equal(models[3]?.contextWindow, 128_000);
+});
+
+test("normalizes Ollama Cloud Retry-After capacity hints without inventing quota", () => {
+	assert.equal(retryAfterTimestamp({ "Retry-After": "30" }, 1_000), 31_000);
+	assert.equal(retryAfterTimestamp({}, 1_000), undefined);
 });
 
 test("contains metadata for every currently advertised Ollama Cloud model", () => {

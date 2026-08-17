@@ -6,6 +6,7 @@ import {
 	type Context,
 	type Model,
 	type SimpleStreamOptions,
+	type ThinkingLevelMap,
 	type StreamOptions,
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -15,6 +16,26 @@ import { normalizeStrictToolSchemas } from "../shared/strict-tool-schema.js";
 const PROVIDER_ID = "local-llm";
 const URL_FIELD = "LOCAL_LLM_BASE_URL";
 const CONTEXT_OVERFLOW_PATTERN = /context size has been exceeded/i;
+
+/** Local OpenAI-compatible servers accept Pi's complete effort vocabulary except minimal/max. */
+export const LOCAL_LLM_THINKING_LEVEL_MAP: ThinkingLevelMap = {
+	off: "off",
+	minimal: null,
+	low: "low",
+	medium: "medium",
+	high: "high",
+	xhigh: "xhigh",
+	max: null,
+};
+
+export function normalizeLocalLlmModels(models: Model<"openai-completions">[]): Model<"openai-completions">[] {
+	return models.map((model) => ({
+		...model,
+		reasoning: true,
+		thinkingLevelMap: { ...LOCAL_LLM_THINKING_LEVEL_MAP },
+		compat: { ...model.compat, supportsReasoningEffort: true },
+	}));
+}
 
 function strictToolSchemaCompatibleApi() {
 	const api = openAICompletionsApi();
@@ -73,7 +94,7 @@ export default function localLlmProvider(pi: ExtensionAPI): void {
 							defaultContextWindow: 128_000,
 							defaultMaxTokens: 16_384,
 						});
-						loginModels.splice(0, loginModels.length, ...models);
+						loginModels.splice(0, loginModels.length, ...normalizeLocalLlmModels(models));
 						return { type: "api_key", key, env: { [URL_FIELD]: baseUrl } };
 					},
 					async check({ ctx, credential }) {
@@ -101,7 +122,7 @@ export default function localLlmProvider(pi: ExtensionAPI): void {
 				const baseUrl = credential?.env?.[URL_FIELD] ?? process.env[URL_FIELD];
 				if (!baseUrl) return [];
 				const apiKey = credential?.key ?? process.env.LOCAL_LLM_API_KEY;
-				return discoverOpenAIModels({
+				const models = await discoverOpenAIModels({
 					providerId: PROVIDER_ID,
 					baseUrl,
 					...(apiKey ? { apiKey } : {}),
@@ -109,6 +130,7 @@ export default function localLlmProvider(pi: ExtensionAPI): void {
 					defaultContextWindow: 128_000,
 					defaultMaxTokens: 16_384,
 				});
+				return normalizeLocalLlmModels(models);
 			},
 			api: strictToolSchemaCompatibleApi(),
 		}),

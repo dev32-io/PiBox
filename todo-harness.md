@@ -45,14 +45,9 @@ Deferred ideas and follow-up work captured during the harness design brainstorm.
 
 ## Model routing and capacity recovery
 
-- Add automatic delayed resumption after provider rate or subscription limits reset.
-- Support switching model providers during an interrupted task run.
-  - An active provider request cannot migrate in place; checkpoint and restart the task as a new run attempt on the alternate provider.
-  - Preserve role, task, worktree, contract revision, context acknowledgements, and recovery lineage.
-  - Revalidate capability rank, effort support, authentication, and repository policy before switching.
-  - Keep requested, failed, and replacement model/provider selections visible and auditable.
-- Add provider/model circuit breakers, cooldowns, health probes, and configurable retry windows.
-- Consider budget-, quota-, latency-, and availability-aware routing after the static ranked fallback policy proves stable.
+- Add automatic delayed resumption after every same-tier provider route is unavailable until a known reset.
+- Add configurable provider cooldown windows and active health probes beyond the current response-driven circuit breaker.
+- Consider budget-, quota-, latency-, and availability-aware routing after ordered same-tier runtime fallback proves stable.
 
 ## Git and workspace lifecycle
 

@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-wor
 import { Container, SelectList, Text } from "@earendil-works/pi-tui";
 import { EFFORT_LEVELS, loadEffortConfig, type EffortConfig } from "./config.js";
 
-function supportedLevels(model: Model<any>): ModelThinkingLevel[] {
+export function supportedLevels(model: Model<any>): ModelThinkingLevel[] {
 	if (!model.reasoning) return ["off"];
 	return EFFORT_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== null);
 }
@@ -20,8 +20,11 @@ function safeLevel(model: Model<any>, requested: ModelThinkingLevel): ModelThink
 	});
 }
 
-function configuredLevel(config: EffortConfig, model: Model<any>): ModelThinkingLevel {
-	return config.models[`${model.provider}/${model.id}`] ?? config.models[model.id] ?? config.default;
+export function configuredLevel(config: EffortConfig, model: Model<any>): ModelThinkingLevel {
+	const explicit = config.models[`${model.provider}/${model.id}`] ?? config.models[model.id];
+	// Local servers vary in how much reasoning they can sustain; keep them
+	// conservative unless the user/repository selected this model explicitly.
+	return explicit ?? (model.provider === "local-llm" ? "off" : config.default);
 }
 
 async function chooseEffort(ctx: ExtensionCommandContext, levels: ModelThinkingLevel[]): Promise<ModelThinkingLevel | undefined> {
