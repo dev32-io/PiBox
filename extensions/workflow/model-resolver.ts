@@ -51,6 +51,24 @@ export function supportsEffort(model: Model<Api>, effort: ModelThinkingLevel): b
 	return getSupportedThinkingLevels(model).includes(effort);
 }
 
+const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** Normalize the compact provider/model#effort notation accepted by direct subagent launches. */
+export function normalizeExplicitModelOverride(model: string, effort?: HarnessEffort): ExplicitModelOverride {
+	let normalizedModel = model.trim();
+	let suffixEffort: HarnessEffort | undefined;
+	const separator = normalizedModel.lastIndexOf("#");
+	if (separator >= 0) {
+		const suffix = normalizedModel.slice(separator + 1).toLowerCase() as HarnessEffort;
+		if (separator === 0 || !EFFORTS.has(suffix)) throw new Error(`Unsupported model effort suffix in ${model}`);
+		normalizedModel = normalizedModel.slice(0, separator);
+		suffixEffort = suffix;
+	}
+	if (!normalizedModel) throw new Error("Model preference must not be empty");
+	const selectedEffort = effort ?? suffixEffort;
+	return { model: normalizedModel, ...(selectedEffort ? { effort: selectedEffort } : {}) };
+}
+
 function parseRoute(configured: TierModelRouteConfig): ParsedRoute {
 	const effortSeparator = configured.lastIndexOf("#");
 	const providerSeparator = configured.indexOf("/");

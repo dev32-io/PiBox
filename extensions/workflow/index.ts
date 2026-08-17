@@ -14,7 +14,7 @@ import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-c
 import { HarnessRunStore } from "./run-store.js";
 import { initializeHarnessRepository, type HarnessScaffoldProfile, type HarnessScaffoldResult } from "./scaffold.js";
 import { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.js";
-import { resolveHarnessModel } from "./model-resolver.js";
+import { normalizeExplicitModelOverride, resolveHarnessModel } from "./model-resolver.js";
 import { IdempotencyStore, RepositoryMutex } from "./idempotency.js";
 import { buildReviewPersistentContext, buildTaskPersistentContext } from "./implementation-context.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType, type PlanEdit } from "./orchestrator-resources.js";
@@ -773,19 +773,21 @@ export default function workflow(pi: ExtensionAPI): void {
 				const suggestion = availableAgents.find((name) => name === normalized || name.includes(normalized) || normalized.includes(name));
 				throw new HarnessError("INVALID_ARTIFACT", `Unknown workflow agent: ${request.agent}.${suggestion ? ` Did you mean ${suggestion}?` : ""} Available agents: ${availableAgents.join(", ")}`);
 			}
-			if (request.effort && !request.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort override requires an explicit model override");
+			if (request.effort && !request.model) throw new HarnessError("INVALID_ARTIFACT", "An explicit effort preference requires an explicit model preference");
 			const selectedModel = request.model ?? agentDefinition.model;
+			const preferred = selectedModel
+				? normalizeExplicitModelOverride(selectedModel, request.effort as HarnessEffort | undefined)
+				: undefined;
 			const routing = {
 				tier: (request.tier ?? agentDefinition.tier!) as CapabilityTier,
-				...(selectedModel ? { override: { model: selectedModel, ...(request.effort ? { effort: request.effort as HarnessEffort } : {}) } } : {}),
-				strict: request.strict ?? false,
+				...(preferred ? { override: preferred } : {}),
 			};
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 			const resolution = resolveHarnessModel(runtime.config, availableModels, routing);
 			if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No configured candidate is available", { attempts: resolution.attempts });
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
-				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(request.model ? { model: request.model } : {}), ...(request.effort ? { effort: request.effort } : {}), ...(request.strict !== undefined ? { strict: request.strict } : {}) }, cwd: runtime.identity.root,
+				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(preferred ? { model: preferred.model, ...(preferred.effort ? { effort: preferred.effort } : {}) } : {}) }, cwd: runtime.identity.root,
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workspace: runtime.identity.root,

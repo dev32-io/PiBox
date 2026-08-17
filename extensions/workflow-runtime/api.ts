@@ -80,11 +80,12 @@ export interface DynamicSubagentRequest {
 	operationId: string;
 	agent: string;
 	task: string;
+	/** Selects the configured capability-tier fallback list. */
 	tier?: "low" | "medium" | "high" | "max";
-	tierJustification?: string;
+	/** Preferred configured model, optionally provider-qualified or suffixed with #effort. */
 	model?: string;
+	/** Overrides a #effort suffix or the preferred route's configured effort. */
 	effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-	strict?: boolean;
 }
 
 export interface WorkflowPreflight {

@@ -51,7 +51,9 @@ test("registers the generalized workflow and subagent surface", async () => {
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_status", "subagent_control", "subagent_respond", "subagent_spawn"]);
 	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
-	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /tier.*tierJustification.*model.*effort.*strict/);
+	const spawnSchema = JSON.stringify(f.tools.get("subagent_spawn").parameters);
+	assert.match(spawnSchema, /tier.*model.*effort/);
+	assert.doesNotMatch(spawnSchema, /tierJustification|strict/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*TUI confirmation.*permission bypass mode/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
@@ -266,10 +268,10 @@ test("background spawning returns its report to the main agent and shows running
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", tier: "medium", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
+	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · Medium \(openai-codex\/gpt-5\.6-sol#high\) · \d+s/);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s/);
 	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
 	release();

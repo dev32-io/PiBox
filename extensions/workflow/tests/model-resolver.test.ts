@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
-import { resolveHarnessModel, supportsEffort } from "../model-resolver.js";
+import { normalizeExplicitModelOverride, resolveHarnessModel, supportsEffort } from "../model-resolver.js";
 
 function model(provider: string, id: string, reasoning = true, thinkingLevelMap?: ThinkingLevelMap): Model<Api> {
 	return { provider, id, reasoning, thinkingLevelMap } as unknown as Model<Api>;
@@ -30,6 +30,30 @@ test("falls back visibly within the ordered model-effort list", () => {
 		assert.equal(result.fallbackUsed, true);
 		assert.deepEqual(result.candidates, [{ provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" }]);
 		assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["model_missing", "selected"]);
+	}
+});
+
+test("normalizes compact model effort preferences", () => {
+	assert.deepEqual(normalizeExplicitModelOverride("deepseek-v4-pro#high"), { model: "deepseek-v4-pro", effort: "high" });
+	assert.deepEqual(normalizeExplicitModelOverride("ollama-cloud/deepseek-v4-pro#max", "low"), { model: "ollama-cloud/deepseek-v4-pro", effort: "low" });
+	assert.throws(() => normalizeExplicitModelOverride("deepseek-v4-pro#turbo"), /Unsupported model effort suffix/);
+});
+
+test("preferred model is promoted ahead of the selected tier fallback list", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.modelTiers.high = ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"];
+	const preference = normalizeExplicitModelOverride("deepseek-v4-pro#high");
+	const result = resolveHarnessModel(config, [model("openai-codex", "gpt-5.6-sol"), model("ollama-cloud", "deepseek-v4-pro")], {
+		tier: "high",
+		override: preference,
+	});
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") {
+		assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "ollama-cloud/deepseek-v4-pro#high");
+		assert.deepEqual(result.candidates, [
+			{ provider: "ollama-cloud", model: "deepseek-v4-pro", effort: "high" },
+			{ provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+		]);
 	}
 });
 

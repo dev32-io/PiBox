@@ -409,21 +409,17 @@ export default function workflows(pi: ExtensionAPI): void {
 				agent: Type.String({ description: `Exact configured agent name. Available agents: ${catalog.length > 0 ? catalog.map((agent) => agent.name).join(", ") : "resolved at session start"}` }),
 				task: Type.String({ description: "Complete assignment prompt for the child" }),
 				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
-				tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const, { description: "Defaults to medium; high/max require tierJustification" })),
-				tierJustification: Type.Optional(Type.String({ description: "For high/max: why medium is insufficient, the irreducible ambiguity, and why more decomposition is unsafe or incoherent" })),
-				model: Type.Optional(Type.String({ description: "Exceptional configured concrete model override; normally omit to use agent policy" })),
-				effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
-				strict: Type.Optional(Type.Boolean()),
+				tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const, { description: "Configured capability-tier fallback list; defaults to medium" })),
+				model: Type.Optional(Type.String({ description: "Preferred configured model; accepts model, provider/model, or either form suffixed with #effort" })),
+				effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Optional preferred-model effort override" })),
 			}, { additionalProperties: false }),
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const adapter = dynamicAdapter();
 				const mode = params.mode ?? "background";
-				if ((params.tier === "high" || params.tier === "max") && (!params.tierJustification || params.tierJustification.trim().length < 20)) throw new Error(`${params.tier} routing requires a substantive tierJustification explaining why medium is insufficient, the irreducible ambiguity, and why further decomposition is unsafe or incoherent`);
 				const request: DynamicSubagentRequest = {
 					operationId: toolCallId, agent: params.agent, task: params.task,
 					tier: params.tier ?? "medium",
-					...(params.tierJustification ? { tierJustification: params.tierJustification } : {}),
-					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}), ...(params.strict !== undefined ? { strict: params.strict } : {}),
+					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}),
 				};
 				const tier = params.tier ?? "medium";
 				let resolvedStatus: DynamicSubagentStarted | undefined;
