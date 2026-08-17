@@ -119,6 +119,7 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 		if (!stage || typeof stage.id !== "string" || !ID_PATTERN.test(stage.id) || stageIds.has(stage.id) || !Array.isArray(stage.tasks) || !stage.tasks.length || stage.tasks.some((id) => typeof id !== "string" || scheduled.has(id))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid or duplicate execution stages/tasks`);
 		stageIds.add(stage.id);
 		stage.tasks.forEach((id) => scheduled.add(id));
+		if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid execution stage mode`);
 		if (stage.checks !== undefined && (!Array.isArray(stage.checks) || stage.checks.some((check) => typeof check !== "string" || !check.trim()))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage checks`);
 		if (stage.review && (!["medium", "high"].includes(stage.review.tier) || (stage.review.tier === "high" && ((stage.review.rationale?.trim().length ?? 0) < 20 || (stage.review.focus?.join(" ").trim().length ?? 0) < 20)))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage review policy`);
 	}
@@ -846,6 +847,7 @@ export class WorkItemStore {
 		const index = await this.read(workItemId);
 		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
+		if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} has an invalid execution mode`);
 		if (!stage.tasks.length || new Set(stage.tasks).size !== stage.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} requires unique tasks`);
 		for (const taskId of stage.tasks) if (!index.tasks.some((task) => task.id === taskId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task in execution stage ${stage.id}: ${taskId}`);
 		if (stage.review?.tier === "high" && ((stage.review.rationale?.trim().length ?? 0) < 20 || (stage.review.focus?.join(" ").trim().length ?? 0) < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${stage.id} requires substantive rationale and focus`);

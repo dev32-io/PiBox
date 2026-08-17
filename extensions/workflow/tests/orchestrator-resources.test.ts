@@ -126,13 +126,30 @@ test("lists compact resource summaries without embedding complete task contracts
 	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
 	await store.create({ id: "summary-flow", title: "Summary flow", kind: "change", intent: "A very broad intent that should not appear in catalogs." });
 	await store.defineTask({ workItemId: "summary-flow", manifest: task(), brief: "A very long implementation brief that should only appear in bounded detail reads.", acceptance: "A very long acceptance contract that should only appear in bounded detail reads." });
+	await store.putExecutionStage("summary-flow", { id: "app", tasks: ["build-app"], mode: "concurrent" }, mutation);
 	const items = await service.listSummaries("work-item");
 	assert.deepEqual(items[0]?.counts, { artifacts: 1, tasks: 1, stages: 1, evaluations: 0 });
 	assert.equal("resource" in items[0]!, false);
 	const tasks = await service.listSummaries("task", "summary-flow");
 	assert.equal(tasks[0]?.stageId, "app");
+	const stages = await service.listSummaries("stage", "summary-flow");
+	assert.equal(stages[0]?.mode, "concurrent");
 	assert.equal(JSON.stringify(tasks).includes("very long implementation brief"), false);
 	assert.deepEqual((await service.summary("work-item:summary-flow/task:build-app")).availableViews, ["summary", "full"]);
+});
+
+test("resolves legacy stage modes in resource summaries", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "legacy-stage-summary", title: "Legacy stages", kind: "change", intent: "Expose resolved stage topology." });
+	const first = task("legacy-singleton"); first.assembly.stageId = "legacy-single";
+	const second = task("legacy-first"); second.assembly.stageId = "legacy-multi";
+	const third = task("legacy-second"); third.assembly.stageId = "legacy-multi";
+	for (const manifest of [first, second, third]) await store.defineTask({ workItemId: "legacy-stage-summary", manifest, brief: "Implement it.", acceptance: "It works." });
+	await store.putExecutionStage("legacy-stage-summary", { id: "legacy-single", tasks: ["legacy-singleton"] }, mutation);
+	await store.putExecutionStage("legacy-stage-summary", { id: "legacy-multi", tasks: ["legacy-first", "legacy-second"] }, mutation);
+	const stages = await service.listSummaries("stage", "legacy-stage-summary");
+	assert.equal(stages.find((stage) => stage.id === "legacy-single")?.mode, "sequential");
+	assert.equal(stages.find((stage) => stage.id === "legacy-multi")?.mode, "concurrent");
 });
 
 test("revises a reviewed task in place without an approval lifecycle", async (t) => {

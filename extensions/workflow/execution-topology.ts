@@ -6,14 +6,22 @@ import type { EvaluationManifest, ExecutionStageContract, TaskManifest, WorkItem
 const execFileAsync = promisify(execFile);
 
 export type TaskExecutionIsolation = "repository" | "worktree";
+export type ResolvedStageMode = "sequential" | "concurrent";
 
 export interface TaskExecutionTopology {
 	stageId: string;
 	stageIndex: number;
 	stageTasks: string[];
 	stageSize: number;
+	mode: ResolvedStageMode;
 	isolation: TaskExecutionIsolation;
 	parallelism: "serial" | "allowed";
+}
+
+/** Resolve the durable mode, retaining the pre-mode singleton/multi-task behavior. */
+export function resolveStageMode(stage: ExecutionStageContract): ResolvedStageMode {
+	if (stage.mode === "sequential" || stage.mode === "concurrent") return stage.mode;
+	return stage.tasks.length === 1 ? "sequential" : "concurrent";
 }
 
 /** Return the planner-authored task stages in durable order. */
@@ -35,14 +43,17 @@ export function taskExecutionTopology(item: WorkItemIndex, task: TaskManifest): 
 	const stageIndex = stages.findIndex((stage) => stage.tasks.includes(task.id));
 	if (stageIndex < 0) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} is not assigned to an execution stage`);
 	const stage = stages[stageIndex]!;
-	const isolation = retainedRuntimeIsolation(item, task) ?? (stage.tasks.length > 1 ? "worktree" : "repository");
+	const mode = resolveStageMode(stage);
+	// A persisted runtime allocation wins over a newly derived topology during recovery.
+	const isolation = retainedRuntimeIsolation(item, task) ?? (mode === "concurrent" ? "worktree" : "repository");
 	return {
 		stageId: stage.id,
 		stageIndex,
 		stageTasks: [...stage.tasks],
 		stageSize: stage.tasks.length,
+		mode,
 		isolation,
-		parallelism: stage.tasks.length > 1 ? "allowed" : "serial",
+		parallelism: mode === "concurrent" ? "allowed" : "serial",
 	};
 }
 
@@ -81,16 +92,32 @@ export function validateExecutionTopology(item: WorkItemIndex, tasks: TaskManife
 	for (const [stageIndex, stage] of stages.entries()) {
 		if (stage.tasks.length === 0) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} must contain at least one task`);
 		if (stage.review?.tier === "high" && ((stage.review.focus?.join(" ").trim().length ?? 0) < 20 || (stage.review.rationale?.trim().length ?? 0) < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${stage.id} requires substantive rationale and focus`);
+		const mode = resolveStageMode(stage);
 		const claims = new Map<string, string>();
+		const taskOrder = new Map(stage.tasks.map((taskId, order) => [taskId, order]));
 		for (const taskId of stage.tasks) {
 			if (!taskById.has(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} references unknown task ${taskId}`);
 			if (stageByTask.has(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${taskId} appears in more than one execution stage`);
 			stageByTask.set(taskId, stageIndex);
-			if (stage.tasks.length === 1) continue;
+			// Claims protect concurrent worktrees only. Sequential tasks intentionally share
+			// the repository and may touch the same resources in declared order.
+			if (mode !== "concurrent") continue;
 			for (const claim of taskById.get(taskId)!.execution.resourceClaims) {
 				const owner = claims.get(claim);
-				if (owner) throw new HarnessError("INVALID_ARTIFACT", `Parallel stage ${stage.id} has conflicting resource claim ${claim} in ${owner} and ${taskId}`);
+				if (owner) throw new HarnessError("INVALID_ARTIFACT", `Concurrent stage ${stage.id} has conflicting resource claim ${claim} in ${owner} and ${taskId}`);
 				claims.set(claim, taskId);
+			}
+		}
+		// Same-stage dependencies cannot express a meaningful barrier in a concurrent
+		// stage. In a sequential stage, order is the barrier; only an earlier declared
+		// task may be named as a redundant dependency.
+		for (const taskId of stage.tasks) {
+			const task = taskById.get(taskId);
+			if (!task) continue;
+			for (const dependency of task.dependsOn) {
+				if (stageByTask.get(dependency) !== stageIndex) continue;
+				if (mode === "concurrent") throw new HarnessError("INVALID_ARTIFACT", `Concurrent stage ${stage.id} cannot contain same-stage dependency ${taskId} -> ${dependency}; blockers must be placed in an earlier execution stage`);
+				if ((taskOrder.get(dependency) ?? -1) >= (taskOrder.get(taskId) ?? -1)) throw new HarnessError("INVALID_ARTIFACT", `Sequential stage ${stage.id} declares ${taskId} before its dependency ${dependency}`);
 			}
 		}
 	}
@@ -101,7 +128,9 @@ export function validateExecutionTopology(item: WorkItemIndex, tasks: TaskManife
 		for (const dependency of task.dependsOn) {
 			const dependencyStage = stageByTask.get(dependency);
 			if (dependencyStage === undefined) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} depends on unknown or unscheduled task ${dependency}`);
-			if (dependencyStage >= taskStage) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} depends on ${dependency}, but blockers must be placed in an earlier execution stage`);
+			if (dependencyStage > taskStage) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} depends on ${dependency}, but blockers must be placed in an earlier execution stage`);
+			// Same-stage dependencies are checked above: concurrent stages reject them,
+			// while sequential stages require the dependency to precede the task.
 		}
 	}
 	// Evaluations are runtime-owned gates and are deliberately outside the planner graph.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { Check } from "typebox/value";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflow, { WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
 
@@ -86,6 +87,12 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.ok(JSON.stringify(schemas.get("workflow_apply_change")).length < 2500, "always-visible repair batch stays compact");
 	assert.match(JSON.stringify(schemas.get("resource_list")), /type.*parent.*query/);
 	assert.match(JSON.stringify(schemas.get("resource_read")), /ref/);
+	const schemaResult = await definitions.get("workflow_schema").execute("test", { operation: "create", resource: "stage", limit: 12000 });
+	const exactStageCreateSchema = JSON.parse((schemaResult as any).content[0].text.split("\n", 2)[1]);
+	const stageSchema = exactStageCreateSchema.properties.body;
+	assert.equal(Check({ id: "ordered", tasks: ["task"], mode: "sequential" }, stageSchema), true);
+	assert.equal(Check({ id: "legacy", tasks: ["task"] }, stageSchema), true, "mode remains optional for legacy authoring");
+	assert.deepEqual(stageSchema.properties.mode.anyOf.map((entry: { const: string }) => entry.const), ["sequential", "concurrent"]);
 	const completionSchema = schemas.get("work_item_complete") as { type?: string; properties?: Record<string, unknown>; anyOf?: unknown };
 	assert.equal(completionSchema.type, "object");
 	assert.deepEqual(Object.keys(completionSchema.properties ?? {}), ["workItemId", "outcomeSections", "outcome"]);

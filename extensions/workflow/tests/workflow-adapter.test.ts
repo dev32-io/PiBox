@@ -177,6 +177,52 @@ test("gates each stage on its harness review while preserving parallel merge bar
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.status, "ready");
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.kind, "merge");
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:right"))?.status, "pending");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-parallel-review"))?.status, "pending", "the concurrent stage review remains gated by the listed merge barrier");
+});
+
+test("orders a three-task sequential stage and gates the next stage on review", async () => {
+	const tasks: any[] = [task("first", "contribution_complete"), task("second", "contribution_complete"), task("third", "contribution_complete"), task("next", "ready", [], "next-stage")];
+	const reviews: any[] = [
+		{ id: "stage-delivery-review", checkpoint: "stage-review", stageId: "delivery", status: "planned", scope: { workItem: "ordered" }, loop: { state: "planned", iteration: 0, maxIterations: 2 } },
+		{ id: "stage-next-stage-review", checkpoint: "stage-review", stageId: "next-stage", status: "planned", scope: { workItem: "ordered" }, loop: { state: "planned", iteration: 0, maxIterations: 2 } },
+	];
+	const item: any = { id: "ordered", title: "Ordered", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "delivery", mode: "sequential", tasks: ["first", "second", "third"] }, { id: "next-stage", tasks: ["next"] }], integrationUnits: [], evaluations: reviews.map(({ id }) => ({ id })) };
+	const runtime: any = {
+		workItems: {
+			async read() { return item; },
+			async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); },
+			async readEvaluation(_workItemId: string, id: string) { return reviews.find((entry) => entry.id === id); },
+		},
+		agents: { async list() { return []; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const assertSequential = (snapshot: any, ids: string[]) => ids.forEach((id) => {
+		const step = snapshot.steps.find((candidate: any) => candidate.ref.endsWith(`task:${id}`));
+		assert.equal(step.parallelism, "serial");
+		assert.deepEqual(step.resourceClaims, ["working-branch"]);
+	});
+	let snapshot = await adapter.snapshot("work-item:ordered", {} as any);
+	assert.equal(snapshot.stages?.[0]?.parallel, false);
+	assertSequential(snapshot, ["first", "second", "third"]);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:first"))?.status, "ready");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:second"))?.status, "pending");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:third"))?.status, "pending");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:next"))?.status, "pending");
+
+	for (const [done, ready] of [["first", "second"], ["second", "third"]]) {
+		tasks.find((entry) => entry.id === done)!.status = "integrated";
+		snapshot = await adapter.snapshot("work-item:ordered", {} as any);
+		assert.equal(snapshot.steps.find((step) => step.ref.endsWith(`task:${ready}`))?.status, "ready");
+		assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-delivery-review"))?.status, "pending");
+	}
+	tasks.find((entry) => entry.id === "third")!.status = "integrated";
+	snapshot = await adapter.snapshot("work-item:ordered", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-delivery-review"))?.status, "ready");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:next"))?.status, "pending");
+
+	reviews[0].status = "passed"; reviews[0].loop.state = "passed";
+	snapshot = await adapter.snapshot("work-item:ordered", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:next"))?.status, "ready");
 });
 
 test("final branch review follows an adopted semantic journey gate instead of a fixed evaluation id", async () => {

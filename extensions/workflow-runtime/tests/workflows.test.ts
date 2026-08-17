@@ -201,6 +201,51 @@ test("transient snapshot attention does not pause an in-flight step or block rou
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("schedules an explicit sequential stage one serial repository task at a time before its next stage", async () => {
+	const f = fixture();
+	const statuses = new Map([["first", "ready"], ["second", "pending"], ["third", "pending"], ["review", "pending"], ["next", "pending"]]);
+	const calls: string[] = [];
+	let active = 0;
+	let maximumActive = 0;
+	let releaseFirst!: () => void;
+	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+	const refs = (id: string) => `test:${id}`;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot(ref) {
+			const steps = [...statuses].map(([id, status]) => ({
+				ref: refs(id), title: id, kind: id === "review" ? "evaluation" as const : "task" as const,
+				status: status as any, dependsOn: [], parallelism: "serial" as const, resourceClaims: id === "review" ? [] : ["working-branch"],
+			}));
+			return { ref, title: "Sequential stage", status: statuses.get("next") === "done" ? "done" : "ready", steps };
+		},
+		async runStep(ref) {
+			const id = ref.slice("test:".length);
+			calls.push(id); active++; maximumActive = Math.max(maximumActive, active);
+			try {
+				if (id === "first") await firstGate;
+				statuses.set(id, "done");
+				if (id === "first") statuses.set("second", "ready");
+				if (id === "second") statuses.set("third", "ready");
+				if (id === "third") statuses.set("review", "ready");
+				if (id === "review") statuses.set("next", "ready");
+				return { ref, state: "completed", summary: `${id} settled.` };
+			} finally { active--; }
+		},
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.deepEqual(calls, ["first"], "only the first sequential task starts initially");
+	releaseFirst();
+	await new Promise((resolve) => setTimeout(resolve, 80));
+	assert.deepEqual(calls, ["first", "second", "third", "review", "next"]);
+	assert.equal(maximumActive, 1, "serial scheduling never overlaps stage work or review");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("background spawning returns its report to the main agent and shows running status", async () => {
 	const f = fixture();
 	let release!: () => void;

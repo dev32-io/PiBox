@@ -33,10 +33,24 @@ test("prohibits planner-authored evaluation resources", () => {
 	assert.throws(() => normalizePlanBundle({ workItem: { id: "checkout" }, tasks: [], stages: [], evaluations: [] }), /cannot contain evaluation/i);
 });
 
+test("normalizes and preserves explicit stage modes while keeping omission compatible", () => {
+	assert.deepEqual(normalizePlanStage({ id: "ordered", tasks: ["one", "two"], mode: "sequential" }), { id: "ordered", tasks: ["one", "two"], checks: [], mode: "sequential" });
+	assert.deepEqual(normalizePlanStage({ id: "parallel", tasks: ["one", "two"], mode: "concurrent" }), { id: "parallel", tasks: ["one", "two"], checks: [], mode: "concurrent" });
+	assert.equal((normalizePlanStage({ id: "legacy", tasks: ["one"] }) as any).mode, undefined);
+	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], mode: "unsupported" }), /unsupported execution mode/i);
+});
+
 test("normalizes medium stage review and requires substantive high policy", () => {
 	assert.deepEqual(normalizePlanStage({ id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { focus: ["Checkout correctness"] } }), { id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { tier: "medium", focus: ["Checkout correctness"] } });
 	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "high", focus: ["bugs"], rationale: "hard" } }), /substantive rationale and focus/i);
 	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "max" } }), /max is not available/i);
+});
+
+test("preserves stage mode through author-facing stage edits", () => {
+	const created = normalizePlanEdit("stage", "create", "work-item:checkout/stage:ordered", { id: "ordered", tasks: ["one", "two"], mode: "sequential" }, "checkout");
+	assert.equal((created.value as any).mode, "sequential");
+	const updated = normalizePlanEdit("stage", "update", "work-item:checkout/stage:ordered", { mode: "concurrent" }, "checkout");
+	assert.deepEqual(updated.value, { mode: "concurrent" });
 });
 
 test("expands concise self-contained task contracts", () => {

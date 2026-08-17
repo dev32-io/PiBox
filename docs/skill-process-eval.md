@@ -14,7 +14,7 @@ Every scenario must satisfy:
 - shape-story stops for explicit story review and never invokes plan-delivery in the same turn;
 - acknowledgements such as “looks good” do not silently start planning;
 - planning starts only after an explicit post-review request;
-- tasks are self-contained runnable tracer bullets without artifact-reference instructions;
+- tasks are aggressively decomposed implementation contributions with embedded tests/checks; sequential stages may contain compiling intermediate commits with the stage as the coherent review boundary, concurrent tasks remain independent, and no proof-only tasks are created;
 - `task_clarify` remains an exceptional route to additional story context, not required startup behavior;
 - resource calls produce no schema, truncation-limit, or dirty-repository errors;
 - the planner reads each child artifact/task it claims to review;

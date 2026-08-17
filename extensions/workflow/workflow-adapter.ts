@@ -5,7 +5,7 @@ import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistr
 import type { RepositoryIdentity } from "./repository.js";
 import { readTextIfExists } from "./repository.js";
 import type { WorkItemStore } from "./work-items.js";
-import { orderedExecutionStages, preflightTaskChecks, taskExecutionTopology } from "./execution-topology.js";
+import { orderedExecutionStages, preflightTaskChecks, resolveStageMode, taskExecutionTopology } from "./execution-topology.js";
 import { WorktreeManager } from "./worktrees.js";
 import type { RepositoryMutex } from "./idempotency.js";
 import { readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
@@ -133,11 +133,14 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const topology = taskExecutionTopology(item, task);
 				const priorStagesDone = stages.slice(0, topology.stageIndex).every((stage) => stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")) && ["passed", "not_applicable"].includes(stageReviews.get(stage.id)?.status ?? ""));
 				const dependenciesDone = task.dependsOn.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? ""));
+				const isSequentialStage = resolveStageMode(stages[topology.stageIndex]!) === "sequential";
+				const taskIndex = topology.stageTasks.indexOf(task.id);
+				const priorSequentialTaskDone = !isSequentialStage || taskIndex <= 0 || taskDone.has(taskById.get(topology.stageTasks[taskIndex - 1]!)?.status ?? "");
 				const isMergeState = contributionStates.has(task.status) && !["merged", "integrated"].includes(task.status);
-				const parallelStageReadyToMerge = topology.stageSize === 1 || topology.stageTasks.every((id) => contributionStates.has(taskById.get(id)?.status ?? ""));
-				const mergeBarrierOwner = topology.stageSize === 1 || topology.stageTasks[0] === task.id;
-				let mapped = taskStatus(task.status, priorStagesDone && dependenciesDone);
-				if (isMergeState && (!parallelStageReadyToMerge || !mergeBarrierOwner)) mapped = { status: "pending", detail: parallelStageReadyToMerge ? "waiting for stage merge barrier" : "waiting for parallel contributions" };
+				const parallelStageReadyToMerge = topology.mode === "sequential" || topology.stageSize === 1 || topology.stageTasks.every((id) => contributionStates.has(taskById.get(id)?.status ?? ""));
+				const mergeBarrierOwner = topology.mode === "sequential" || topology.stageSize === 1 || topology.stageTasks[0] === task.id;
+				let mapped = taskStatus(task.status, priorStagesDone && dependenciesDone && priorSequentialTaskDone);
+				if (isMergeState && (!priorSequentialTaskDone || !parallelStageReadyToMerge || !mergeBarrierOwner)) mapped = { status: "pending", detail: !priorSequentialTaskDone ? "waiting for prior sequential task" : parallelStageReadyToMerge ? "waiting for stage merge barrier" : "waiting for parallel contributions" };
 				if (mapped.status === "running") {
 					const activity = scopeActivity(agents, "taskId", task.id);
 					if (!activity.running) mapped = { status: "attention", detail: activity.attention ?? "stale process state" };
@@ -190,7 +193,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
-			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: stage.tasks.length > 1, group: "planner" as const }));
+			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));
 			const runtimeNodes = evaluations.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => `evaluation:${evaluation.id}`);
 			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])] };
 		},

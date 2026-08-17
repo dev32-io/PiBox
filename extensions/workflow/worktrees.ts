@@ -266,7 +266,11 @@ export class WorktreeManager {
 
 		const requestedTask = await this.workItems.readTask(workItemId, taskId);
 		const topology = taskExecutionTopology(item, requestedTask);
-		const taskIds = topology.isolation === "worktree" && topology.stageSize > 1 ? topology.stageTasks : [taskId];
+		// The resolved stage mode owns the integration boundary. Sequential tasks are
+		// integrated one at a time so the canonical branch is the next task's base;
+		// concurrent stages alone use the listed-order stage barrier.
+		const concurrentStage = topology.mode === "concurrent";
+		const taskIds = concurrentStage ? topology.stageTasks : [taskId];
 		const tasks = await Promise.all(taskIds.map((id) => this.workItems.readTask(workItemId, id)));
 		const pending = tasks.filter((task) => !["merged", "integrated"].includes(task.status));
 		if (pending.length === 0) {
@@ -280,7 +284,7 @@ export class WorktreeManager {
 		const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 		const checkResults: IntegrationResult["checks"] = [];
 		try {
-			if (topology.isolation === "repository") {
+			if (!concurrentStage) {
 				const completedCommit = pending[0]!.runtime!.completedCommit!;
 				const present = await execFileAsync("git", ["merge-base", "--is-ancestor", completedCommit, "HEAD"], { cwd: this.identity.root }).then(() => true, () => false);
 				if (!present) throw new HarnessError("INVALID_HANDOFF", `Repository task ${pending[0]!.id} commit is not present on ${workingBranch}`);
@@ -293,7 +297,8 @@ export class WorktreeManager {
 			}
 
 			const stage = (item.executionStages ?? []).find((candidate) => candidate.id === topology.stageId);
-			const commands = checks ?? stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
+			const isFinalSequentialTask = topology.mode === "sequential" && topology.stageTasks.indexOf(taskId) === topology.stageTasks.length - 1;
+			const commands = concurrentStage || isFinalSequentialTask ? checks ?? stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))] : [];
 			for (const command of commands) {
 				const result = await runShell(command, this.identity.root);
 				checkResults.push({ command, ...result });
@@ -323,7 +328,8 @@ export class WorktreeManager {
 			if (error instanceof HarnessError) throw error;
 			throw new HarnessError("GIT_OPERATION_FAILED", `Atomic stage merge failed for ${topology.stageId}: ${message}`);
 		}
-		if (topology.stageSize > 1) await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(workItemId, topology.stageId)]).catch(() => undefined);
+		// Stage refs are concurrency barriers, never sequential-task state.
+		if (concurrentStage) await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(workItemId, topology.stageId)]).catch(() => undefined);
 		await this.workItems.refreshReadyTasks(workItemId);
 		return { commit: await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, taskIds, stageId: topology.stageId, checks: checkResults };
 	}

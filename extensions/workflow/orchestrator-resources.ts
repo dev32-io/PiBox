@@ -4,6 +4,7 @@ import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import { isTierTaskAssignment, taskAgentName, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { resolveStageMode } from "./execution-topology.js";
 import { WorkItemStore } from "./work-items.js";
 
 export type CanonicalResourceType = "work-item" | "artifact" | "task" | "stage" | "evaluation";
@@ -169,7 +170,7 @@ export class OrchestratorResourceService {
 					allowedActions: allowed(type, finalized),
 				});
 			}
-			if (type === "stage") for (const stage of item.executionStages ?? []) results.push({ ref: `work-item:${item.id}/stage:${stage.id}`, revision: item.planning.revision, id: stage.id, taskCount: stage.tasks.length, checks: stage.checks ?? [], review: stage.review ?? { tier: "medium" }, allowedActions: allowed(type, finalized) });
+			if (type === "stage") for (const stage of item.executionStages ?? []) results.push({ ref: `work-item:${item.id}/stage:${stage.id}`, revision: item.planning.revision, id: stage.id, taskCount: stage.tasks.length, checks: stage.checks ?? [], mode: resolveStageMode(stage), review: stage.review ?? { tier: "medium" }, allowedActions: allowed(type, finalized) });
 			if (type === "evaluation") for (const catalog of item.evaluations) {
 				const evaluation = await this.store.readEvaluation(item.id, catalog.id);
 				results.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, revision: item.planning.revision, id: evaluation.id, type: evaluation.type, status: evaluation.status, required: evaluation.required, scope: evaluation.scope, allowedActions: allowed(type, finalized) });

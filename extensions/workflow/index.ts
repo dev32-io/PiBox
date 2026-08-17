@@ -138,7 +138,7 @@ const TASK_RESOURCE_BODY = Type.Union([
 	Type.Object({ manifest: TASK_MANIFEST_RESOURCE, brief: Type.String(), acceptance: Type.String() }, { additionalProperties: false }),
 	Type.Object({ manifest: TASK_MANIFEST_RESOURCE, narrativeSchemaVersion: Type.Literal(2), briefSections: TASK_BRIEF_SECTIONS, acceptanceSections: TASK_ACCEPTANCE_SECTIONS }, { additionalProperties: false }),
 ]);
-const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { minItems: 1 }), checks: Type.Optional(Type.Array(Type.String())), review: Type.Optional(Type.Object({ tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
+const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { minItems: 1 }), mode: Type.Optional(Type.Union([Type.Literal("sequential"), Type.Literal("concurrent")])), checks: Type.Optional(Type.Array(Type.String())), review: Type.Optional(Type.Object({ tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
 const CANONICAL_PLAN_BUNDLE = Type.Object({
 	workItem: WORK_ITEM_RESOURCE_BODY,
 	artifacts: Type.Array(ARTIFACT_RESOURCE_BODY),

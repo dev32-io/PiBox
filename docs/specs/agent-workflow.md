@@ -16,7 +16,7 @@ The main Pi session remains the user's conversational and orchestration authorit
 
 The workflow scales with the work. A small text or color edit can remain ordinary ad-hoc Pi work. A bounded change can use lightweight artifacts and selective delegation. A complex story can use the complete planning, review, execution, and evaluation workflow.
 
-The workflow defines phase-level obligations, not a mandatory per-task ceremony. Planning must establish a reviewed contract; implementation must produce an assembled result; completion must have proportionate evidence. The orchestrator decides whether review and testing happen per task, once for an integration unit, once for the completed work item, or are unnecessary for a low-risk contribution. This explicitly avoids forcing every task through the same implement-review-test-fix loop.
+The workflow defines phase-level obligations, not a mandatory per-task ceremony. Planning must establish a reviewed contract; implementation must produce an assembled result; completion must have proportionate evidence. Optional extra or ad-hoc review and broad testing may be omitted for low-risk work where appropriate, but every managed execution stage always runs its required runtime-owned stage review/fix gate and declared checks. This avoids forcing every task through the same implement-review-test-fix loop without weakening the stage contract.
 
 ## 2. Design goals
 
@@ -502,15 +502,15 @@ Each task must be:
 - Clear about whether it is a complete behavior or a partial contribution.
 - Honest about dependencies and its expected intermediate state.
 - Assigned to a stage when several tasks must be assembled before they are meaningful.
-- Assigned to an ordered stage; blockers live in earlier stages and same-stage siblings are independent.
+- Assigned to an ordered stage with an explicit `mode`: `sequential` or `concurrent`; blockers live in earlier stages.
 - Given a proportionate verification timing: task, integration-unit, work-item, or intentionally skipped.
 - Assigned a capability tier only after decomposition.
 
-The planner drafts tracer-bullet contributions rather than horizontal implementation layers. Each task cuts a narrow but complete path through the behavior, implementation layers, and focused tests it needs; is independently demoable or verifiable; and fits one fresh worker context. Setup belongs with the behavior that needs it. Preparatory seams and expand–migrate–contract sequences are exceptions used only when vertical slices cannot remain coherent or green.
+The planner aggressively decomposes implementation work rather than requiring every task to be a tracer bullet or independently demoable. Each task owns a focused contribution concern with its implementation and embedded tests/checks; it may be a compiling intermediate commit in an explicit sequential stage, where the stage is the coherent review boundary. Concurrent-stage tasks remain independent. No proof-only, test-only, review-only, or verification-only tasks are created. Setup belongs with the behavior that needs it, and preparatory seams or expand–migrate–contract sequences are used when a safe ordered intermediate state is required.
 
 The planner writes the complete draft atomically, reads the whole plan graph at the exact written revision back, and only then performs one lightweight self-review with fresh eyes: map each binding criterion and constraint to an owning task and proof, find vague placeholders, and verify dependencies, stages, references, and produced/consumed interfaces agree across the graph. If needed, it applies one revision-pinned surgical edit without rewriting unchanged resources and does not repeat the review. Planner-facing writes default harness-owned lifecycle and schema boilerplate, but task briefs and acceptance contracts remain structured because they are injected into implementation context. A stronger tier or deep deliberation never compensates for avoidable task scope.
 
-Tasks in one execution stage are the concurrent set. They cannot depend on one another and must have compatible resource claims. Blocked work belongs in a later stage. The extension derives execution mechanics from topology: singleton stages run directly on the feature branch; multi-task stages start isolated worktrees from one pinned base and cross one atomic merge-and-check barrier.
+Each execution stage declares `mode: sequential` or `mode: concurrent`. A sequential stage runs its tasks in declared order on the canonical `feature/<work-item>` branch; each task integrates before the next starts, so later tasks see prior commits. A concurrent stage launches tasks in individual worktrees from one pinned common base, requires compatible resource claims and no same-stage dependency semantics, then crosses one atomic merge barrier in declared order. For backward compatibility, an omitted mode resolves to sequential for a singleton stage and concurrent for a multi-task stage; new plans should declare the mode explicitly.
 
 ### 9.5 Optional plan critic
 
@@ -753,7 +753,7 @@ A worker's structured handoff establishes that its assigned contribution is comp
 
 ### 13.2 Execution stages and integration units
 
-Ordered execution stages are the scheduler topology. Each singleton stage executes directly on the feature branch; every multi-task stage is one concurrent set whose tasks start from a pinned common base and cross an atomic merge barrier. Integration units remain semantic verification groupings and may span one or more stages.
+Ordered execution stages are the scheduler topology. Each stage has an explicit `mode: sequential | concurrent`. Sequential stages execute every task serially in declared order on the canonical feature branch. Concurrent stages execute tasks independently in per-task worktrees from one pinned common base and integrate them through one atomic merge barrier. When `mode` is omitted, a singleton stage is resolved as sequential and a multi-task stage as concurrent for legacy plans. Integration units remain semantic verification groupings and may span one or more stages.
 
 The planner may group related tasks into an integration unit:
 
@@ -788,7 +788,7 @@ Resource claims protect shared external or generated resources that separate Git
 
 ### 13.4 Scheduling
 
-The reviewed stage graph determines concurrency and isolation. The extension launches one singleton-stage task at a time on the canonical feature branch, or all compatible ready tasks in a multi-task stage in isolated worktrees. The extension rejects launches when:
+The reviewed stage graph and resolved stage mode determine concurrency and isolation. In a sequential stage, only the next declared task is launched on the canonical feature branch, after the prior task integrates. In a concurrent stage, all compatible ready tasks launch in isolated worktrees from the pinned common base. The extension rejects launches when:
 
 - The declared base or dependencies are not available.
 - A required resource is locked.
@@ -798,7 +798,7 @@ The reviewed stage graph determines concurrency and isolation. The extension lau
 
 ### 13.5 Worktree allocation
 
-Worktrees are allocated only for multi-task stages. Every sibling is based on the same pinned stage commit; a planner cannot request a worktree for a serial task or direct-repository execution for a parallel task.
+Sequential-stage tasks use the canonical feature branch and integrate independently, so each later task sees the prior task's commit. Concurrent-stage tasks use one worktree per task, all based on the same pinned stage commit; the stage crosses one merge barrier after every contribution is ready. A planner cannot request worktree execution for a sequential task or direct-repository execution for a concurrent task.
 
 ```text
 branch:
@@ -825,15 +825,15 @@ An implementation task must finish with:
 - No changes under `agent-artifacts/`.
 - No unacknowledged context amendments.
 
-A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the reviewed execution strategy defers those obligations. The extension validates actual Git state and the declared handoff rather than imposing a universal test checklist.
+A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the reviewed execution strategy defers those obligations. Optional extra or ad-hoc review and broad testing may be deferred or omitted; however, every managed execution stage still runs its required runtime-owned stage review/fix gate and declared checks. The extension validates actual Git state and the declared handoff rather than imposing a universal per-task test checklist.
 
 ## 14. Assembly and integration
 
 ### 14.1 Ownership
 
-A singleton-stage child commits directly to the checked-out feature branch under the scheduler's exclusive feature-branch claim. Multi-task-stage children commit only to task branches. The orchestrator owns the canonical feature branch and atomic stage barrier. Reviewers inspect whichever boundary the orchestrator assigns: a task contribution, integrated stage/unit, or completed work-item candidate.
+Sequential-stage children commit directly to the checked-out feature branch under the scheduler's exclusive feature-branch claim, one task at a time. Concurrent-stage children commit only to task branches; the orchestrator owns their atomic stage barrier. Every assembled stage runs its required stage checks and runtime-owned review/fix loop before the next stage advances. Reviewers inspect the integrated stage, while the runtime retains final E2E and final branch review as ordered completion gates on the assembled delivery branch.
 
-### 14.2 Parallel-stage merge barrier
+### 14.2 Concurrent-stage merge barrier
 
 ```text
 parallel task branches from one pinned base
@@ -853,7 +853,7 @@ No later stage observes a partially merged parallel batch. A failed merge or sta
 
 The canonical branch is updated only from an orchestrator-controlled candidate whose expected base still matches. If another unit integrates first, the candidate is rebuilt or rebased under orchestrator control.
 
-The required checks are those declared for this integration boundary. The extension never invents a universal build/review/E2E gate.
+The stage's required checks run after sequential integration or the concurrent merge barrier. A failed check or required review enters the managed fix loop and blocks later stages until settled. After all stages, the runtime-owned final E2E (when a meaningful journey exists) and final branch review remain ordered completion gates; the extension never permits their substitution by manual evaluation or an unreviewed shortcut.
 
 ### 14.4 Commit policy
 
@@ -880,7 +880,7 @@ The extension preserves the last clean canonical state and all task branches.
 
 ### 15.1 Phase-level obligation
 
-Evaluation is required at the level necessary to establish confidence in the reviewed deliverable, not once per task. The planner and main orchestrator decide the cheapest meaningful verification boundary.
+Optional extra evaluation is required only at the level necessary to establish confidence in the reviewed deliverable, not once per task. Independently, every managed execution stage has its runtime-owned stage review/fix gate and declared checks. The planner and main orchestrator decide the cheapest meaningful boundary for any additional review or testing.
 
 Possible boundaries are:
 
@@ -930,12 +930,12 @@ When requested, the plan critic challenges missing final confidence, not the abs
 
 The orchestrator may:
 
-- Skip evaluation for trivial or purely structural contributions.
+- Skip optional extra evaluation for trivial or purely structural contributions.
 - Combine spec and quality concerns into one evaluator prompt when that is efficient.
-- Batch review across several related tasks.
-- Defer build or tests until all required pieces are assembled.
+- Batch optional extra review across several related tasks.
+- Defer broad build or tests until all required pieces are assembled; the stage's declared checks still run.
 - Run targeted tests instead of the full suite.
-- Omit E2E when there is no meaningful user journey or the risk does not justify it.
+- Omit additional E2E when there is no meaningful user journey or the risk does not justify it; runtime-owned required gates remain mandatory.
 - Add stronger checks when implementation findings increase risk.
 
 These changes do not require another user decision unless they weaken a user-mandated control, leave a binding acceptance criterion without credible proof, or alter a security/quality boundary the user explicitly required.

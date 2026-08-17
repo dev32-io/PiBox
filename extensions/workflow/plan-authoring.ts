@@ -218,7 +218,8 @@ export function normalizePlanStage(value: unknown): PlanAuthoringRecord {
 	const review = stage.review === undefined ? undefined : record(stage.review);
 	if (review?.tier === "high" && ((String(review.rationale ?? "").trim().length < 20) || strings(review.focus).join(" ").trim().length < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${String(stage.id)} requires substantive rationale and focus`);
 	if (review?.tier === "max") throw new HarnessError("INVALID_ARTIFACT", "Stage review policy supports medium by default or justified high; max is not available");
-	return { id: stage.id, tasks: strings(stage.tasks), checks: strings(stage.checks), ...(review ? { review: { tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) } } : {}) };
+	if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `Stage ${String(stage.id)} has unsupported execution mode`);
+	return { id: stage.id, tasks: strings(stage.tasks), checks: strings(stage.checks), ...(stage.mode !== undefined ? { mode: stage.mode } : {}), ...(review ? { review: { tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) } } : {}) };
 }
 
 export function normalizePlanEvaluation(_value: unknown, _workItemId: string): never {
@@ -260,7 +261,7 @@ const EDIT_FIELDS: Record<Exclude<CanonicalResourceType, "work-item">, { create:
 		create: ["id", "title", "goal", "context", "included", "work", "requiredWork", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
 		update: ["title", "goal", "context", "included", "work", "requiredWork", "excluded", "interfaces", "constraints", "acceptance", "proof", "checks", "risks", "dependsOn", "stageId", "intermediateState", "integrationExpectation", "resourceClaims", "assignment", "verification", "references", "briefSections", "acceptanceSections"],
 	},
-	stage: { create: ["id", "tasks", "checks", "review"], update: ["tasks", "checks", "review"] },
+	stage: { create: ["id", "tasks", "checks", "mode", "review"], update: ["tasks", "checks", "mode", "review"] },
 	evaluation: { create: [], update: [] },
 };
 

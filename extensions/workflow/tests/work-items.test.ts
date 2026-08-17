@@ -198,6 +198,25 @@ verification: { timing: task, methods: [], taskChecks: [], rationale: Historical
 	assert.equal("model" in manifest.execution.assignment ? manifest.execution.assignment.model : undefined, "luna");
 });
 
+test("rejects unsupported persisted execution stage modes", () => {
+	assert.throws(() => parseWorkItemIndex(`schemaVersion: 1
+id: invalid-mode
+title: Invalid mode
+kind: change
+phase: planning
+state: active
+planning:
+  revision: 1
+artifacts: []
+tasks: []
+evaluations: []
+executionStages:
+  - id: delivery
+    tasks: [task]
+    mode: diagonal
+`), /invalid execution stage mode/);
+});
+
 test("rejects evaluation-only planner stages", () => {
 	const item = { executionStages: [{ id: "review", tasks: [] }], integrationUnits: [] } as any;
 	assert.throws(() => validateExecutionTopology(item, [], []), /must contain at least one task/);
@@ -219,11 +238,13 @@ test("revising a singleton task preserves stage order and rolls back invalid top
 	await store.create({ id: "singleton-order", title: "Singleton order", kind: "change", intent: "Preserve execution order." });
 	const manifest = (id: string, stageId: string): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "fixture" } }, assembly: { stageId, intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
 	await store.defineTask({ workItemId: "singleton-order", manifest: manifest("first", "first-stage"), brief: "First", acceptance: "First" });
+	await store.putExecutionStage("singleton-order", { id: "first-stage", tasks: ["first"], mode: "sequential" }, { rationale: "fixture" });
 	await store.defineTask({ workItemId: "singleton-order", manifest: manifest("second", "second-stage"), brief: "Second", acceptance: "Second" });
 	const contract = await store.readTaskContract("singleton-order", "first");
 	contract.manifest.title = "First revised";
 	const revised = await store.reviseTask({ workItemId: "singleton-order", manifest: contract.manifest, brief: contract.brief, acceptance: contract.acceptance, authority: { rationale: "fixture" } });
 	assert.deepEqual(revised.executionStages?.map((stage) => stage.id), ["first-stage", "second-stage"]);
 	assert.deepEqual(revised.executionStages?.map((stage) => stage.tasks), [["first"], ["second"]]);
+	assert.equal(revised.executionStages?.find((stage) => stage.id === "first-stage")?.mode, "sequential");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });

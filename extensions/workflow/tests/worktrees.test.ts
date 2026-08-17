@@ -83,17 +83,36 @@ test("derives parallel worktrees and merges the stage through one atomic barrier
 	}
 	assert.equal(allocations[0]!.baseCommit, allocations[1]!.baseCommit, "parallel tasks share one stage base");
 	const integrated = await manager.mergeTask("feature", "add-feature");
-	assert.deepEqual(integrated.taskIds, ["add-feature", "sibling"]);
+	assert.deepEqual(integrated.taskIds, ["add-feature", "sibling"], "one listed-order merge barrier integrates the whole legacy concurrent stage");
+	assert.deepEqual(integrated.checks.map(({ command }) => command), ["test -f add-feature.txt", "test -f sibling.txt"], "stage checks remain part of the barrier");
 	assert.equal(await readFile(join(root, "add-feature.txt"), "utf8"), "add-feature\n");
 	assert.equal(await readFile(join(root, "sibling.txt"), "utf8"), "sibling\n");
 	assert.equal((await store.readTask("feature", "add-feature")).status, "merged");
 	assert.equal((await store.readTask("feature", "sibling")).status, "merged");
+	await assert.rejects(git(root, "show-ref", "--verify", "refs/pibox/stages/feature/feature-unit"), "concurrent stage base ref is cleaned after the barrier");
 	assert.equal(await git(root, "branch", "--show-current"), "feature/feature");
 	await store.recordEvaluation({ workItemId: "feature", evaluationId: "feature-check", verdict: "pass", report: "# Result\n\nBoth files exist.", evidence: [{ result: "passed", description: "stage files" }], findings: [{ id: "QUALITY-001", severity: "low", status: "accepted", summary: "Optional polish remains", blocking: false }] });
 	const completed = await store.completeWorkItem("feature", "# Outcome\n\nDelivered the feature with deterministic evidence.");
 	assert.equal(completed.phase, "complete");
 	assert.match(await readFile(join(root, "agent-artifacts", "feature", "outcome.md"), "utf8"), /QUALITY-001/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("explicit concurrent stages allocate independent worktrees from one pinned base", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "explicit", title: "Explicit concurrent", kind: "change", branchKind: "feature", intent: "Run concurrent tasks" });
+	await store.defineTask({ workItemId: "explicit", manifest: task("first", "delivery"), brief: "First contribution", acceptance: "First accepted" });
+	await store.defineTask({ workItemId: "explicit", manifest: task("second", "delivery"), brief: "Second contribution", acceptance: "Second accepted" });
+	await store.putExecutionStage("explicit", { id: "delivery", tasks: ["first", "second"], mode: "concurrent" }, { rationale: "fixture" });
+	await store.submitPlanning("explicit");
+	const manager = new WorktreeManager(identity);
+	await manager.validateWorkingBranch("explicit");
+	const allocations = await Promise.all(["first", "second"].map(async (id) => manager.allocate("explicit", await store.readTask("explicit", id))));
+	assert.deepEqual(allocations.map((allocation) => allocation.isolation), ["worktree", "worktree"]);
+	assert.notEqual(allocations[0]!.path, allocations[1]!.path);
+	assert.equal(allocations[0]!.baseCommit, allocations[1]!.baseCommit, "explicit concurrent tasks share one pinned stage base");
+	assert.equal(await git(root, "branch", "--show-current"), "feature/explicit");
 });
 
 test("derives singleton stages as direct feature-branch execution", async (t) => {
@@ -105,6 +124,61 @@ test("derives singleton stages as direct feature-branch execution", async (t) =>
 	const manager = new WorktreeManager(identity); await manager.validateWorkingBranch("serial");
 	const allocation = await manager.allocate("serial", await store.readTask("serial", "add-feature"));
 	assert.equal(allocation.path, identity.root); assert.equal(allocation.isolation, "repository"); assert.equal(allocation.branch, "fix/serial");
+});
+
+test("integrates explicit sequential stage tasks independently on the canonical branch", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "ordered", title: "Ordered", kind: "change", branchKind: "fix", intent: "Run ordered tasks" });
+	await store.defineTask({ workItemId: "ordered", manifest: task("first", "ordered-stage"), brief: "First contribution", acceptance: "First exists" });
+	await store.defineTask({ workItemId: "ordered", manifest: task("second", "ordered-stage"), brief: "Second contribution", acceptance: "Second exists" });
+	await store.defineTask({ workItemId: "ordered", manifest: task("third", "ordered-stage"), brief: "Third contribution", acceptance: "Third exists" });
+	await store.putExecutionStage("ordered", { id: "ordered-stage", tasks: ["first", "second", "third"], mode: "sequential", checks: ["test -f third.txt"] }, { rationale: "fixture" });
+	await store.submitPlanning("ordered");
+	const manager = new WorktreeManager(identity);
+	await manager.validateWorkingBranch("ordered");
+
+	const firstAllocation = await manager.allocate("ordered", await store.readTask("ordered", "first"));
+	assert.equal(firstAllocation.path, identity.root);
+	assert.equal(firstAllocation.branch, "fix/ordered");
+	assert.equal(firstAllocation.isolation, "repository");
+	await store.updateTask("ordered", "first", { status: "running", runtime: { executionMode: firstAllocation.isolation, branch: firstAllocation.branch, worktree: firstAllocation.path, baseCommit: firstAllocation.baseCommit } });
+	await writeFile(join(root, "first.txt"), "first\n");
+	await git(root, "add", "first.txt");
+	await git(root, "commit", "--quiet", "-m", "implement first");
+	const firstCommit = await git(root, "rev-parse", "HEAD");
+	await store.updateTask("ordered", "first", { status: "contribution_complete", runtime: { completedCommit: firstCommit } });
+	const firstIntegrated = await manager.mergeTask("ordered", "first");
+	assert.deepEqual(firstIntegrated.checks, [], "non-final sequential task does not run stage checks");
+	const firstIntegratedCommit = await git(root, "rev-parse", "HEAD");
+
+	const secondAllocation = await manager.allocate("ordered", await store.readTask("ordered", "second"));
+	assert.equal(secondAllocation.path, identity.root, "the next sequential task uses the canonical checkout");
+	assert.equal(secondAllocation.baseCommit, firstIntegratedCommit, "the next task sees the prior integration");
+	await store.updateTask("ordered", "second", { status: "running", runtime: { executionMode: secondAllocation.isolation, branch: secondAllocation.branch, worktree: secondAllocation.path, baseCommit: secondAllocation.baseCommit } });
+	assert.equal(await readFile(join(root, "first.txt"), "utf8"), "first\n");
+	await writeFile(join(root, "second.txt"), "second\n");
+	await git(root, "add", "second.txt");
+	await git(root, "commit", "--quiet", "-m", "implement second");
+	await store.updateTask("ordered", "second", { status: "contribution_complete", runtime: { completedCommit: await git(root, "rev-parse", "HEAD") } });
+	const secondIntegrated = await manager.mergeTask("ordered", "second");
+	assert.deepEqual(secondIntegrated.taskIds, ["second"]);
+	assert.deepEqual(secondIntegrated.checks, [], "second non-final sequential task does not run stage checks");
+
+	const thirdAllocation = await manager.allocate("ordered", await store.readTask("ordered", "third"));
+	assert.equal(thirdAllocation.baseCommit, await git(root, "rev-parse", "HEAD"));
+	await store.updateTask("ordered", "third", { status: "running", runtime: { executionMode: thirdAllocation.isolation, branch: thirdAllocation.branch, worktree: thirdAllocation.path, baseCommit: thirdAllocation.baseCommit } });
+	await writeFile(join(root, "third.txt"), "third\n");
+	await git(root, "add", "third.txt");
+	await git(root, "commit", "--quiet", "-m", "implement third");
+	await store.updateTask("ordered", "third", { status: "contribution_complete", runtime: { completedCommit: await git(root, "rev-parse", "HEAD") } });
+	const integrated = await manager.mergeTask("ordered", "third");
+	assert.deepEqual(integrated.taskIds, ["third"]);
+	assert.deepEqual(integrated.checks.map(({ command }) => command), ["test -f third.txt"], "final sequential task runs the stage check exactly once");
+	assert.equal((await store.readTask("ordered", "first")).status, "merged");
+	assert.equal((await store.readTask("ordered", "second")).status, "merged");
+	assert.equal((await store.readTask("ordered", "third")).status, "merged");
+	await assert.rejects(git(root, "show-ref", "--verify", "refs/pibox/stages/ordered/ordered-stage"));
 });
 
 test("creates and validates a working branch before the canonical work-item write", async (t) => {

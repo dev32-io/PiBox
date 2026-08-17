@@ -205,6 +205,8 @@ export interface StageReviewPolicy {
 export interface ExecutionStageContract {
 	id: string;
 	tasks: string[];
+	/** Explicit execution topology; omitted stages retain legacy resolution behavior. */
+	mode?: "sequential" | "concurrent";
 	checks?: string[];
 	review?: StageReviewPolicy;
 }
