@@ -1,4 +1,4 @@
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { CapabilityTier, HarnessConfig, HarnessEffort, TierModelRouteConfig } from "./types.js";
 
 export interface ExplicitModelOverride {
@@ -48,11 +48,7 @@ export interface UnresolvedHarnessModel {
 export type HarnessModelResolution = ResolvedHarnessModel | UnresolvedHarnessModel;
 
 export function supportsEffort(model: Model<Api>, effort: ModelThinkingLevel): boolean {
-	const mapped = model.thinkingLevelMap?.[effort];
-	if (effort === "off") return mapped !== null;
-	if (!model.reasoning || mapped === null) return false;
-	if (effort === "xhigh" || effort === "max") return mapped !== undefined;
-	return true;
+	return getSupportedThinkingLevels(model).includes(effort);
 }
 
 function parseRoute(configured: TierModelRouteConfig): ParsedRoute {

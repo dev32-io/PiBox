@@ -1,23 +1,19 @@
-import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import {
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Model,
+	type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, SelectList, Text } from "@earendil-works/pi-tui";
 import { EFFORT_LEVELS, loadEffortConfig, type EffortConfig } from "./config.js";
 
 export function supportedLevels(model: Model<any>): ModelThinkingLevel[] {
-	if (!model.reasoning) return ["off"];
-	return EFFORT_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== null);
+	return getSupportedThinkingLevels(model);
 }
 
-/** Pick the closest supported level, preferring the less expensive option on a tie. */
 function safeLevel(model: Model<any>, requested: ModelThinkingLevel): ModelThinkingLevel {
-	const supported = supportedLevels(model);
-	if (supported.includes(requested)) return requested;
-	const requestedIndex = EFFORT_LEVELS.indexOf(requested);
-	return supported.reduce((closest, candidate) => {
-		const candidateDistance = Math.abs(EFFORT_LEVELS.indexOf(candidate) - requestedIndex);
-		const closestDistance = Math.abs(EFFORT_LEVELS.indexOf(closest) - requestedIndex);
-		return candidateDistance < closestDistance ? candidate : closest;
-	});
+	return clampThinkingLevel(model, requested);
 }
 
 export function configuredLevel(config: EffortConfig, model: Model<any>): ModelThinkingLevel {

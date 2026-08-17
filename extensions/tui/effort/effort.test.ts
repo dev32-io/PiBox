@@ -10,10 +10,14 @@ function model(provider: string, id: string, thinkingLevelMap: Model<any>["think
 
 const local = model("local-llm", "local-model", { off: "off", minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: null });
 const other = model("other", "remote-model", { off: "off", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" });
+const standardOnly = model("other", "standard-only", undefined);
+const maxWithoutXhigh = model("other", "max-without-xhigh", { max: "max" });
 const config: EffortConfig = { default: "high", models: {} };
 
-test("local-llm exposes exactly off through xhigh, excluding minimal and max", () => {
+test("uses Pi's tristate effort semantics for omitted, null, and mapped levels", () => {
 	assert.deepEqual(supportedLevels(local), ["off", "low", "medium", "high", "xhigh"]);
+	assert.deepEqual(supportedLevels(standardOnly), ["off", "minimal", "low", "medium", "high"]);
+	assert.deepEqual(supportedLevels(maxWithoutXhigh), ["off", "minimal", "low", "medium", "high", "max"]);
 });
 
 test("local-llm defaults to off while other providers retain configured defaults", () => {

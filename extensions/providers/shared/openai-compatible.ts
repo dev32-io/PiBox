@@ -1,9 +1,10 @@
-import type { Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
+import type { Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai";
 
 export interface DiscoveredModelMetadata {
 	contextWindow?: number;
 	maxTokens?: number;
 	reasoning?: boolean;
+	thinkingLevelMap?: ThinkingLevelMap;
 	images?: boolean;
 }
 
@@ -134,6 +135,7 @@ export function toPiModels(
 			provider: options.providerId,
 			baseUrl: options.baseUrl,
 			reasoning,
+			...(metadata?.thinkingLevelMap ? { thinkingLevelMap: { ...metadata.thinkingLevelMap } } : {}),
 			input: images ? ["text", "image"] : ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,

@@ -40,13 +40,14 @@ test("uses curated metadata as a fallback while preferring endpoint token limits
 		defaultContextWindow: 128_000,
 		defaultMaxTokens: 16_384,
 		modelMetadata: {
-			"curated-model": { contextWindow: 262_144, maxTokens: 32_768, reasoning: true, images: true },
+			"curated-model": { contextWindow: 262_144, maxTokens: 32_768, reasoning: true, thinkingLevelMap: { max: "max" }, images: true },
 			"remote-model": { contextWindow: 1_000_000, maxTokens: 32_768 },
 		},
 	});
 	assert.equal(models[0]?.contextWindow, 262_144);
 	assert.equal(models[0]?.maxTokens, 32_768);
 	assert.equal(models[0]?.reasoning, true);
+	assert.deepEqual(models[0]?.thinkingLevelMap, { max: "max" });
 	assert.deepEqual(models[0]?.input, ["text", "image"]);
 	assert.equal(models[1]?.contextWindow, 64_000);
 	assert.equal(models[1]?.maxTokens, 8_000);

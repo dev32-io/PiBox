@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { toPiModels } from "../../shared/openai-compatible.js";
 import { retryAfterTimestamp } from "../index.js";
 import { OLLAMA_CLOUD_MODEL_METADATA } from "../model-metadata.js";
@@ -24,12 +25,16 @@ test("maps Ollama Cloud IDs to library context and modality metadata", () => {
 
 	assert.equal(models[0]?.contextWindow, 1_000_000);
 	assert.equal(models[0]?.reasoning, true);
+	assert.deepEqual(models[0]?.thinkingLevelMap, { max: "max" });
+	assert.deepEqual(getSupportedThinkingLevels(models[0]!), ["off", "minimal", "low", "medium", "high", "max"]);
 	assert.deepEqual(models[0]?.input, ["text"]);
 	assert.equal(models[1]?.contextWindow, 262_144);
 	assert.equal(models[1]?.reasoning, true);
 	assert.deepEqual(models[1]?.input, ["text", "image"]);
 	assert.equal(models[2]?.contextWindow, 1_048_576);
+	assert.deepEqual(models[2]?.thinkingLevelMap, { max: "max" });
 	assert.equal(models[3]?.contextWindow, 128_000);
+	assert.equal(models[3]?.thinkingLevelMap, undefined);
 });
 
 test("normalizes Ollama Cloud Retry-After capacity hints without inventing quota", () => {
