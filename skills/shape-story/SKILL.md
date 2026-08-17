@@ -48,7 +48,7 @@ After the user validates the checkpoint:
 3. Read each written artifact ref back individually and check for placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between acceptance and design. A compact work-item read is not a substitute for reading its child artifacts.
 4. Correct only the affected resource. Include the persisted e2e-matrix in the story review checkpoint and resource refs.
 
-Use these author-facing shapes; the resource API translates them to canonical storage.
+Use these author-facing shapes; the resource API translates them to canonical storage. Creation uses `type`, optional `parent`, and `value`; updates use only `ref` and `value`.
 
 **Story container:**
 
@@ -118,7 +118,7 @@ Use these author-facing shapes; the resource API translates them to canonical st
 }
 ```
 
-**Approved E2E matrix artifact:**
+**Approved E2E matrix artifact** (omit inapplicable optional fields; `None` and `N/A` are rejected placeholders):
 
 ```json
 {
