@@ -58,7 +58,7 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 		case "workflow_transition": return { action: "Transition workflow", target: [args.ref, args.action].filter(Boolean).join(" · ") };
 		case "workflow_start": return { action: "Start workflow", target: args.ref };
 		case "workflow_control": return { action: `${words(args.action ?? "control")} workflow`, target: args.ref };
-		case "workflow_checkpoint": return { action: "Decide checkpoint", target: [args.ref, args.action].filter(Boolean).join(" · ") };
+		case "workflow_checkpoint": return { action: args.action === "approve" ? "Approve" : args.action === "request_changes" ? "Request changes" : "Review checkpoint", target: args.ref };
 		case "workflow_status": return { action: "Inspect workflow status" };
 		case "workflow_init": return { action: "Initialize workflow", target: args.profile };
 		case "subagent_spawn": return { action: args.agent ?? "Subagent", target: compact(args.task, 78) };

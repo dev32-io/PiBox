@@ -664,20 +664,28 @@ export default function workflow(pi: ExtensionAPI): void {
 		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No repair model is available");
 		const existing = loop.fixerAgentId ? await runtime.agents.get(loop.fixerAgentId).catch(() => undefined) : undefined;
 		const repairIteration = loop.iteration + 1;
+		const operationBase = `repair:${workItemId}:${evaluationId}:${repairIteration}`;
+		const priorAttempts = (await runtime.agents.list()).filter((agent) => agent.operationId === operationBase || agent.operationId.startsWith(`${operationBase}:retry:`));
+		const operationId = priorAttempts.length === 0 ? operationBase : `${operationBase}:retry:${priorAttempts.length}`;
 		const persistentContext = await buildReviewPersistentContext(runtime.workItems, workItemId, evaluation);
-		const launched = await runtime.coordinator.launch({
-			operationId: `repair:${workItemId}:${evaluationId}:${repairIteration}`, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
-			task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }),
-			assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
-			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
-			workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
-			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
-			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
-		});
-		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
-		await assertCleanRepository(runtime.identity.root);
-		await runtime.mutex.run(`repair-settled:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "rereviewing", fixerAgentId: launched.agent.id }, "planned"));
-		return textResult(`Repair iteration ${repairIteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: launched.agent.id, iteration: repairIteration });
+		try {
+			const launched = await runtime.coordinator.launch({
+				operationId, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
+				task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }),
+				assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
+				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
+				workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
+				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
+				promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
+			});
+			if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
+			await assertCleanRepository(runtime.identity.root);
+			await runtime.mutex.run(`repair-settled:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "rereviewing", iteration: repairIteration, fixerAgentId: launched.agent.id }, "planned"));
+			return textResult(`Repair iteration ${repairIteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: launched.agent.id, iteration: repairIteration });
+		} catch (error) {
+			await runtime.mutex.run(`repair-failed:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "awaiting_manager", iteration: loop.iteration, managerPrompt: loop.managerPrompt! }, evaluation.status));
+			throw error;
+		}
 	};
 
 	const launchManagedEvaluation = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {

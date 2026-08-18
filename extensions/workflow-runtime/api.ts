@@ -114,7 +114,7 @@ export interface WorkflowAdapter {
 	/** Trusted, validated definitions available to the generic launcher. */
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;
-	controlCheckpoint?(ref: string, action: "continue" | "retry" | "request_changes" | "skip" | "accept_risk", prompt: string | undefined, ctx: ExtensionContext): Promise<unknown>;
+	controlCheckpoint?(ref: string, action: "approve" | "request_changes", options: { prompt?: string; acceptedRisks?: Array<{ findingId: string; rationale: string }> } | undefined, ctx: ExtensionContext): Promise<unknown>;
 	listSubagents(ctx: ExtensionContext): Promise<unknown[]>;
 	listMessages(ctx: ExtensionContext): Promise<unknown[]>;
 	controlSubagent(agentId: string, action: "pause" | "stop", ctx: ExtensionContext): Promise<unknown>;

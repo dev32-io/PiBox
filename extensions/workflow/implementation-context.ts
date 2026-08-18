@@ -102,6 +102,10 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 			workItem: `Stage ${stage.id}`,
 			evaluation: [
 				`Reviewed commit: ${reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded"}`,
+				`Review mode: ${evaluation.loop?.state === "rereviewing" ? "closure-focused re-review" : "initial exhaustive review"}`,
+				`Prior findings: ${(evaluation.findings ?? []).map((finding) => `${finding.id} (${finding.severity}, ${finding.status}) — ${finding.summary}`).join("; ") || "None recorded."}`,
+				`Manager decision: ${evaluation.loop?.managerPrompt ?? "No prior manager decision recorded."}`,
+				`Bounded repair diff: inspect only the repair since the reviewed commit; do not reopen unrelated implementation.`,
 				`Stage checks:\n${stage.checks?.map((check) => `- ${check}`).join("\n") ?? "- None declared."}`,
 				`Review focus:\n${stage.review?.focus?.map((focus) => `- ${focus}`).join("\n") ?? "- General correctness, contract fit, regressions, maintainability, and focused proof."}`,
 			].join("\n\n"),
@@ -111,7 +115,7 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 	}
 	return `${renderBuiltInPrompt("review-context", {
 		workItem: `${item.id} — ${item.title}`,
-		evaluation: `Reviewed commit: ${reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded"}\n\n\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,
+		evaluation: `Reviewed commit: ${reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded"}\nReview mode: ${evaluation.loop?.state === "rereviewing" ? "closure-focused re-review" : "initial exhaustive review"}\nPrior findings: ${(evaluation.findings ?? []).map((finding) => `${finding.id} (${finding.severity}, ${finding.status}) — ${finding.summary}`).join("; ") || "None recorded."}\nManager decision: ${evaluation.loop?.managerPrompt ?? "No prior manager decision recorded."}\nBounded repair diff: inspect only the repair since the reviewed commit.\n\n\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,
 		tasks: tasks.join("\n\n") || "No task manifest is assigned to this evaluation boundary.",
 		artifacts: artifacts.join("\n\n") || "No specification or design artifacts are recorded.",
 	})}\n`;

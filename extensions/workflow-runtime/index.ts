@@ -174,9 +174,13 @@ export default function workflows(pi: ExtensionAPI): void {
 			} else if (reviewActive) {
 				let reviewNumber = 0;
 				for (const step of reviewSteps) {
-					const isFix = /fixing/i.test(step.detail ?? "");
-					const number = Math.max(1, Number((step.detail ?? step.title).match(/(?:iteration|#)\s*(\d+)/i)?.[1] ?? (++reviewNumber)));
-					const label = `${isFix ? "Fix" : "Review"} #${number}`;
+					const queuedFix = /fix requested/i.test(step.title) || /fix requested/i.test(step.detail ?? "");
+					const isFix = queuedFix || /fixing/i.test(step.detail ?? "");
+					const recordedIteration = Number((step.detail ?? step.title).match(/(?:iteration|#)\s*(\d+)/i)?.[1] ?? (++reviewNumber));
+					// The loop iteration advances after a successful fix. While fixing,
+					// iteration N therefore represents the upcoming Fix #(N + 1).
+					const number = Math.max(1, recordedIteration + (isFix && !queuedFix ? 1 : 0));
+					const label = queuedFix ? "Fix requested" : `${isFix ? "Fix" : "Review"} #${number}`;
 					lines.push(`  ${ctx.ui.theme.fg(step.status === "attention" ? "error" : step.status === "done" ? "success" : "accent", `${stateIcon(step.status, step.kind)} `)}${label}`);
 				}
 			}
@@ -322,9 +326,9 @@ export default function workflows(pi: ExtensionAPI): void {
 					const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
 					const detail = attentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
 					const checkpoint = attentionSteps.find((step) => step.kind === "evaluation");
-					const guidance = `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref} to request changes, retry the same reviewer, continue, skip, or accept non-blocking risk. Do not manipulate Git or task state manually.` : ""}`;
-					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref, kind: attentionSteps[0].kind } : {}), title: snapshot.title, detail: guidance, cause: "checkpoint-required", nextAction: checkpoint ? "Use workflow_checkpoint to decide the review outcome." : "Resolve the attention state and resume." });
-					sendEvent({ workflowRef: ref, title: `${snapshot.title} · attention`, detail: guidance, attention: true, cause: "checkpoint-required", nextAction: checkpoint ? "Use workflow_checkpoint to decide the review outcome." : "Resolve the attention state and resume." });
+					const guidance = `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref}: Approve (optionally naming accepted risks) or Request changes. Do not manipulate Git or task state manually.` : ""}`;
+					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref, kind: attentionSteps[0].kind } : {}), title: snapshot.title, detail: guidance, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
+					sendEvent({ workflowRef: ref, title: `${snapshot.title} · attention`, detail: guidance, attention: true, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
 					continue;
 				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
@@ -401,17 +405,24 @@ export default function workflows(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
-		name: "workflow_checkpoint", label: "Decide Workflow Checkpoint",
-		description: "Apply a review-loop decision. request_changes starts or reconciles the persistent fixer and automatically re-runs the same persistent reviewer after a successful fix; no separate resume is needed. Failed repair launch/reconciliation does not consume an iteration. retry re-runs review without repair; accept_risk is only for non-blocking findings.",
-		parameters: Type.Object({ ref: Type.String({ description: "Exact evaluation step ref" }), action: StringEnum(["continue", "retry", "request_changes", "skip", "accept_risk"] as const), prompt: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		name: "workflow_checkpoint", label: "Review checkpoint",
+		description: "Choose the meaningful review outcome: approve (optionally with structured acceptedRisks) or request_changes. request_changes records the decision, returns immediately, and lets the runner own background repair and automatic re-review.",
+		parameters: Type.Object({ ref: Type.String({ description: "Exact evaluation step ref" }), action: StringEnum(["approve", "request_changes"] as const), prompt: Type.Optional(Type.String()), acceptedRisks: Type.Optional(Type.Array(Type.Object({ findingId: Type.String(), rationale: Type.String() }))) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const adapter = adapterFor(params.ref);
 			if (!adapter.controlCheckpoint) throw new Error(`Workflow adapter does not support checkpoint decisions: ${params.ref}`);
-			const decision = await adapter.controlCheckpoint(params.ref, params.action, params.prompt, ctx);
+			let decision: unknown;
+			try {
+				decision = await adapter.controlCheckpoint(params.ref, params.action, { ...(params.prompt ? { prompt: params.prompt } : {}), ...(params.acceptedRisks ? { acceptedRisks: params.acceptedRisks } : {}) }, ctx);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message.includes("USER_DECISION_REQUIRED")) return result(message, { userDecisionRequired: true, ref: params.ref });
+				throw error;
+			}
 			const workflowRef = params.ref.split("/evaluation:")[0]!;
 			active.set(workflowRef, "running"); currentRef = workflowRef; persist(workflowRef, "running");
 			await tick(ctx);
-			return result(params.action === "request_changes" ? `Repair and automatic re-review completed for ${params.ref}.` : `${params.action} recorded for ${params.ref}.`, decision);
+			return result(params.action === "request_changes" ? `Request changes recorded for ${params.ref}. Managed repair and automatic re-review are running in the background.` : `Approve recorded for ${params.ref}.`, decision);
 		},
 	});
 

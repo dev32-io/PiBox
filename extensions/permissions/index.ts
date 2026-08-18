@@ -6,6 +6,8 @@ import type { LoadedPermissionPolicy, PermissionMode } from "./types.js";
 
 const WORKFLOW_BYPASS_CANCEL = "No — keep permissions enforced";
 const WORKFLOW_BYPASS_CONFIRM = "Yes — switch to BYPASS and start workflow";
+const CRITICAL_RISK_CANCEL = "No — keep review unresolved";
+const CRITICAL_RISK_CONFIRM = "Yes — accept Critical risk";
 
 const STATUS_KEY = "permission-mode";
 const ENTRY_TYPE = "pibox-permission-mode";
@@ -47,6 +49,11 @@ export default function permissions(pi: ExtensionAPI): void {
 	const uninstallRuntime = installPermissionRuntime({
 		getMode: () => mode,
 		setMode,
+		async confirmCriticalRisk(ctx, ref, findingIds) {
+			if (ctx.mode !== "tui" || !ctx.hasUI) return false;
+			const choice = await ctx.ui.select(`Accept Critical review risk?\n\n${ref}\n\nThis is explicit user authority to merge unresolved Critical findings: ${findingIds.join(", ")}.`, [CRITICAL_RISK_CANCEL, CRITICAL_RISK_CONFIRM]);
+			return choice === CRITICAL_RISK_CONFIRM;
+		},
 		async confirmWorkflowStart(ctx, ref) {
 			// Bypass already represents an explicit session-owner authorization. This
 			// is also how approved headless parent sessions pass authority to children.

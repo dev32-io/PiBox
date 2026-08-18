@@ -21,3 +21,5 @@ This is the authoritative plan context for the current review loop and remains i
 ## Review Discipline
 
 Evaluate plan conformance, correctness, regressions, maintainability, and verification evidence. Cite findings against concrete plan criteria or task commitments. Distinguish blocking defects from residual risk.
+
+For re-review, persistent context must include prior findings, the manager decision, reviewed commits, and the bounded repair diff. Verify closure and repair regressions without reopening the wider implementation; newly noticed pre-existing Major/Minor issues become deferred residual risks.

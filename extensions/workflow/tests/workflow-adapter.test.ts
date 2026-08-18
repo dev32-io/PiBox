@@ -71,23 +71,67 @@ test("renders a review-fix loop as one checkpoint step with phase and iteration"
 	assert.equal(snapshot.steps[0]!.status, "ready");
 });
 
-test("request_changes launches repair and automatic re-review without consuming a failed repair launch", async () => {
-	let evaluation: any = { id: "stage-delivery-review", checkpoint: "stage-review", status: "failed", attempt: 1, findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "awaiting_manager", iteration: 0, maxIterations: 2, reviewerAgentId: "reviewer" } };
-	const updates: any[] = [];
+test("a reported prior reviewer does not shadow a queued fixer", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "fixing", iteration: 1, maxIterations: 3, managerPrompt: "Fix F1" } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", updatedAt: new Date().toISOString(), attempts: [{ id: "attempt", state: "exited" }], currentAttemptId: "attempt" };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) , launchRepair: async () => ({ content: [] }) });
+	const snapshot = await adapter.snapshot("work-item:example", {} as any);
+	const step = snapshot.steps[0]!;
+	assert.equal(step.status, "ready");
+	assert.match(step.title, /Fix requested/);
+});
+
+test("a failed fixer remains actionable during fixing", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "fixing", iteration: 1, maxIterations: 3, managerPrompt: "Fix F1", fixerAgentId: "fixer" } };
+	const fixer = { id: "fixer", role: "repair-implementer", evaluationId: "review", state: "failed", updatedAt: new Date().toISOString(), attempts: [] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [fixer]; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
+	const snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps[0]!.status, "attention");
+	assert.match(snapshot.steps[0]!.detail ?? "", /failed/);
+});
+
+test("request_changes records a fixing step without synchronously launching repair or re-review", async () => {
+	let evaluation: any = { id: "stage-delivery-review", checkpoint: "stage-review", status: "failed", attempt: 1, findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "awaiting_manager", iteration: 1, maxIterations: 3, reviewerAgentId: "reviewer" } };
 	const runtime: any = {
-		config: { limits: { repairRounds: 2 } },
-		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any, status?: string) { evaluation = { ...evaluation, ...(status ? { status } : {}), loop: { ...evaluation.loop, ...update } }; updates.push(structuredClone(evaluation.loop)); return evaluation; } },
+		config: { limits: { repairRounds: 3 } },
+		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any, status?: string) { evaluation = { ...evaluation, ...(status ? { status } : {}), loop: { ...evaluation.loop, ...update } }; return evaluation; } },
 		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
 	};
-	let repairAttempts = 0; let reviews = 0;
-	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => { reviews++; return { content: [{ type: "text", text: "passed" }], details: { agentId: "reviewer" } }; }, launchRepair: async () => { repairAttempts++; if (repairAttempts === 1) throw new Error("launch failed"); return { content: [{ type: "text", text: "fixed" }], details: { agentId: "fixer" } }; } });
-	await assert.rejects(adapter.controlCheckpoint!("work-item:example/evaluation:stage-delivery-review", "request_changes", "Fix F1", {} as any), /launch failed/);
-	assert.equal(evaluation.loop.iteration, 0);
+	let repairs = 0; let reviews = 0;
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => { reviews++; return { content: [] }; }, launchRepair: async () => { repairs++; return { content: [] }; } });
+	const decision = await adapter.controlCheckpoint?.("work-item:example/evaluation:stage-delivery-review", "request_changes", { prompt: "Fix F1" }, {} as any) as any;
+	assert.equal(decision.loop.state, "fixing");
+	assert.equal(decision.loop.iteration, 1, "iteration advances only after repair settlement");
+	assert.equal(decision.loop.managerPrompt, "Fix F1");
+	assert.equal(repairs, 0, "the workflow runner owns background repair launch");
+	assert.equal(reviews, 0, "the workflow runner owns automatic re-review launch");
+
+	// Recovery may replay the same authorization while the fixer is queued or in
+	// flight, but must not replace its identity or prompt.
+	evaluation.loop = { ...evaluation.loop, fixerAgentId: "fixer", managerPrompt: "Fix F1" };
+	const replay = await adapter.controlCheckpoint?.("work-item:example/evaluation:stage-delivery-review", "request_changes", { prompt: "Fix F1" }, {} as any) as any;
+	assert.equal(replay.loop.fixerAgentId, "fixer");
+	assert.equal(replay.loop.iteration, 1);
+	assert.equal(replay.loop.managerPrompt, "Fix F1");
+	assert.equal(repairs, 0, "replaying fixing must not launch a duplicate repair");
+});
+
+test("request_changes cannot rewind a re-review or exceed the repair limit", async () => {
+	let evaluation: any = { id: "review", checkpoint: "stage-review", status: "planned", findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "rereviewing", iteration: 1, maxIterations: 1, managerPrompt: "Fix F1" } };
+	const runtime: any = {
+		config: { limits: { repairRounds: 1 } },
+		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any) { evaluation = { ...evaluation, loop: { ...evaluation.loop, ...update } }; return evaluation; } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
+	await assert.rejects(() => adapter.controlCheckpoint!("work-item:example/evaluation:review", "request_changes", { prompt: "Fix F2" }, {} as any), /while loop is rereviewing/);
+	evaluation.loop = { state: "awaiting_manager", iteration: 1, maxIterations: 1, managerPrompt: "Fix F1" };
+	await assert.rejects(() => adapter.controlCheckpoint!("work-item:example/evaluation:review", "request_changes", { prompt: "Fix F2" }, {} as any), /iteration limit/);
 	assert.equal(evaluation.loop.state, "awaiting_manager");
-	await adapter.controlCheckpoint?.("work-item:example/evaluation:stage-delivery-review", "request_changes", "Fix F1", {} as any);
-	assert.equal(evaluation.loop.iteration, 1);
-	assert.equal(reviews, 1, "successful repair immediately re-reviews");
-	assert.ok(updates.some((loop) => loop.state === "rereviewing"));
 });
 
 test("stop ignores reported agents whose process already exited", async () => {
@@ -280,7 +324,7 @@ test("does not render exited or reported evaluation agents as running", async ()
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.detail, "stale process state");
 
 	evaluation.loop = { state: "fixing", iteration: 1, maxIterations: 2 };
-	agent = { ...agent, state: "running", attempts: [{ id: "attempt", state: "running" }] };
+	agent = { ...agent, role: "repair-implementer", state: "running", attempts: [{ id: "attempt", state: "running" }] };
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "running", "active fixer wins over the ready loop label");
 });

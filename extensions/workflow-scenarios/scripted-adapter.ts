@@ -92,12 +92,12 @@ export class ScriptedWorkflowAdapter implements WorkflowAdapter {
 		return { ref, state: outcome === "block" ? "blocked" : "failed", summary: `${id} ${outcome === "block" ? "blocked" : "failed"}.`, attention: true };
 	}
 
-	async controlCheckpoint(ref: string, action: "continue" | "retry" | "request_changes" | "skip" | "accept_risk"): Promise<unknown> {
+	async controlCheckpoint(ref: string, action: "approve" | "request_changes", _options?: { prompt?: string; acceptedRisks?: Array<{ findingId: string; rationale: string }> }): Promise<unknown> {
 		const id = this.idFromRef(ref.replace("/evaluation:", "/step:"));
 		const state = this.states.get(id);
 		if (!state || state.definition.kind !== "evaluation") throw new Error(`Unknown scripted evaluation checkpoint ${ref}`);
 		this.record({ type: "workflow_control", detail: `checkpoint:${action}:${id}` });
-		if (action === "skip" || action === "accept_risk" || action === "continue") state.status = "done";
+		if (action === "approve") state.status = "done";
 		else state.status = "pending";
 		return { id, action };
 	}

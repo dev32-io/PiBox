@@ -1136,6 +1136,65 @@ export class WorkItemStore {
 		}
 	}
 
+	/** Approve a review with explicitly selected, durable residual risks. The manifest and
+	 * report are committed together so a failed canonical mutation cannot imply approval. */
+	async approveEvaluation(workItemId: string, evaluationId: string, acceptedRisks: Array<{ findingId: string; rationale: string; userConfirmed?: boolean }>): Promise<EvaluationManifest> {
+		const lock = new RepositoryMutex(join(this.repositoryRoot, ".git", "pibox-evaluation-lock"));
+		return lock.run(`evaluation-approve:${workItemId}:${evaluationId}`, async () => {
+			await assertCleanRepository(this.repositoryRoot);
+			const root = this.workItemRoot(workItemId);
+			const index = await this.read(workItemId);
+			await this.assertWorkingBranch(index);
+			const catalog = index.evaluations.find((entry) => entry.id === evaluationId);
+			if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
+			const evaluationPath = join(root, catalog.path);
+			const evaluationRoot = dirname(evaluationPath);
+			const indexPath = join(root, "index.yaml");
+			const riskPath = join(evaluationRoot, "risk-acceptance.md");
+			const previousEvaluation = await readFile(evaluationPath, "utf8");
+			const previousIndex = await readFile(indexPath, "utf8");
+			const previousRisk = await readFile(riskPath, "utf8").catch(() => undefined);
+			const evaluation = parse(previousEvaluation) as EvaluationManifest;
+			if (evaluation.attempt < 1) throw new HarnessError("INVALID_HANDOFF", "Approval requires a completed evaluation attempt.");
+			if (evaluation.type === "deterministic" && evaluation.status !== "passed") throw new HarnessError("INVALID_HANDOFF", "Deterministic failed checks are hard blockers and cannot be accepted as risk.");
+			const unresolved = (evaluation.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
+			const selected = new Map(acceptedRisks.map((risk) => [risk.findingId, risk]));
+			const missing = unresolved.filter((finding) => !selected.has(finding.id));
+			if (missing.length) throw new HarnessError("INVALID_HANDOFF", `Approval must name every unresolved finding in acceptedRisks: ${missing.map((finding) => finding.id).join(", ")}`);
+			for (const risk of acceptedRisks) if (!risk.rationale.trim()) throw new HarnessError("INVALID_HANDOFF", `acceptedRisks rationale is required for ${risk.findingId}`);
+			for (const finding of unresolved) {
+				const risk = selected.get(finding.id)!;
+				if (finding.severity === "critical" && !risk.userConfirmed) throw new HarnessError("USER_DECISION_REQUIRED", `Explicit user confirmation is required before accepting Critical finding ${finding.id}.`);
+				finding.status = "accepted";
+			}
+			const evidenceManifest = await readFile(join(root, "evidence", evaluationId, "manifest.yaml"), "utf8").catch(() => "No deterministic evidence manifest recorded.");
+			const history = previousRisk ? `${previousRisk.trim()}\n\n---\n\n` : "";
+			const lines = [`# Risk acceptance — ${evaluationId}`, "", `- Work item: ${workItemId}`, `- Evaluation: ${evaluationId}`, `- Reviewed commit: ${evaluation.loop?.reviewedCommit ?? "not recorded"}`, "- Decision: Approved with risk", `- Recorded at: ${new Date().toISOString()}`, "", "## Accepted findings", ""];
+			for (const risk of acceptedRisks) {
+				const finding = (evaluation.findings ?? []).find((candidate) => candidate.id === risk.findingId);
+				if (!finding) throw new HarnessError("INVALID_HANDOFF", `Unknown finding in acceptedRisks: ${risk.findingId}`);
+				lines.push(`### ${finding.id} — ${finding.severity}`, `- Location: ${finding.location ?? "Not specified"}`, `- Summary: ${finding.summary}`, `- Manager rationale: ${risk.rationale}`, `- Explicit Critical-risk confirmation: ${finding.severity === "critical" ? (risk.userConfirmed ? "required and received" : "required and missing") : "not required"}`, "");
+			}
+			lines.push("## Deterministic checks and evidence", "", evidenceManifest.trim(), "", "## Residual risks", "", ...(evaluation.findings ?? []).filter((finding) => finding.status === "accepted").map((finding) => `- ${finding.id}: ${finding.summary}`), "", "## Provenance", "", `Canonical evaluation report: ${catalog.path}`, `Evidence resource: evidence/${evaluationId}/manifest.yaml`);
+			const rendered = history + lines.join("\n") + "\n";
+			try {
+				evaluation.status = "passed";
+				evaluation.loop = { state: "passed", iteration: evaluation.loop?.iteration ?? 0, maxIterations: evaluation.loop?.maxIterations ?? 2, ...evaluation.loop, acceptedRisks };
+				evaluation.result = { ...(evaluation.result ?? { verdict: "pass", report: "report.md" }), verdict: "pass", riskAcceptance: "risk-acceptance.md" };
+				await atomicWriteFile(riskPath, rendered);
+				await atomicWriteFile(evaluationPath, stringify(evaluation));
+				await atomicWriteFile(indexPath, stringify(index));
+				await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): approve evaluation ${evaluationId} with risk`);
+				return evaluation;
+			} catch (error) {
+				await atomicWriteFile(evaluationPath, previousEvaluation); await atomicWriteFile(indexPath, previousIndex);
+				if (previousRisk === undefined) await rm(riskPath, { force: true }); else await atomicWriteFile(riskPath, previousRisk);
+				await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, indexPath)]).catch(() => undefined);
+				throw error;
+			}
+		});
+	}
+
 	async completeWorkItem(workItemId: string, outcome?: string, outcomeSections?: { delivered: string[]; deviations?: string[]; residualRisks?: string[]; followUp?: string[] }): Promise<WorkItemIndex> {
 		if (!outcome?.trim() && !outcomeSections) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
@@ -1151,7 +1210,7 @@ export class WorkItemStore {
 		const verification: string[] = [];
 		for (const evaluation of index.evaluations) {
 			const manifest = await this.readEvaluation(workItemId, evaluation.id);
-			verification.push(`${manifest.id}: ${manifest.status}`);
+			verification.push(`${manifest.id}: ${manifest.status}${manifest.result?.riskAcceptance ? ` (risk report: ${manifest.result.riskAcceptance})` : ""}`);
 			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
 				throw new HarnessError("INVALID_HANDOFF", `Required evaluation has not passed: ${evaluation.id}`);
 			}

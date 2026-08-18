@@ -34,9 +34,10 @@ export interface WorkflowScenarioDefinition {
 	steps: ScriptedStepDefinition[];
 	steering?: Array<{
 		when: "paused";
-		action: "resume" | "stop" | "request_changes" | "retry" | "accept_risk" | "skip";
+		action: "resume" | "stop" | "request_changes" | "approve";
 		stepId?: string;
 		prompt?: string;
+		acceptedRisks?: Array<{ findingId: string; rationale: string }>;
 	}>;
 	expect: WorkflowScenarioExpectation;
 	timeoutMs?: number;

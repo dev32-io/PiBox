@@ -10,7 +10,8 @@ export type HarnessErrorCode =
 	| "NOT_A_GIT_REPOSITORY"
 	| "RESOURCE_LOCKED"
 	| "WORK_ITEM_EXISTS"
-	| "WORK_ITEM_NOT_FOUND";
+	| "WORK_ITEM_NOT_FOUND"
+	| "USER_DECISION_REQUIRED";
 
 export class HarnessError extends Error {
 	readonly code: HarnessErrorCode;

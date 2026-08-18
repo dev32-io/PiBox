@@ -339,6 +339,37 @@ test("foreground spawning waits for the delegated result without using the backg
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("request_changes returns immediately while the runner starts Fix #2 in background", async () => {
+	const f = fixture();
+	let fixing = false;
+	let repairStarts = 0;
+	const neverSettles = new Promise<any>(() => {});
+	const snapshot = (): WorkflowSnapshot => ({
+		ref: "work-item:example", title: "Example", status: fixing ? "ready" : "attention",
+		steps: [{ ref: "work-item:example/evaluation:review", title: "Review loop review", kind: "evaluation", status: fixing ? "ready" : "attention", detail: fixing ? "fixing · iteration 1" : "awaiting manager · iteration 1", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "delivery", index: 0, nodes: ["evaluation:review"], parallel: false, group: "planner" }],
+	});
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:example"), async snapshot() { return snapshot(); },
+		async runStep() { repairStarts++; return neverSettles; },
+		async controlCheckpoint() { fixing = true; return { loop: { state: "fixing", iteration: 1 } }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const result = await f.tools.get("workflow_checkpoint").execute("call", { ref: "work-item:example/evaluation:review", action: "request_changes", prompt: "Fix it" }, undefined, undefined, f.ctx);
+	assert.match(result.content[0].text, /running in the background/i);
+	assert.equal(repairStarts, 1);
+	// Replaying/reconciling the same checkpoint while the persistent fixer is
+	// already in flight must not reserve a second logical worker.
+	await f.tools.get("workflow_checkpoint").execute("call-again", { ref: "work-item:example/evaluation:review", action: "request_changes", prompt: "Fix it" }, undefined, undefined, f.ctx);
+	assert.equal(repairStarts, 1);
+	const widget = f.widget() as ((...args: any[]) => any);
+	const rendered = widget?.({}, f.ctx.ui.theme).render(100) as string[];
+	assert.equal(rendered.some((line) => line.includes("Fix #2")), true, "fix numbering describes the upcoming repair iteration");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("running step kinds use distinct icons without redundant state labels", async () => {
 	const f = fixture();
 	const snapshot: WorkflowSnapshot = {

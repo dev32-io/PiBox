@@ -5,6 +5,7 @@ export interface PermissionRuntimeController {
 	getMode(): PermissionMode;
 	setMode(mode: PermissionMode, source: "shortcut" | "command" | "workflow"): void;
 	confirmWorkflowStart(ctx: ExtensionContext, ref: string): Promise<boolean>;
+	confirmCriticalRisk?(ctx: ExtensionContext, ref: string, findingIds: string[]): Promise<boolean>;
 }
 
 const RUNTIME_KEY = Symbol.for("pibox:permission-runtime");
@@ -29,6 +30,12 @@ export async function confirmWorkflowBypass(ctx: ExtensionContext, ref: string):
 	const controller = runtimeGlobal()[RUNTIME_KEY];
 	if (!controller) throw new Error("PiBox permission extension is unavailable; refusing to start an unattended workflow without explicit bypass confirmation.");
 	return controller.confirmWorkflowStart(ctx, ref);
+}
+
+export async function confirmCriticalRisk(ctx: ExtensionContext, ref: string, findingIds: string[]): Promise<boolean> {
+	const controller = runtimeGlobal()[RUNTIME_KEY];
+	if (!controller?.confirmCriticalRisk) return false;
+	return controller.confirmCriticalRisk(ctx, ref, findingIds);
 }
 
 export function activateWorkflowBypass(): void {

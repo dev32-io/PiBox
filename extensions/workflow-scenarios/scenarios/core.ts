@@ -90,7 +90,7 @@ export const acceptResidualRiskScenario: WorkflowScenarioDefinition = {
 		{ id: "implement", delayMs: 5 },
 		{ id: "final-review", kind: "evaluation", dependsOn: ["implement"], outcome: "fail", delayMs: 5 },
 	],
-	steering: [{ when: "paused", action: "accept_risk", stepId: "final-review", prompt: "Accept the documented low-severity cosmetic limitation." }],
+	steering: [{ when: "paused", action: "approve", stepId: "final-review", prompt: "Accept the documented low-severity cosmetic limitation.", acceptedRisks: [{ findingId: "cosmetic", rationale: "Cosmetic limitation is outside the reviewed acceptance boundary." }] }],
 	expect: { terminal: "complete", completed: ["implement", "final-review"], attempts: { implement: 1, "final-review": 1 }, workflowControls: 1, maxPeakConcurrency: 1 },
 };
 

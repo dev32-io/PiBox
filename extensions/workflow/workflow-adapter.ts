@@ -9,6 +9,7 @@ import { orderedExecutionStages, preflightTaskChecks, resolveStageMode, taskExec
 import { WorktreeManager } from "./worktrees.js";
 import type { RepositoryMutex } from "./idempotency.js";
 import { readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
+import { confirmCriticalRisk } from "../permissions/runtime.js";
 
 export interface HarnessWorkflowRuntime {
 	identity: RepositoryIdentity;
@@ -33,22 +34,38 @@ export interface HarnessWorkflowAdapterOptions {
 
 const WORK_ITEM = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const STEP = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)\/(task|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*)$/;
-const terminalAgent = new Set(["completed", "failed", "protocol_failed", "cancelled"]);
+const settledAgent = new Set(["completed", "cancelled"]);
 const taskDone = new Set(["merged", "integrated"]);
 const REPORT_RECONCILIATION_GRACE_MS = 5_000;
 
 function agentAttention(agent: SessionAgentRecord): string | undefined {
-	if (isAgentProcessActive(agent) || terminalAgent.has(agent.state)) return undefined;
+	if (isAgentProcessActive(agent) || settledAgent.has(agent.state)) return undefined;
 	if (agent.state === "reported") return "result pending reconciliation";
 	if ((agent.state === "launching" || agent.state === "running") && agent.currentAttemptId) return "stale process state";
 	return agent.state.replaceAll("_", " ");
 }
 
-function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string): { running: boolean; attention?: string } {
-	const matching = agents.filter((agent) => agent[scope] === id);
+function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean): { running: boolean; attention?: string } {
+	const matching = agents.filter((agent) => agent[scope] === id && (!relevant || relevant(agent)));
 	if (matching.some(isAgentProcessActive)) return { running: true };
 	const attention = matching.map(agentAttention).find((detail): detail is string => Boolean(detail));
 	return { running: false, ...(attention ? { attention } : {}) };
+}
+
+function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; reviewerAgentId?: string; fixerAgentId?: string } }): { running: boolean; attention?: string } {
+	const loop = evaluation.loop;
+	if (loop?.state === "fixing") {
+		// A reported reviewer is the settled result which caused this checkpoint; it
+		// is not activity for the queued fixer. Prefer the persisted fixer identity
+		// when present so retries resume the same logical worker.
+		return scopeActivity(agents, "evaluationId", evaluation.id, (agent) =>
+			(loop.fixerAgentId ? agent.id === loop.fixerAgentId : agent.role === "repair-implementer"));
+	}
+	if (loop?.state === "rereviewing" || loop?.state === "reviewing") {
+		return scopeActivity(agents, "evaluationId", evaluation.id, (agent) =>
+			(loop.reviewerAgentId ? agent.id === loop.reviewerAgentId : agent.role !== "repair-implementer"));
+	}
+	return scopeActivity(agents, "evaluationId", evaluation.id);
 }
 
 function taskStatus(status: string, dependenciesDone: boolean): { status: WorkflowStepStatus; detail?: string } {
@@ -176,8 +193,11 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const dependenciesDone = dependencySteps.every((step) => step?.status === "done");
 				const dependencyAttention = dependencySteps.find((step) => step?.status === "attention" || step?.status === "cancelled");
 				let status: WorkflowStepStatus = "pending"; let detail: string | undefined;
-				const activity = scopeActivity(agents, "evaluationId", evaluation.id);
-				// Process activity is authoritative over the durable loop label. A fixer or
+				const activity = evaluationActivity(agents, evaluation);
+				// Process activity is authoritative over the durable loop label, but only
+				// for the worker that owns the current phase. A prior reviewer report must
+				// not shadow a queued fixer.
+				// A fixer or
 				// reviewer can be active while the canonical loop is still being settled.
 				if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "skipped") status = "done";
 				else if (activity.running) { status = "running"; detail = evaluation.loop?.state === "fixing" ? "fixing" : evaluation.loop?.state === "rereviewing" ? "re-reviewing" : "reviewing"; }
@@ -187,11 +207,11 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				else if (evaluation.loop?.state === "awaiting_manager" || ["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.loop?.state === "awaiting_manager" ? `awaiting manager · iteration ${evaluation.loop.iteration}` : evaluation.status; }
 				else if (evaluation.status === "running") { status = "attention"; detail = "stale process state"; }
 				else if (dependenciesDone) status = "ready";
-				const phase = evaluation.loop?.state === "rereviewing" ? `re-reviewing #${evaluation.loop.iteration}` : evaluation.loop?.state === "fixing" ? `fixing #${evaluation.loop.iteration}` : evaluation.loop?.state === "awaiting_manager" ? "awaiting manager" : "reviewing";
+				const phase = evaluation.loop?.state === "rereviewing" ? `re-reviewing #${evaluation.loop.iteration}` : evaluation.loop?.state === "fixing" ? activity.running ? `fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : "Fix requested" : ["passed", "not_applicable"].includes(evaluation.status) ? "Approved" : evaluation.loop?.state === "awaiting_manager" ? "Needs attention" : "Reviewing";
 				const findings = evaluation.findings ?? [];
 				const open = findings.filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 				const blocking = open.filter((finding) => finding.blocking);
-				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? 2}; allowed actions: ${blocking.length ? "request_changes, retry, continue" : "continue, accept_risk, retry"}${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
+				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? 2}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
 				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
@@ -235,44 +255,45 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 		},
 		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void) { return options.spawnSubagent!(request, ctx, signal, onText); } } : {}),
 		...(options.listSpawnableAgents ? { async listSpawnableAgents(ctx: ExtensionContext) { return options.listSpawnableAgents!(ctx); } } : {}),
-		async controlCheckpoint(ref, action, prompt, ctx) {
+		async controlCheckpoint(ref, action, checkpointOptions, ctx) {
 			const match = STEP.exec(ref);
 			if (!match || match[2] !== "evaluation") throw new Error(`Checkpoint decision requires an evaluation step ref: ${ref}`);
 			const [, workItemId, , evaluationId] = match;
 			const runtime = await options.runtimeFor(ctx);
 			const evaluation = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
-			const loop = evaluation.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? 2 };
-			const openFindings = (evaluation.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
-			const blockingFindings = openFindings.filter((finding) => finding.blocking);
+			const prompt = checkpointOptions?.prompt;
 			if (action === "request_changes") {
-				if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${evaluationId}`);
-				if (evaluation.checkpoint === "final-review" && blockingFindings.length === 0) throw new Error("Final branch review has no blocking findings; non-blocking findings may only be accepted as residual risk.");
-				if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
-				if (loop.iteration >= loop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
-				const nextIteration = loop.iteration + 1;
-				await runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", managerPrompt: prompt }));
-				try {
-					await options.launchRepair(ctx, workItemId!, evaluationId!);
-				} catch (error) {
-					await runtime.mutex.run(`checkpoint-rollback:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "awaiting_manager", iteration: loop.iteration, managerPrompt: prompt }, evaluation.status));
-					throw error;
-				}
-				await runtime.mutex.run(`checkpoint-repair:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "rereviewing", iteration: nextIteration }, "planned"));
-				const rereview = await options.launchEvaluation(ctx, workItemId!, evaluationId!);
-				return { repairIteration: nextIteration, rereview: rereview.details ?? rereview.content };
+				// Re-read under the checkpoint mutex: a resumed/replayed decision must be
+				// judged against the durable phase, not the snapshot read before locking.
+				return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
+					const current = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
+					const currentLoop = current.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? 2 };
+					if (currentLoop.state === "fixing") {
+						if (!prompt?.trim() || prompt.trim() !== currentLoop.managerPrompt?.trim()) throw new Error(`Evaluation ${evaluationId} is already fixing; only the existing repair decision may be replayed`);
+						// Idempotent recovery: retain the fixer identity, prompt, and iteration.
+						return current;
+					}
+					if (currentLoop.state !== "awaiting_manager") throw new Error(`Cannot request changes for evaluation ${evaluationId} while loop is ${currentLoop.state}`);
+					if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${evaluationId}`);
+					const currentFindings = (current.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
+					if (current.checkpoint === "final-review" && currentFindings.filter((finding) => finding.blocking).length === 0) throw new Error("Final branch review has no blocking findings; non-blocking findings may only be accepted as residual risk.");
+					if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
+					if (currentLoop.iteration >= currentLoop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
+					// Record authorization only. The runner owns fixer launch, settlement,
+					// and automatic re-review.
+					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", managerPrompt: prompt });
+				});
 			}
 			return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
-				if (action === "retry") return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "rereviewing", ...(prompt ? { managerPrompt: prompt } : {}) }, "planned");
-				if (action === "skip") {
-					if (evaluation.checkpoint === "stage-review") throw new Error("Required stage reviews cannot be skipped");
-					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "skipped", ...(prompt ? { managerPrompt: prompt } : {}) }, "not_applicable");
+				if (action === "approve") {
+					const risks = checkpointOptions?.acceptedRisks ?? [];
+					const critical = risks.filter((risk) => evaluation.findings?.find((finding) => finding.id === risk.findingId)?.severity === "critical");
+					if (critical.length) {
+						if (!ctx.hasUI || !(await confirmCriticalRisk(ctx, ref, critical.map((risk) => risk.findingId)))) throw new Error("USER_DECISION_REQUIRED: Explicit user confirmation is required before accepting Critical risk; approval was not recorded.");
+					}
+					return runtime.workItems.approveEvaluation(workItemId!, evaluationId!, risks.map((risk) => ({ ...risk, ...(critical.some((candidate) => candidate.findingId === risk.findingId) ? { userConfirmed: true } : {}) })));
 				}
-				if (action === "accept_risk") {
-					if (evaluation.attempt < 1) throw new Error("Risk cannot be accepted before an evaluation attempt records findings");
-					if (blockingFindings.length > 0) throw new Error(`Cannot accept risk while blocking findings remain: ${blockingFindings.map((finding) => finding.id).join(", ")}`);
-					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "passed", ...(prompt ? { managerPrompt: prompt } : {}) }, "passed");
-				}
-				return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: evaluation.attempt > 0 ? "rereviewing" : "reviewing", ...(prompt ? { managerPrompt: prompt } : {}) }, "planned");
+				throw new Error(`Unsupported checkpoint action: ${action}`);
 			});
 		},
 		async controlWorkflow(ref, action, ctx) {

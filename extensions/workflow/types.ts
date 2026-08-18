@@ -185,6 +185,7 @@ export function taskAgentName(task: TaskManifest): string {
 
 export interface EvaluationFinding {
 	id: string;
+	/** Human review language is normalized at persistence boundaries: low/medium/high remain legacy-compatible with Minor/Major, critical is Critical. */
 	severity: "low" | "medium" | "high" | "critical";
 	status: "open" | "accepted" | "rejected" | "duplicate" | "deferred" | "resolved" | "needs_user";
 	criterion?: string;
@@ -227,7 +228,7 @@ export interface EvaluationManifest {
 	methods: string[];
 	criteria?: string[];
 	findings?: EvaluationFinding[];
-	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string };
+	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string; riskAcceptance?: string };
 	/** Durable state for one visible review/fix loop and stable reviewer/fixer identities. */
 	loop?: {
 		state: ReviewLoopState;
@@ -237,6 +238,7 @@ export interface EvaluationManifest {
 		fixerAgentId?: string;
 		reviewedCommit?: string;
 		managerPrompt?: string;
+		acceptedRisks?: Array<{ findingId: string; rationale: string; userConfirmed?: boolean }>;
 	};
 }
 

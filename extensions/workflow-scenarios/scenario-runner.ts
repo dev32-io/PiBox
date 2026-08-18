@@ -22,9 +22,9 @@ export async function runWorkflowScenario(scenario: WorkflowScenarioDefinition):
 				const steering = scenario.steering?.[steeringIndex];
 				if (steering?.when === "paused") {
 					steeringIndex++;
-					if (["request_changes", "retry", "accept_risk", "skip"].includes(steering.action)) {
+					if (["request_changes", "approve"].includes(steering.action)) {
 						if (!steering.stepId) throw new Error(`Scenario ${scenario.id} checkpoint steering requires stepId`);
-						await harness.tools.get("workflow_checkpoint").execute(`steer-${steeringIndex}`, { ref: `${adapter.workflowRef}/evaluation:${steering.stepId}`, action: steering.action, ...(steering.prompt ? { prompt: steering.prompt } : {}) }, undefined, undefined, harness.ctx);
+						await harness.tools.get("workflow_checkpoint").execute(`steer-${steeringIndex}`, { ref: `${adapter.workflowRef}/evaluation:${steering.stepId}`, action: steering.action, ...(steering.prompt ? { prompt: steering.prompt } : {}), ...(steering.acceptedRisks ? { acceptedRisks: steering.acceptedRisks } : {}) }, undefined, undefined, harness.ctx);
 					} else {
 						await harness.tools.get("workflow_control").execute(`steer-${steeringIndex}`, { ref: adapter.workflowRef, action: steering.action }, undefined, undefined, harness.ctx);
 					}
