@@ -33,6 +33,8 @@ export interface WorkflowStep {
 	kind: string;
 	status: WorkflowStepStatus;
 	phase?: WorkflowStepPhase;
+	/** Harness checkpoint semantics used for truthful final-validation rendering. */
+	checkpoint?: "stage-review" | "final-e2e" | "final-review";
 	dependsOn: string[];
 	parallelism: "allowed" | "serial";
 	resourceClaims: string[];

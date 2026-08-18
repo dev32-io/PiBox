@@ -572,6 +572,34 @@ test("an in-flight fixer shows starting progress before its Pi process reports",
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("renders final validation as distinct E2E and whole-branch fix loops", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
+	const progress = { startedAt: new Date().toISOString(), lastEventAt: new Date().toISOString(), turns: 4, toolCalls: 13, toolErrors: 0, outputTokens: 2285, reasoningTokens: 1082, processStartedAt: new Date().toISOString() };
+	const snapshot: WorkflowSnapshot = {
+		ref: "work-item:calendar", title: "Calendar", status: "running",
+		steps: [
+			{ ref: "work-item:calendar/evaluation:final-e2e", title: "E2E journey/fix loop · Running journeys", kind: "evaluation", checkpoint: "final-e2e", status: "running", progress, dependsOn: [], parallelism: "serial", resourceClaims: [] },
+			{ ref: "work-item:calendar/evaluation:final-branch-review", title: "Whole-branch review/fix loop · Whole-branch review queued", kind: "evaluation", checkpoint: "final-review", status: "pending", dependsOn: ["work-item:calendar/evaluation:final-e2e"], parallelism: "serial", resourceClaims: [] },
+		],
+		stages: [{ id: "runtime-verification", index: 8, nodes: ["evaluation:final-e2e", "evaluation:final-branch-review"], parallel: false, group: "runtime" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(140) as string[];
+	assert.ok(rendered.some((line) => line.includes("Final validation · E2E journey/fix loop · 2 gates")));
+	assert.ok(rendered.some((line) => line.includes("E2E journey/fix loop · Running journeys") && line.includes("4 turns") && line.includes("13 tools")));
+	assert.ok(rendered.some((line) => line.includes("Whole-branch review/fix loop · Whole-branch review queued")));
+	assert.equal(rendered.some((line) => line.includes("Runtime verification") || line.includes("0 tasks")), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("renders durable integration and verification phases instead of generic ready-to-merge labels", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });

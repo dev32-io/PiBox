@@ -95,6 +95,30 @@ function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: stri
 	return { running: false };
 }
 
+function finalValidationDisplay(evaluation: { checkpoint?: string; status: string; loop?: { state?: string; iteration?: number } }, activity: { running: boolean; attention?: string }): { name: string; phase: string } | undefined {
+	const journey = evaluation.checkpoint === "final-e2e";
+	const branch = evaluation.checkpoint === "final-review";
+	if (!journey && !branch) return undefined;
+	const name = journey ? "E2E journey/fix loop" : "Whole-branch review/fix loop";
+	const state = evaluation.loop?.state;
+	const iteration = evaluation.loop?.iteration ?? 0;
+	if (["passed", "not_applicable"].includes(evaluation.status) || state === "passed") return { name, phase: journey ? "Journeys passed" : "Branch approved" };
+	if (state === "awaiting_manager") return { name, phase: "Decision needed · Approve or Request changes" };
+	if (activity.running) {
+		if (state === "fixing") return { name, phase: journey ? `Fixing E2E failures #${Math.max(2, iteration + 1)}` : `Fixing branch findings #${Math.max(2, iteration + 1)}` };
+		if (state === "rereviewing") return { name, phase: journey ? `Re-running journeys #${iteration}` : `Re-reviewing whole branch #${iteration}` };
+		return { name, phase: journey ? "Running journeys" : "Reviewing whole branch" };
+	}
+	if (activity.attention) {
+		if (state === "fixing") return { name, phase: journey ? "E2E fix failed · Resume" : "Branch fix failed · Resume" };
+		if (activity.attention === "result pending reconciliation") return { name, phase: journey ? "Journey report ready" : "Branch-review report ready" };
+		return { name, phase: journey ? "E2E worker needs attention" : "Branch reviewer needs attention" };
+	}
+	if (state === "fixing") return { name, phase: journey ? "E2E fix queued" : "Branch fix queued" };
+	if (state === "rereviewing") return { name, phase: journey ? "Journey re-run queued" : "Branch re-review queued" };
+	return { name, phase: journey ? "Journey run queued" : "Whole-branch review queued" };
+}
+
 function taskStatus(status: string, dependenciesDone: boolean): { status: WorkflowStepStatus; detail?: string } {
 	if (taskDone.has(status)) return { status: "done" };
 	if (["running", "reviewing"].includes(status)) return { status: "running" };
@@ -320,20 +344,22 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// Durable loop states describe intent, not process activity. Keep this as the
 				// canonical user-facing phase so queued work and settled reports cannot look
 				// like an active worker in the dashboard or workflow events.
-				const phase = ["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" ? "Approved"
+				const finalValidation = finalValidationDisplay(evaluation, activity);
+				const phase = finalValidation?.phase ?? (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" ? "Approved"
 					: evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
 					: activity.running ? evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"
 					: activity.attention && evaluation.loop?.state === "fixing" ? "Fix failed · Resume"
 					: activity.attention === "result pending reconciliation" ? "Review report ready"
 					: evaluation.loop?.state === "fixing" ? "Fix requested"
 					: evaluation.loop?.state === "rereviewing" ? "Re-review requested"
-					: "Review requested";
+					: "Review requested");
+				if (finalValidation && !dependencyAttention) detail = finalValidation.phase;
 				const findings = evaluation.findings ?? [];
 				const open = findings.filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 				const blocking = open.filter((finding) => finding.blocking);
 				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
-				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
+				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));

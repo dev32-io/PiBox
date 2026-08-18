@@ -200,11 +200,17 @@ export default function workflows(pi: ExtensionAPI): void {
 			const verificationFailed = !runningMerge && mergeSteps.some((step) => step.phase === "verification-failed");
 			const verifying = runningMerge?.phase === "verifying-candidate";
 			const stageVisualStatus = verificationFailed ? "attention" : stageStatus;
-			const lifecycle = stageStatus === "attention" ? "Needs attention" : stageStatus === "done" ? "Integrated" : reviewActive ? "Reviewing" : implementationActive ? "Implementing" : verificationFailed ? "Verification failed" : verifying ? "Verifying candidate" : runningMerge ? "Assembling candidate" : integrationActive ? "Ready to integrate" : "Queued";
+			const runtimeStage = stage.group === "runtime";
+			const runtimeLoop = primary?.checkpoint === "final-e2e" ? "E2E journey/fix loop" : primary?.checkpoint === "final-review" ? "Whole-branch review/fix loop" : "Final validation queued";
+			const lifecycle = runtimeStage
+				? stageStatus === "done" ? "Validated" : `${runtimeLoop}${stageStatus === "attention" ? " needs attention" : ""}`
+				: stageStatus === "attention" ? "Needs attention" : stageStatus === "done" ? "Integrated" : reviewActive ? "Reviewing" : implementationActive ? "Implementing" : verificationFailed ? "Verification failed" : verifying ? "Verifying candidate" : runningMerge ? "Assembling candidate" : integrationActive ? "Ready to integrate" : "Queued";
 			const topology = stage.parallel ? "⇉" : "→";
 			const stageColor: "error" | "accent" | "muted" | "success" = stageVisualStatus === "attention" ? "error" : implementationActive || integrationActive || reviewActive ? "accent" : stageStatus === "done" ? "success" : "muted";
-			const title = stage.group === "runtime" ? "Runtime verification" : `Stage ${stage.index + 1} · ${stage.id}`;
-			lines.push(ctx.ui.theme.fg(stageColor, `${stateIcon(stageVisualStatus, verifying ? "verification" : primary?.kind ?? "task")} ${topology} ${title} · ${lifecycle} · ${stageSteps.filter((step) => step.kind === "task" || step.kind === "merge").length} task${stageSteps.filter((step) => step.kind === "task" || step.kind === "merge").length === 1 ? "" : "s"}`));
+			const title = runtimeStage ? "Final validation" : `Stage ${stage.index + 1} · ${stage.id}`;
+			const unitCount = runtimeStage ? stageSteps.length : stageSteps.filter((step) => step.kind === "task" || step.kind === "merge").length;
+			const unitName = runtimeStage ? "gate" : "task";
+			lines.push(ctx.ui.theme.fg(stageColor, `${stateIcon(stageVisualStatus, verifying ? "verification" : primary?.kind ?? "task")} ${topology} ${title} · ${lifecycle} · ${unitCount} ${unitName}${unitCount === 1 ? "" : "s"}`));
 			// Only the implementation slice is expanded. Reviews and repairs are a
 			// compact sequence of explicit checkpoints, and a passed stage stays closed.
 			if (implementationActive || integrationActive) {
@@ -231,7 +237,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					const queuedFix = status === "running" && /fix requested/i.test(phase ?? step.detail ?? "")
 						? /iteration\s+(\d+)\//i.exec(step.detail ?? "")
 						: undefined;
-					const label = (queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
+					const label = (runtimeStage ? step.title : queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
 					const progress = includeProgress ? displayProgress(step, status) : "";
 					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
@@ -347,7 +353,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		if (inFlight.has(step.ref)) throw new Error(`Step is already running: ${step.ref}`);
 		inFlight.set(step.ref, epoch);
 		inFlightProgress.set(step.ref, initialAgentProgress(new Date().toISOString()));
-		sendEvent({ workflowRef: step.ref.split("/")[0]!, title: step.kind === "merge" ? `Assembling integration candidate · ${step.title}` : `Starting ${step.title}`, attention: false, kind: step.kind, toStatus: "running" });
+		const startTitle = step.checkpoint ? `Starting ${step.title.split(" · ")[0]}` : step.kind === "merge" ? `Assembling integration candidate · ${step.title}` : `Starting ${step.title}`;
+		sendEvent({ workflowRef: step.ref.split("/")[0]!, title: startTitle, attention: false, kind: step.kind, toStatus: "running" });
 		return adapter.runStep(step.ref, ctx, signal);
 	};
 

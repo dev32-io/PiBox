@@ -144,16 +144,30 @@ test("resume preserves and reopens the same failed fixer on its unchanged dirty 
 	assert.equal(await readFile(join(root, "source.txt"), "utf8"), "partial repair\n");
 });
 
-test("renders a review-fix loop as one checkpoint step with phase and iteration", async () => {
-	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "final-review" }] };
-	const evaluation: any = { id: "final-review", type: "combined-review", checkpoint: "final-e2e", scope: { workItem: "example" }, status: "planned", required: true, attempt: 1, methods: [], loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };
+test("renders the final E2E fix loop with journey-specific queued and active phases", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "final-e2e" }] };
+	const evaluation: any = { id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: "example" }, status: "planned", required: true, attempt: 1, methods: [], loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return []; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.length, 1);
-	assert.match(snapshot.steps[0]!.title, /Review loop final-review · Re-review requested/);
-	assert.doesNotMatch(snapshot.steps[0]!.title, /Re-reviewing/);
+	assert.match(snapshot.steps[0]!.title, /E2E journey\/fix loop · Journey re-run queued/);
+	assert.doesNotMatch(snapshot.steps[0]!.title, /Review requested|Reviewing/);
+	assert.equal(snapshot.steps[0]!.checkpoint, "final-e2e");
 	assert.equal(snapshot.steps[0]!.status, "ready");
+});
+
+test("renders the whole-branch review-fix loop with branch-specific active phases", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "final-branch-review" }] };
+	const evaluation: any = { id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: "example" }, status: "planned", required: true, attempt: 1, methods: [], loop: { state: "reviewing", iteration: 0, maxIterations: 3, reviewerAgentId: "reviewer" } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "final-branch-review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", activity: { kind: "review", generation: 0 } }] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
+	assert.equal(step.status, "running");
+	assert.equal(step.checkpoint, "final-review");
+	assert.match(step.title, /Whole-branch review\/fix loop · Reviewing whole branch/);
+	assert.doesNotMatch(step.title, /Review requested/);
 });
 
 test("an active reviewer is the only source of Re-reviewing wording", async () => {
