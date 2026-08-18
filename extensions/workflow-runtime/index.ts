@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { formatSubagentRoute, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
@@ -556,12 +556,11 @@ export default function workflows(pi: ExtensionAPI): void {
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const adapter = dynamicAdapter();
 				const mode = params.mode ?? "background";
+				const tier = inferDynamicSubagentTier(params.tier, params.model);
 				const request: DynamicSubagentRequest = {
-					operationId: toolCallId, agent: params.agent, task: params.task,
-					tier: params.tier ?? "medium",
+					operationId: toolCallId, agent: params.agent, task: params.task, tier,
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}),
 				};
-				const tier = params.tier ?? "medium";
 				let resolvedStatus: DynamicSubagentStarted | undefined;
 				if (mode === "background") {
 					runningSubagents.set(toolCallId, { agent: params.agent, mode, startedAt: Date.now(), ...(tier ? { tier } : {}) });

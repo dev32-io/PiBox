@@ -78,12 +78,20 @@ export interface SpawnableAgentDefinition {
 }
 
 /** Free-form main-session delegation. Managed workflow steps keep their canonical adapter-owned refs. */
+export type DynamicSubagentTier = "low" | "medium" | "high" | "max" | "local";
+
+/** Infer provider-isolated local routing only from an explicit local-llm model. */
+export function inferDynamicSubagentTier(tier?: DynamicSubagentTier, model?: string): DynamicSubagentTier {
+	if (tier) return tier;
+	return model?.trim().startsWith("local-llm/") ? "local" : "medium";
+}
+
 export interface DynamicSubagentRequest {
 	operationId: string;
 	agent: string;
 	task: string;
 	/** Selects a configured capability tier or the provider-isolated local route list. */
-	tier?: "low" | "medium" | "high" | "max" | "local";
+	tier?: DynamicSubagentTier;
 	/** Preferred configured model, optionally provider-qualified or suffixed with #effort. */
 	model?: string;
 	/** Overrides a #effort suffix or the preferred route's configured effort. */

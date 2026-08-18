@@ -18,9 +18,12 @@ function safeLevel(model: Model<any>, requested: ModelThinkingLevel): ModelThink
 
 export function configuredLevel(config: EffortConfig, model: Model<any>): ModelThinkingLevel {
 	const explicit = config.models[`${model.provider}/${model.id}`] ?? config.models[model.id];
-	// Local servers vary in how much reasoning they can sustain; keep them
-	// conservative unless the user/repository selected this model explicitly.
-	return explicit ?? (model.provider === "local-llm" ? "off" : config.default);
+	return explicit ?? config.default;
+}
+
+/** Managed children receive an explicit harness `--thinking` value. */
+export function shouldApplyEffortDefault(env: NodeJS.ProcessEnv = process.env): boolean {
+	return !env.PIBOX_SUBAGENT_ID;
 }
 
 async function chooseEffort(ctx: ExtensionCommandContext, levels: ModelThinkingLevel[]): Promise<ModelThinkingLevel | undefined> {
@@ -64,10 +67,12 @@ export default function effort(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		config = loadEffortConfig(ctx.cwd);
-		if (ctx.model) applyDefault(ctx.model);
+		if (shouldApplyEffortDefault() && ctx.model) applyDefault(ctx.model);
 	});
 
-	pi.on("model_select", (event) => applyDefault(event.model));
+	pi.on("model_select", (event) => {
+		if (shouldApplyEffortDefault()) applyDefault(event.model);
+	});
 
 	pi.registerCommand("effort", {
 		description: "Choose the current model's reasoning effort",

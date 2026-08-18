@@ -19,7 +19,8 @@ const CONTEXT_OVERFLOW_PATTERN = /context size has been exceeded/i;
 
 /** Local OpenAI-compatible servers accept Pi's complete effort vocabulary except minimal/max. */
 export const LOCAL_LLM_THINKING_LEVEL_MAP: ThinkingLevelMap = {
-	off: "off",
+	// OpenAI-compatible reasoning APIs spell Pi's canonical `off` as `none`.
+	off: "none",
 	minimal: null,
 	low: "low",
 	medium: "medium",

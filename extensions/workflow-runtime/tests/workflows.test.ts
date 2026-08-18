@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
 import { installPermissionRuntime } from "../../permissions/runtime.js";
 
 function fixture(workflowConfirmed = true) {
@@ -44,6 +44,13 @@ function fixture(workflowConfirmed = true) {
 	};
 	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget, permissionMode: () => permissionMode };
 }
+
+test("infers local routing only for an explicit local-llm provider", () => {
+	assert.equal(inferDynamicSubagentTier(undefined, "local-llm/qwen3.8-27b-uncensored#medium"), "local");
+	assert.equal(inferDynamicSubagentTier(undefined, "openai-codex/gpt-5.6-luna"), "medium");
+	assert.equal(inferDynamicSubagentTier(undefined, undefined), "medium");
+	assert.equal(inferDynamicSubagentTier("high", "local-llm/qwen3.8-27b-uncensored"), "high");
+});
 
 test("registers the generalized workflow and subagent surface", async () => {
 	const f = fixture();

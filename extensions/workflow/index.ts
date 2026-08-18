@@ -27,7 +27,7 @@ import { CanonicalMutationCoordinator, runManagedChild } from "./canonical-mutat
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
@@ -811,7 +811,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				? normalizeExplicitModelOverride(selectedModel, request.effort as HarnessEffort | undefined)
 				: undefined;
 			const routing = {
-				tier: (request.tier ?? agentDefinition.tier!) as ModelTier,
+				tier: inferDynamicSubagentTier(request.tier, preferred?.model) as ModelTier,
 				...(preferred ? { override: preferred } : {}),
 			};
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();

@@ -17,3 +17,4 @@ modelTiers:
     - ollama-cloud/deepseek-v4-flash#low
   local:
     - local-llm/meta/muse-glimmer#high
+    - local-llm/qwen3.8-27b-uncensored#medium

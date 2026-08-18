@@ -16,6 +16,7 @@ test("local-llm discovery normalizes every model to its supported effort levels"
 	assert.equal(model.compat?.supportsReasoningEffort, true);
 	assert.deepEqual(model.thinkingLevelMap, LOCAL_LLM_THINKING_LEVEL_MAP);
 	assert.deepEqual(Object.keys(model.thinkingLevelMap ?? {}).sort(), ["high", "low", "medium", "minimal", "off", "xhigh", "max"].sort());
+	assert.equal(model.thinkingLevelMap?.off, "none");
 	assert.equal(model.thinkingLevelMap?.minimal, null);
 	assert.equal(model.thinkingLevelMap?.max, null);
 });

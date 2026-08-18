@@ -57,6 +57,30 @@ function extractText(event: unknown): string {
 	return value.message.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "";
 }
 
+function terminalAssistantError(events: readonly unknown[]): string | undefined {
+	for (let index = events.length - 1; index >= 0; index -= 1) {
+		const value = events[index] as { type?: string; message?: { role?: string; stopReason?: string; errorMessage?: string } };
+		if (value.type === "message_end" && value.message?.role === "assistant") {
+			return value.message.stopReason === "error" ? (value.message.errorMessage ?? "Assistant request failed") : undefined;
+		}
+	}
+	return undefined;
+}
+
+function directResult(options: DirectAgentOptions, exitCode: number, text: string, stderr: string, events: unknown[]): DirectAgentResult {
+	const assistantError = terminalAssistantError(events);
+	return {
+		exitCode: exitCode === 0 && assistantError ? 1 : exitCode,
+		agent: options.agent,
+		provider: options.provider,
+		model: options.model,
+		effort: options.effort,
+		text,
+		stderr: assistantError ? `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}${assistantError}` : stderr,
+		events,
+	};
+}
+
 export interface JsonlObserver {
 	drain(): Promise<void>;
 	close(): Promise<void>;
@@ -181,7 +205,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				text = extractText(events[index]);
 				if (text) break;
 			}
-			return { exitCode, agent: options.agent, provider: options.provider, model: options.model, effort: options.effort, text, stderr, events };
+			return directResult(options, exitCode, text, stderr, events);
 		}
 		const exitCode = await new Promise<number>((resolveExit) => {
 			const child = spawn(selected.command, selected.args, {
@@ -229,7 +253,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 			text = extractText(events[index]);
 			if (text) break;
 		}
-		return { exitCode, agent: options.agent, provider: options.provider, model: options.model, effort: options.effort, text, stderr, events };
+		return directResult(options, exitCode, text, stderr, events);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

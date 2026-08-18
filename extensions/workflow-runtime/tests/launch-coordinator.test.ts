@@ -65,6 +65,21 @@ test("launches a direct child through the registry with file-backed process outp
 	assert.match(await readFile(join(attemptRoot, "stdout.jsonl"), "utf8"), /mapped repository/);
 });
 
+test("treats a terminal assistant error as failure when Pi exits zero", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-assistant-error-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-error");
+	await registry.initialize("main:session-error");
+	const fake = join(root, "fake-error.mjs");
+	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[],stopReason:"error",errorMessage:"provider rejected effort"}}));\n`);
+	const coordinator = new LaunchCoordinator(registry, "main:session-error", () => ({ command: process.execPath, args: [fake] }));
+	const launched = await coordinator.launch({ operationId: "assistant-error", role: "explorer", task: "Try", assignment: {}, cwd: root, provider: "local-llm", model: "local", effort: "medium", tools: [] });
+	assert.equal(launched.result.exitCode, 1);
+	assert.match(launched.result.stderr, /provider rejected effort/);
+	assert.equal(launched.agent.state, "failed");
+	assert.equal(launched.agent.attempts[0]?.exitCode, 1);
+});
+
 test("resumes a waiting assignment as another process attempt under the same slot and Pi session", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-resume-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
