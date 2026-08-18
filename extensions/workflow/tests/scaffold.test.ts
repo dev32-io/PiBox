@@ -87,11 +87,11 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	const loaded = loadHarnessConfig(root, { home: join(root, "unused-home") });
 	assert.equal(loaded.config.schemaVersion, 2);
 	assert.deepEqual(loaded.config.modelTiers, {
-		max: ["openai-codex/gpt-5.6-sol#high"],
-		high: ["openai-codex/gpt-5.6-sol#medium"],
-		medium: ["openai-codex/gpt-5.6-luna#max"],
-		low: ["openai-codex/gpt-5.6-luna#medium"],
-		local: ["local-llm/qwen/qwen3.8-27b#high"],
+		max: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro#max"],
+		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"],
+		medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
+		low: ["openai-codex/gpt-5.6-luna#low", "ollama-cloud/deepseek-v4-flash#low"],
+		local: ["local-llm/meta/muse-glimmer#high"],
 	});
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "medium");
