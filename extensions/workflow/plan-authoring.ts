@@ -1,5 +1,6 @@
 import { HarnessError } from "./errors.js";
 import type { CanonicalResourceType, PlanBundle, PlanEdit } from "./orchestrator-resources.js";
+import { normalizeVerificationChecks } from "./verification-checks.js";
 
 export type PlanAuthoringRecord = Record<string, unknown>;
 
@@ -219,7 +220,7 @@ export function normalizePlanStage(value: unknown): PlanAuthoringRecord {
 	if (review?.tier === "high" && ((String(review.rationale ?? "").trim().length < 20) || strings(review.focus).join(" ").trim().length < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${String(stage.id)} requires substantive rationale and focus`);
 	if (review?.tier === "max") throw new HarnessError("INVALID_ARTIFACT", "Stage review policy supports medium by default or justified high; max is not available");
 	if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `Stage ${String(stage.id)} has unsupported execution mode`);
-	return { id: stage.id, tasks: strings(stage.tasks), checks: strings(stage.checks), ...(stage.mode !== undefined ? { mode: stage.mode } : {}), ...(review ? { review: { tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) } } : {}) };
+	return { id: stage.id, tasks: strings(stage.tasks), checks: normalizeVerificationChecks(stage.checks, `Stage ${String(stage.id)} checks`), ...(stage.mode !== undefined ? { mode: stage.mode } : {}), ...(review ? { review: { tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) } } : {}) };
 }
 
 export function normalizePlanEvaluation(_value: unknown, _workItemId: string): never {

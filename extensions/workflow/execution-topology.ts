@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
 import type { EvaluationManifest, ExecutionStageContract, TaskManifest, WorkItemIndex } from "./types.js";
+import { normalizeChecks } from "./verification-checks.js";
+import { resolveVerificationProfile, type ResolvedVerificationProfile } from "./verification-config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -58,25 +60,35 @@ export function taskExecutionTopology(item: WorkItemIndex, task: TaskManifest): 
 }
 
 /** Validate only declarations that can be checked without running project code. Values are never guessed. */
-export async function preflightTaskChecks(item: WorkItemIndex, tasks: TaskManifest[]): Promise<{ missingCommands: string[]; missingEnvironment: string[] }> {
-	const stageChecks = orderedExecutionStages(item).flatMap((stage) => stage.checks ?? []);
-	const checks = [...new Set([...tasks.flatMap((task) => task.verification.taskChecks), ...stageChecks].map((check) => check.trim()).filter(Boolean))];
+export async function preflightTaskChecks(item: WorkItemIndex, tasks: TaskManifest[], repositoryRoot?: string): Promise<{ missingCommands: string[]; missingEnvironment: string[] }> {
+	const stageChecks = orderedExecutionStages(item).flatMap((stage) => normalizeChecks(stage.checks ?? [], `Stage ${stage.id} checks`));
+	const taskChecks = [...new Set(tasks.flatMap((task) => task.verification.taskChecks).map((command) => command.trim()).filter(Boolean))].map((command, index) => ({ id: `task-check-${index + 1}`, command }));
+	const checks = [...taskChecks, ...stageChecks];
 	const missingCommands = new Set<string>();
 	const missingEnvironment = new Set<string>();
+	const runProbe = async (profile: ResolvedVerificationProfile | undefined, probe: string): Promise<void> => {
+		if (!profile) { await execFileAsync("sh", ["-lc", probe], { timeout: 2_000 }); return; }
+		const script = [profile.legacy ? undefined : "set -e", profile.bootstrap, probe].filter(Boolean).join("\n");
+		await execFileAsync(profile.shell, [profile.legacy ? "-lc" : "-c", script], { cwd: repositoryRoot, timeout: 5_000 });
+	};
 	for (const check of checks) {
+		const profile = repositoryRoot ? await resolveVerificationProfile(repositoryRoot, check) : undefined;
 		// Shell syntax is intentionally not interpreted. This catches the common executable
 		// and explicit environment prerequisites without pretending to understand every shell.
-		const envRefs = [...check.matchAll(/(?:\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))/g)]
+		const envRefs = [...check.command.matchAll(/(?:\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*))/g)]
 			.map((m) => m[1] ?? m[2]).filter((name): name is string => Boolean(name));
-		for (const name of envRefs) if (!process.env[name]?.trim()) missingEnvironment.add(name);
-		const command = check.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+|env\s+)+/, "").match(/^(?:command\s+-v\s+)?([A-Za-z0-9_./-]+)/)?.[1];
+		for (const name of envRefs) {
+			try { await runProbe(profile, `test -n "\${${name}:-}"`); }
+			catch { missingEnvironment.add(name); }
+		}
+		const command = check.command.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+|env\s+)+/, "").match(/^(?:command\s+-v\s+)?([A-Za-z0-9_./-]+)/)?.[1];
 		if (command && /(?:^|[/._-])(mvn|gradle|gradlew)(?:$|[/._-])/.test(command)) {
-			try { await execFileAsync("sh", ["-lc", "command -v -- java"], { timeout: 2_000 }); } catch { missingCommands.add("java"); }
+			try { await runProbe(profile, "command -v -- java >/dev/null && java -version >/dev/null 2>&1"); } catch { missingCommands.add("java"); }
 		}
 		if (command && !["if", "then", "fi", "for", "do", "done", "case", "test", "echo", "true", "false"].includes(command)) {
 			try {
-				const probe = command.includes("/") ? `test -x ${JSON.stringify(command)}` : `command -v -- ${JSON.stringify(command)}`;
-				await execFileAsync("sh", ["-lc", probe], { timeout: 2_000 });
+				const probe = command.includes("/") ? `test -x ${JSON.stringify(command)}` : `command -v -- ${JSON.stringify(command)} >/dev/null`;
+				await runProbe(profile, probe);
 			} catch { missingCommands.add(command); }
 		}
 	}

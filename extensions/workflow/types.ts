@@ -205,12 +205,22 @@ export interface StageReviewPolicy {
 	rationale?: string;
 }
 
+export interface VerificationCheck {
+	/** Stable within one stage; omitted legacy checks receive check-N identifiers. */
+	id?: string;
+	command: string;
+	/** Named execution profile from .pibox/verification.yaml. */
+	profile?: string;
+}
+
+export type VerificationCheckSpec = string | VerificationCheck;
+
 export interface ExecutionStageContract {
 	id: string;
 	tasks: string[];
 	/** Explicit execution topology; omitted stages retain legacy resolution behavior. */
 	mode?: "sequential" | "concurrent";
-	checks?: string[];
+	checks?: VerificationCheckSpec[];
 	review?: StageReviewPolicy;
 }
 

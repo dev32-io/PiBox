@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -7,8 +7,10 @@ import { HarnessError } from "./errors.js";
 import { taskExecutionTopology, type TaskExecutionIsolation } from "./execution-topology.js";
 import { assertCleanRepository, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
-import type { TaskManifest } from "./types.js";
+import type { TaskManifest, VerificationCheckSpec } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
+import { normalizeChecks } from "./verification-checks.js";
+import { VerificationRunner, verificationFailureSummary } from "./verification-runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,7 +41,7 @@ export interface IntegrationResult {
 	taskId: string;
 	taskIds: string[];
 	stageId: string;
-	checks: Array<{ command: string; code: number; stdout: string; stderr: string }>;
+	checks: Array<{ id: string; profile: string; command: string; code: number; stdout: string; stderr: string; attemptPath: string }>;
 }
 
 export interface ValidatedWorkingBranch {
@@ -258,12 +260,14 @@ export class WorktreeManager {
 		const item = await this.workItems.read(workItemId);
 		const tasks = await Promise.all(taskIds.map((taskId) => this.workItems.readTask(workItemId, taskId)));
 		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
-		const commands = stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
+		const checks = normalizeChecks(stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))], `Stage ${stageId} checks`);
 		const results: IntegrationResult["checks"] = [];
-		for (const command of commands) {
-			const result = await runShell(command, this.identity.root);
-			results.push({ command, ...result });
-			if (result.code !== 0) throw new HarnessError("GIT_OPERATION_FAILED", `Post-repair check failed: ${command}\n${result.stderr || result.stdout}`);
+		const candidateCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		const runner = new VerificationRunner(this.identity);
+		for (const check of checks) {
+			const result = await runner.run(workItemId, stageId, check, this.identity.root, candidateCommit);
+			results.push({ id: check.id, profile: result.profile, command: check.command, code: result.code, stdout: result.stdout, stderr: result.stderr, attemptPath: result.attemptPath });
+			if (result.code !== 0) throw new HarnessError("GIT_OPERATION_FAILED", `Post-repair check failed: ${check.command}\n${verificationFailureSummary(result)}`, { stageId, checkId: check.id, attemptPath: result.attemptPath, code: result.code });
 		}
 		return results;
 	}
@@ -277,11 +281,11 @@ export class WorktreeManager {
 		if (remaining.length === 0) await rm(conflictRoot, { recursive: true, force: true });
 	}
 
-	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
+	async mergeTask(workItemId: string, taskId: string, checks?: VerificationCheckSpec[]): Promise<IntegrationResult> {
 		return this.coordinator.run(`integration:${workItemId}:${taskId}`, () => this.mergeTaskUnlocked(workItemId, taskId, checks));
 	}
 
-	private async mergeTaskUnlocked(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
+	private async mergeTaskUnlocked(workItemId: string, taskId: string, checks?: VerificationCheckSpec[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId);
 		const workingBranch = item.delivery?.workingBranch;
@@ -323,11 +327,13 @@ export class WorktreeManager {
 
 			const stage = (item.executionStages ?? []).find((candidate) => candidate.id === topology.stageId);
 			const isFinalSequentialTask = topology.mode === "sequential" && topology.stageTasks.indexOf(taskId) === topology.stageTasks.length - 1;
-			const commands = concurrentStage || isFinalSequentialTask ? checks ?? stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))] : [];
-			for (const command of commands) {
-				const result = await runShell(command, this.identity.root);
-				checkResults.push({ command, ...result });
-				if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Post-stage check failed: ${command}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`, result);
+			const checksToRun = normalizeChecks(concurrentStage || isFinalSequentialTask ? checks ?? stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))] : [], `Stage ${topology.stageId} checks`);
+			const candidateCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+			const runner = new VerificationRunner(this.identity);
+			for (const check of checksToRun) {
+				const result = await runner.run(workItemId, topology.stageId, check, this.identity.root, candidateCommit);
+				checkResults.push({ id: check.id, profile: result.profile, command: check.command, code: result.code, stdout: result.stdout, stderr: result.stderr, attemptPath: result.attemptPath });
+				if (result.code !== 0) throw new HarnessError("INVALID_HANDOFF", `Post-stage check failed: ${check.command}\n${verificationFailureSummary(result)}`, { stageId: topology.stageId, checkId: check.id, attemptPath: result.attemptPath, code: result.code });
 			}
 			const integratedCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 			for (const task of pending) await this.workItems.updateTask(workItemId, task.id, { status: "merged", runtime: { mergedCommit: integratedCommit } });
@@ -370,16 +376,4 @@ export class WorktreeManager {
 		}
 		return { commit: await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, taskIds, stageId: topology.stageId, checks: checkResults };
 	}
-}
-
-function runShell(command: string, cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
-	return new Promise((resolve) => {
-		const child = spawn("/bin/sh", ["-lc", command], { cwd, stdio: ["ignore", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		child.stdout.on("data", (data) => (stdout += data.toString()));
-		child.stderr.on("data", (data) => (stderr += data.toString()));
-		child.on("error", (error) => resolve({ code: 1, stdout, stderr: `${stderr}${error.message}` }));
-		child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
-	});
 }

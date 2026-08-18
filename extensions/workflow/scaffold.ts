@@ -27,8 +27,10 @@ export interface HarnessScaffoldResult {
 
 const WORKTREE_IGNORE_PATTERN = "/.worktree/";
 const PRIVATE_STATE_IGNORE_PATTERN = "/.pibox/";
+const VERSIONED_VERIFICATION_PATTERNS = ["!/.pibox/", "/.pibox/*", "!/.pibox/verification.yaml"] as const;
 const WORKTREE_IGNORE_PROBE = ".worktree/pibox/.ignore-check";
 const PRIVATE_STATE_IGNORE_PROBE = ".pibox/.ignore-check";
+const VERIFICATION_CONFIG_PROBE = ".pibox/verification.yaml";
 
 async function readOptional(path: string): Promise<string | undefined> {
 	try {
@@ -42,7 +44,9 @@ async function readOptional(path: string): Promise<string | undefined> {
 async function ensureHarnessIgnores(repositoryRoot: string, ignorePath: string): Promise<boolean> {
 	const required: string[] = [];
 	if (!(await isGitPathIgnored(repositoryRoot, WORKTREE_IGNORE_PROBE))) required.push(WORKTREE_IGNORE_PATTERN);
-	if (!(await isGitPathIgnored(repositoryRoot, PRIVATE_STATE_IGNORE_PROBE))) required.push(PRIVATE_STATE_IGNORE_PATTERN);
+	const privateStateMissing = !(await isGitPathIgnored(repositoryRoot, PRIVATE_STATE_IGNORE_PROBE));
+	if (privateStateMissing) required.push(PRIVATE_STATE_IGNORE_PATTERN, ...VERSIONED_VERIFICATION_PATTERNS);
+	else if (await isGitPathIgnored(repositoryRoot, VERIFICATION_CONFIG_PROBE)) required.push(...VERSIONED_VERIFICATION_PATTERNS);
 	if (required.length === 0) return false;
 	const previous = await readOptional(ignorePath);
 	const prefix = previous && !previous.endsWith("\n") ? `${previous}\n` : (previous ?? "");
@@ -50,6 +54,7 @@ async function ensureHarnessIgnores(repositoryRoot: string, ignorePath: string):
 	for (const probe of [WORKTREE_IGNORE_PROBE, PRIVATE_STATE_IGNORE_PROBE]) {
 		if (!(await isGitPathIgnored(repositoryRoot, probe))) throw new HarnessError("CONFIG_INVALID", "Failed to establish PiBox runtime ignores in .gitignore");
 	}
+	if (await isGitPathIgnored(repositoryRoot, VERIFICATION_CONFIG_PROBE)) throw new HarnessError("CONFIG_INVALID", "Failed to make .pibox/verification.yaml versionable");
 	return true;
 }
 

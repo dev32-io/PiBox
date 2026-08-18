@@ -40,6 +40,13 @@ test("normalizes and preserves explicit stage modes while keeping omission compa
 	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], mode: "unsupported" }), /unsupported execution mode/i);
 });
 
+test("normalizes structured verification checks while preserving legacy commands", () => {
+	assert.deepEqual(normalizePlanStage({ id: "mobile", tasks: ["android"], checks: ["npm test", { id: "android-unit", command: "./gradlew test", profile: "android" }] }), {
+		id: "mobile", tasks: ["android"], checks: ["npm test", { id: "android-unit", command: "./gradlew test", profile: "android" }],
+	});
+	assert.throws(() => normalizePlanStage({ id: "mobile", tasks: ["android"], checks: [{ id: "same", command: "one" }, { id: "same", command: "two" }] }), /duplicate check id/i);
+});
+
 test("normalizes medium stage review and requires substantive high policy", () => {
 	assert.deepEqual(normalizePlanStage({ id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { focus: ["Checkout correctness"] } }), { id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { tier: "medium", focus: ["Checkout correctness"] } });
 	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "high", focus: ["bugs"], rationale: "hard" } }), /substantive rationale and focus/i);

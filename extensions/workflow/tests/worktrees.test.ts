@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,7 +23,7 @@ async function fixture(t: test.TestContext, options: { remote?: boolean } = {}) 
 	await git(root, "config", "user.name", "Harness Test");
 	await git(root, "config", "user.email", "harness@example.test");
 	await writeFile(join(root, "README.md"), "fixture\n");
-	await writeFile(join(root, ".gitignore"), "/.worktree/\n");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
 	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
 	await git(root, "branch", "-M", "develop");
@@ -168,6 +168,29 @@ test("derives singleton stages as direct feature-branch execution", async (t) =>
 	const manager = new WorktreeManager(identity); await manager.validateWorkingBranch("serial");
 	const allocation = await manager.allocate("serial", await store.readTask("serial", "add-feature"));
 	assert.equal(allocation.path, identity.root); assert.equal(allocation.isolation, "repository"); assert.equal(allocation.branch, "fix/serial");
+});
+
+test("runs a structured stage check with its repository verification profile and durable evidence", async (t) => {
+	const { root, identity } = await fixture(t);
+	await mkdir(join(root, ".pibox"), { recursive: true });
+	await writeFile(join(root, ".pibox", "verification.yaml"), `schemaVersion: 1\nprofiles:\n  profiled:\n    shell: /bin/bash\n    bootstrap: export PROFILE_MARKER=ready\n    requiredEnvironment: [PROFILE_MARKER]\n`);
+	await git(root, "add", ".pibox/verification.yaml");
+	await git(root, "commit", "--quiet", "-m", "add verification profile");
+	const store = new WorkItemStore(root);
+	await store.create({ id: "profiled", title: "Profiled", kind: "change", branchKind: "fix", intent: "Run profiled checks" });
+	await store.defineTask({ workItemId: "profiled", manifest: task("only", "delivery"), brief: "Direct work", acceptance: "Direct accepted" });
+	await store.putExecutionStage("profiled", { id: "delivery", tasks: ["only"], mode: "sequential", checks: [{ id: "profile-proof", profile: "profiled", command: "test \"$PROFILE_MARKER\" = ready && test -f only.txt" }] }, { rationale: "fixture" });
+	await store.submitPlanning("profiled");
+	const manager = new WorktreeManager(identity); await manager.validateWorkingBranch("profiled");
+	const allocation = await manager.allocate("profiled", await store.readTask("profiled", "only"));
+	await store.updateTask("profiled", "only", { status: "running", runtime: { executionMode: allocation.isolation, branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+	await writeFile(join(root, "only.txt"), "only\n"); await git(root, "add", "only.txt"); await git(root, "commit", "--quiet", "-m", "implement only");
+	await store.updateTask("profiled", "only", { status: "contribution_complete", runtime: { completedCommit: await git(root, "rev-parse", "HEAD") } });
+	const integrated = await manager.mergeTask("profiled", "only");
+	assert.equal(integrated.checks[0]?.id, "profile-proof");
+	assert.equal(integrated.checks[0]?.profile, "profiled");
+	assert.match(integrated.checks[0]?.attemptPath ?? "", /verification\/delivery\/profile-proof\/attempts\/001$/);
+	assert.match(await readFile(join(root, integrated.checks[0]!.attemptPath, "result.yaml"), "utf8"), /state: passed/);
 });
 
 test("integrates explicit sequential stage tasks independently on the canonical branch", async (t) => {

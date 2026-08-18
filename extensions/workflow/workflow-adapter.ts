@@ -16,6 +16,7 @@ import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 import { WorkflowEventJournal, type WorkflowDomainEventType } from "./workflow-events.js";
 import type { RepositoryEventStore } from "./event-store.js";
 
+
 export interface HarnessWorkflowRuntime {
 	identity: RepositoryIdentity;
 	workItems: WorkItemStore;
@@ -145,7 +146,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const runtime = await options.runtimeFor(ctx);
 			const item = await runtime.workItems.read(match[1]!);
 			const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
-			const missing = await preflightTaskChecks(item, tasks);
+			const missing = await preflightTaskChecks(item, tasks, runtime.identity.root);
 			if (!missing.missingCommands.length && !missing.missingEnvironment.length) return { ok: true };
 			const details = [
 				missing.missingCommands.length ? `missing commands: ${missing.missingCommands.join(", ")}` : undefined,

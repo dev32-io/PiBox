@@ -10,6 +10,7 @@ import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit }
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import { isTierTaskAssignment, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
+import { normalizeChecks, verificationCommand } from "./verification-checks.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions", "e2e-matrix": "e2e-matrix" } as const;
@@ -121,7 +122,10 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 		stageIds.add(stage.id);
 		stage.tasks.forEach((id) => scheduled.add(id));
 		if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid execution stage mode`);
-		if (stage.checks !== undefined && (!Array.isArray(stage.checks) || stage.checks.some((check) => typeof check !== "string" || !check.trim()))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage checks`);
+		if (stage.checks !== undefined) {
+			if (!Array.isArray(stage.checks)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage checks`);
+			normalizeChecks(stage.checks, `${source} stage ${stage.id} checks`);
+		}
 		if (stage.review && (!["medium", "high"].includes(stage.review.tier) || (stage.review.tier === "high" && ((stage.review.rationale?.trim().length ?? 0) < 20 || (stage.review.focus?.join(" ").trim().length ?? 0) < 20)))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage review policy`);
 	}
 	const artifactIds = new Set<string>();
@@ -1103,7 +1107,7 @@ export class WorkItemStore {
 				continue;
 			}
 			const policy = stage.review ?? { tier: "medium" as const };
-			await this.defineRuntimeEvaluation(workItemId, { schemaVersion: 1, id, type: "combined-review", checkpoint: "stage-review", stageId: stage.id, scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: stage.checks ?? [], ...(policy.focus ? { criteria: policy.focus } : {}), loop: { state: "planned", iteration: 0, maxIterations } });
+			await this.defineRuntimeEvaluation(workItemId, { schemaVersion: 1, id, type: "combined-review", checkpoint: "stage-review", stageId: stage.id, scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: (stage.checks ?? []).map(verificationCommand), ...(policy.focus ? { criteria: policy.focus } : {}), loop: { state: "planned", iteration: 0, maxIterations } });
 			existing = [...existing, await this.readEvaluation(workItemId, id)];
 		}
 		let finalJourney = existing.find((evaluation) => evaluation.checkpoint === "final-e2e");
