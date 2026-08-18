@@ -88,6 +88,11 @@ export interface DynamicSubagentRequest {
 	effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 }
 
+export interface WorkflowStartProgress {
+	phase: "Validating prerequisites" | "Finalizing reviewed plan" | "Validating working branch" | "Creating runtime verification gates" | "Activating tasks" | "Building execution snapshot" | "Starting workflow";
+	elapsedMs: number;
+}
+
 export interface WorkflowPreflight {
 	ok: boolean;
 	detail?: string;
@@ -100,7 +105,7 @@ export interface WorkflowAdapter {
 	canHandle(ref: string): boolean;
 	/** Cheap, side-effect-free validation performed before any worker is launched. */
 	preflightWorkflow?(ref: string, ctx: ExtensionContext): Promise<WorkflowPreflight>;
-	prepareWorkflow?(ref: string, ctx: ExtensionContext): Promise<void>;
+	prepareWorkflow?(ref: string, ctx: ExtensionContext, onUpdate?: (progress: WorkflowStartProgress) => void): Promise<void>;
 	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;

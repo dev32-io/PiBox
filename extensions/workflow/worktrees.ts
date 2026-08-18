@@ -228,9 +228,19 @@ export class WorktreeManager {
 		const evidencePath = entries.length ? join(root, entries[entries.length - 1]!) : undefined;
 		if (!evidencePath) return undefined;
 		const content = await readFile(evidencePath, "utf8");
-		const stageId = content.match(/^stage: ([^\\n]+)/m)?.[1];
-		const taskIds = content.match(/^tasks: ([^\\n]*)/m)?.[1]?.split(", ").filter(Boolean) ?? [];
-		return stageId ? { stageId, taskIds, evidencePath } : undefined;
+		const headers = new Map<string, string>();
+		for (const line of content.split(/\\r?\\n/)) {
+			const separator = line.indexOf(":");
+			if (separator < 0) continue;
+			headers.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+		}
+		const stageId = headers.get("stage");
+		const taskIds = (headers.get("tasks") ?? "").split(",").map((taskId) => taskId.trim()).filter(Boolean);
+		const validId = (value: string): boolean => /^[a-z0-9][a-z0-9-]*$/.test(value);
+		if (!stageId || !validId(stageId) || taskIds.length === 0 || taskIds.some((taskId) => !validId(taskId))) {
+			throw new HarnessError("INVALID_ARTIFACT", `Malformed integration conflict evidence: ${evidencePath}`);
+		}
+		return { stageId, taskIds, evidencePath };
 	}
 
 	async runStageChecks(workItemId: string, stageId: string, taskIds: string[]): Promise<IntegrationResult["checks"]> {

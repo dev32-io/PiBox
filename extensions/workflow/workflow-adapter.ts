@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import type { DynamicSubagentRequest, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus } from "../workflow-runtime/api.js";
+import type { DynamicSubagentRequest, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { readTextIfExists } from "./repository.js";
@@ -82,16 +82,19 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			].filter(Boolean).join("; ");
 			return { ok: false, ...missing, detail: `Workflow preflight failed: ${details}. Configure the declared prerequisites and retry; PiBox will not guess project-specific values.` };
 		},
-		async prepareWorkflow(ref, ctx) {
+		async prepareWorkflow(ref, ctx, onUpdate) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
+			const started = Date.now();
+			const progress = (phase: WorkflowStartProgress["phase"]) => onUpdate?.({ phase, elapsedMs: Date.now() - started });
 			await runtime.mutex.run(`workflow-begin:${match[1]}`, async () => {
-				await runtime.workItems.submitPlanning(match[1]!);
+				progress("Finalizing reviewed plan"); await runtime.workItems.submitPlanning(match[1]!);
+				progress("Validating working branch");
 				if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, match[1]!);
 				else await new WorktreeManager(runtime.identity).validateWorkingBranch(match[1]!);
 				await runtime.workItems.beginExecution(match[1]!);
-				await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? 2);
-				await runtime.workItems.activateDraftTasks(match[1]!);
+				progress("Creating runtime verification gates"); await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? 2);
+				progress("Activating tasks"); await runtime.workItems.activateDraftTasks(match[1]!);
 			});
 		},
 		async completionPrompt(ref, ctx) {
@@ -295,7 +298,10 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				}
 				return;
 			}
-			if (action === "pause") return;
+			if (action === "pause") {
+				await runtime.workItems.transitionWorkItem(workItemId, "pause", "Workflow paused by user; safe amendment boundary.");
+				return;
+			}
 			for (const agent of await runtime.agents.list()) if (agent.workItemId === workItemId && isAgentProcessActive(agent)) await this.controlSubagent(agent.id, "stop", ctx);
 		},
 		async listSubagents(ctx) { return (await options.runtimeFor(ctx)).agents.list(); },

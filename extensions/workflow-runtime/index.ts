@@ -53,6 +53,9 @@ export default function workflows(pi: ExtensionAPI): void {
 	const runningSubagents = new Map<string, RunningSubagentStatus>();
 
 	const adapterFor = (ref: string): WorkflowAdapter => {
+		// Discovery is deliberately repeatable: extensions may load after the
+		// session-start hook (notably during reloads and tests).
+		if (adapters.length === 0) pi.events.emit(WORKFLOW_ADAPTER_DISCOVERY_EVENT, { register(adapter: WorkflowAdapter) { if (!adapters.some((candidate) => candidate.id === adapter.id)) adapters.push(adapter); } } satisfies WorkflowAdapterDiscovery);
 		const adapter = adapters.find((candidate) => candidate.canHandle(ref));
 		if (!adapter) throw new Error(`No workflow adapter accepts ${ref}`);
 		return adapter;
@@ -130,7 +133,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
 	const stateIcon = (status: WorkflowStep["status"], kind: string): string => {
 		if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? DEFAULT_RUNNING_FRAMES; return frames[frame % frames.length]!; }
-		return status === "attention" ? "!" : status === "ready" ? "○" : status === "pending" ? "□" : status === "done" ? "✓" : "–";
+		return status === "attention" ? "⚠" : status === "ready" ? "◆" : status === "pending" ? "·" : status === "done" ? "✓" : "–";
 	};
 
 	const rawTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
@@ -155,7 +158,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const reviewSteps = stageSteps.filter((step) => step.kind === "evaluation");
 			const reviewActive = reviewSteps.some((step) => step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref));
 			const implementationActive = !reviewActive && stageSteps.some((step) => step.kind !== "evaluation" && (step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref)));
-			const lifecycle = stageStatus === "attention" ? "attention" : stageStatus === "done" ? "complete" : implementationActive ? "implementing" : reviewActive ? "reviewing" : stageStatus === "running" ? "active" : stageStatus === "ready" ? "ready" : "queued";
+			const lifecycle = stageStatus === "attention" ? "Needs attention" : stageStatus === "done" ? "Merged" : implementationActive ? "Implementing" : reviewActive ? "Reviewing" : stageStatus === "running" ? "Merging" : stageStatus === "ready" ? "Ready to merge" : "Queued";
 			const topology = stage.parallel ? "⇉" : "→";
 			const stageColor: "error" | "accent" | "muted" | "success" = stageStatus === "attention" ? "error" : implementationActive || reviewActive ? "accent" : stageStatus === "done" ? "success" : "muted";
 			const title = stage.group === "runtime" ? "Runtime verification" : `Stage ${stage.index + 1} · ${stage.id}`;
@@ -164,7 +167,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			// compact sequence of explicit checkpoints, and a passed stage stays closed.
 			if (implementationActive) {
 				for (const step of stageSteps.filter((candidate) => candidate.kind !== "evaluation")) {
-					const kind = step.kind === "task" ? "contribution" : step.kind === "merge" ? "merge/check" : step.kind;
+					const kind = step.kind === "task" ? (step.status === "done" ? "Implemented" : "Implementing") : step.kind === "merge" ? (step.status === "done" ? "Merged" : step.status === "running" ? "Merging" : "Ready to merge") : step.kind;
 					const color: "success" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" || step.status === "ready" ? "accent" : "muted";
 					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind)} `)}${kind} · ${step.title}`);
 				}
@@ -239,10 +242,11 @@ export default function workflows(pi: ExtensionAPI): void {
 			const terminalSnapshot = workflowRef ? await adapter.snapshot(workflowRef, ctx).catch(() => undefined) : undefined;
 			const terminalStep = terminalSnapshot?.steps.find((candidate) => candidate.ref === step.ref);
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
-			const contributionCompleted = step.kind === "task" && (terminalStep?.kind === "merge" || terminalStep?.status === "done");
-			const evaluationCompleted = step.kind === "evaluation" && terminalStep?.status === "done";
-			if (workflowRef && settled.state === "completed" && !attention && (contributionCompleted || evaluationCompleted)) {
-				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: contributionCompleted ? "contribution_complete" : "passed", terminal: true });
+			// Completion feedback is reserved for the canonical merge barrier. A worker
+			// handoff is useful progress, but is not task completion yet.
+			const taskMerged = step.kind === "merge" && terminalStep?.status === "done";
+			if (workflowRef && settled.state === "completed" && !attention && taskMerged) {
+				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: "merged", terminal: true });
 			}
 			if (attention) {
 				if (workflowRef) {
@@ -345,11 +349,18 @@ export default function workflows(pi: ExtensionAPI): void {
 		name: "workflow_start", label: "Start Workflow",
 		description: "Start deterministic background execution for a reviewed workflow reference after the user explicitly asks to run it. Before launch, PiBox shows a user-owned TUI confirmation and switches the session and spawned subagents to permission bypass mode. The registered adapter refreshes current steps and advances routine ready work.",
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
-		async execute(_id, params, _signal, _update, ctx) {
+		async execute(_id, params, _signal, onUpdate, ctx) {
+			const started = Date.now();
+			const progress = (phase: string) => {
+				const text = `${phase} · ${Date.now() - started}ms`;
+				onUpdate?.(result(text, { ref: params.ref, phase, elapsedMs: Date.now() - started }));
+				if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", text);
+			};
 			try {
 				const confirmed = await confirmWorkflowBypass(ctx, params.ref);
 				if (!confirmed) return result(`Workflow start cancelled. ${params.ref} was not launched and permission mode was not changed.`, { ref: params.ref, cancelled: true });
 				const adapter = adapterFor(params.ref);
+				progress("Validating prerequisites");
 				const preflight = await adapter.preflightWorkflow?.(params.ref, ctx);
 				if (preflight && !preflight.ok) {
 					const detail = preflight.detail ?? "Workflow preflight failed. Resolve the declared prerequisites and retry.";
@@ -357,14 +368,20 @@ export default function workflows(pi: ExtensionAPI): void {
 					sendEvent({ workflowRef: params.ref, title: "Workflow preflight · attention", detail, attention: true, cause: "preflight-failed", nextAction: "Configure the declared prerequisites, then retry workflow_start." });
 					return result(detail, { ref: params.ref, attention: true, preflight });
 				}
-				await adapter.prepareWorkflow?.(params.ref, ctx);
+				await adapter.prepareWorkflow?.(params.ref, ctx, (update) => {
+					onUpdate?.(result(`${update.phase} · ${update.elapsedMs}ms`, { ref: params.ref, ...update }));
+					if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", `${update.phase} · ${update.elapsedMs}ms`);
+				});
+				progress("Building execution snapshot");
 				const snapshot = await adapter.snapshot(params.ref, ctx);
-				activateWorkflowBypass();
+				progress("Starting workflow"); activateWorkflowBypass();
 				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
 				void tick(ctx);
+				if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", undefined);
 				return result(`Started workflow ${params.ref} in background with ${snapshot.steps.length} step(s).`, snapshot);
 			} catch (error) {
 				active.delete(params.ref);
+				if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", undefined);
 				if (currentRef === params.ref) { currentRef = undefined; currentSnapshot = undefined; renderDashboard(ctx); }
 				throw error;
 			}

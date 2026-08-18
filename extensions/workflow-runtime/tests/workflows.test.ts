@@ -129,7 +129,7 @@ test("background step failure pauses instead of retrying unchanged state", async
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("emits workflow feedback when a task contribution completes", async () => {
+test("does not emit completion feedback when a task contribution completes before merge", async () => {
 	const f = fixture();
 	let done = false;
 	const feedback: WorkflowFeedbackEvent[] = [];
@@ -146,7 +146,27 @@ test("emits workflow feedback when a task contribution completes", async () => {
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.deepEqual(feedback, [{ type: "task-completed", workflowRef: "test:workflow", stepRef: "test:task", kind: "task", title: "Implement feedback", detail: "Contribution completed.", toStatus: "contribution_complete", terminal: true }]);
+	assert.deepEqual(feedback, []);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("emits one completion feedback after a merge settles", async () => {
+	const f = fixture();
+	let done = false;
+	const feedback: WorkflowFeedbackEvent[] = [];
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() { return { ref: "test:workflow", title: "Merge", status: done ? "done" : "ready", steps: [{ ref: "test:merge", title: "Merge task", kind: "merge", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Merged." }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(feedback.filter((event) => event.type === "task-completed").length, 1);
+	assert.equal(feedback.find((event) => event.type === "task-completed")?.toStatus, "merged");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

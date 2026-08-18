@@ -145,6 +145,9 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /no separate approval command is required/i);
 	assert.match(run, /clear user request to execute the reviewed workflow is the sole execution gate/i);
 	assert.match(run, /call `workflow_start` directly/i);
+	assert.match(run, /After routine work is handed to the runtime, end the turn/i);
+	assert.match(run, /never use `sleep`, polling loops, repeated delayed `workflow_status`, or shell wait scripts/i);
+	assert.match(run, /React only to automatically delivered workflow events/i);
 	assert.match(run, /## Execution Model/i);
 	assert.match(run, /sequential tasks run serially in declared order on the canonical working branch and see prior commits/i);
 	assert.match(run, /concurrent tasks run in independent per-task worktrees from one pinned base and cross one merge barrier/i);

@@ -398,7 +398,8 @@ export class WorkItemStore {
 		ensureInside(root, artifactPath);
 		const relativePath = relative(root, artifactPath);
 		const existing = index.artifacts.find((artifact) => artifact.id === input.id);
-		if (input.type === "e2e-matrix" && existing && (index.tasks.length > 0 || index.evaluations.length > 0)) throw new HarnessError("CAPABILITY_DENIED", "The approved e2e-matrix is immutable after delivery planning begins; return to story shaping before changing it");
+		const amendingMatrix = input.type === "e2e-matrix" && Boolean(existing) && (index.tasks.length > 0 || index.evaluations.length > 0);
+		if (amendingMatrix && index.phase !== "planning" && index.state !== "paused") throw new HarnessError("CAPABILITY_DENIED", "E2E matrix amendment is unsafe during active execution; pause the workflow, amend the matrix, then resume");
 		const existingMatrix = index.artifacts.find((artifact) => artifact.type === "e2e-matrix" && artifact.id !== input.id);
 		if (input.type === "e2e-matrix" && existingMatrix) throw new HarnessError("INVALID_ARTIFACT", `Work item already has an e2e-matrix artifact: ${existingMatrix.id}`);
 		if (existing && (existing.type !== input.type || existing.path !== relativePath)) {
@@ -421,6 +422,16 @@ export class WorkItemStore {
 			await atomicWriteFile(artifactPath, `${content.trim()}\n`);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([artifactPath, indexPath], `harness(${input.workItemId}): update ${input.type} ${input.id}`);
+			if (amendingMatrix) {
+				// Preserve any recorded attempts. Only untouched runtime gates are
+				// regenerated so historical evidence remains immutable and auditable.
+				for (const entry of index.evaluations) {
+					const evaluation = await this.readEvaluation(input.workItemId, entry.id);
+					if (["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") && evaluation.attempt === 0 && !evaluation.result) {
+						await this.updateEvaluationLoop(input.workItemId, evaluation.id, { state: "planned", iteration: 0 }, "planned");
+					}
+				}
+			}
 			return index;
 		} catch (error) {
 			await this.restore([
@@ -439,7 +450,7 @@ export class WorkItemStore {
 		assertContractMutable(index);
 		if (artifactId === "intent" || artifactId === "outcome") throw new HarnessError("CAPABILITY_DENIED", `Artifact ${artifactId} cannot be deleted`);
 		const artifact = index.artifacts.find((candidate) => candidate.id === artifactId);
-		if (artifact?.type === "e2e-matrix" && (index.tasks.length > 0 || index.evaluations.length > 0)) throw new HarnessError("CAPABILITY_DENIED", "The approved e2e-matrix is immutable after delivery planning begins; return to story shaping before removing it");
+		if (artifact?.type === "e2e-matrix" && (index.tasks.length > 0 || index.evaluations.length > 0) && index.phase !== "planning") throw new HarnessError("CAPABILITY_DENIED", "E2E matrix removal is only safe before execution; use a controlled paused amendment instead");
 		if (!artifact) throw new HarnessError("INVALID_ARTIFACT", `Unknown artifact: ${artifactId}`);
 		for (const task of index.tasks) {
 			const manifest = await this.readTask(workItemId, task.id);
@@ -1188,7 +1199,7 @@ export class WorkItemStore {
 		}
 	}
 
-	async transitionWorkItem(id: string, action: "postpone" | "resume" | "archive" | "reopen" | "request-user", reason: string): Promise<WorkItemIndex> {
+	async transitionWorkItem(id: string, action: "postpone" | "pause" | "resume" | "archive" | "reopen" | "request-user", reason: string): Promise<WorkItemIndex> {
 		if (!reason.trim()) throw new HarnessError("INVALID_ARTIFACT", "Transition reason is required");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(id);
@@ -1198,6 +1209,7 @@ export class WorkItemStore {
 		await this.assertWorkingBranch(index);
 		if (index.finalization?.locked && action !== "reopen") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before transition`);
 		if (action === "postpone") index.state = "postponed";
+		if (action === "pause") index.state = "paused";
 		if (action === "resume") index.state = "active";
 		if (action === "request-user") index.state = "waiting_user";
 		if (action === "archive") {

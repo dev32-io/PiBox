@@ -618,8 +618,13 @@ export default function workflow(pi: ExtensionAPI): void {
 		const resolution = resolveHarnessModel(runtime.config, available, { tier: "medium" });
 		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No medium repair model is available");
 		const prompt = `Resolve the rolled-back Git integration conflict for stage ${stageId} (${taskIds.join(", ")}). The working branch is clean and contributor branches remain intact. Reproduce the stage merge from those branches, resolve only the resulting conflicts, commit the integrated result, run the declared checks, and report exact commands and results. Private conflict evidence is retained at ${evidencePath}; inspect only the bounded portions needed for the resolution and do not copy it into reports. Do not alter task topology or spawn another agent.`;
-		const launched = await runtime.coordinator.launch({
-			operationId: `integration-repair:${workItemId}:${stageId}`, role: "repair-implementer", task: prompt,
+		const operationId = `integration-repair:${workItemId}:${stageId}`;
+		const prior = (await runtime.agents.list()).find((agent) => agent.operationId === operationId);
+		// A completed logical repair is terminal and must never be relaunched. Resume
+		// only replays the deterministic postconditions below; failed repairs get a
+		// fresh identity so the registry's terminal transition rules remain strict.
+		const launched = prior?.state === "completed" ? undefined : await runtime.coordinator.launch({
+			operationId: prior && ["failed", "protocol_failed", "cancelled"].includes(prior.state) ? `${operationId}:retry:${Date.now()}` : operationId, role: "repair-implementer", task: prompt,
 			assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt }, cwd: runtime.identity.root,
 			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
 			tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
@@ -628,7 +633,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
 			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
 		});
-		if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Integration repair agent failed");
+		if (launched && launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Integration repair agent failed");
 		await assertCleanRepository(runtime.identity.root);
 		const integratedCommit = await runGit(runtime.identity.root, ["rev-parse", "HEAD"]);
 		for (const taskId of taskIds) {
@@ -641,7 +646,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		for (const taskId of taskIds) await runtime.workItems.updateTask(workItemId, taskId, { status: "merged", runtime: { mergedCommit: integratedCommit } });
 		await manager.clearConflict(workItemId, evidencePath);
 		await runtime.workItems.refreshReadyTasks(workItemId);
-		return textResult(`Managed integration repair for ${item.id}/${stageId} completed at ${integratedCommit.slice(0, 12)} with ${checks.length} harness check(s).`, { agentId: launched.agent.id, stageId, taskIds, integratedCommit, checks });
+		return textResult(`Managed integration repair for ${item.id}/${stageId} completed at ${integratedCommit.slice(0, 12)} with ${checks.length} harness check(s).`, { ...(launched ? { agentId: launched.agent.id } : prior ? { agentId: prior.id } : {}), stageId, taskIds, integratedCommit, checks });
 	};
 
 	const launchManagedRepair = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
