@@ -72,6 +72,28 @@ test("local routing cannot match or fall back to an identically named paid model
 	}
 });
 
+test("an unknown explicit local model fails closed instead of using a configured fallback", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.modelTiers.local = ["local-llm/meta/muse-glimmer#high"];
+	const result = resolveHarnessModel(config, [
+		model("local-llm", "meta/muse-glimmer"),
+		model("openai-codex", "gpt-5.6-luna"),
+	], { tier: "local", override: { model: "local-llm/qwen3.8-27b-uncensored", effort: "medium" } });
+	assert.equal(result.status, "waiting_model");
+	assert.deepEqual(result.attempts, [{ model: "local-llm/qwen3.8-27b-uncensored", effort: "medium", status: "override_not_configured" }]);
+});
+
+test("an unsupported effort for an explicit local model fails without fallback", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.modelTiers.local = ["local-llm/meta/muse-glimmer#high", "local-llm/qwen3.8-27b-uncensored#medium"];
+	const result = resolveHarnessModel(config, [
+		model("local-llm", "meta/muse-glimmer"),
+		model("local-llm", "qwen3.8-27b-uncensored", true, { medium: null, high: "high" }),
+	], { tier: "local", override: { model: "local-llm/qwen3.8-27b-uncensored", effort: "medium" } });
+	assert.equal(result.status, "waiting_model");
+	assert.deepEqual(result.attempts, [{ provider: "local-llm", model: "qwen3.8-27b-uncensored", effort: "medium", status: "effort_unsupported" }]);
+});
+
 test("ordinary tiers never promote a matching local route", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	config.modelTiers.high = ["openrouter/qwen/qwen3.8-27b#high"];

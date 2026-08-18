@@ -104,7 +104,9 @@ function candidates(config: HarnessConfig, request: ModelResolutionRequest): Arr
 		return true;
 	});
 	const explicit = matching.map((route) => ({ route, effort: request.override!.effort ?? route.effort, override: true }));
-	if (request.strict) return explicit;
+	// An explicit local request is always strict. A bad model id or unsupported
+	// effort must fail visibly rather than selecting another local or paid route.
+	if (request.strict || request.tier === "local") return explicit;
 	const seen = new Set(explicit.map(({ route }) => `${route.provider}/${route.model}`));
 	return [...explicit, ...routes.filter((route) => !seen.has(`${route.provider}/${route.model}`)).map((route) => ({ route, effort: route.effort, override: false }))];
 }

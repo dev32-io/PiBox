@@ -816,7 +816,14 @@ export default function workflow(pi: ExtensionAPI): void {
 			};
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 			const resolution = resolveHarnessModel(runtime.config, availableModels, routing);
-			if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No configured candidate is available", { attempts: resolution.attempts });
+			if (resolution.status === "waiting_model") {
+				const requestedRoute = preferred ? `${preferred.model}${preferred.effort ? `#${preferred.effort}` : ""}` : "the configured local route list";
+				const attempts = resolution.attempts.map((attempt) => `${attempt.provider ? `${attempt.provider}/` : ""}${attempt.model}${attempt.effort ? `#${attempt.effort}` : ""}: ${attempt.status}`).join("; ");
+				if (routing.tier === "local") {
+					throw new HarnessError("MODEL_UNAVAILABLE", `Local model request ${requestedRoute} failed closed without fallback.${attempts ? ` ${attempts}` : ""}`, { attempts: resolution.attempts });
+				}
+				throw new HarnessError("MODEL_UNAVAILABLE", "No configured candidate is available", { attempts: resolution.attempts });
+			}
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
 				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(preferred ? { model: preferred.model, ...(preferred.effort ? { effort: preferred.effort } : {}) } : {}) }, cwd: runtime.identity.root,
