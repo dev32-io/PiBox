@@ -25,11 +25,14 @@ export interface WorkflowFeedbackEvent {
 
 export type WorkflowStepStatus = "pending" | "ready" | "running" | "done" | "attention" | "cancelled";
 
+export type WorkflowStepPhase = "implementing" | "contribution-ready" | "ready-to-integrate" | "assembling-candidate" | "verifying-candidate" | "verification-failed" | "integrated";
+
 export interface WorkflowStep {
 	ref: string;
 	title: string;
 	kind: string;
 	status: WorkflowStepStatus;
+	phase?: WorkflowStepPhase;
 	dependsOn: string[];
 	parallelism: "allowed" | "serial";
 	resourceClaims: string[];
@@ -117,11 +120,21 @@ export interface WorkflowExecutionControl {
 	ownerSessionId?: string;
 }
 
+export interface WorkflowLifecycleUpdate {
+	workflowRef: string;
+	title: string;
+	detail?: string;
+	attention: boolean;
+	kind?: string;
+	toStatus?: WorkflowStepStatus;
+	cause?: string;
+}
+
 export interface WorkflowAdapter {
 	id: string;
 	canHandle(ref: string): boolean;
 	/** Subscribe to durable worker lifecycle transitions for event-driven refreshes. Setup may be asynchronous. */
-	subscribeLifecycle?(ref: string, ctx: ExtensionContext, listener: () => void, signal?: AbortSignal): void | (() => void) | Promise<void | (() => void)>;
+	subscribeLifecycle?(ref: string, ctx: ExtensionContext, listener: (update?: WorkflowLifecycleUpdate) => void, signal?: AbortSignal): void | (() => void) | Promise<void | (() => void)>;
 	/** Durable workflow ownership boundary. Commands are idempotent by operationId. */
 	controlExecution?(ref: string, command: "start" | "pause" | "resume" | "stop" | "complete" | "detach" | "attach", operationId: string, ctx: ExtensionContext): Promise<WorkflowExecutionControl>;
 	listExecutionControls?(ctx: ExtensionContext): Promise<WorkflowExecutionControl[]>;

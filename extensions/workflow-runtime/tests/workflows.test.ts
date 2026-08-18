@@ -532,6 +532,56 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("renders durable integration and verification phases instead of generic ready-to-merge labels", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
+	const snapshot: WorkflowSnapshot = {
+		ref: "work-item:calendar", title: "Calendar", status: "ready",
+		steps: [
+			{ ref: "work-item:calendar/task:android", title: "Android calendar", kind: "merge", status: "ready", phase: "verification-failed", dependsOn: [], parallelism: "serial", resourceClaims: ["working-branch"] },
+			{ ref: "work-item:calendar/task:ios", title: "iOS calendar", kind: "merge", status: "pending", phase: "contribution-ready", dependsOn: [], parallelism: "serial", resourceClaims: ["working-branch"] },
+		],
+		stages: [{ id: "mobile-platform", index: 0, nodes: ["task:android", "task:ios"], parallel: true, group: "planner" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	assert.ok(rendered.some((line) => line.includes("Verification failed") && line.includes("2 tasks")));
+	assert.ok(rendered.some((line) => line.includes("⚠ Verification failed · Android calendar")));
+	assert.ok(rendered.some((line) => line.includes("◆ Contribution ready · iOS calendar")));
+	assert.equal(rendered.some((line) => line.includes("Ready to merge")), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("animates candidate verification from the semantic verification phase", async () => {
+	const f = fixture();
+	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
+	const snapshot: WorkflowSnapshot = {
+		ref: "work-item:calendar", title: "Calendar", status: "ready",
+		steps: [{ ref: "work-item:calendar/task:android", title: "Android calendar", kind: "merge", status: "ready", phase: "verifying-candidate", dependsOn: [], parallelism: "serial", resourceClaims: ["working-branch"] }],
+		stages: [{ id: "mobile-platform", index: 0, nodes: ["task:android"], parallel: false, group: "planner" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"), async snapshot() { return snapshot; }, async runStep() { return neverSettles; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "work-item:calendar" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	const verifying = rendered.filter((line) => line.includes("Verifying candidate"));
+	assert.equal(verifying.length, 2);
+	assert.ok(verifying.every((line) => /[◐◓◑◒]/.test(line)));
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("lifecycle callbacks refresh a queued review into its active dashboard state", async () => {
 	const f = fixture();
 	let phase: "queued" | "running" = "queued";

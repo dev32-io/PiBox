@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { SessionAgentRegistry } from "../../workflow-runtime/agent-registry.js";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
+import { RepositoryEventStore } from "../event-store.js";
 
 function task(id: string, status: string, dependsOn: string[] = [], stageId = "delivery") {
 	return { id, title: id, status, dependsOn, execution: { resourceClaims: [id] }, assembly: { stageId } };
@@ -42,6 +43,26 @@ test("lifecycle subscription wakes across registry instances after session repla
 	const dispose = await adapter.subscribeLifecycle?.("work-item:example", {} as any, wake);
 	await writer.reserve({ operationId: "cross-instance", parentAgentId: "main:session-1", parentDepth: 0, role: "repair-implementer", provider: "test", model: "fake", effort: "low", assignment: {}, workItemId: "example" });
 	await Promise.race([awakened, new Promise((_, reject) => setTimeout(() => reject(new Error("adapter lifecycle wake-up timed out")), 1_000))]);
+	if (typeof dispose === "function") dispose();
+});
+
+test("replays durable verification events into lifecycle notices", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-verification-events-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const agents = new SessionAgentRegistry(root, "session-1");
+	await agents.initialize();
+	const identity: any = { id: "repo", root, privateRoot: root };
+	const events = new RepositoryEventStore(identity);
+	await events.initialize();
+	const runtime: any = { identity, agents, events };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let resolveNotice!: (value: any) => void;
+	const notice = new Promise<any>((resolve) => { resolveNotice = resolve; });
+	const dispose = await adapter.subscribeLifecycle?.("work-item:example", {} as any, (update) => { if (update) resolveNotice(update); });
+	await events.append("verification.attempt.started", { workItemId: "example", stageId: "delivery", checkId: "ios", attemptId: "004", candidateCommit: "a".repeat(40) });
+	const projected = await Promise.race([notice, new Promise((_, reject) => setTimeout(() => reject(new Error("verification event notice timed out")), 1_000))]);
+	assert.match(projected.title, /Verifying · delivery · ios/);
+	assert.match(projected.detail, /attempt 004 · candidate a{12}/);
 	if (typeof dispose === "function") dispose();
 });
 
@@ -348,6 +369,26 @@ test("derives task, integration, and evaluation steps without mutating canonical
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.status, "done", "canonical completion wins over a stale reported agent");
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "done");
+});
+
+test("projects durable candidate verification activity without changing scheduler readiness", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-verification-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const attemptRoot = join(root, ".pibox", "work-items", "example", "verification", "delivery", "ios", "attempts", "001");
+	await mkdir(attemptRoot, { recursive: true });
+	const writeAttempt = (state: string) => writeFile(join(attemptRoot, "attempt.yaml"), `state: ${state}\nid: "001"\ncheckId: ios\ncandidateCommit: ${"b".repeat(40)}\nstartedAt: 2026-08-18T20:00:00.000Z\n`);
+	await writeAttempt("failed");
+	const tasks: any[] = [task("left", "contribution_complete"), task("right", "contribution_complete")];
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "delivery", tasks: ["left", "right"], mode: "concurrent" }], integrationUnits: [], evaluations: [] };
+	const runtime: any = { identity: { id: "repo", root, privateRoot: join(root, ".pibox") }, workItems: { async read() { return item; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps[0]?.status, "ready", "visual verification failure must not rewrite scheduler readiness");
+	assert.equal(snapshot.steps[0]?.phase, "verification-failed");
+	assert.equal(snapshot.steps[1]?.phase, "contribution-ready");
+	await writeAttempt("running");
+	snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps[0]?.phase, "verifying-candidate");
 });
 
 test("places the harness review after its stage tasks", async () => {

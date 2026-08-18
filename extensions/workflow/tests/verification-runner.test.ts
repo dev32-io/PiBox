@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { parse } from "yaml";
 import test from "node:test";
 import { discoverRepository } from "../repository.js";
-import { VerificationRunner, verificationFailureSummary } from "../verification-runner.js";
+import { readStageVerificationActivity, VerificationRunner, verificationFailureSummary } from "../verification-runner.js";
 
 const exec = promisify(execFile);
 
@@ -47,6 +47,9 @@ test("runs a fresh profiled shell and persists complete immutable attempt eviden
 	assert.equal(attempt.profile, "project");
 	assert.equal(terminal.state, "passed");
 	assert.match(terminal.stdout.checksum, /^sha256:/);
+	const events = (await readFile(join(root, ".pibox", "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+	assert.deepEqual(events.map((event) => event.type), ["verification.attempt.started", "verification.attempt.passed"]);
+	assert.equal(events[0].data.candidateCommit, commit);
 });
 
 test("preserves failed retries and reports the terminal error with an evidence path", async (t) => {
@@ -61,6 +64,18 @@ test("preserves failed retries and reports the terminal error with an evidence p
 	assert.match(verificationFailureSummary(first), /Durable verification evidence: \.pibox/);
 	assert.equal(parse(await readFile(join(root, first.attemptPath, "result.yaml"), "utf8")).state, "failed");
 	assert.equal(parse(await readFile(join(root, second.attemptPath, "result.yaml"), "utf8")).state, "passed");
+	assert.equal((await readStageVerificationActivity(identity, "story", "delivery"))?.state, "passed");
+});
+
+test("preserves relevant stdout diagnostics when stderr contains only a terminal build summary", async () => {
+	const summary = verificationFailureSummary({
+		stdout: "compile chatter\n/path/UserSessionHost.swift:157:13: error: cannot find 'CalendarScreen' in scope\nmore chatter after the diagnostic",
+		stderr: "warning from the build tool\n** BUILD FAILED **\nThe following build commands failed:",
+		attemptPath: ".pibox/work-items/calendar/verification/stage/check/attempts/001",
+	} as Parameters<typeof verificationFailureSummary>[0]);
+	assert.match(summary.slice(0, 700), /cannot find 'CalendarScreen' in scope/, "bounded workflow notices retain the actionable diagnostic");
+	assert.match(summary, /BUILD FAILED/);
+	assert.match(summary, /Durable verification evidence/);
 });
 
 test("does not miss a fast child settlement while persisting running metadata", async (t) => {

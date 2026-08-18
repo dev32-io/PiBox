@@ -6,12 +6,22 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
+import { RepositoryEventStore } from "./event-store.js";
 import { atomicWriteFile } from "./repository.js";
 import type { RepositoryIdentity } from "./repository.js";
 import type { NormalizedVerificationCheck } from "./verification-checks.js";
 import { resolveVerificationProfile } from "./verification-config.js";
 
 const TAIL_LIMIT = 16 * 1024;
+
+export interface StageVerificationActivity {
+	state: "starting" | "running" | "passed" | "failed" | "interrupted";
+	checkId: string;
+	attemptId: string;
+	candidateCommit: string;
+	startedAt: string;
+	completedAt?: string;
+}
 
 export interface VerificationAttemptResult {
 	id: string;
@@ -81,15 +91,56 @@ async function reconcileIncompleteAttempts(root: string): Promise<void> {
 }
 
 function terminalSummary(result: Pick<VerificationAttemptResult, "stdout" | "stderr">): string {
-	return (result.stderr.trim() || result.stdout.trim() || "Verification command failed without output").slice(-4_000);
+	const stdout = result.stdout.trim();
+	const stderr = result.stderr.trim();
+	const combined = [stdout, stderr].filter(Boolean).join("\n");
+	if (!combined) return "Verification command failed without output";
+	const diagnostics = combined
+		.split("\n")
+		.map((line) => line.trimEnd())
+		.filter((line) => /(?:error:|fatal:|exception|cannot find|not found|build failed|commands failed|failed frontend)/i.test(line))
+		.slice(-20)
+		.join("\n");
+	const tails = [stdout && `stdout tail:\n${stdout.slice(-1_500)}`, stderr && `stderr tail:\n${stderr.slice(-1_500)}`].filter(Boolean).join("\n");
+	return `${diagnostics ? `Relevant diagnostics:\n${diagnostics}\n` : ""}${tails}`.slice(0, 4_000);
 }
 
 export function verificationFailureSummary(result: VerificationAttemptResult): string {
 	return `${terminalSummary(result)}\nDurable verification evidence: ${result.attemptPath}`;
 }
 
+export async function readStageVerificationActivity(identity: RepositoryIdentity, workItemId: string, stageId: string): Promise<StageVerificationActivity | undefined> {
+	const stageRoot = join(identity.privateRoot, "work-items", workItemId, "verification", stageId);
+	const checks = await readdir(stageRoot, { withFileTypes: true }).catch(() => []);
+	const latest: StageVerificationActivity[] = [];
+	for (const check of checks) {
+		if (!check.isDirectory()) continue;
+		const attemptsRoot = join(stageRoot, check.name, "attempts");
+		const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort();
+		const attemptId = attempts.at(-1);
+		if (!attemptId) continue;
+		const attempt = await readYaml(join(attemptsRoot, attemptId, "attempt.yaml"));
+		if (!attempt || typeof attempt.state !== "string" || typeof attempt.candidateCommit !== "string" || typeof attempt.startedAt !== "string") continue;
+		latest.push({
+			state: attempt.state as StageVerificationActivity["state"],
+			checkId: typeof attempt.checkId === "string" ? attempt.checkId : check.name,
+			attemptId,
+			candidateCommit: attempt.candidateCommit,
+			startedAt: attempt.startedAt,
+			...(typeof attempt.completedAt === "string" ? { completedAt: attempt.completedAt } : {}),
+		});
+	}
+	const newest = latest.sort((left, right) => right.startedAt.localeCompare(left.startedAt))[0];
+	if (!newest) return undefined;
+	const candidate = latest.filter((attempt) => attempt.candidateCommit === newest.candidateCommit);
+	return candidate.find((attempt) => attempt.state === "running" || attempt.state === "starting")
+		?? candidate.find((attempt) => attempt.state === "failed" || attempt.state === "interrupted")
+		?? newest;
+}
+
 export class VerificationRunner {
-	constructor(private readonly identity: RepositoryIdentity) {}
+	private readonly events: RepositoryEventStore;
+	constructor(private readonly identity: RepositoryIdentity) { this.events = new RepositoryEventStore(identity); }
 
 	async run(workItemId: string, stageId: string, check: NormalizedVerificationCheck, cwd: string, candidateCommit: string): Promise<VerificationAttemptResult> {
 		const attemptsRoot = join(this.identity.privateRoot, "work-items", workItemId, "verification", stageId, check.id, "attempts");
@@ -127,6 +178,7 @@ export class VerificationRunner {
 			stderrPath: relative(attemptRoot, stderrPath),
 		};
 		await atomicWriteFile(attemptPath, stringify(base), 0o600);
+		await this.events.append("verification.attempt.started", { schemaVersion: 1, workItemId, stageId, checkId: check.id, attemptId: id, candidateCommit, profile: profile.name, state: "starting" });
 
 		const requiredChecks = profile.requiredEnvironment.map((name) => `if [ -z "\${${name}:-}" ]; then printf '%s\\n' 'Required verification environment is missing: ${name}' >&2; exit 78; fi`);
 		const script = [profile.legacy ? undefined : "set -e", profile.bootstrap, ...requiredChecks, check.command].filter(Boolean).join("\n");
@@ -175,6 +227,7 @@ export class VerificationRunner {
 		};
 		await atomicWriteFile(join(attemptRoot, "result.yaml"), stringify(resultRecord), 0o600);
 		await atomicWriteFile(attemptPath, stringify({ ...base, state, ...(childPid === undefined ? {} : { pid: childPid }), completedAt }), 0o600);
+		await this.events.append(`verification.attempt.${state}`, { schemaVersion: 1, workItemId, stageId, checkId: check.id, attemptId: id, candidateCommit, profile: profile.name, state, code: exitCode, completedAt, attemptPath: relativeAttemptPath });
 		return {
 			id,
 			profile: profile.name,

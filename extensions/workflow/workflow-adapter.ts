@@ -15,6 +15,7 @@ import { confirmCriticalRisk } from "../permissions/runtime.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 import { WorkflowEventJournal, type WorkflowDomainEventType } from "./workflow-events.js";
 import type { RepositoryEventStore } from "./event-store.js";
+import { readStageVerificationActivity } from "./verification-runner.js";
 
 
 export interface HarnessWorkflowRuntime {
@@ -199,10 +200,31 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					}).catch(() => undefined);
 				}, signal);
 				unsubscribers.push(agentWatcher);
-				// Cross-process event notifications are wake-up hints. The supervisor
-				// rereads durable state, so duplicate or missed filesystem notifications
-				// cannot become workflow facts by themselves.
-				if (runtime.events) unsubscribers.push(runtime.events.watch(listener, signal));
+				// Cross-process filesystem notifications are wake-up hints. Replay the
+				// durable suffix from a cursor, then project semantic verification events
+				// into notices while every event still triggers a fresh snapshot.
+				if (runtime.events) {
+					let cursor = Math.max(0, ...(await runtime.events.readAll()).map((event) => event.sequence));
+					let drain = Promise.resolve();
+					const replay = () => {
+						drain = drain.then(async () => {
+							for (const event of await runtime.events!.readSince(cursor)) {
+								cursor = Math.max(cursor, event.sequence);
+								const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : undefined;
+								if (event.type.startsWith("verification.attempt.") && data && data.workItemId === match[1]) {
+									const stageId = String(data.stageId ?? "stage");
+									const checkId = String(data.checkId ?? "check");
+									const attemptId = String(data.attemptId ?? "?");
+									const candidate = String(data.candidateCommit ?? "").slice(0, 12);
+									const state = event.type.split(".").at(-1)!;
+									listener({ workflowRef: ref, title: `${state === "started" ? "Verifying" : state === "passed" ? "Verification passed" : "Verification failed"} · ${stageId} · ${checkId}`, detail: [`attempt ${attemptId}`, candidate ? `candidate ${candidate}` : undefined].filter(Boolean).join(" · "), attention: false, kind: "verification", cause: event.type });
+								} else listener();
+							}
+						}).catch(() => listener());
+					};
+					unsubscribers.push(runtime.events.watch(replay, signal));
+					replay();
+				}
 				const unsubscribe = () => { for (const dispose of unsubscribers.splice(0)) dispose(); };
 				if (signal?.aborted) { unsubscribe(); return () => undefined; }
 				if (signal) signal.addEventListener("abort", unsubscribe, { once: true });
@@ -220,6 +242,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
 			const evaluationById = new Map(evaluations.map((evaluation) => [evaluation.id, evaluation]));
 			const stages = orderedExecutionStages(item);
+			const stageVerification = runtime.identity?.privateRoot
+				? new Map((await Promise.all(stages.map(async (stage) => [stage.id, await readStageVerificationActivity(runtime.identity, item.id, stage.id)] as const))).filter((entry) => entry[1]))
+				: new Map();
 			const stageReviews = new Map(evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review" && evaluation.stageId).map((evaluation) => [evaluation.stageId!, evaluation]));
 			const contributionStates = new Set(["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating", "merged", "integrated"]);
 			const steps: WorkflowStep[] = tasks.map((task) => {
@@ -236,11 +261,19 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const activity = scopeActivity(agents, "taskId", task.id);
 				if (isMergeState && (!priorSequentialTaskDone || !parallelStageReadyToMerge || !mergeBarrierOwner)) mapped = { status: "pending", detail: !priorSequentialTaskDone ? "waiting for prior sequential task" : parallelStageReadyToMerge ? "waiting for stage merge barrier" : "waiting for parallel contributions" };
 				if (mapped.status === "running" && !activity.running) mapped = { status: "attention", detail: activity.attention ?? "stale process state" };
+				const verification = stageVerification.get(topology.stageId);
+				const phase = ["merged", "integrated"].includes(task.status) ? "integrated"
+					: isMergeState && !mergeBarrierOwner ? "contribution-ready"
+					: isMergeState && (verification?.state === "failed" || verification?.state === "interrupted") ? "verification-failed"
+					: isMergeState && (verification?.state === "running" || verification?.state === "starting") ? "verifying-candidate"
+					: isMergeState ? "ready-to-integrate"
+					: mapped.status === "running" || mapped.status === "ready" ? "implementing" : undefined;
 				return {
 					ref: `work-item:${item.id}/task:${task.id}`,
 					title: task.title,
 					kind: isMergeState ? "merge" : "task",
 					...mapped,
+					...(phase ? { phase } : {}),
 					dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(topology.stageIndex > 0 && stageReviews.get(stages[topology.stageIndex - 1]!.id) ? [`work-item:${item.id}/evaluation:${stageReviews.get(stages[topology.stageIndex - 1]!.id)!.id}`] : [])],
 					parallelism: isMergeState ? "serial" : topology.parallelism,
 					resourceClaims: isMergeState || topology.isolation === "repository" ? ["working-branch"] : task.execution.resourceClaims,
