@@ -1,5 +1,6 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { formatAgentProcessStatus } from "../../../workflow-runtime/agent-progress.js";
 import { currentSubagentPulseDot, formatSubagentRoute } from "../../../workflow-runtime/subagent-display.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
@@ -98,7 +99,8 @@ class HarnessCallComponent implements Component {
 		const route = this.name === "subagent_spawn"
 			? formatSubagentRoute(this.details?.tier ?? this.args.tier, this.details?.resolved)
 			: undefined;
-		const state = ["running", route].filter(Boolean).join(" · ");
+		const processStatus = this.name === "subagent_spawn" ? formatAgentProcessStatus(this.details?.progress) : "running";
+		const state = [processStatus, route].filter(Boolean).join(" · ");
 		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", state)}`, width, "…")];
 	}
 

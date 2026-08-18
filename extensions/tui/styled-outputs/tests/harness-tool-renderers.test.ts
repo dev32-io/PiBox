@@ -22,7 +22,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		tier: "medium",
 		task: "Verify one browser flow like a real user",
 	}, theme, true, false));
-	assert.equal(starting[1], "└─ running · Medium");
+	assert.equal(starting[1], "└─ starting · Medium");
 	assert.doesNotMatch(starting.join("\n"), /resolving model|foreground/);
 	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester",
@@ -34,8 +34,16 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
 	}));
 	assert.match(rendered[0] ?? "", /^[·•●] e2e-tester Verify one browser flow like a real user/);
-	assert.equal(rendered[1], "└─ running · Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.equal(rendered[1], "└─ starting · Medium (openai-codex/gpt-5.6-sol#medium)");
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
+	const active = lines(renderHarnessToolCall("subagent_spawn", {
+		agent: "e2e-tester", mode: "foreground", tier: "medium", task: "Verify one browser flow like a real user",
+	}, theme, true, false, {
+		tier: "medium",
+		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+		progress: { startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z", lastEventAt: "2026-01-01T00:00:00.000Z", turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
+	}));
+	assert.equal(active[1], "└─ active · Medium (openai-codex/gpt-5.6-sol#medium)");
 });
 
 test("renders distillation calls with scope-specific titles", () => {

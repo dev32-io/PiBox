@@ -1,5 +1,9 @@
 export interface AgentProgress {
 	startedAt: string;
+	/** Set only after the child Pi process has successfully spawned. */
+	processStartedAt?: string;
+	/** Set after the child Pi process exits, independently of agent event activity. */
+	processExitedAt?: string;
 	lastEventAt: string;
 	turns: number;
 	toolCalls: number;
@@ -58,6 +62,25 @@ export function initialAgentProgress(startedAt: string): AgentProgress {
 	return { startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 };
 }
 
+export function markAgentProcessStarted(progress: AgentProgress, observedAt = new Date().toISOString()): AgentProgress {
+	return progress.processStartedAt ? progress : { ...progress, processStartedAt: observedAt };
+}
+
+export function markAgentProcessExited(progress: AgentProgress, observedAt = new Date().toISOString()): AgentProgress {
+	return progress.processExitedAt ? progress : { ...progress, processExitedAt: observedAt };
+}
+
+export function formatAgentProcessStatus(progress: AgentProgress | undefined): "starting" | "active" | undefined {
+	if (!progress) return "starting";
+	if (progress.processExitedAt) return undefined;
+	if (progress.processStartedAt) return "active";
+	if (progress.settledAt) return undefined;
+	// Activity is a compatibility signal for progress records written before
+	// processStartedAt was introduced; any child event proves Pi has spawned.
+	const observedProcessActivity = progress.turns > 0 || progress.toolCalls > 0 || progress.outputTokens > 0 || Boolean(progress.activeTool);
+	return observedProcessActivity ? "active" : "starting";
+}
+
 function compactNumber(value: number): string {
 	if (value < 1_000) return String(value);
 	if (value < 10_000) return `${(Math.round(value / 100) / 10).toFixed(1).replace(/\.0$/, "")}k`;
@@ -74,21 +97,13 @@ function elapsed(from: string, toMs: number): string {
 
 export function formatAgentProgress(progress: AgentProgress | undefined, now = Date.now()): string {
 	if (!progress) return "";
-	const terminalAt = progress.settledAt ? Date.parse(progress.settledAt) : now;
+	const terminalAt = progress.processExitedAt ? Date.parse(progress.processExitedAt) : progress.settledAt ? Date.parse(progress.settledAt) : now;
 	const parts = [elapsed(progress.startedAt, terminalAt)];
-	const hasActivity = progress.turns > 0 || progress.toolCalls > 0 || progress.outputTokens > 0 || Boolean(progress.activeTool);
-	if (!hasActivity && !progress.settledAt) parts.push("starting");
 	if (progress.turns > 0) parts.push(`${progress.turns} turn${progress.turns === 1 ? "" : "s"}`);
 	if (progress.toolCalls > 0) parts.push(`${progress.toolCalls} tool${progress.toolCalls === 1 ? "" : "s"}`);
 	if (progress.activeTool) parts.push(progress.activeTool);
 	if (progress.outputTokens > 0) parts.push(`↓ ${compactNumber(progress.outputTokens)}`);
-	if (!progress.settledAt && hasActivity) {
-		const ageSeconds = Math.max(0, Math.floor((now - Date.parse(progress.lastEventAt)) / 1_000));
-		if (progress.activeTool || ageSeconds < 30) parts.push("active");
-		else {
-			const bucketSeconds = ageSeconds < 60 ? Math.floor(ageSeconds / 15) * 15 : Math.floor(ageSeconds / 60) * 60;
-			parts.push(`idle ${elapsed(new Date(now - bucketSeconds * 1_000).toISOString(), now)}`);
-		}
-	}
+	const processStatus = formatAgentProcessStatus(progress);
+	if (processStatus) parts.push(processStatus);
 	return parts.join(" · ");
 }

@@ -386,7 +386,7 @@ test("background spawning returns its report to the main agent and shows running
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s · 2 turns · 3 tools · ↓ 1\.2k/);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s · 2 turns · 3 tools · ↓ 1\.2k · active/);
 	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
 	release();

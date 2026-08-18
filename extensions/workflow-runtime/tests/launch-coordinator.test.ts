@@ -58,6 +58,8 @@ test("launches a direct child through the registry with file-backed process outp
 	assert.equal(record.attempts[0]?.progress?.turns, 1);
 	assert.equal(record.attempts[0]?.progress?.toolCalls, 1);
 	assert.equal(record.attempts[0]?.progress?.outputTokens, 1234);
+	assert.ok(record.attempts[0]?.progress?.processStartedAt);
+	assert.ok(record.attempts[0]?.progress?.processExitedAt);
 	assert.ok(record.attempts[0]?.progress?.settledAt);
 	assert.ok(progressUpdates.includes(1234));
 	const attemptRoot = join(registry.root, "agents", record.id, "attempts", record.attempts[0]!.id);

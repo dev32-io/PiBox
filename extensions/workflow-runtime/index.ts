@@ -103,8 +103,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		const dot = subagentPulseDot(subagentPulseFrame);
 		const lines = [...runningSubagents.values()].map((status) => {
 			const route = formatSubagentRoute(status.tier, status.resolved);
-			const progress = formatAgentProgress(status.progress) || formatElapsed(status.startedAt);
-			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `running · ${route} · ${progress}`)}`;
+			const progress = formatAgentProgress(status.progress) || `${formatElapsed(status.startedAt)} · starting`;
+			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `${route} · ${progress}`)}`;
 		});
 		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
 	};

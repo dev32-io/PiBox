@@ -8,7 +8,7 @@ import {
 } from "../provider-fallback/index.js";
 import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
-import { initialAgentProgress, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
 
 export interface CoordinatedLaunchInput extends AgentScope {
 	operationId: string;
@@ -144,17 +144,22 @@ export class LaunchCoordinator {
 					},
 					...(invocationResolver ? { invocationResolver } : {}),
 					onSpawn: (pid) => {
-						if (pid) running = this.registry.markRunning(reserved.id, attempt.id, pid);
+						if (pid) {
+							running = this.registry.markRunning(reserved.id, attempt.id, pid);
+							progress = markAgentProcessStarted(progress);
+							const durableProgress = structuredClone(progress);
+							input.onProgress?.(durableProgress);
+							progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
+						}
 						input.onSpawn?.(pid);
 					},
 				});
 				await running;
-				if (!progress.settledAt) {
-					progress = projectAgentProgress(progress, { type: "agent_settled" });
-					const durableProgress = structuredClone(progress);
-					input.onProgress?.(durableProgress);
-					progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
-				}
+				progress = markAgentProcessExited(progress);
+				if (!progress.settledAt) progress = projectAgentProgress(progress, { type: "agent_settled" });
+				const durableProgress = structuredClone(progress);
+				input.onProgress?.(durableProgress);
+				progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
 				await progressWrites;
 				const failure = classifyProviderFailure(result, input.signal);
 				const providerFailure = isFallbackEligible(failure);
