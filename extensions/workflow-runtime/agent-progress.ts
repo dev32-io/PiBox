@@ -76,13 +76,19 @@ export function formatAgentProgress(progress: AgentProgress | undefined, now = D
 	if (!progress) return "";
 	const terminalAt = progress.settledAt ? Date.parse(progress.settledAt) : now;
 	const parts = [elapsed(progress.startedAt, terminalAt)];
+	const hasActivity = progress.turns > 0 || progress.toolCalls > 0 || progress.outputTokens > 0 || Boolean(progress.activeTool);
+	if (!hasActivity && !progress.settledAt) parts.push("starting");
 	if (progress.turns > 0) parts.push(`${progress.turns} turn${progress.turns === 1 ? "" : "s"}`);
 	if (progress.toolCalls > 0) parts.push(`${progress.toolCalls} tool${progress.toolCalls === 1 ? "" : "s"}`);
 	if (progress.activeTool) parts.push(progress.activeTool);
 	if (progress.outputTokens > 0) parts.push(`↓ ${compactNumber(progress.outputTokens)}`);
-	if (!progress.settledAt) {
+	if (!progress.settledAt && hasActivity) {
 		const ageSeconds = Math.max(0, Math.floor((now - Date.parse(progress.lastEventAt)) / 1_000));
-		parts.push(ageSeconds < 2 ? "active now" : `active ${ageSeconds}s ago`);
+		if (progress.activeTool || ageSeconds < 30) parts.push("active");
+		else {
+			const bucketSeconds = ageSeconds < 60 ? Math.floor(ageSeconds / 15) * 15 : Math.floor(ageSeconds / 60) * 60;
+			parts.push(`idle ${elapsed(new Date(now - bucketSeconds * 1_000).toISOString(), now)}`);
+		}
 	}
 	return parts.join(" · ");
 }

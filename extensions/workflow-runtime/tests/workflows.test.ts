@@ -496,9 +496,10 @@ test("running step kinds use distinct icons without redundant state labels", asy
 test("an in-flight ready step animates immediately before the adapter reports running", async () => {
 	const f = fixture();
 	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
+	const progress = { startedAt: new Date().toISOString(), lastEventAt: new Date().toISOString(), turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 };
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:workflow", title: "Starting implementation", status: "ready",
-		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [], progress }],
 		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
 	};
 	const adapter: WorkflowAdapter = {
@@ -516,6 +517,11 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	assert.equal(activeLines.length, 2, "stage and task both render as implementing");
 	assert.ok(activeLines.every((line) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line)), "in-flight ready state uses animated task frames instead of a static ready diamond");
 	assert.ok(activeLines.every((line) => !line.includes("◆")));
+	const firstDivider = rendered[0]!.indexOf("│");
+	progress.turns = 12; progress.toolCalls = 34; progress.outputTokens = 152_000; progress.lastEventAt = new Date(Date.now() - 45_000).toISOString();
+	const updated = widget?.({}, f.ctx.ui.theme).render(100) as string[];
+	assert.ok(firstDivider > 0, "wide layout shows the event pane");
+	assert.equal(updated[0]!.indexOf("│"), firstDivider, "volatile progress does not move the responsive pane divider");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

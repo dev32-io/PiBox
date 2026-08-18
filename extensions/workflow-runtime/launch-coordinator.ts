@@ -100,7 +100,8 @@ export class LaunchCoordinator {
 				const attemptRoot = join(agentRoot, "attempts", attempt.id);
 				let running: Promise<unknown> | undefined;
 				let progress = initialAgentProgress(attempt.startedAt);
-				let progressWrites = Promise.resolve();
+				input.onProgress?.(structuredClone(progress));
+				let progressWrites = this.registry.updateProgress(reserved.id, attempt.id, progress).then(() => undefined);
 				const successfulText: string[] = [];
 				const result = await runDirectAgent({
 					agent: input.role,

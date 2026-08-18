@@ -25,6 +25,17 @@ test("projects only concise semantic progress from child events", () => {
 	assert.match(formatAgentProgress({ ...progress, outputTokens: 152_000 }), /↓ 152k/);
 });
 
+test("uses stable startup and activity labels instead of second-by-second age churn", () => {
+	const startedAt = "2026-01-01T00:00:00.000Z";
+	const starting = initialAgentProgress(startedAt);
+	assert.equal(formatAgentProgress(starting, Date.parse("2026-01-01T00:00:08.000Z")), "8s · starting");
+	const active = { ...starting, turns: 1, outputTokens: 120, lastEventAt: "2026-01-01T00:00:10.000Z" };
+	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:00:11.000Z")), /↓ 120 · active$/);
+	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:00:29.000Z")), /↓ 120 · active$/);
+	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:00:41.000Z")), /idle 30s$/);
+	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:00:54.000Z")), /idle 30s$/);
+});
+
 test("incremental JSONL observation handles partial lines and duplicate drains exactly once", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-jsonl-observer-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

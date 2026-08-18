@@ -155,21 +155,21 @@ export default function workflows(pi: ExtensionAPI): void {
 		return status === "attention" ? "⚠" : status === "ready" ? "◆" : status === "pending" ? "·" : status === "done" ? "✓" : "–";
 	};
 
-	const rawTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
+	const rawTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, includeProgress = true): string[] => {
 		const done = snapshot.steps.filter((step) => step.status === "done").length;
 		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 		for (const step of snapshot.steps) {
 			const status = displayStatus(step);
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
-			const progress = status === "running" ? formatAgentProgress(step.progress) : "";
+			const progress = includeProgress && status === "running" ? formatAgentProgress(step.progress) : "";
 			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 		}
 		return lines;
 	};
 
-	const stageTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext): string[] => {
-		if (!snapshot.stages?.length) return rawTaskLines(snapshot, ctx);
+	const stageTaskLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, includeProgress = true): string[] => {
+		if (!snapshot.stages?.length) return rawTaskLines(snapshot, ctx, includeProgress);
 		const done = snapshot.steps.filter((step) => step.status === "done").length;
 		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 		for (const stage of snapshot.stages) {
@@ -191,7 +191,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					const status = displayStatus(step);
 					const kind = step.kind === "task" ? (status === "done" ? "Implemented" : "Implementing") : step.kind === "merge" ? (status === "done" ? "Merged" : status === "running" ? "Merging" : "Ready to merge") : step.kind;
 					const color: "success" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" || status === "ready" ? "accent" : "muted";
-					const progress = status === "running" ? formatAgentProgress(step.progress) : "";
+					const progress = includeProgress && status === "running" ? formatAgentProgress(step.progress) : "";
 					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(status, step.kind)} `)}${kind} · ${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
 			} else if (reviewActive) {
@@ -207,7 +207,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					// canonical phase title.
 					const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
 					const label = (phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
-					const progress = status === "running" ? formatAgentProgress(step.progress) : "";
+					const progress = includeProgress && status === "running" ? formatAgentProgress(step.progress) : "";
 					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
 			}
@@ -217,9 +217,12 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const dashboardLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number): string[] => {
 		const innerWidth = Math.max(1, width - 2);
-		const tasks = stageTaskLines(snapshot, ctx);
+		const tasks = stageTaskLines(snapshot, ctx, true);
+		const structuralTasks = stageTaskLines(snapshot, ctx, false);
 		const separatorWidth = 3;
-		const naturalTaskWidth = Math.max(...tasks.map((task) => visibleWidth(task)));
+		// Volatile progress must not move the two-pane divider. Width stays
+		// responsive to the workflow's structural content rather than fixed.
+		const naturalTaskWidth = Math.max(...structuralTasks.map((task) => visibleWidth(task)));
 		const maxTaskWidth = Math.max(28, Math.floor(innerWidth * 0.58));
 		const compactTaskWidth = Math.min(naturalTaskWidth, maxTaskWidth);
 		const availableEventWidth = innerWidth - compactTaskWidth - separatorWidth;
