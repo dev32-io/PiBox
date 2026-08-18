@@ -57,6 +57,32 @@ test("preferred model is promoted ahead of the selected tier fallback list", () 
 	}
 });
 
+test("local routing cannot match or fall back to an identically named paid model", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.modelTiers.local = ["local-llm/qwen/qwen3.8-27b#high"];
+	config.modelTiers.high = ["openrouter/qwen/qwen3.8-27b#high"];
+	const result = resolveHarnessModel(config, [
+		model("openrouter", "qwen/qwen3.8-27b"),
+		model("local-llm", "qwen/qwen3.8-27b"),
+	], { tier: "local", override: { model: "qwen/qwen3.8-27b" } });
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") {
+		assert.equal(result.model.provider, "local-llm");
+		assert.deepEqual(result.candidates, [{ provider: "local-llm", model: "qwen/qwen3.8-27b", effort: "high" }]);
+	}
+});
+
+test("ordinary tiers never promote a matching local route", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.modelTiers.high = ["openrouter/qwen/qwen3.8-27b#high"];
+	const result = resolveHarnessModel(config, [model("local-llm", "qwen/qwen3.8-27b")], {
+		tier: "high",
+		override: { model: "qwen/qwen3.8-27b" },
+	});
+	assert.equal(result.status, "waiting_model");
+	assert.equal(result.attempts.some((attempt) => attempt.provider === "local-llm"), false);
+});
+
 test("strict concrete override does not silently fall back", () => {
 	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, [model("openai-codex", "gpt-5.6-luna", true, { max: "max" })], {
 		tier: "high",

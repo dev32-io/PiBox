@@ -52,7 +52,7 @@ test("registers the generalized workflow and subagent surface", async () => {
 	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Background is the default/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
 	const spawnSchema = JSON.stringify(f.tools.get("subagent_spawn").parameters);
-	assert.match(spawnSchema, /tier.*model.*effort/);
+	assert.match(spawnSchema, /tier.*local.*model.*effort/);
 	assert.doesNotMatch(spawnSchema, /tierJustification|strict/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*TUI confirmation.*permission bypass mode/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);

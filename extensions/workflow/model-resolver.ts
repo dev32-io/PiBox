@@ -1,5 +1,5 @@
 import { getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import type { CapabilityTier, HarnessConfig, HarnessEffort, TierModelRouteConfig } from "./types.js";
+import type { HarnessConfig, HarnessEffort, ModelTier, TierModelRouteConfig } from "./types.js";
 
 export interface ExplicitModelOverride {
 	/** Configured concrete model id, optionally prefixed with provider/. */
@@ -8,7 +8,7 @@ export interface ExplicitModelOverride {
 }
 
 export interface ModelResolutionRequest {
-	tier: CapabilityTier;
+	tier: ModelTier;
 	override?: ExplicitModelOverride;
 	strict?: boolean;
 }
@@ -29,7 +29,7 @@ interface ParsedRoute {
 
 export interface ResolvedHarnessModel {
 	status: "resolved";
-	requested: { tier: CapabilityTier; override?: ExplicitModelOverride };
+	requested: { tier: ModelTier; override?: ExplicitModelOverride };
 	route: TierModelRouteConfig;
 	model: Model<Api>;
 	effort: ModelThinkingLevel;
@@ -41,7 +41,7 @@ export interface ResolvedHarnessModel {
 
 export interface UnresolvedHarnessModel {
 	status: "waiting_model";
-	requested: { tier: CapabilityTier; override?: ExplicitModelOverride };
+	requested: { tier: ModelTier; override?: ExplicitModelOverride };
 	attempts: ModelAttempt[];
 }
 
@@ -88,10 +88,15 @@ function candidates(config: HarnessConfig, request: ModelResolutionRequest): Arr
 	const routes = (config.modelTiers[request.tier] ?? []).map(parseRoute);
 	if (!request.override) return routes.map((route) => ({ route, effort: route.effort, override: false }));
 	const matched = new Set<string>();
-	const orderedRoutes = [
-		...routes,
-		...Object.entries(config.modelTiers).filter(([tier]) => tier !== request.tier).flatMap(([, tierRoutes]) => tierRoutes.map(parseRoute)),
-	];
+	// `local` is a provider-isolated route group, not another capability tier.
+	// Never let model-name collisions promote a paid route into a local launch,
+	// or a local route into an ordinary managed/dynamic launch.
+	const crossTierRoutes = request.tier === "local"
+		? []
+		: Object.entries(config.modelTiers)
+			.filter(([tier]) => tier !== request.tier && tier !== "local")
+			.flatMap(([, tierRoutes]) => tierRoutes.map(parseRoute));
+	const orderedRoutes = [...routes, ...crossTierRoutes];
 	const matching = orderedRoutes.filter((route) => {
 		const key = `${route.provider}/${route.model}`;
 		if (!routeMatchesOverride(route, request.override!.model) || matched.has(key)) return false;
@@ -113,8 +118,11 @@ export function resolveHarnessModel(
 	const resolvedCandidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }> = [];
 	const requested = { tier: request.tier, ...(request.override ? { override: request.override } : {}) };
 	const configured = candidates(config, request);
+	const overrideSearchRoutes = request.tier === "local"
+		? config.modelTiers.local
+		: Object.entries(config.modelTiers).filter(([tier]) => tier !== "local").flatMap(([, routes]) => routes);
 	const overrideConfigured = request.override
-		? Object.values(config.modelTiers).flat().map(parseRoute).some((route) => routeMatchesOverride(route, request.override!.model))
+		? overrideSearchRoutes.map(parseRoute).some((route) => routeMatchesOverride(route, request.override!.model))
 		: true;
 	if (request.override && !overrideConfigured) attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "override_not_configured" });
 

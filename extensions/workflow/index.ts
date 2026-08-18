@@ -21,7 +21,7 @@ import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceTy
 import { normalizePlanArtifact, normalizePlanBundle, normalizePlanEdit, normalizePlanStage, normalizePlanTask, normalizeResourceArtifact } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
-import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
+import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type ModelTier, type MutationAuthority, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { CanonicalMutationCoordinator, runManagedChild } from "./canonical-mutation.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
@@ -810,7 +810,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				? normalizeExplicitModelOverride(selectedModel, request.effort as HarnessEffort | undefined)
 				: undefined;
 			const routing = {
-				tier: (request.tier ?? agentDefinition.tier!) as CapabilityTier,
+				tier: (request.tier ?? agentDefinition.tier!) as ModelTier,
 				...(preferred ? { override: preferred } : {}),
 			};
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();

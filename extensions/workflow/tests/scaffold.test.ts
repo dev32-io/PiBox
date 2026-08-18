@@ -91,6 +91,7 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 		high: ["openai-codex/gpt-5.6-sol#medium"],
 		medium: ["openai-codex/gpt-5.6-luna#max"],
 		low: ["openai-codex/gpt-5.6-luna#medium"],
+		local: ["local-llm/qwen/qwen3.8-27b#high"],
 	});
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "medium");

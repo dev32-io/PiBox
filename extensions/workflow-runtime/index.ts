@@ -540,7 +540,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				agent: Type.String({ description: `Exact configured agent name. Available agents: ${catalog.length > 0 ? catalog.map((agent) => agent.name).join(", ") : "resolved at session start"}` }),
 				task: Type.String({ description: "Complete assignment prompt for the child" }),
 				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
-				tier: Type.Optional(StringEnum(["low", "medium", "high", "max"] as const, { description: "Configured capability-tier fallback list; defaults to medium" })),
+				tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Configured fallback list; local is isolated to the local-llm provider; defaults to medium" })),
 				model: Type.Optional(Type.String({ description: "Preferred configured model; accepts model, provider/model, or either form suffixed with #effort" })),
 				effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Optional preferred-model effort override" })),
 			}, { additionalProperties: false }),

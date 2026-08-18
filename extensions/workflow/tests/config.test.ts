@@ -6,13 +6,14 @@ import test from "node:test";
 import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig, mergeConfigValues, validateHarnessConfig } from "../config.js";
 import { HarnessError } from "../errors.js";
 
-test("uses cost-aware model-effort pairs for the four capability tiers", () => {
+test("uses cost-aware model-effort pairs plus a provider-isolated local route list", () => {
 	assert.equal(DEFAULT_HARNESS_CONFIG.limits.repairRounds, 8, "smaller models receive eight bounded review/fix opportunities by default");
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.modelTiers, {
 		max: ["openai-codex/gpt-5.6-sol#high"],
 		high: ["openai-codex/gpt-5.6-sol#medium"],
 		medium: ["openai-codex/gpt-5.6-luna#max"],
 		low: ["openai-codex/gpt-5.6-luna#medium"],
+		local: ["local-llm/qwen/qwen3.8-27b#high"],
 	});
 });
 
@@ -77,6 +78,12 @@ test("discovers traditional project agent markdown with optional harness tier ro
 	assert.equal(loaded.config.agents.traditional?.prompt, join(root, ".pi", "agents", "traditional.md"));
 	assert.equal(loaded.config.agents.invalid, undefined);
 	assert.equal(loaded.diagnostics.some((diagnostic) => diagnostic.source.endsWith("invalid.md") && diagnostic.level === "warning"), true);
+});
+
+test("rejects non-local providers in the isolated local route list", () => {
+	const value = structuredClone(DEFAULT_HARNESS_CONFIG) as any;
+	value.modelTiers.local = ["openrouter/qwen/qwen3.8-27b#high"];
+	assert.throws(() => validateHarnessConfig(value), /modelTiers\.local routes must use the local-llm provider/);
 });
 
 test("normalizes legacy route mappings to one model-effort pair", () => {

@@ -6,6 +6,7 @@ import { parse } from "yaml";
 import { HarnessError } from "./errors.js";
 import type {
 	CapabilityTier,
+	ModelTier,
 	ConfigDiagnostic,
 	HarnessConfig,
 	HarnessEffort,
@@ -19,7 +20,9 @@ import { validateToolSelectors } from "./tool-groups.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
+const CAPABILITY_TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
+const MODEL_TIERS: ModelTier[] = [...CAPABILITY_TIERS, "local"];
+const LOCAL_PROVIDER_ID = "local-llm";
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTiers", "agents", "roles", "orchestrator", "limits"]);
 const ROUTE_KEYS = new Set(["provider", "model", "effort"]);
 const AGENT_KEYS = new Set(["extends", "description", "prompt", "skills", "tools", "model", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]); // deliberation is accepted only for legacy policy compatibility
@@ -36,6 +39,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 		high: ["openai-codex/gpt-5.6-sol#medium"],
 		medium: ["openai-codex/gpt-5.6-luna#max"],
 		low: ["openai-codex/gpt-5.6-luna#medium"],
+		local: ["local-llm/qwen/qwen3.8-27b#high"],
 	},
 	agents: {
 		...builtInAgentDefinitions.agents,
@@ -133,7 +137,7 @@ function parseAgent(value: unknown, path: string): AgentConfig {
 	if (value.completionSchema !== undefined) agent.completionSchema = expectString(value.completionSchema, `${path}.completionSchema`);
 	if (value.tier !== undefined) {
 		const tier = expectString(value.tier, `${path}.tier`) as CapabilityTier;
-		if (!TIERS.includes(tier)) throw new HarnessError("CONFIG_INVALID", `${path}.tier is unsupported`);
+		if (!CAPABILITY_TIERS.includes(tier)) throw new HarnessError("CONFIG_INVALID", `${path}.tier is unsupported`);
 		agent.tier = tier;
 	}
 	if (value.deliberation !== undefined && !["standard", "deep"].includes(expectString(value.deliberation, `${path}.deliberation`))) throw new HarnessError("CONFIG_INVALID", `${path}.deliberation is unsupported`);
@@ -147,13 +151,16 @@ export function validateHarnessConfig(value: unknown): HarnessConfig {
 	const rawAgents = isRecord(value.agents) ? value.agents : value.roles;
 	if (!isRecord(value.modelTiers) || !isRecord(rawAgents) || !isRecord(value.orchestrator) || !isRecord(value.limits)) throw new HarnessError("CONFIG_INVALID", "modelTiers, agents, orchestrator, and limits must be mappings");
 
-	const modelTiers = {} as Record<CapabilityTier, TierModelRouteConfig[]>;
-	for (const tier of TIERS) {
+	const modelTiers = {} as Record<ModelTier, TierModelRouteConfig[]>;
+	for (const tier of MODEL_TIERS) {
 		const raw = value.modelTiers[tier];
 		if (!Array.isArray(raw) || raw.length === 0) throw new HarnessError("CONFIG_INVALID", `modelTiers.${tier} must be a non-empty array`);
 		modelTiers[tier] = raw.map((route, index) => parseRoute(route, `modelTiers.${tier}[${index}]`));
+		if (tier === "local" && modelTiers.local.some((route) => !route.startsWith(`${LOCAL_PROVIDER_ID}/`))) {
+			throw new HarnessError("CONFIG_INVALID", `modelTiers.local routes must use the ${LOCAL_PROVIDER_ID} provider`);
+		}
 	}
-	for (const tier of Object.keys(value.modelTiers)) if (!TIERS.includes(tier as CapabilityTier)) throw new HarnessError("CONFIG_INVALID", `Unknown model tier: ${tier}`);
+	for (const tier of Object.keys(value.modelTiers)) if (!MODEL_TIERS.includes(tier as ModelTier)) throw new HarnessError("CONFIG_INVALID", `Unknown model tier: ${tier}`);
 
 	const parsedAgents: Record<string, AgentConfig> = {};
 	for (const [name, raw] of Object.entries(rawAgents)) parsedAgents[name] = parseAgent(raw, `agents.${name}`);

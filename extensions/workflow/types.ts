@@ -23,8 +23,10 @@ export interface MutationAuthority {
 export type Complexity = "low" | "medium" | "high" | "critical";
 export type HarnessEffort = ModelThinkingLevel;
 export type CapabilityTier = "low" | "medium" | "high" | "max";
+/** Dynamic launches may explicitly select the provider-isolated local route group. */
+export type ModelTier = CapabilityTier | "local";
 
-/** One concrete `provider/model#effort` route inside an ordered capability tier. */
+/** One concrete `provider/model#effort` route inside an ordered model tier. */
 export type TierModelRouteConfig = string;
 
 export interface AgentConfig {
@@ -42,7 +44,7 @@ export interface AgentConfig {
 
 export interface HarnessConfig {
 	schemaVersion: 2;
-	modelTiers: Record<CapabilityTier, TierModelRouteConfig[]>;
+	modelTiers: Record<ModelTier, TierModelRouteConfig[]>;
 	agents: Record<string, AgentConfig>;
 	orchestrator: {
 		modelSwitching: "off" | "suggest" | "auto-visible";

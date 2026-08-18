@@ -80,8 +80,8 @@ export interface DynamicSubagentRequest {
 	operationId: string;
 	agent: string;
 	task: string;
-	/** Selects the configured capability-tier fallback list. */
-	tier?: "low" | "medium" | "high" | "max";
+	/** Selects a configured capability tier or the provider-isolated local route list. */
+	tier?: "low" | "medium" | "high" | "max" | "local";
 	/** Preferred configured model, optionally provider-qualified or suffixed with #effort. */
 	model?: string;
 	/** Overrides a #effort suffix or the preferred route's configured effort. */
