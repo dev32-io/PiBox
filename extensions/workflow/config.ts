@@ -16,6 +16,7 @@ import type {
 import { discoverAgentDefinitions, discoverProjectAgents } from "./agent-definitions.js";
 import { BUILT_IN_AGENT_ROOT } from "./prompt-loader.js";
 import { validateToolSelectors } from "./tool-groups.js";
+import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
@@ -41,7 +42,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 		implementer: { ...builtInAgentDefinitions.agents.implementer!, completionSchema: "implementer-v1" },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
-	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 2 },
+	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: DEFAULT_REVIEW_FIX_ITERATIONS },
 };
 
 type UnknownRecord = Record<string, unknown>;

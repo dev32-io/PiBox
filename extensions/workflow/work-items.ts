@@ -9,6 +9,7 @@ import { validateExecutionTopology } from "./execution-topology.js";
 import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit } from "./repository.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import { isTierTaskAssignment, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions", "e2e-matrix": "e2e-matrix" } as const;
@@ -864,7 +865,7 @@ export class WorkItemStore {
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
 		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
-		const evaluation: EvaluationManifest = { ...manifest, loop: manifest.loop ?? { state: "planned", iteration: 0, maxIterations: 2 } };
+		const evaluation: EvaluationManifest = { ...manifest, loop: manifest.loop ?? { state: "planned", iteration: 0, maxIterations: DEFAULT_REVIEW_FIX_ITERATIONS } };
 		if (manifest.stageId) {
 			const tasks = await Promise.all(index.tasks.map((entry) => this.readTask(workItemId, entry.id)));
 			const evaluations = await Promise.all(index.evaluations.filter((entry) => entry.id !== manifest.id).map((entry) => this.readEvaluation(workItemId, entry.id)));
@@ -1086,11 +1087,11 @@ export class WorkItemStore {
 		return matrix ? this.readArtifact(workItemId, matrix.id) : undefined;
 	}
 
-	async ensureFinalEvaluations(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
+	async ensureFinalEvaluations(workItemId: string, maxIterations = DEFAULT_REVIEW_FIX_ITERATIONS): Promise<EvaluationManifest[]> {
 		return await this.coordinator.run(`ensure-final-evaluations:${workItemId}`, () => this.ensureFinalEvaluationsUnlocked(workItemId, maxIterations));
 	}
 
-	private async ensureFinalEvaluationsUnlocked(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
+	private async ensureFinalEvaluationsUnlocked(workItemId: string, maxIterations = DEFAULT_REVIEW_FIX_ITERATIONS): Promise<EvaluationManifest[]> {
 		const item = await this.read(workItemId);
 		if (!item.artifacts.some((artifact) => artifact.type === "e2e-matrix" && artifact.status === "approved")) throw new HarnessError("INVALID_HANDOFF", `Work item ${workItemId} cannot launch final E2E without an e2e-matrix artifact`);
 		let existing = await Promise.all(item.evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
@@ -1145,7 +1146,7 @@ export class WorkItemStore {
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
 		const path = join(root, catalog.path);
 		const evaluation = await this.readEvaluation(workItemId, evaluationId);
-		evaluation.loop = { state: "planned", iteration: 0, maxIterations: 2, ...evaluation.loop, ...update };
+		evaluation.loop = { state: "planned", iteration: 0, maxIterations: DEFAULT_REVIEW_FIX_ITERATIONS, ...evaluation.loop, ...update };
 		if (status) evaluation.status = status;
 		await atomicWriteFile(path, stringify(evaluation));
 		await this.commit([path], `harness(${workItemId}): update review loop ${evaluationId}`);
@@ -1232,7 +1233,7 @@ export class WorkItemStore {
 			evaluation.attempt += 1;
 			evaluation.loop = {
 				iteration: evaluation.loop?.iteration ?? 0,
-				maxIterations: evaluation.loop?.maxIterations ?? 2,
+				maxIterations: evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS,
 				...evaluation.loop,
 				state: input.verdict === "pass" || input.verdict === "not_applicable" ? "passed" : "awaiting_manager",
 			};
@@ -1314,7 +1315,7 @@ export class WorkItemStore {
 			const rendered = history + lines.join("\n") + "\n";
 			try {
 				evaluation.status = "passed";
-				evaluation.loop = { state: "passed", iteration: evaluation.loop?.iteration ?? 0, maxIterations: evaluation.loop?.maxIterations ?? 2, ...evaluation.loop, acceptedRisks };
+				evaluation.loop = { state: "passed", iteration: evaluation.loop?.iteration ?? 0, maxIterations: evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS, ...evaluation.loop, acceptedRisks };
 				evaluation.result = { ...(evaluation.result ?? { verdict: "pass", report: "report.md" }), verdict: "pass", riskAcceptance: "risk-acceptance.md" };
 				await atomicWriteFile(riskPath, rendered);
 				await atomicWriteFile(evaluationPath, stringify(evaluation));

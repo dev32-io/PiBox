@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import type { DynamicSubagentRequest, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
+import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { readTextIfExists } from "./repository.js";
@@ -10,12 +11,17 @@ import { WorktreeManager } from "./worktrees.js";
 import type { RepositoryMutex } from "./idempotency.js";
 import { readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { confirmCriticalRisk } from "../permissions/runtime.js";
+import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
+import { WorkflowEventJournal, type WorkflowDomainEventType } from "./workflow-events.js";
+import type { RepositoryEventStore } from "./event-store.js";
 
 export interface HarnessWorkflowRuntime {
 	identity: RepositoryIdentity;
 	workItems: WorkItemStore;
 	mutex: RepositoryMutex;
 	agents: SessionAgentRegistry;
+	sessionId?: string;
+	events?: RepositoryEventStore;
 	config?: { limits: { repairRounds: number } };
 }
 
@@ -36,8 +42,6 @@ const WORK_ITEM = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const STEP = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)\/(task|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const settledAgent = new Set(["completed", "cancelled"]);
 const taskDone = new Set(["merged", "integrated"]);
-const REPORT_RECONCILIATION_GRACE_MS = 5_000;
-
 function agentAttention(agent: SessionAgentRecord): string | undefined {
 	if (isAgentProcessActive(agent) || settledAgent.has(agent.state)) return undefined;
 	if (agent.state === "reported") return "result pending reconciliation";
@@ -52,20 +56,30 @@ function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluati
 	return { running: false, ...(attention ? { attention } : {}) };
 }
 
-function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; reviewerAgentId?: string; fixerAgentId?: string } }): { running: boolean; attention?: string } {
+function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): { running: boolean; attention?: string } {
 	const loop = evaluation.loop;
-	if (loop?.state === "fixing") {
-		// A reported reviewer is the settled result which caused this checkpoint; it
-		// is not activity for the queued fixer. Prefer the persisted fixer identity
-		// when present so retries resume the same logical worker.
-		return scopeActivity(agents, "evaluationId", evaluation.id, (agent) =>
-			(loop.fixerAgentId ? agent.id === loop.fixerAgentId : agent.role === "repair-implementer"));
-	}
-	if (loop?.state === "rereviewing" || loop?.state === "reviewing") {
-		return scopeActivity(agents, "evaluationId", evaluation.id, (agent) =>
-			(loop.reviewerAgentId ? agent.id === loop.reviewerAgentId : agent.role !== "repair-implementer"));
-	}
-	return scopeActivity(agents, "evaluationId", evaluation.id);
+	const fixing = loop?.state === "fixing";
+	const rereviewing = loop?.state === "rereviewing";
+	const expected = fixing
+		? { kind: "repair" as const, generation: (loop?.iteration ?? 0) + 1 }
+		: { kind: "review" as const, generation: rereviewing ? (loop?.iteration ?? 0) : 0 };
+	const candidates = agents.filter((agent) => agent.evaluationId === evaluation.id &&
+		(fixing ? (loop?.fixerAgentId ? agent.id === loop.fixerAgentId : agent.role === "repair-implementer") :
+			(loop?.reviewerAgentId ? agent.id === loop.reviewerAgentId : agent.role !== "repair-implementer")));
+	const current = candidates
+		.map((agent) => ({ agent, attempt: agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId) }))
+		.filter(({ attempt }) => attempt?.activity?.kind === expected.kind && attempt.activity.generation === expected.generation);
+	// The activity descriptor, rather than attempt sequence, is the durable
+	// generation boundary. This also makes provider fallback attempts in one
+	// generation equivalent while excluding historical reports and exits.
+	if (current.some(({ agent }) => isAgentProcessActive(agent))) return { running: true };
+	if (current.some(({ agent }) => agent.state === "reported")) return { running: false, attention: "result pending reconciliation" };
+	const failed = current.find(({ agent }) => ["failed", "protocol_failed", "recovery_required"].includes(agent.state));
+	if (failed) return { running: false, attention: agentAttention(failed.agent) ?? "failed" };
+	if (current.some(({ agent }) => agent.state === "launching" || agent.state === "running")) return { running: false, attention: "stale process state" };
+	if (current.some(({ attempt }) => attempt?.state === "failed")) return { running: false, attention: "failed" };
+	if (current.some(({ attempt }) => attempt?.state === "exited")) return { running: false, attention: "stale process state" };
+	return { running: false };
 }
 
 function taskStatus(status: string, dependenciesDone: boolean): { status: WorkflowStepStatus; detail?: string } {
@@ -86,6 +100,37 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 	return {
 		id: "workflow",
 		canHandle(ref) { return WORK_ITEM.test(ref) || STEP.test(ref); },
+		async controlExecution(ref, command, operationId, ctx) {
+			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
+			const runtime = await options.runtimeFor(ctx);
+			const sessionId = runtime.sessionId ?? ctx.sessionManager.getSessionId();
+			const prior = await new WorkflowControlStore(runtime.identity.privateRoot).get(ref);
+			const record = await new WorkflowControlStore(runtime.identity.privateRoot).apply({ workflowRef: ref, command, sessionId, operationId });
+			if (runtime.events && prior?.lastOperationId !== operationId) {
+				const eventType: WorkflowDomainEventType = command === "start" ? "workflow.started"
+					: command === "pause" ? "workflow.paused"
+						: command === "resume" ? "workflow.resumed"
+							: command === "stop" ? "workflow.stopped"
+								: command === "complete" ? "workflow.completed"
+									: command === "detach" ? "workflow.detached" : "workflow.attached";
+				await new WorkflowEventJournal(runtime.events).append({ type: eventType, workItemId: match[1]!, ownerGeneration: record.generation, correlationId: operationId, transition: { ...(prior ? { from: prior.mode } : {}), to: record.mode, cause: command } });
+			}
+			return record;
+		},
+		async listExecutionControls(ctx) {
+			const runtime = await options.runtimeFor(ctx);
+			return new WorkflowControlStore(runtime.identity.privateRoot).list();
+		},
+		async assertExecutionCurrent(ref, generation, ctx) {
+			const runtime = await options.runtimeFor(ctx);
+			const sessionId = runtime.sessionId ?? ctx.sessionManager.getSessionId();
+			await new WorkflowControlStore(runtime.identity.privateRoot).assertCurrent(ref, sessionId, generation);
+		},
+		async reconcileWorkflow(ref, ctx) {
+			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
+			if (!options.reconcileReported) return;
+			await options.reconcileReported(await options.runtimeFor(ctx));
+		},
 		async preflightWorkflow(ref, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
@@ -110,7 +155,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, match[1]!);
 				else await new WorktreeManager(runtime.identity).validateWorkingBranch(match[1]!);
 				await runtime.workItems.beginExecution(match[1]!);
-				progress("Creating runtime verification gates"); await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? 2);
+				progress("Creating runtime verification gates"); await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS);
 				progress("Activating tasks"); await runtime.workItems.activateDraftTasks(match[1]!);
 			});
 		},
@@ -131,17 +176,34 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					: readBuiltInPrompt("workflow-completion-unknown-branch"),
 			});
 		},
+		subscribeLifecycle(ref, ctx, listener, signal) {
+			const match = WORK_ITEM.exec(ref);
+			if (!match || signal?.aborted) return () => undefined;
+			return options.runtimeFor(ctx).then((runtime) => {
+				if (signal?.aborted) return () => undefined;
+				const unsubscribers: Array<() => void> = [];
+				unsubscribers.push(runtime.agents.subscribe((event) => {
+					if (signal?.aborted || !event.data.agentId) return;
+					void runtime.agents.get(event.data.agentId).then((agent) => {
+						if (!signal?.aborted && agent.workItemId === match[1]) listener();
+					}).catch(() => undefined);
+				}));
+				// Cross-process event notifications are wake-up hints. The supervisor
+				// rereads durable state, so duplicate or missed filesystem notifications
+				// cannot become workflow facts by themselves.
+				if (runtime.events) unsubscribers.push(runtime.events.watch(listener, signal));
+				const unsubscribe = () => { for (const dispose of unsubscribers.splice(0)) dispose(); };
+				if (signal?.aborted) { unsubscribe(); return () => undefined; }
+				if (signal) signal.addEventListener("abort", unsubscribe, { once: true });
+				return unsubscribe;
+			}).catch(() => () => undefined);
+		},
 		async snapshot(ref, ctx): Promise<WorkflowSnapshot> {
 			const match = WORK_ITEM.exec(ref);
 			if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
 			const item = await runtime.workItems.read(match[1]!);
-			let agents = await runtime.agents.list();
-			const staleReport = agents.some((agent) => agent.state === "reported" && Date.now() - Date.parse(agent.updatedAt) >= REPORT_RECONCILIATION_GRACE_MS);
-			if (staleReport && options.reconcileReported) {
-				await options.reconcileReported(runtime).catch(() => undefined);
-				agents = await runtime.agents.list();
-			}
+			const agents = await runtime.agents.list();
 			const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 			const evaluations = await Promise.all(item.evaluations.map((entry) => runtime.workItems.readEvaluation(item.id, entry.id)));
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
@@ -199,20 +261,23 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// not shadow a queued fixer.
 				// A fixer or
 				// reviewer can be active while the canonical loop is still being settled.
-				if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "skipped") status = "done";
+				// A durable manager checkpoint is authoritative, even when a persistent
+				// reviewer still has a reported process record.
+				if (evaluation.loop?.state === "awaiting_manager") { status = "attention"; detail = "Needs attention · Approve or Request changes"; }
+				else if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "skipped") status = "done";
 				else if (activity.running) { status = "running"; detail = evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, (evaluation.loop?.iteration ?? 0) + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"; }
 				else if (activity.attention) { status = "attention"; detail = activity.attention; }
 				else if (dependencyAttention) { status = "attention"; detail = `blocked by ${dependencyAttention.title}`; }
 				else if (evaluation.loop?.state === "fixing" || evaluation.loop?.state === "rereviewing") { status = dependenciesDone ? "ready" : "pending"; detail = evaluation.loop.state === "fixing" ? "Fix requested" : "Re-review requested"; }
-				else if (evaluation.loop?.state === "awaiting_manager" || ["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes" : evaluation.status; }
+				else if (["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.status; }
 				else if (evaluation.status === "running") { status = "attention"; detail = "stale process state"; }
 				else if (dependenciesDone) status = "ready";
 				// Durable loop states describe intent, not process activity. Keep this as the
 				// canonical user-facing phase so queued work and settled reports cannot look
 				// like an active worker in the dashboard or workflow events.
-				const phase = ["passed", "not_applicable"].includes(evaluation.status) ? "Approved"
+				const phase = evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
+					: ["passed", "not_applicable"].includes(evaluation.status) ? "Approved"
 					: activity.running ? evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"
-					: evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
 					: activity.attention === "result pending reconciliation" ? "Review report ready"
 					: evaluation.loop?.state === "fixing" ? "Fix requested"
 					: evaluation.loop?.state === "rereviewing" ? "Re-review requested"
@@ -220,7 +285,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const findings = evaluation.findings ?? [];
 				const open = findings.filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 				const blocking = open.filter((finding) => finding.blocking);
-				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? 2}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
+				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
 				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
@@ -276,7 +341,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// judged against the durable phase, not the snapshot read before locking.
 				return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
 					const current = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
-					const currentLoop = current.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? 2 };
+					const currentLoop = current.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS };
 					if (currentLoop.state === "fixing") {
 						if (!prompt?.trim() || prompt.trim() !== currentLoop.managerPrompt?.trim()) throw new Error(`Evaluation ${evaluationId} is already fixing; only the existing repair decision may be replayed`);
 						// Idempotent recovery: retain the fixer identity, prompt, and iteration.
@@ -316,7 +381,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, workItemId);
 					else await new WorktreeManager(runtime.identity).validateWorkingBranch(workItemId);
 					const begun = await runtime.workItems.beginExecution(workItemId);
-					await runtime.workItems.ensureFinalEvaluations(workItemId, runtime.config?.limits.repairRounds ?? 2);
+					await runtime.workItems.ensureFinalEvaluations(workItemId, runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS);
 					await runtime.workItems.activateDraftTasks(workItemId);
 					return begun;
 				});

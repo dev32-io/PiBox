@@ -56,12 +56,18 @@ export interface AgentScope {
 	workspace?: string;
 }
 
+export type WorkflowActivityDescriptor = {
+	kind: "review" | "repair";
+	generation: number;
+};
+
 export interface ProcessAttempt {
 	id: string;
 	provider?: string;
 	model?: string;
 	effort?: string;
 	sequence: number;
+	activity?: WorkflowActivityDescriptor;
 	state: "launching" | "running" | "exited" | "failed";
 	pid?: number;
 	startedAt: string;
@@ -123,6 +129,15 @@ export interface AgentMessageRecord {
 	updatedAt: string;
 }
 
+export interface AgentRegistryEvent {
+	type: string;
+	at: string;
+	sequence: number;
+	data: { agentId?: string; state?: AgentState; [key: string]: unknown };
+}
+
+export type AgentRegistryListener = (event: AgentRegistryEvent) => void;
+
 export interface ReserveAgentInput extends AgentScope {
 	operationId: string;
 	parentAgentId: string;
@@ -139,6 +154,7 @@ export class SessionAgentRegistry {
 	readonly snapshotPath: string;
 	readonly eventsPath: string;
 	readonly mutex: WorkflowMutex;
+	private readonly listeners = new Set<AgentRegistryListener>();
 
 	constructor(
 		repositoryPrivateRoot: string,
@@ -151,6 +167,11 @@ export class SessionAgentRegistry {
 		this.snapshotPath = join(this.root, "agents.yaml");
 		this.eventsPath = join(this.root, "agent-events.jsonl");
 		this.mutex = new WorkflowMutex(this.root);
+	}
+
+	subscribe(listener: AgentRegistryListener): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
 	}
 
 	async initialize(mainAgentId = `main:${this.sessionId}`): Promise<void> {
@@ -229,11 +250,11 @@ export class SessionAgentRegistry {
 		})).agent;
 	}
 
-	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
+	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }, activity?: WorkflowActivityDescriptor): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");
 			const now = new Date().toISOString();
-			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now, ...(route ?? {}) };
+			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now, ...(route ?? {}), ...(activity ? { activity } : {}) };
 			if (route) { agent.provider = route.provider; agent.model = route.model; agent.effort = route.effort; }
 			agent.state = "launching";
 			agent.currentAttemptId = attempt.id;
@@ -393,6 +414,11 @@ export class SessionAgentRegistry {
 		snapshot.eventSequence += 1;
 		await this.write(snapshot);
 		await mkdir(this.root, { recursive: true, mode: 0o700 });
-		await appendFile(this.eventsPath, `${JSON.stringify({ sequence: snapshot.eventSequence, at: new Date().toISOString(), type, data })}\n`, { mode: 0o600 });
+		const at = new Date().toISOString();
+		await appendFile(this.eventsPath, `${JSON.stringify({ sequence: snapshot.eventSequence, at, type, data })}\n`, { mode: 0o600 });
+		const event: AgentRegistryEvent = { sequence: snapshot.eventSequence, at, type, data: data as AgentRegistryEvent["data"] };
+		for (const listener of this.listeners) {
+			try { listener(event); } catch { /* observers must not affect durable lifecycle transitions */ }
+		}
 	}
 }

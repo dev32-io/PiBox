@@ -37,10 +37,10 @@ function formatElapsed(startedAt: number): string {
 export default function workflows(pi: ExtensionAPI): void {
 	const adapters: WorkflowAdapter[] = [];
 	const active = new Map<string, "running" | "paused">();
-	const inFlight = new Set<string>();
+	const ownership = new Map<string, number>();
+	const inFlight = new Map<string, number>();
 	let currentRef: string | undefined;
 	let currentSnapshot: WorkflowSnapshot | undefined;
-	let timer: NodeJS.Timeout | undefined;
 	let subagentPulseTimer: NodeJS.Timeout | undefined;
 	let ticking = false;
 	let frame = 0;
@@ -51,6 +51,10 @@ export default function workflows(pi: ExtensionAPI): void {
 	let dashboardInvalidate: (() => void) | undefined;
 	const notices = new Map<string, WorkflowNotice>();
 	const runningSubagents = new Map<string, RunningSubagentStatus>();
+	const lifecycleSubscriptions = new Map<string, { controller: AbortController; unsubscribe: (() => void) | undefined }>();
+	let tickRequested = false;
+	let runtimeEpoch = 0;
+	let shuttingDown = false;
 
 	const adapterFor = (ref: string): WorkflowAdapter => {
 		// Discovery is deliberately repeatable: extensions may load after the
@@ -76,6 +80,14 @@ export default function workflows(pi: ExtensionAPI): void {
 	const sendFeedback = (event: WorkflowFeedbackEvent) => {
 		try { pi.events.emit(WORKFLOW_FEEDBACK_EVENT, event); }
 		catch { /* Session replacement leaves durable workflow state authoritative. */ }
+	};
+
+	const pauseDurably = async (adapter: WorkflowAdapter, ref: string, operationId: string, ctx: ExtensionContext) => {
+		if (active.get(ref) !== "running") return;
+		const control = await adapter.controlExecution?.(ref, "pause", operationId, ctx).catch(() => undefined);
+		if (control) ownership.set(ref, control.generation);
+		active.set(ref, "paused");
+		persist(ref, "paused");
 	};
 
 	const renderSubagentStatus = () => {
@@ -130,6 +142,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 	};
 
+	const displayStatus = (step: WorkflowStep): WorkflowStep["status"] => inFlight.has(step.ref) && step.status !== "done" ? "running" : step.status;
 	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
 	const stateIcon = (status: WorkflowStep["status"], kind: string): string => {
 		if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? DEFAULT_RUNNING_FRAMES; return frames[frame % frames.length]!; }
@@ -140,8 +153,9 @@ export default function workflows(pi: ExtensionAPI): void {
 		const done = snapshot.steps.filter((step) => step.status === "done").length;
 		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 		for (const step of snapshot.steps) {
-			const icon = stateIcon(step.status, step.kind);
-			const color: "success" | "warning" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" ? "accent" : "muted";
+			const status = displayStatus(step);
+			const icon = stateIcon(status, step.kind);
+			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
 			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}`);
 		}
 		return lines;
@@ -153,8 +167,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 		for (const stage of snapshot.stages) {
 			const stageSteps = snapshot.steps.filter((step) => stage.nodes.some((node) => step.ref.endsWith(`/${node}`)));
-			const primary = stageSteps.reduce<WorkflowStep | undefined>((best, step) => !best || stateRank(step.status) > stateRank(best.status) ? step : best, undefined);
-			const stageStatus = primary?.status ?? "pending";
+			const primary = stageSteps.reduce<WorkflowStep | undefined>((best, step) => !best || stateRank(displayStatus(step)) > stateRank(displayStatus(best)) ? step : best, undefined);
+			const stageStatus = primary ? displayStatus(primary) : "pending";
 			const reviewSteps = stageSteps.filter((step) => step.kind === "evaluation");
 			const reviewActive = reviewSteps.some((step) => step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref));
 			const implementationActive = !reviewActive && stageSteps.some((step) => step.kind !== "evaluation" && (step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref)));
@@ -167,12 +181,14 @@ export default function workflows(pi: ExtensionAPI): void {
 			// compact sequence of explicit checkpoints, and a passed stage stays closed.
 			if (implementationActive) {
 				for (const step of stageSteps.filter((candidate) => candidate.kind !== "evaluation")) {
-					const kind = step.kind === "task" ? (step.status === "done" ? "Implemented" : "Implementing") : step.kind === "merge" ? (step.status === "done" ? "Merged" : step.status === "running" ? "Merging" : "Ready to merge") : step.kind;
-					const color: "success" | "error" | "muted" | "accent" = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" || step.status === "ready" ? "accent" : "muted";
-					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind)} `)}${kind} · ${step.title}`);
+					const status = displayStatus(step);
+					const kind = step.kind === "task" ? (status === "done" ? "Implemented" : "Implementing") : step.kind === "merge" ? (status === "done" ? "Merged" : status === "running" ? "Merging" : "Ready to merge") : step.kind;
+					const color: "success" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" || status === "ready" ? "accent" : "muted";
+					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(status, step.kind)} `)}${kind} · ${step.title}`);
 				}
 			} else if (reviewActive) {
 				for (const step of reviewSteps) {
+					const status = displayStatus(step);
 					// The adapter's title is the canonical phase. Do not infer activity
 					// from durable-state words here: queued re-review must not become a
 					// generic Review #N (or an active re-review) in the dashboard.
@@ -183,7 +199,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					// canonical phase title.
 					const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
 					const label = (phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
-					lines.push(`  ${ctx.ui.theme.fg(step.status === "attention" ? "error" : step.status === "done" ? "success" : "accent", `${stateIcon(step.status, step.kind)} `)}${label}`);
+					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}`);
 				}
 			}
 		}
@@ -241,11 +257,23 @@ export default function workflows(pi: ExtensionAPI): void {
 		});
 	};
 
-	const settleStep = async (adapter: WorkflowAdapter, step: WorkflowStep, promise: Promise<WorkflowRunResult>, ctx: ExtensionContext, workflowRef?: string) => {
+	const settlementIsLive = (workflowRef: string | undefined, epoch: number) => Boolean(
+		!shuttingDown && epoch === runtimeEpoch && sessionCtx && workflowRef && active.has(workflowRef),
+	);
+	const settlementIsCurrent = async (adapter: WorkflowAdapter, workflowRef: string | undefined, epoch: number, generation: number | undefined, ctx: ExtensionContext): Promise<boolean> => {
+		if (!settlementIsLive(workflowRef, epoch)) return false;
+		if (!workflowRef || generation === undefined || !adapter.assertExecutionCurrent) return true;
+		try { await adapter.assertExecutionCurrent(workflowRef, generation, ctx); return settlementIsLive(workflowRef, epoch); }
+		catch { return false; }
+	};
+
+	const settleStep = async (adapter: WorkflowAdapter, step: WorkflowStep, promise: Promise<WorkflowRunResult>, ctx: ExtensionContext, workflowRef: string | undefined, epoch: number, generation: number | undefined) => {
 		try {
 			const settled = await promise;
+			if (!await settlementIsCurrent(adapter, workflowRef, epoch, generation, ctx)) return;
 			const attention = Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed");
 			const terminalSnapshot = workflowRef ? await adapter.snapshot(workflowRef, ctx).catch(() => undefined) : undefined;
+			if (!await settlementIsCurrent(adapter, workflowRef, epoch, generation, ctx)) return;
 			const terminalStep = terminalSnapshot?.steps.find((candidate) => candidate.ref === step.ref);
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${terminalStep?.title ?? step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
 			// Completion feedback is reserved for the canonical merge barrier. A worker
@@ -256,26 +284,27 @@ export default function workflows(pi: ExtensionAPI): void {
 			}
 			if (attention) {
 				if (workflowRef) {
-					active.set(workflowRef, "paused"); persist(workflowRef, "paused");
+					await pauseDurably(adapter, workflowRef, `settlement:${step.ref}:${generation ?? epoch}:attention`, ctx);
 					sendFeedback({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, cause: "step-attention", nextAction: "Resolve the step and resume or decide at its checkpoint." });
 				}
 			}
 		} catch (error) {
+			if (!await settlementIsCurrent(adapter, workflowRef, epoch, generation, ctx)) return;
 			const detail = error instanceof Error ? error.message : String(error);
 			if (workflowRef) {
-				active.set(workflowRef, "paused"); persist(workflowRef, "paused");
+				await pauseDurably(adapter, workflowRef, `settlement:${step.ref}:${generation ?? epoch}:exception`, ctx);
 				sendFeedback({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 			}
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · failed`, detail, attention: true, kind: step.kind, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 		} finally {
-			inFlight.delete(step.ref);
-			await tick(ctx);
+			if (inFlight.get(step.ref) === epoch) inFlight.delete(step.ref);
+			if (settlementIsLive(workflowRef, epoch)) requestTick(ctx, epoch);
 		}
 	};
 
-	const startStep = (adapter: WorkflowAdapter, step: WorkflowStep, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult> => {
+	const startStep = (adapter: WorkflowAdapter, step: WorkflowStep, ctx: ExtensionContext, epoch: number, signal?: AbortSignal): Promise<WorkflowRunResult> => {
 		if (inFlight.has(step.ref)) throw new Error(`Step is already running: ${step.ref}`);
-		inFlight.add(step.ref);
+		inFlight.set(step.ref, epoch);
 		sendEvent({ workflowRef: step.ref.split("/")[0]!, title: `Starting ${step.title}`, attention: false, kind: step.kind, toStatus: "running" });
 		return adapter.runStep(step.ref, ctx, signal);
 	};
@@ -296,24 +325,35 @@ export default function workflows(pi: ExtensionAPI): void {
 		return selected;
 	};
 
-	const tick = async (ctx: ExtensionContext) => {
-		if (ticking) return;
+	const requestTick = (ctx: ExtensionContext, epoch = runtimeEpoch) => {
+		if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx || !currentRef || !active.has(currentRef)) return;
+		void tick(ctx, epoch);
+	};
+
+	const tick = async (ctx: ExtensionContext, epoch = runtimeEpoch) => {
+		if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
+		if (ticking) { tickRequested = true; return; }
 		ticking = true;
 		try {
 			frame++;
 			for (const [ref, state] of active) {
+				if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
 				const adapter = adapterFor(ref);
 				let snapshot: WorkflowSnapshot;
-				try { snapshot = await adapter.snapshot(ref, ctx); }
+				try {
+					await adapter.reconcileWorkflow?.(ref, ctx);
+					snapshot = await adapter.snapshot(ref, ctx);
+				}
 				catch (error) {
 					if (state === "running") {
 						const detail = error instanceof Error ? error.message : String(error);
-						active.set(ref, "paused"); persist(ref, "paused");
+						await pauseDurably(adapter, ref, `snapshot:${ref}:${ownership.get(ref) ?? epoch}:failed`, ctx);
 						sendFeedback({ type: "error", workflowRef: ref, title: ref, detail, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
 						sendEvent({ workflowRef: ref, title: `${ref} · attention`, detail, attention: true, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
 					}
 					continue;
 				}
+				if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
 				if (ref === currentRef) {
 					currentSnapshot = { ...snapshot, steps: snapshot.steps.map((step) => inFlight.has(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) };
 					renderDashboard(ctx);
@@ -323,39 +363,74 @@ export default function workflows(pi: ExtensionAPI): void {
 				// and runStep completion. The in-flight promise remains authoritative until it
 				// settles; only attention with no active step should pause the workflow.
 				const hasIndependentReadyWork = snapshot.steps.some((step) => step.status === "ready" && !inFlight.has(step.ref));
-				if (snapshot.status === "attention" && !snapshot.steps.some((step) => inFlight.has(step.ref)) && !hasIndependentReadyWork) {
-					active.set(ref, "paused"); persist(ref, "paused");
-					const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
-					const detail = attentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
-					const checkpoint = attentionSteps.find((step) => step.kind === "evaluation");
+				const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
+				const actionableAttentionSteps = attentionSteps.filter((step) => step.detail !== "result pending reconciliation");
+				if (snapshot.status === "attention" && actionableAttentionSteps.length > 0 && !snapshot.steps.some((step) => inFlight.has(step.ref)) && !hasIndependentReadyWork) {
+					const detail = actionableAttentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
+					await pauseDurably(adapter, ref, `attention:${actionableAttentionSteps.map((step) => step.ref).join(",")}:${ownership.get(ref) ?? epoch}`, ctx);
+					const checkpoint = actionableAttentionSteps.find((step) => step.kind === "evaluation");
 					const guidance = `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref}: Approve (optionally naming accepted risks) or Request changes. Do not manipulate Git or task state manually.` : ""}`;
 					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref, kind: attentionSteps[0].kind } : {}), title: snapshot.title, detail: guidance, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
 					sendEvent({ workflowRef: ref, title: `${snapshot.title} · attention`, detail: guidance, attention: true, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
 					continue;
 				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
-					active.delete(ref); persist(ref, "stopped"); sendEvent({ workflowRef: ref, title: `${snapshot.title} · complete`, detail: "Finished all workflow steps.", attention: false, toStatus: "integrated", cause: "workflow-terminal" });
+					await adapter.controlExecution?.(ref, "complete", `complete:${ref}:${ownership.get(ref) ?? epoch}`, ctx).catch(() => undefined);
+					active.delete(ref); ownership.delete(ref); persist(ref, "stopped"); sendEvent({ workflowRef: ref, title: `${snapshot.title} · complete`, detail: "Finished all workflow steps.", attention: false, toStatus: "integrated", cause: "workflow-terminal" });
 					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? renderBuiltInPrompt("default-workflow-completion", { workflowRef: ref });
 					try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* session recovery can inspect canonical completion state */ }
 					continue;
 				}
 				for (const step of runnable(snapshot)) {
-					const promise = startStep(adapter, step, ctx);
-					void settleStep(adapter, step, promise, ctx, ref);
+					const promise = startStep(adapter, step, ctx, epoch);
+					void settleStep(adapter, step, promise, ctx, ref, epoch, ownership.get(ref));
 				}
 			}
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			if (currentRef) sendFeedback({ type: "error", workflowRef: currentRef, title: "Workflow runner", detail, cause: "runner-exception" });
 			sendEvent({ workflowRef: currentRef ?? "workflow", title: "Workflow runner · attention", detail, attention: true, cause: "runner-exception" });
-		} finally { ticking = false; }
+		} finally {
+			ticking = false;
+			if (tickRequested) {
+				tickRequested = false;
+				if (!shuttingDown && epoch === runtimeEpoch) requestTick(ctx, epoch);
+			}
+		}
+	};
+
+	const watchLifecycle = (ref: string, adapter: WorkflowAdapter, ctx: ExtensionContext) => {
+		if (!adapter.subscribeLifecycle) return;
+		const previous = lifecycleSubscriptions.get(ref);
+		previous?.controller.abort();
+		previous?.unsubscribe?.();
+		const controller = new AbortController();
+		const subscription: { controller: AbortController; unsubscribe: (() => void) | undefined } = { controller, unsubscribe: undefined };
+		lifecycleSubscriptions.set(ref, subscription);
+		const epoch = runtimeEpoch;
+		const listener = () => requestTick(ctx, epoch);
+		void Promise.resolve(adapter.subscribeLifecycle(ref, ctx, listener, controller.signal)).then((unsubscribe) => {
+			if (controller.signal.aborted || shuttingDown || epoch !== runtimeEpoch || lifecycleSubscriptions.get(ref) !== subscription) {
+				if (typeof unsubscribe === "function") unsubscribe();
+				return;
+			}
+			subscription.unsubscribe = typeof unsubscribe === "function" ? unsubscribe : undefined;
+		}).catch(() => undefined);
+	};
+
+	const stopLifecycle = (ref: string) => {
+		const subscription = lifecycleSubscriptions.get(ref);
+		if (!subscription) return;
+		subscription.controller.abort();
+		subscription.unsubscribe?.();
+		lifecycleSubscriptions.delete(ref);
 	};
 
 	pi.registerTool({
 		name: "workflow_start", label: "Start Workflow",
 		description: "Start deterministic background execution for a reviewed workflow reference after the user explicitly asks to run it. Before launch, PiBox shows a user-owned TUI confirmation and switches the session and spawned subagents to permission bypass mode. The registered adapter refreshes current steps and advances routine ready work.",
 		parameters: Type.Object({ ref: Type.String() }, { additionalProperties: false }),
-		async execute(_id, params, _signal, onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, onUpdate, ctx) {
 			const started = Date.now();
 			const progress = (phase: string) => {
 				const text = `${phase} · ${Date.now() - started}ms`;
@@ -381,12 +456,16 @@ export default function workflows(pi: ExtensionAPI): void {
 				progress("Building execution snapshot");
 				const snapshot = await adapter.snapshot(params.ref, ctx);
 				progress("Starting workflow"); activateWorkflowBypass();
+				const control = await adapter.controlExecution?.(params.ref, "start", `tool:${toolCallId}`, ctx);
+				if (control) ownership.set(params.ref, control.generation);
 				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
-				void tick(ctx);
+				watchLifecycle(params.ref, adapter, ctx);
+				requestTick(ctx);
 				if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", undefined);
 				return result(`Started workflow ${params.ref} in background with ${snapshot.steps.length} step(s).`, snapshot);
 			} catch (error) {
 				active.delete(params.ref);
+				ownership.delete(params.ref);
 				if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", undefined);
 				if (currentRef === params.ref) { currentRef = undefined; currentSnapshot = undefined; renderDashboard(ctx); }
 				throw error;
@@ -397,11 +476,24 @@ export default function workflows(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_control", label: "Control Workflow", description: "Pause, resume, or stop workflow execution. Stop terminates active attempts but preserves adapter-owned work; resume prepares incomplete stopped work and starts fresh attempts.",
 		parameters: Type.Object({ ref: Type.String(), action: StringEnum(["pause", "resume", "stop"] as const) }, { additionalProperties: false }),
-		async execute(_id, params, _signal, _update, ctx) {
-			const adapter = adapterFor(params.ref); await adapter.controlWorkflow(params.ref, params.action, ctx);
-			if (params.action === "resume") active.set(params.ref, "running"); else if (params.action === "pause") active.set(params.ref, "paused"); else active.delete(params.ref);
+		async execute(toolCallId, params, _signal, _update, ctx) {
+			const adapter = adapterFor(params.ref);
+			const control = await adapter.controlExecution?.(params.ref, params.action, `tool:${toolCallId}`, ctx);
+			if (control) ownership.set(params.ref, control.generation);
+			if (params.action === "stop") {
+				runtimeEpoch++;
+				tickRequested = false;
+				stopLifecycle(params.ref);
+				active.delete(params.ref);
+				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) inFlight.delete(stepRef);
+			}
+			await adapter.controlWorkflow(params.ref, params.action, ctx);
+			if (params.action === "resume") active.set(params.ref, "running"); else if (params.action === "pause") active.set(params.ref, "paused"); else { active.delete(params.ref); ownership.delete(params.ref); }
 			currentRef = params.ref; persist(params.ref, params.action === "stop" ? "stopped" : params.action === "resume" ? "running" : "paused");
-			if (params.action === "stop") { currentSnapshot = undefined; renderDashboard(ctx); } else await tick(ctx);
+			if (params.action === "stop") {
+				currentSnapshot = undefined;
+				renderDashboard(ctx);
+			} else await tick(ctx, runtimeEpoch);
 			return result(`${params.action} recorded for workflow ${params.ref}.`);
 		},
 	});
@@ -410,7 +502,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		name: "workflow_checkpoint", label: "Review checkpoint",
 		description: "Choose the meaningful review outcome: approve (optionally with structured acceptedRisks) or request_changes. request_changes records the decision, returns immediately, and lets the runner own background repair and automatic re-review.",
 		parameters: Type.Object({ ref: Type.String({ description: "Exact evaluation step ref" }), action: StringEnum(["approve", "request_changes"] as const), prompt: Type.Optional(Type.String()), acceptedRisks: Type.Optional(Type.Array(Type.Object({ findingId: Type.String(), rationale: Type.String() }))) }, { additionalProperties: false }),
-		async execute(_id, params, _signal, _update, ctx) {
+		async execute(toolCallId, params, _signal, _update, ctx) {
 			const adapter = adapterFor(params.ref);
 			if (!adapter.controlCheckpoint) throw new Error(`Workflow adapter does not support checkpoint decisions: ${params.ref}`);
 			let decision: unknown;
@@ -422,6 +514,11 @@ export default function workflows(pi: ExtensionAPI): void {
 				throw error;
 			}
 			const workflowRef = params.ref.split("/evaluation:")[0]!;
+			const existingMode = active.get(workflowRef);
+			if (existingMode === "paused") {
+				const control = await adapter.controlExecution?.(workflowRef, "resume", `checkpoint:${toolCallId}`, ctx);
+				if (control) ownership.set(workflowRef, control.generation);
+			}
 			active.set(workflowRef, "running"); currentRef = workflowRef; persist(workflowRef, "running");
 			await tick(ctx);
 			return result(params.action === "request_changes" ? `Request changes recorded for ${params.ref}. Managed repair and automatic re-review are running in the background.` : `Approve recorded for ${params.ref}.`, decision);
@@ -540,7 +637,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				const agents = await adapter.listSubagents(ctx) as Array<{ id?: string }>;
 				if (agents.some((agent) => agent.id === params.agentId)) {
 					const recorded = await adapter.respondSubagent(params.agentId, params.messageId, params.response, ctx) as { workflowRef?: string };
-					if (recorded.workflowRef && active.has(recorded.workflowRef)) { active.set(recorded.workflowRef, "running"); persist(recorded.workflowRef, "running"); void tick(ctx); }
+					if (recorded.workflowRef && active.has(recorded.workflowRef)) { active.set(recorded.workflowRef, "running"); persist(recorded.workflowRef, "running"); requestTick(ctx); }
 					return result(`Response recorded for ${params.messageId}.`, recorded);
 				}
 			}
@@ -556,10 +653,12 @@ export default function workflows(pi: ExtensionAPI): void {
 		else active.delete(command.ref);
 		currentRef = command.ref;
 		persist(command.ref, command.action === "stop" ? "stopped" : command.action === "resume" ? "running" : "paused");
-		void tick(sessionCtx);
+		requestTick(sessionCtx);
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		runtimeEpoch++;
+		shuttingDown = false;
 		if (process.env.PIBOX_SUBAGENT_ID) { pi.setActiveTools(pi.getActiveTools().filter((name) => !TOOL_NAMES.includes(name))); return; }
 		adapters.length = 0;
 		pi.events.emit(WORKFLOW_ADAPTER_DISCOVERY_EVENT, { register(adapter: WorkflowAdapter) { if (!adapters.some((candidate) => candidate.id === adapter.id)) adapters.push(adapter); } } satisfies WorkflowAdapterDiscovery);
@@ -574,11 +673,38 @@ export default function workflows(pi: ExtensionAPI): void {
 			const data = entry.data as { ref?: string; state?: "running" | "paused" | "stopped" };
 			if (data.ref && data.state) states.set(data.ref, data.state);
 		}
-		for (const [ref, state] of states) if (state !== "stopped") { active.set(ref, state); currentRef = ref; }
-		if (currentRef) currentSnapshot = await adapterFor(currentRef).snapshot(currentRef, ctx).catch(() => undefined);
+		const controlled = new Set<string>();
+		for (const adapter of adapters) {
+			const records = adapter.listExecutionControls ? await adapter.listExecutionControls(ctx).catch(() => []) : [];
+			for (const record of records) {
+				controlled.add(record.workflowRef);
+				if (record.mode !== "running" && record.mode !== "paused") continue;
+				if (record.ownerSessionId && record.ownerSessionId !== ctx.sessionManager.getSessionId()) continue;
+				const attached = await adapter.controlExecution?.(record.workflowRef, "attach", `session:${ctx.sessionManager.getSessionId()}:attach:${record.generation}`, ctx).catch(() => undefined);
+				if (attached) ownership.set(record.workflowRef, attached.generation);
+				active.set(record.workflowRef, record.mode);
+				currentRef = record.workflowRef;
+			}
+		}
+		// Compatibility for workflows started before durable control records existed.
+		// Establish fence 1 during attach so an automatic post-reload tick never runs
+		// outside durable ownership while waiting for an explicit resume command.
+		for (const [ref, state] of states) {
+			if (state === "stopped" || controlled.has(ref)) continue;
+			const adapter = adapterFor(ref);
+			const migrated = await adapter.controlExecution?.(ref, state === "running" ? "resume" : "pause", `session:${ctx.sessionManager.getSessionId()}:migrate:${state}`, ctx).catch(() => undefined);
+			if (migrated) ownership.set(ref, migrated.generation);
+			active.set(ref, state);
+			currentRef = ref;
+		}
+		if (currentRef) {
+			const adapter = adapterFor(currentRef);
+			currentSnapshot = await adapter.snapshot(currentRef, ctx).catch(() => undefined);
+			watchLifecycle(currentRef, adapter, ctx);
+		}
 		renderDashboard(ctx);
 		renderSubagentStatus();
-		timer = setInterval(() => { if (sessionCtx) void tick(sessionCtx); }, 500); timer.unref();
+		if (currentRef) requestTick(ctx);
 		startVisualTimer();
 		subagentPulseTimer = setInterval(() => {
 			if (runningSubagents.size === 0) return;
@@ -588,14 +714,24 @@ export default function workflows(pi: ExtensionAPI): void {
 		subagentPulseTimer.unref();
 	});
 
-	pi.on("session_shutdown", (_event, ctx) => {
-		if (timer) clearInterval(timer);
+	pi.on("session_shutdown", async (_event, ctx) => {
+		for (const ref of active.keys()) {
+			const adapter = adapters.find((candidate) => candidate.canHandle(ref));
+			if (adapter?.controlExecution && ownership.has(ref)) await adapter.controlExecution(ref, "detach", `session:${ctx.sessionManager.getSessionId()}:detach:${ownership.get(ref)}`, ctx).catch(() => undefined);
+		}
 		if (subagentPulseTimer) clearInterval(subagentPulseTimer);
 		if (visualTimer) clearInterval(visualTimer);
-		timer = undefined;
 		visualTimer = undefined;
 		subagentPulseTimer = undefined;
 		runningSubagents.clear();
+		runtimeEpoch++;
+		shuttingDown = true;
+		tickRequested = false;
+		for (const ref of lifecycleSubscriptions.keys()) stopLifecycle(ref);
+		active.clear();
+		ownership.clear();
+		currentRef = undefined;
+		currentSnapshot = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
 		sessionCtx = undefined;
 		dashboardInvalidate = undefined;

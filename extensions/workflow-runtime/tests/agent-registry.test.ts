@@ -47,6 +47,22 @@ test("reserves a logical agent and retains its slot across process attempts and 
 	assert.equal(await registry.activeCount(), 1);
 });
 
+test("publishes each durable lifecycle transition once and replay does not duplicate workers", async (t) => {
+	const { registry } = await fixture(t);
+	const events: string[] = [];
+	const unsubscribe = registry.subscribe((event) => events.push(event.type));
+	registry.subscribe(() => { throw new Error("observer failure"); });
+	const agent = await registry.reserve(input(1));
+	await registry.reserve(input(1));
+	const { attempt } = await registry.startAttempt(agent.id);
+	await registry.markRunning(agent.id, attempt.id, 1234);
+	await registry.recordExit(agent.id, attempt.id, 0);
+	await registry.transition(agent.id, "reported");
+	unsubscribe();
+	assert.deepEqual(events, ["agent.reserved", "agent.attempt_started", "agent.running", "agent.process_exited", "agent.reported"]);
+	assert.equal((await registry.list()).length, 1);
+});
+
 test("releases a slot only after a terminal logical transition", async (t) => {
 	const { registry } = await fixture(t, 1);
 	const agent = await registry.reserve(input(1));

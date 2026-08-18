@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowSnapshot } from "../api.js";
+import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
 import { installPermissionRuntime } from "../../permissions/runtime.js";
 
 function fixture(workflowConfirmed = true) {
@@ -40,7 +40,7 @@ function fixture(workflowConfirmed = true) {
 			setWidget(_id: string, value: unknown) { widget = value; },
 			setStatus(id: string, value: string | undefined) { if (value === undefined) statuses.delete(id); else statuses.set(id, value); },
 		},
-		sessionManager: { getEntries: () => entries },
+		sessionManager: { getEntries: () => entries, getSessionId: () => "test-session" },
 	};
 	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget, permissionMode: () => permissionMode };
 }
@@ -108,6 +108,72 @@ test("workflow start requires extension-owned bypass confirmation before adapter
 	assert.equal(prepared, false);
 	assert.equal(f.permissionMode(), "enforce");
 	assert.match(outcome.content[0].text, /cancelled/i);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("session restore establishes durable ownership before ticking a legacy running workflow", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:workflow", state: "running" } });
+	const controls: string[] = [];
+	let owned = false;
+	let snapshots = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution(_ref, command) { controls.push(command); owned = true; return { workflowRef: "test:workflow", mode: "running", generation: 1, ownerSessionId: "session" }; },
+		async snapshot(ref) { assert.equal(owned, true, "restore must establish a fence before its first snapshot/tick"); snapshots++; return { ref, title: "Restored", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	assert.deepEqual(controls, ["resume"]);
+	assert.ok(snapshots > 0);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("late failed settlement after stop is inert", async () => {
+	const f = fixture();
+	let rejectRun!: (error: Error) => void;
+	let runs = 0;
+	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep() { runs++; return new Promise<never>((_resolve, reject) => { rejectRun = reject; }); }, async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	await f.tools.get("workflow_control").execute("stop", { ref: "test:workflow", action: "stop" }, undefined, undefined, f.ctx);
+	rejectRun(new Error("late failure"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(runs, 1);
+	assert.equal(f.entries.some((entry) => (entry.data as any).state === "paused"), false);
+	assert.equal(f.messages.length, 0);
+	assert.equal(f.widget(), undefined);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("late successful settlement after stop is inert", async () => {
+	const f = fixture();
+	let resolveRun!: () => void;
+	let runs = 0;
+	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep() { runs++; return new Promise((resolve) => { resolveRun = () => resolve({ ref: "test:step", state: "completed", summary: "late success" }); }); }, async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	await f.tools.get("workflow_control").execute("stop", { ref: "test:workflow", action: "stop" }, undefined, undefined, f.ctx);
+	resolveRun();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(runs, 1);
+	assert.equal(f.entries.some((entry) => (entry.data as any).state === "paused"), false);
+	assert.equal(f.messages.length, 0);
+	assert.equal(f.widget(), undefined);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -397,6 +463,130 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	assert.equal(rendered.some((line) => /\b(running|merging)\b/.test(line)), false);
 	const icons = rendered.slice(1).map((line) => line.trimStart()[0]);
 	assert.equal(new Set(icons).size, 3, "task, merge, and evaluation activity have distinct animated icon families");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("an in-flight ready step animates immediately before the adapter reports running", async () => {
+	const f = fixture();
+	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
+	const snapshot: WorkflowSnapshot = {
+		ref: "test:workflow", title: "Starting implementation", status: "ready",
+		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep() { return neverSettles; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const widget = f.widget() as ((...args: any[]) => any);
+	const rendered = widget?.({}, f.ctx.ui.theme).render(100) as string[];
+	const activeLines = rendered.filter((line) => line.includes("Implementing"));
+	assert.equal(activeLines.length, 2, "stage and task both render as implementing");
+	assert.ok(activeLines.every((line) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line)), "in-flight ready state uses animated task frames instead of a static ready diamond");
+	assert.ok(activeLines.every((line) => !line.includes("◆")));
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("lifecycle callbacks refresh a queued review into its active dashboard state", async () => {
+	const f = fixture();
+	let phase: "queued" | "running" = "queued";
+	let notify!: () => void;
+	const refreshed = new Promise<void>((resolve) => { notify = resolve; });
+	let lifecycle!: () => void;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		subscribeLifecycle(_ref, _ctx, listener) { lifecycle = listener; return () => undefined; },
+		async snapshot(ref) {
+			if (phase === "running") notify();
+			return { ref, title: "Review lifecycle", status: "ready", steps: [{ ref: `${ref}/evaluation:review`, title: phase === "running" ? "Review · Re-reviewing #1" : "Review · Re-review requested", kind: "evaluation", status: phase === "running" ? "running" : "pending", detail: phase, dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+		},
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "work-item:review" }, undefined, undefined, f.ctx);
+	phase = "running";
+	lifecycle!();
+	await refreshed;
+	await new Promise((resolve) => setImmediate(resolve));
+	const widget = f.widget() as ((...args: any[]) => any);
+	const rendered = widget?.({}, f.ctx.ui.theme).render(100) as string[];
+	assert.ok(rendered.some((line) => line.includes("Re-reviewing #1")));
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("duplicate lifecycle callbacks coalesce behind one in-flight refresh", async () => {
+	const f = fixture();
+	let lifecycle!: () => void;
+	let refreshing = false;
+	let snapshots = 0;
+	let entered!: () => void;
+	const enteredRefresh = new Promise<void>((resolve) => { entered = resolve; });
+	let release!: () => void;
+	const barrier = new Promise<void>((resolve) => { release = resolve; });
+	let followUp!: () => void;
+	const completedFollowUp = new Promise<void>((resolve) => { followUp = resolve; });
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		subscribeLifecycle(_ref, _ctx, listener) { lifecycle = listener; return () => undefined; },
+		async snapshot(ref) {
+			snapshots++;
+			if (!refreshing) return { ref, title: "Coalesced", status: "ready", steps: [{ ref: `${ref}/step`, title: "Queued", kind: "task", status: "pending", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+			entered();
+			await barrier;
+			refreshing = false;
+			followUp();
+			return { ref, title: "Coalesced", status: "ready", steps: [{ ref: `${ref}/step`, title: "Active", kind: "task", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+		},
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:coalesced" }, undefined, undefined, f.ctx);
+	refreshing = true;
+	lifecycle!();
+	await enteredRefresh;
+	lifecycle!(); lifecycle!();
+	release();
+	await completedFollowUp;
+	assert.equal(snapshots, 3, "initial snapshot and exactly one coalesced refresh after the in-flight startup tick");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("stopping during asynchronous lifecycle setup prevents late listener installation", async () => {
+	const f = fixture();
+	let release!: () => void;
+	const barrier = new Promise<void>((resolve) => { release = resolve; });
+	let installed = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		subscribeLifecycle(_ref, _ctx, listener, signal) {
+			return barrier.then(() => {
+				if (signal?.aborted) return () => undefined;
+				installed++;
+				return () => undefined;
+			});
+		},
+		async snapshot(ref) { return { ref, title: "Cancellation", status: "ready", steps: [{ ref: `${ref}/step`, title: "Queued", kind: "task", status: "pending", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:cancel" }, undefined, undefined, f.ctx);
+	await f.tools.get("workflow_control").execute("stop", { ref: "test:cancel", action: "stop" }, undefined, undefined, f.ctx);
+	release();
+	await barrier;
+	await Promise.resolve();
+	assert.equal(installed, 0);
+	assert.equal(f.widget(), undefined);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

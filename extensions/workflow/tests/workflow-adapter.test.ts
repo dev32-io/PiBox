@@ -6,6 +6,13 @@ function task(id: string, status: string, dependsOn: string[] = [], stageId = "d
 	return { id, title: id, status, dependsOn, execution: { resourceClaims: [id] }, assembly: { stageId } };
 }
 
+async function evaluationStep(evaluation: any, agents: any[]) {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: evaluation.id }] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return agents; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
+	return (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
+}
+
 test("exposes dynamic agent delegation through the workflow adapter", async () => {
 	let captured: any;
 	const expected: any = { ref: "agent:critic", state: "completed", summary: "ready", agentId: "critic" };
@@ -75,7 +82,7 @@ test("renders a review-fix loop as one checkpoint step with phase and iteration"
 test("an active reviewer is the only source of Re-reviewing wording", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "planned", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3, reviewerAgentId: "reviewer" } };
-	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running" }] };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", activity: { kind: "review", generation: 2 } }] };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
@@ -86,7 +93,7 @@ test("an active reviewer is the only source of Re-reviewing wording", async () =
 test("a settled re-review report uses report wording, not active wording", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3, reviewerAgentId: "reviewer" } };
-	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited" }] };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited", activity: { kind: "review", generation: 2 } }] };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
@@ -126,6 +133,53 @@ test("a reported prior reviewer does not shadow a queued fixer", async () => {
 	assert.match(step.title, /Fix requested/);
 });
 
+test("stale original report does not shadow queued rereview", async () => {
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "launching", currentAttemptId: "new", attempts: [
+		{ id: "old", state: "exited", activity: { kind: "review", generation: 0 } },
+		{ id: "new", state: "launching", activity: { kind: "review", generation: 2 } },
+	] };
+	const step = await evaluationStep(evaluation, [reviewer]);
+	assert.equal(step.status, "running");
+	assert.match(step.title, /Re-reviewing #2/);
+});
+
+test("provider fallback attempts within one generation remain active", async () => {
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "planned", scope: { workItem: "example" }, loop: { state: "reviewing", iteration: 0, maxIterations: 3 } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", currentAttemptId: "fallback", attempts: [
+		{ id: "primary", state: "failed", activity: { kind: "review", generation: 0 } },
+		{ id: "fallback", state: "running", activity: { kind: "review", generation: 0 } },
+	] };
+	const step = await evaluationStep(evaluation, [reviewer]);
+	assert.equal(step.status, "running");
+	assert.match(step.title, /Reviewing/);
+});
+
+test("current-generation report is report-ready", async () => {
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited", activity: { kind: "review", generation: 2 } }] };
+	const step = await evaluationStep(evaluation, [reviewer]);
+	assert.equal(step.status, "attention");
+	assert.match(step.title, /Review report ready/);
+});
+
+test("awaiting manager overrides reported agents", async () => {
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "awaiting_manager", iteration: 2, maxIterations: 3 } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited", activity: { kind: "review", generation: 2 } }] };
+	const step = await evaluationStep(evaluation, [reviewer]);
+	assert.equal(step.status, "attention");
+	assert.match(step.title, /Needs attention · Approve or Request changes/);
+	assert.doesNotMatch(step.title, /Review report ready/);
+});
+
+test("repeated fixer generation uses repair iteration plus one", async () => {
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "fixing", iteration: 3, maxIterations: 4 } };
+	const fixer = { id: "fixer", role: "repair-implementer", evaluationId: "review", state: "running", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", activity: { kind: "repair", generation: 4 } }] };
+	const step = await evaluationStep(evaluation, [fixer]);
+	assert.equal(step.status, "running");
+	assert.match(step.title, /Fixing #4/);
+});
+
 test("downstream blocked re-review keeps requested wording in its detail", async () => {
 	const tasks: any[] = [task("blocked-task", "failed")];
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: "blocked-task" }], executionStages: [{ id: "delivery", tasks: ["blocked-task"] }], integrationUnits: [], evaluations: [{ id: "review" }] };
@@ -141,7 +195,7 @@ test("downstream blocked re-review keeps requested wording in its detail", async
 test("a failed fixer remains actionable during fixing", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "fixing", iteration: 1, maxIterations: 3, managerPrompt: "Fix F1", fixerAgentId: "fixer" } };
-	const fixer = { id: "fixer", role: "repair-implementer", evaluationId: "review", state: "failed", updatedAt: new Date().toISOString(), attempts: [] };
+	const fixer = { id: "fixer", role: "repair-implementer", evaluationId: "review", state: "failed", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "failed", activity: { kind: "repair", generation: 2 } }] };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [fixer]; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
 	const snapshot = await adapter.snapshot("work-item:example", {} as any);
@@ -202,6 +256,37 @@ test("stop ignores reported agents whose process already exited", async () => {
 	assert.equal(reads, 0, "settled agents are not sent through process signaling");
 	const result = await adapter.controlSubagent(reported.id, "stop", {} as any) as any;
 	assert.equal(result.signaled, false);
+});
+
+test("the default loop permits iteration eight and rejects a ninth repair", async () => {
+	let evaluation: any = { id: "review", checkpoint: "stage-review", status: "failed", findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "awaiting_manager", iteration: 7, maxIterations: 8 } };
+	const runtime: any = {
+		config: { limits: { repairRounds: 8 } },
+		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any) { evaluation = { ...evaluation, loop: { ...evaluation.loop, ...update } }; return evaluation; } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
+	await adapter.controlCheckpoint!("work-item:example/evaluation:review", "request_changes", { prompt: "Repair iteration eight" }, {} as any);
+	assert.equal(evaluation.loop.state, "fixing");
+	evaluation.loop = { ...evaluation.loop, state: "awaiting_manager", iteration: 8 };
+	await assert.rejects(() => adapter.controlCheckpoint!("work-item:example/evaluation:review", "request_changes", { prompt: "Attempt iteration nine" }, {} as any), /iteration limit/);
+	assert.equal(evaluation.loop.state, "awaiting_manager");
+});
+
+test("snapshot is a pure projection and reported-agent reconciliation is explicit", async () => {
+	let reconciliations = 0;
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; } }, agents: { async list() { return [{ id: "agent", state: "reported", attempts: [] }]; } } };
+	const adapter = createHarnessWorkflowAdapter({
+		runtimeFor: async () => runtime,
+		launchTask: async () => ({ content: [] }),
+		launchEvaluation: async () => ({ content: [] }),
+		async reconcileReported() { reconciliations++; },
+	});
+	await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(reconciliations, 0, "projection reads never settle canonical state");
+	await adapter.reconcileWorkflow!("work-item:example", {} as any);
+	assert.equal(reconciliations, 1, "the supervisor owns explicit reconciliation");
 });
 
 test("derives task, integration, and evaluation steps without mutating canonical state", async () => {
@@ -358,7 +443,7 @@ test("does not render exited or reported evaluation agents as running", async ()
 	const tasks: any[] = [task("first", "merged")];
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: "first" }], executionStages: [{ id: "delivery", tasks: ["first"] }], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", status: "planned", scope: { workItem: "example" } };
-	let agent: any = { id: "reviewer", state: "running", evaluationId: "review", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running" }] };
+	let agent: any = { id: "reviewer", state: "running", evaluationId: "review", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", activity: { kind: "review", generation: 0 } }] };
 	const runtime: any = {
 		identity: { root: "/repo" },
 		workItems: { async read() { return item; }, async activateDraftTasks() { return []; }, async readTask() { return tasks[0]; }, async readEvaluation() { return evaluation; } },
@@ -368,7 +453,7 @@ test("does not render exited or reported evaluation agents as running", async ()
 	let snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "running");
 
-	agent = { ...agent, state: "reported", attempts: [{ id: "attempt", state: "exited" }] };
+	agent = { ...agent, state: "reported", attempts: [{ id: "attempt", state: "exited", activity: { kind: "review", generation: 0 } }] };
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "attention");
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.detail, "result pending reconciliation");
@@ -379,7 +464,7 @@ test("does not render exited or reported evaluation agents as running", async ()
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.detail, "stale process state");
 
 	evaluation.loop = { state: "fixing", iteration: 1, maxIterations: 2 };
-	agent = { ...agent, role: "repair-implementer", state: "running", attempts: [{ id: "attempt", state: "running" }] };
+	agent = { ...agent, role: "repair-implementer", state: "running", attempts: [{ id: "attempt", state: "running", activity: { kind: "repair", generation: 2 } }] };
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "running", "active fixer wins over the ready loop label");
 });

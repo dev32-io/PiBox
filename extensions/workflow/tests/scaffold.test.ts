@@ -94,6 +94,7 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	});
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "medium");
+	assert.equal(loaded.config.limits.repairRounds, 8, "economy changes concurrency, not the bounded review/fix opportunity count");
 	const policy = await readFile(join(root, ".pi", "harness.yaml"), "utf8");
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);

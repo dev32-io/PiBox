@@ -7,6 +7,7 @@ import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig, mergeConfigValues, validateH
 import { HarnessError } from "../errors.js";
 
 test("uses cost-aware model-effort pairs for the four capability tiers", () => {
+	assert.equal(DEFAULT_HARNESS_CONFIG.limits.repairRounds, 8, "smaller models receive eight bounded review/fix opportunities by default");
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.modelTiers, {
 		max: ["openai-codex/gpt-5.6-sol#high"],
 		high: ["openai-codex/gpt-5.6-sol#medium"],
@@ -53,6 +54,7 @@ test("loads user then repository tier configuration and records a stable digest"
 	assert.equal(loaded.config.limits.maxConcurrency, 6);
 	assert.equal(loaded.config.limits.maxActiveSubagentsPerSession, 16);
 	assert.equal(loaded.config.limits.maxSubagentDepth, 1);
+	assert.equal(loaded.config.limits.repairRounds, 8, "partial repository configuration inherits the review/fix default");
 	assert.deepEqual(loaded.config.modelTiers.medium, ["local/bounded#off"]);
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.deepEqual(loaded.config.agents.implementer?.tools, DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, "harness policy cannot override frontmatter tools");

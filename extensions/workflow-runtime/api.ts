@@ -100,9 +100,24 @@ export interface WorkflowPreflight {
 	missingEnvironment?: string[];
 }
 
+export interface WorkflowExecutionControl {
+	workflowRef: string;
+	mode: "running" | "paused" | "stopped" | "completed";
+	generation: number;
+	ownerSessionId?: string;
+}
+
 export interface WorkflowAdapter {
 	id: string;
 	canHandle(ref: string): boolean;
+	/** Subscribe to durable worker lifecycle transitions for event-driven refreshes. Setup may be asynchronous. */
+	subscribeLifecycle?(ref: string, ctx: ExtensionContext, listener: () => void, signal?: AbortSignal): void | (() => void) | Promise<void | (() => void)>;
+	/** Durable workflow ownership boundary. Commands are idempotent by operationId. */
+	controlExecution?(ref: string, command: "start" | "pause" | "resume" | "stop" | "complete" | "detach" | "attach", operationId: string, ctx: ExtensionContext): Promise<WorkflowExecutionControl>;
+	listExecutionControls?(ctx: ExtensionContext): Promise<WorkflowExecutionControl[]>;
+	assertExecutionCurrent?(ref: string, generation: number, ctx: ExtensionContext): Promise<void>;
+	/** Explicit supervisor reconciliation command; snapshots remain pure reads. */
+	reconcileWorkflow?(ref: string, ctx: ExtensionContext): Promise<void>;
 	/** Cheap, side-effect-free validation performed before any worker is launched. */
 	preflightWorkflow?(ref: string, ctx: ExtensionContext): Promise<WorkflowPreflight>;
 	prepareWorkflow?(ref: string, ctx: ExtensionContext, onUpdate?: (progress: WorkflowStartProgress) => void): Promise<void>;

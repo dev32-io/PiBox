@@ -6,7 +6,7 @@ import {
 	type ProviderCooldowns,
 	type ProviderRoute,
 } from "../provider-fallback/index.js";
-import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord } from "./agent-registry.js";
+import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
 
 export interface CoordinatedLaunchInput extends AgentScope {
@@ -19,6 +19,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	provider: string;
 	model: string;
 	effort: string;
+	activity?: WorkflowActivityDescriptor;
 	providerCandidates?: ProviderRoute[];
 	tools: string[];
 	promptPath?: string;
@@ -92,7 +93,7 @@ export class LaunchCoordinator {
 			for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
 				const route = routes[routeIndex]!;
 				if (!this.cooldowns.available(route.provider)) continue;
-				const { attempt } = await this.registry.startAttempt(reserved.id, route);
+				const { attempt } = await this.registry.startAttempt(reserved.id, route, input.activity);
 				input.onStarted?.(await this.registry.get(reserved.id));
 				const attemptRoot = join(agentRoot, "attempts", attempt.id);
 				let running: Promise<unknown> | undefined;

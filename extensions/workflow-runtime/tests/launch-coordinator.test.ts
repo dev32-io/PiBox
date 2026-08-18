@@ -93,13 +93,17 @@ test("falls back through ordered routes without changing logical agent or Pi ses
 		sessions.push(args[args.indexOf("--session") + 1]!);
 		return { command: process.execPath, args: [route === "bad/one" ? limited : success] };
 	}, [], new ProviderCooldowns());
-	const result = await coordinator.launch({ operationId: "fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "bad", model: "one", effort: "low", providerCandidates: [{ provider: "bad", model: "one", effort: "low" }, { provider: "good", model: "two", effort: "low" }], tools: [], onText: (text) => updates.push(text) });
+	const result = await coordinator.launch({ operationId: "fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "bad", model: "one", effort: "low", activity: { kind: "review", generation: 0 }, providerCandidates: [{ provider: "bad", model: "one", effort: "low" }, { provider: "good", model: "two", effort: "low" }], tools: [], onText: (text) => updates.push(text) });
 	assert.equal(result.result.text, "ok");
 	assert.deepEqual(seen, ["bad/one", "good/two"]);
 	assert.deepEqual(updates, ["ok"]);
 	assert.equal(new Set(sessions).size, 1);
 	assert.equal(result.agent.provider, "good");
 	assert.equal(result.agent.attempts.length, 2);
+	assert.deepEqual(result.agent.attempts.map((attempt) => attempt.activity), [
+		{ kind: "review", generation: 0 },
+		{ kind: "review", generation: 0 },
+	]);
 });
 
 test("does not fallback non-provider failures", async (t) => {
