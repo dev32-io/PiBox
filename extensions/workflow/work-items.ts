@@ -1315,7 +1315,7 @@ export class WorkItemStore {
 			const rendered = history + lines.join("\n") + "\n";
 			try {
 				evaluation.status = "passed";
-				evaluation.loop = { state: "passed", iteration: evaluation.loop?.iteration ?? 0, maxIterations: evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS, ...evaluation.loop, acceptedRisks };
+				evaluation.loop = { iteration: evaluation.loop?.iteration ?? 0, maxIterations: evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS, ...evaluation.loop, state: "passed", acceptedRisks };
 				evaluation.result = { ...(evaluation.result ?? { verdict: "pass", report: "report.md" }), verdict: "pass", riskAcceptance: "risk-acceptance.md" };
 				await atomicWriteFile(riskPath, rendered);
 				await atomicWriteFile(evaluationPath, stringify(evaluation));

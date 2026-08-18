@@ -236,6 +236,26 @@ test("emits one completion feedback after a merge settles", async () => {
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("a completed review wakes the main session and emits success feedback", async () => {
+	const f = fixture();
+	let done = false;
+	const feedback: WorkflowFeedbackEvent[] = [];
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() { return { ref: "test:workflow", title: "Review boundary", status: done ? "done" : "ready", steps: [{ ref: "test:evaluation", title: "Stage review", kind: "evaluation", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Review passed." }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(feedback.filter((event) => event.type === "task-completed" && event.toStatus === "approved").length, 1);
+	assert.equal(f.messages.filter(({ message, options }) => (message as any).customType === "pibox-workflow-event" && (options as any).deliverAs === "followUp" && (options as any).triggerTurn === true).length, 1);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("emits workflow error feedback when a step pauses for attention", async () => {
 	const f = fixture();
 	const feedback: WorkflowFeedbackEvent[] = [];

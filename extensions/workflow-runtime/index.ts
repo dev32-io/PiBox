@@ -131,12 +131,15 @@ export default function workflows(pi: ExtensionAPI): void {
 		const safe = boundedNotice(event);
 		notices.set(safe.workflowRef, safe);
 		if (sessionCtx) renderDashboard(sessionCtx);
-		// Routine lifecycle is a widget concern. Only actionable attention steers the
-		// orchestrator; this prevents a busy run from growing the main transcript.
-		if (!safe.attention) return;
+		// Routine lifecycle is a widget concern. Review completion is also a main-
+		// session boundary: the orchestrator may need to honor a deferred user
+		// instruction before the next stage, and must not remain stuck describing an
+		// already-settled review.
+		const reviewCompleted = !safe.attention && safe.kind === "evaluation" && safe.toStatus === "done";
+		if (!safe.attention && !reviewCompleted) return;
 		try {
 			const detail = [safe.detail, safe.cause ? `Cause: ${bounded(safe.cause, 120)}` : undefined, safe.nextAction ? `Next: ${safe.nextAction}` : undefined].filter(Boolean).join("\n");
-			pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow attention]\n${safe.title}${detail ? `\n${detail}` : ""}`, display: false, details: safe }, { deliverAs: "steer", triggerTurn: true });
+			pi.sendMessage({ customType: "pibox-workflow-event", content: `[${safe.attention ? "Workflow attention" : "Workflow progress"}]\n${safe.title}${detail ? `\n${detail}` : ""}`, display: false, details: safe }, { deliverAs: safe.attention ? "steer" : "followUp", triggerTurn: true });
 		} catch {
 			// A replacement or closing session will reconcile from durable adapter state.
 		}
@@ -279,8 +282,9 @@ export default function workflows(pi: ExtensionAPI): void {
 			// Completion feedback is reserved for the canonical merge barrier. A worker
 			// handoff is useful progress, but is not task completion yet.
 			const taskMerged = step.kind === "merge" && terminalStep?.status === "done";
-			if (workflowRef && settled.state === "completed" && !attention && taskMerged) {
-				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: "merged", terminal: true });
+			const reviewCompleted = step.kind === "evaluation" && terminalStep?.status === "done";
+			if (workflowRef && settled.state === "completed" && !attention && (taskMerged || reviewCompleted)) {
+				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: taskMerged ? "merged" : "approved", terminal: true });
 			}
 			if (attention) {
 				if (workflowRef) {

@@ -263,8 +263,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// reviewer can be active while the canonical loop is still being settled.
 				// A durable manager checkpoint is authoritative, even when a persistent
 				// reviewer still has a reported process record.
-				if (evaluation.loop?.state === "awaiting_manager") { status = "attention"; detail = "Needs attention · Approve or Request changes"; }
-				else if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "skipped") status = "done";
+				if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" || evaluation.loop?.state === "skipped") status = "done";
+				else if (evaluation.loop?.state === "awaiting_manager") { status = "attention"; detail = "Needs attention · Approve or Request changes"; }
 				else if (activity.running) { status = "running"; detail = evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, (evaluation.loop?.iteration ?? 0) + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"; }
 				else if (activity.attention) { status = "attention"; detail = activity.attention; }
 				else if (dependencyAttention) { status = "attention"; detail = `blocked by ${dependencyAttention.title}`; }
@@ -275,8 +275,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// Durable loop states describe intent, not process activity. Keep this as the
 				// canonical user-facing phase so queued work and settled reports cannot look
 				// like an active worker in the dashboard or workflow events.
-				const phase = evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
-					: ["passed", "not_applicable"].includes(evaluation.status) ? "Approved"
+				const phase = ["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" ? "Approved"
+					: evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
 					: activity.running ? evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"
 					: activity.attention === "result pending reconciliation" ? "Review report ready"
 					: evaluation.loop?.state === "fixing" ? "Fix requested"

@@ -112,6 +112,13 @@ test("settled awaiting_manager with a persistent reported reviewer uses explicit
 	assert.doesNotMatch(step.title, /Review report ready/);
 });
 
+test("passed status overrides a stale awaiting-manager loop during recovery", async () => {
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "passed", scope: { workItem: "example" }, loop: { state: "awaiting_manager", iteration: 3, maxIterations: 3 } };
+	const step = await evaluationStep(evaluation, []);
+	assert.equal(step.status, "done");
+	assert.match(step.title, /Approved/);
+});
+
 test("awaiting manager presents an explicit review checkpoint", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "awaiting_manager", iteration: 1, maxIterations: 3 } };
