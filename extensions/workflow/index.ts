@@ -23,6 +23,7 @@ import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
 import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type MutationAuthority, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
+import { CanonicalMutationCoordinator, runManagedChild } from "./canonical-mutation.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
@@ -360,13 +361,14 @@ async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager
 	const mainAgentId = `main:${sessionId}`;
 	const agents = new SessionAgentRegistry(identity.privateRoot, sessionId, loaded.config.limits.maxActiveSubagentsPerSession, loaded.config.limits.maxSubagentDepth);
 	await agents.initialize(mainAgentId);
+	const canonical = new CanonicalMutationCoordinator(identity.root, identity.commonDir ?? join(identity.root, ".git"));
 	return {
 		identity,
 		events,
-		workItems: new WorkItemStore(identity.root),
+		workItems: new WorkItemStore(identity.root, canonical),
 		config: loaded.config,
 		operations: new IdempotencyStore(identity.privateRoot),
-		mutex: new RepositoryMutex(identity.privateRoot),
+		mutex: canonical.mutex,
 		agents,
 		// Memory retrieval and bounded distillation reads are agent-context
 		// capabilities, not orchestrator-only tools. Load their hooks explicitly so
@@ -571,7 +573,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			await locks.acquire(task.execution.resourceClaims, `${item.id}/${task.id}`);
 			const allocation = await runtime.mutex.run(`allocate:${item.id}:${task.id}`, () => manager.allocate(item.id, task));
 			const persistentContext = await buildTaskPersistentContext(runtime.workItems, item.id, task);
-			const launched = await supervisor.launchTask({
+			const launch = () => supervisor.launchTask({
 				identity: runtime.identity,
 				workItemId: item.id,
 				task,
@@ -594,6 +596,10 @@ export default function workflow(pi: ExtensionAPI): void {
 				...(signal ? { signal } : {}),
 				...(onUpdate ? { onUpdate } : {}),
 			});
+			// Repository children may commit in the canonical checkout. Hold the
+			// common-dir lock until the child exits and handoff settlement finishes.
+			// Isolated worktree children have distinct indexes and remain parallel.
+			const launched = await runManagedChild(runtime.mutex, allocation.isolation, `task-child:${item.id}:${task.id}`, launch);
 			await runtime.events.append("task.run_settled", { workItemId: item.id, taskId: task.id, runId: launched.run.id, state: launched.run.state });
 			const settledRoute = `${launched.run.resolvedProvider ?? resolution.model.provider}/${launched.run.resolvedModel ?? resolution.model.id}#${launched.run.resolvedEffort ?? resolution.effort}`;
 			return textResult(
@@ -608,6 +614,11 @@ export default function workflow(pi: ExtensionAPI): void {
 	};
 
 	const launchManagedIntegrationRepair = async (ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal) => {
+		const runtime = await runtimeFor(ctx);
+		return runtime.mutex.run(`integration-repair:${workItemId}:${stageId}`, () => launchManagedIntegrationRepairUnlocked(ctx, workItemId, stageId, taskIds, evidencePath, signal));
+	};
+
+	const launchManagedIntegrationRepairUnlocked = async (ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal) => {
 		requireTrusted(ctx);
 		const runtime = await runtimeFor(ctx);
 		const item = await runtime.workItems.read(workItemId);
@@ -668,11 +679,15 @@ export default function workflow(pi: ExtensionAPI): void {
 		const priorAttempts = (await runtime.agents.list()).filter((agent) => agent.operationId === operationBase || agent.operationId.startsWith(`${operationBase}:retry:`));
 		const operationId = priorAttempts.length === 0 ? operationBase : `${operationBase}:retry:${priorAttempts.length}`;
 		const persistentContext = await buildReviewPersistentContext(runtime.workItems, workItemId, evaluation);
+		// Repair implementers work in the canonical checkout and may commit there.
+		// Keep the common-dir lock for the child lifetime and settlement; unlike
+		// evaluators, repair agents do not need evaluation_record while running.
+		return runtime.mutex.run(`repair-child:${workItemId}:${evaluationId}`, async () => {
 		try {
 			const launched = await runtime.coordinator.launch({
 				operationId, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
-				task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }),
-				assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt }, cwd: runtime.identity.root,
+				task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }),
+				assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }, cwd: runtime.identity.root,
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
 				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
@@ -686,6 +701,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			await runtime.mutex.run(`repair-failed:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "awaiting_manager", iteration: loop.iteration, managerPrompt: loop.managerPrompt! }, evaluation.status));
 			throw error;
 		}
+		});
 	};
 
 	const launchManagedEvaluation = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {

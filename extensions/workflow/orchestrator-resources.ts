@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
@@ -6,6 +6,7 @@ import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js"
 import { isTierTaskAssignment, taskAgentName, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { resolveStageMode } from "./execution-topology.js";
 import { WorkItemStore } from "./work-items.js";
+import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 
 export type CanonicalResourceType = "work-item" | "artifact" | "task" | "stage" | "evaluation";
 
@@ -72,10 +73,12 @@ export class OrchestratorResourceService {
 	readonly repositoryRoot: string;
 	readonly store: WorkItemStore;
 	readonly config: HarnessConfig | undefined;
+	readonly coordinator: CanonicalMutationCoordinator;
 
-	constructor(repositoryRoot: string, store = new WorkItemStore(repositoryRoot), config?: HarnessConfig) {
+	constructor(repositoryRoot: string, store = new WorkItemStore(repositoryRoot), config?: HarnessConfig, coordinator?: CanonicalMutationCoordinator) {
 		this.repositoryRoot = repositoryRoot;
 		this.store = store;
+		this.coordinator = coordinator ?? store.coordinator;
 		this.config = config;
 	}
 
@@ -97,31 +100,40 @@ export class OrchestratorResourceService {
 	}
 
 	async transaction<T>(label: string, operation: () => Promise<T>): Promise<{ value: T; commit?: string }> {
-		await assertCleanRepository(this.repositoryRoot);
-		const base = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
-		const startingBranch = await runGit(this.repositoryRoot, ["branch", "--show-current"]);
-		try {
-			const value = await operation();
-			const head = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
-			if (head === base) return { value };
-			await this.assertOwnedCommits(base);
-			await runGit(this.repositoryRoot, ["reset", "--soft", base]);
-			const message = label.startsWith("harness(") ? label : `harness(resource-api): ${label.replace(/^harness:\s*/, "")}`;
-			await runGit(this.repositoryRoot, ["commit", "-m", message]);
-			return { value, commit: await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]) };
-		} catch (error) {
-			const head = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]).catch(() => base);
-			if (head !== base) {
+		return this.coordinator.run(`resource:${label}`, async () => {
+			await assertCleanRepository(this.repositoryRoot);
+			const base = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+			try {
+				const value = await operation();
+				const head = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+				if (head === base) return { value };
 				await this.assertOwnedCommits(base);
-				await runGit(this.repositoryRoot, ["reset", "--hard", base]);
+				const paths = (await runGit(this.repositoryRoot, ["diff", "--name-only", `${base}..HEAD`])).split("\n").filter(Boolean);
+				if (paths.some((path) => !path.startsWith("agent-artifacts/"))) throw new HarnessError("GIT_OPERATION_FAILED", "Resource transaction touched non-harness paths; refusing to coalesce");
+				await runGit(this.repositoryRoot, ["reset", "--soft", base]);
+				await this.coordinator.commitHarness(paths.map((path) => join(this.repositoryRoot, path)), label.startsWith("harness(") ? label : `harness(resource-api): ${label.replace(/^harness:\s*/, "")}`);
+				return { value, commit: await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]) };
+			} catch (error) {
+				try {
+					const head = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+					if (head !== base) {
+						const subjects = (await runGit(this.repositoryRoot, ["log", "--format=%s", `${base}..HEAD`])).split("\n").filter(Boolean);
+						const paths = (await runGit(this.repositoryRoot, ["diff", "--name-only", `${base}..HEAD`])).split("\n").filter(Boolean);
+						if (subjects.some((subject) => !subject.startsWith("harness(")) || paths.some((path) => !path.startsWith("agent-artifacts/"))) throw new Error("canonical branch advanced outside transaction-owned harness metadata; preserved");
+						await runGit(this.repositoryRoot, ["reset", "--soft", base]);
+						for (const path of paths) {
+							const existed = await runGit(this.repositoryRoot, ["cat-file", "-e", `${base}:${path}`]).then(() => true, () => false);
+							if (existed) await runGit(this.repositoryRoot, ["restore", "--source", base, "--staged", "--worktree", "--", path]);
+							else { await runGit(this.repositoryRoot, ["reset", "HEAD", "--", path]); await rm(join(this.repositoryRoot, path), { recursive: true, force: true }); }
+						}
+					}
+					await assertCleanRepository(this.repositoryRoot);
+				} catch (rollbackError) {
+					throw new HarnessError("GIT_OPERATION_FAILED", `Resource mutation failed: ${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. External work was preserved.`, { base });
+				}
+				throw error;
 			}
-			const failedBranch = await runGit(this.repositoryRoot, ["branch", "--show-current"]).catch(() => startingBranch);
-			if (startingBranch && failedBranch !== startingBranch && /^(feature|fix)\//.test(failedBranch)) {
-				await runGit(this.repositoryRoot, ["switch", startingBranch]);
-				await runGit(this.repositoryRoot, ["branch", "-D", failedBranch]);
-			}
-			throw error;
-		}
+		});
 	}
 
 	async coalesceRevision(workItemId: string, baseline: WorkItemIndex | undefined, _authority: MutationAuthority): Promise<WorkItemIndex> {
@@ -131,8 +143,7 @@ export class OrchestratorResourceService {
 		current.planning.revision = revision;
 		const indexPath = join(this.store.workItemRoot(workItemId), "index.yaml");
 		await atomicWriteFile(indexPath, stringify(current));
-		await runGit(this.repositoryRoot, ["add", "--", relative(this.repositoryRoot, indexPath)]);
-		await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): coalesce resource change`]);
+		await this.coordinator.commitHarness([indexPath], `harness(${workItemId}): coalesce resource change`);
 		return current;
 	}
 

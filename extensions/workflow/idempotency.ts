@@ -1,6 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { HarnessError } from "./errors.js";
 import { atomicWriteFile } from "./repository.js";
 
@@ -16,13 +17,22 @@ function digest(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
+const activeTransactions = new AsyncLocalStorage<Set<string>>();
+
 export class RepositoryMutex {
 	readonly path: string;
 	readonly waitTimeoutMs: number;
 	#tail: Promise<void> = Promise.resolve();
 
 	constructor(repositoryPrivateRoot: string, waitTimeoutMs = 30_000) {
-		this.path = join(repositoryPrivateRoot, "locks", "canonical");
+		// A repository-local .pibox is intentionally untracked; placing the lock in
+		// it would make clean-state validation race with the lock receipt itself.
+		// All canonical callers use this one common-Git-directory location. The
+		// fallback keeps the small standalone mutex API useful in unit tests.
+		// Repository callers pass the discovered Git common directory (or the
+		// explicit .pibox root used by standalone mutex tests). Never derive the
+		// identity from a repository basename: linked worktrees share this path.
+		this.path = join(resolve(repositoryPrivateRoot), "locks", "canonical");
 		this.waitTimeoutMs = waitTimeoutMs;
 	}
 
@@ -47,6 +57,11 @@ export class RepositoryMutex {
 	}
 
 	async run<T>(owner: string, operation: () => Promise<T>): Promise<T> {
+		// Higher-level resource transactions and store methods intentionally share one
+		// coordinator. Re-entry is safe within one async transaction and avoids the
+		// deadlock that separate API layers would otherwise create.
+		const inherited = activeTransactions.getStore();
+		if (inherited?.has(this.path)) return operation();
 		const previous = this.#tail;
 		let releaseQueue!: () => void;
 		this.#tail = new Promise<void>((resolve) => (releaseQueue = resolve));
@@ -54,7 +69,8 @@ export class RepositoryMutex {
 		try {
 			await this.acquire(owner);
 			try {
-				return await operation();
+				const scope = new Set(inherited ?? []); scope.add(this.path);
+				return await activeTransactions.run(scope, operation);
 			} finally {
 				await rm(this.path, { recursive: true, force: true });
 			}

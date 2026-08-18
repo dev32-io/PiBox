@@ -34,12 +34,13 @@ export async function reconcileReportedAgents(input: {
 				const commits = (await runGit(workspace, ["rev-list", "--reverse", `${run.baseCommit}..HEAD`])).split("\n").filter(Boolean);
 				const artifactChanges = await runGit(workspace, ["diff", "--name-only", `${run.baseCommit}..HEAD`, "--", "agent-artifacts"]);
 				if (status || artifactChanges || !handoff.commits.includes(head) || handoff.commits.some((commit) => !commits.includes(commit))) throw new Error("Recovered task handoff failed Git or scope validation");
-				await input.mutex.run(`reconcile-task:${agent.id}`, async () => {
+				await input.workItems.coordinator.run(`reconcile-task:${agent.id}`, async () => {
+					const currentRun = await runs.read(agent.runId!);
 					const currentTask = await input.workItems.readTask(agent.workItemId!, agent.taskId!);
 					if (currentTask.runtime?.completedCommit !== head || !["contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated"].includes(currentTask.status)) {
 						await input.workItems.updateTask(agent.workItemId!, agent.taskId!, { status: "contribution_complete", runtime: { completedCommit: head } });
 					}
-					if (run.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
+					if (currentRun.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
 				});
 				await input.registry.transition(agent.id, "completed", { summary: handoff.summary });
 				result.completed.push(agent.id);
@@ -48,17 +49,21 @@ export async function reconcileReportedAgents(input: {
 
 			if (agent.workItemId && agent.runId && agent.evaluationId) {
 				const runs = new HarnessRunStore(input.identity.privateRoot, agent.workItemId);
-				const run = await runs.read(agent.runId);
 				const handoff = await runs.readEvaluationHandoff(agent.runId);
 				if (!handoff) { result.pending.push(agent.id); continue; }
-				const current = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
-				// The run attempt is allocated before the child starts. If canonical state
-				// already reached that attempt, recovery must not count it again—even if a
-				// process died after committing the manifest but before its run receipt.
-				const alreadyRecorded = current.attempt >= run.attempt;
-				if (!alreadyRecorded) await input.workItems.recordEvaluation({ workItemId: agent.workItemId!, evaluationId: agent.evaluationId!, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
-				if (run.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
-				const settled = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
+				// The attempt check, canonical record, and run settlement are one mutation:
+				// a second reconciler cannot observe the old attempt between these steps.
+				const settled = await input.workItems.coordinator.run(`reconcile-evaluation:${agent.id}`, async () => {
+					// The run must be read after acquiring the canonical lock. Otherwise an
+					// evaluation checkpoint can race this settlement and produce a second
+					// completion event from stale state.
+					const run = await runs.read(agent.runId!);
+					const current = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
+					if (current.attempt < run.attempt) await input.workItems.recordEvaluation({ workItemId: agent.workItemId!, evaluationId: agent.evaluationId!, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
+					const freshRun = await runs.read(agent.runId!);
+					if (freshRun.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
+					return input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
+				});
 				// A failed review is a checkpoint, not the end of the logical reviewer.
 				// Keep it reported so a later repair/re-review can reuse its identity.
 				if (settled.loop?.state === "awaiting_manager" || settled.loop?.state === "fixing" || settled.loop?.state === "rereviewing") {

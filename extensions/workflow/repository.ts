@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -12,6 +13,7 @@ export interface RepositoryIdentity {
 	id: string;
 	root: string;
 	privateRoot: string;
+	commonDir?: string;
 }
 
 export async function runGit(cwd: string, args: string[]): Promise<string> {
@@ -35,6 +37,13 @@ export async function isGitPathIgnored(repositoryRoot: string, repositoryRelativ
 	}
 }
 
+export function discoverCommonDirSync(cwd: string): string | undefined {
+	try {
+		const value = execFileSync("git", ["rev-parse", "--git-common-dir"], { cwd, encoding: "utf8" }).trim();
+		return realpathSync(isAbsolute(value) ? value : resolve(cwd, value));
+	} catch { return undefined; }
+}
+
 export async function discoverRepository(cwd: string, home = homedir()): Promise<RepositoryIdentity> {
 	let root: string;
 	try {
@@ -49,7 +58,7 @@ export async function discoverRepository(cwd: string, home = homedir()): Promise
 	const id = createHash("sha256").update(commonDir).digest("hex").slice(0, 20);
 	// Operational records belong to the repository, but remain intentionally untracked.
 	// Resolving from the common Git directory keeps every linked worktree on one shared state root.
-	return { id, root: canonicalRoot, privateRoot: join(canonicalRoot, ".pibox") };
+	return { id, root: canonicalRoot, privateRoot: join(canonicalRoot, ".pibox"), commonDir };
 }
 
 export async function assertCleanRepository(root: string): Promise<void> {

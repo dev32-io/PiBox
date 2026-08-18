@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
 import { taskExecutionTopology, type TaskExecutionIsolation } from "./execution-topology.js";
 import { assertCleanRepository, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
+import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import type { TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 
@@ -105,10 +106,12 @@ export class WorktreeManager {
 	readonly identity: RepositoryIdentity;
 	readonly workItems: WorkItemStore;
 	readonly worktreeRoot: string;
+	readonly coordinator: CanonicalMutationCoordinator;
 
-	constructor(identity: RepositoryIdentity) {
+	constructor(identity: RepositoryIdentity, coordinator?: CanonicalMutationCoordinator) {
 		this.identity = identity;
-		this.workItems = new WorkItemStore(identity.root);
+		this.coordinator = coordinator ?? new CanonicalMutationCoordinator(identity.root, identity.commonDir ?? identity.root);
+		this.workItems = new WorkItemStore(identity.root, this.coordinator);
 		this.worktreeRoot = join(identity.root, ".worktree", "pibox");
 	}
 
@@ -140,6 +143,10 @@ export class WorktreeManager {
 	}
 
 	async allocate(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
+		return this.coordinator.run(`allocate:${workItemId}:${task.id}`, () => this.allocateUnlocked(workItemId, task));
+	}
+
+	private async allocateUnlocked(workItemId: string, task: TaskManifest): Promise<AllocatedWorktree> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId);
 		for (const dependency of task.dependsOn) {
@@ -206,6 +213,10 @@ export class WorktreeManager {
 	}
 
 	async removeManaged(name: string, force = false): Promise<ManagedWorktree> {
+		return this.coordinator.run(`remove-worktree:${name}`, () => this.removeManagedUnlocked(name, force));
+	}
+
+	private async removeManagedUnlocked(name: string, force = false): Promise<ManagedWorktree> {
 		const worktree = (await this.listManaged()).find((candidate) => candidate.name === name);
 		if (!worktree) throw new HarnessError("INVALID_ARTIFACT", `Unknown PiBox worktree: ${name}`);
 		if (worktree.active) throw new HarnessError("CAPABILITY_DENIED", `Worktree is active and cannot be removed: ${name}`);
@@ -229,7 +240,7 @@ export class WorktreeManager {
 		if (!evidencePath) return undefined;
 		const content = await readFile(evidencePath, "utf8");
 		const headers = new Map<string, string>();
-		for (const line of content.split(/\\r?\\n/)) {
+		for (const line of content.split(/\r?\n/)) {
 			const separator = line.indexOf(":");
 			if (separator < 0) continue;
 			headers.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
@@ -267,6 +278,10 @@ export class WorktreeManager {
 	}
 
 	async mergeTask(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
+		return this.coordinator.run(`integration:${workItemId}:${taskId}`, () => this.mergeTaskUnlocked(workItemId, taskId, checks));
+	}
+
+	private async mergeTaskUnlocked(workItemId: string, taskId: string, checks?: string[]): Promise<IntegrationResult> {
 		await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId);
 		const workingBranch = item.delivery?.workingBranch;
@@ -319,7 +334,7 @@ export class WorktreeManager {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			const status = await runGit(this.identity.root, ["status", "--porcelain=v1", "--untracked-files=all"]).catch(() => "");
-			const conflicted = /(^|\\n)UU |(^|\\n)AA |(^|\\n)DD |(^|\\n)AU |(^|\\n)UA /.test(status) || message.includes("CONFLICT");
+			const conflicted = /(^|\n)UU |(^|\n)AA |(^|\n)DD |(^|\n)AU |(^|\n)UA /.test(status) || message.includes("CONFLICT");
 			if (conflicted) {
 				// Capture the failed merge before restoring the canonical branch. Contributor
 				// branches remain intact, so a harness-owned repair can reproduce the merge
@@ -328,19 +343,31 @@ export class WorktreeManager {
 				await mkdir(dirname(evidencePath), { recursive: true });
 				const diff = await runGit(this.identity.root, ["diff", "--cc"]).catch(() => "");
 				await writeFile(evidencePath, `stage: ${topology.stageId}\ntasks: ${taskIds.join(", ")}\nbase: ${baseCommit}\nstatus:\n${status}\nconflict:\n${message}\ncombined diff:\n${diff}`, "utf8");
-				await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
+				try { await runGit(this.identity.root, ["merge", "--abort"]); } catch (rollbackError) { throw new HarnessError("GIT_OPERATION_FAILED", `Integration rollback failed after conflict: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`, { baseCommit, evidencePath }); }
 				await runGit(this.identity.root, ["reset", "--hard", baseCommit]);
 				throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${topology.stageId} integration conflict requires managed repair. The working branch was restored clean; contributor branches and private evidence are preserved at ${evidencePath}. Resume through the harness repair path.`, { conflict: true, stageId: topology.stageId, taskIds, evidencePath, baseCommit });
 			}
-			// Non-conflict failures retain the prior atomic rollback behavior.
-			await runGit(this.identity.root, ["merge", "--abort"]).catch(() => undefined);
-			await runGit(this.identity.root, ["reset", "--hard", baseCommit]).catch(() => undefined);
+			// Never suppress rollback failures: managed recovery needs the original
+			// failure and the repository evidence, not a falsely clean result.
+			const mergeInProgress = await runGit(this.identity.root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(() => true, () => false);
+			if (mergeInProgress) {
+				try { await runGit(this.identity.root, ["merge", "--abort"]); } catch (rollbackError) { throw new HarnessError("GIT_OPERATION_FAILED", `Integration rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}; original: ${message}`, { baseCommit, rollbackError }); }
+			}
+			try { await runGit(this.identity.root, ["reset", "--hard", baseCommit]); } catch (rollbackError) { throw new HarnessError("GIT_OPERATION_FAILED", `Integration rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}; original: ${message}`, { baseCommit, rollbackError }); }
 			if (error instanceof HarnessError) throw error;
 			throw new HarnessError("GIT_OPERATION_FAILED", `Atomic stage merge failed for ${topology.stageId}: ${message}`);
 		}
-		// Stage refs are concurrency barriers, never sequential-task state.
-		if (concurrentStage) await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(workItemId, topology.stageId)]).catch(() => undefined);
-		await this.workItems.refreshReadyTasks(workItemId);
+		// Settlement is deliberately still inside mergeTask's coordinator lease.  Do
+		// not delete the barrier ref until canonical readiness metadata has settled:
+		// a failure must be loud and recoverable, never a silently stale ref/task pair.
+		try {
+			await this.workItems.refreshReadyTasks(workItemId);
+			// Stage refs are concurrency barriers, never sequential-task state.
+			if (concurrentStage) await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(workItemId, topology.stageId)]);
+		} catch (settlementError) {
+			const message = settlementError instanceof Error ? settlementError.message : String(settlementError);
+			throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${topology.stageId} merged, but post-merge settlement requires managed recovery: ${message}. Canonical commits and task ownership were preserved; the stage barrier ref is retained when deletion did not complete.`, { stageId: topology.stageId, taskIds, settlementError: message });
+		}
 		return { commit: await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, taskIds, stageId: topology.stageId, checks: checkResults };
 	}
 }

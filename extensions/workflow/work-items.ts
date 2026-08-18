@@ -6,8 +6,8 @@ import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { validateExecutionTopology } from "./execution-topology.js";
-import { RepositoryMutex } from "./idempotency.js";
-import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
+import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit } from "./repository.js";
+import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import { isTierTaskAssignment, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -199,10 +199,13 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 export class WorkItemStore {
 	readonly repositoryRoot: string;
 	readonly artifactRoot: string;
+	readonly coordinator: CanonicalMutationCoordinator;
 
-	constructor(repositoryRoot: string) {
+	constructor(repositoryRoot: string, coordinator?: CanonicalMutationCoordinator) {
 		this.repositoryRoot = resolve(repositoryRoot);
 		this.artifactRoot = join(this.repositoryRoot, "agent-artifacts");
+		const commonDir = discoverCommonDirSync(this.repositoryRoot);
+		this.coordinator = coordinator ?? new CanonicalMutationCoordinator(this.repositoryRoot, commonDir ?? this.repositoryRoot);
 	}
 
 	workItemRoot(id: string): string {
@@ -273,6 +276,10 @@ export class WorkItemStore {
 	}
 
 	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
+		return this.coordinator.run(`work-item-create:${input.id}`, () => this.createUnlocked(input));
+	}
+
+	private async createUnlocked(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
 		validateId(input.id, "Work-item id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		const intent = narrativeSchemaVersion === 2
@@ -288,13 +295,18 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.id);
 		if (await pathExists(root)) throw new HarnessError("WORK_ITEM_EXISTS", `Work item already exists: ${input.id}`);
+		// Capture both sides of the branch operation before pull/switch.  A failed
+		// create must return the checkout to exactly the branch the caller supplied;
+		// it must never reset that branch, since it may have advanced externally.
+		const originalBranch = await this.currentBranch();
+		const originalHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
 		const requestedBranch = input.delivery?.workingBranch ?? input.workingBranch;
 		const inferredKind = requestedBranch?.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
-		const delivery = await this.prepareWorkingBranch(input.id, requestedBranch, input.branchKind ?? inferredKind);
-
+		let delivery: WorkItemDelivery | undefined;
 		const temporary = join(this.artifactRoot, `.${input.id}.tmp-${randomUUID()}`);
-		await mkdir(temporary, { recursive: true });
 		try {
+			delivery = await this.prepareWorkingBranch(input.id, requestedBranch, input.branchKind ?? inferredKind);
+			await mkdir(temporary, { recursive: true });
 			await writeFile(join(temporary, "intent.md"), `${intent.trim()}\n`, "utf8");
 			const index: WorkItemIndex = {
 				schemaVersion: 1,
@@ -313,20 +325,39 @@ export class WorkItemStore {
 			await writeFile(join(temporary, "index.yaml"), stringify(index), "utf8");
 			await mkdir(this.artifactRoot, { recursive: true });
 			await rename(temporary, root);
-			try {
-				await this.commit([root], `harness(${input.id}): create work item`);
-			} catch (error) {
-				await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, root)]).catch(() => undefined);
-				await rm(root, { recursive: true, force: true });
-				throw error;
-			}
+			await this.commit([root], `harness(${input.id}): create work item`);
 			return index;
+		} catch (error) {
+			const recovery: string[] = [];
+			try {
+				if (delivery && (await this.currentBranch()) === delivery.workingBranch) {
+					const tip = await runGit(this.repositoryRoot, ["rev-parse", delivery.workingBranch]);
+					// Only remove/reset objects demonstrably created by this transaction.
+					if (tip === delivery.createdFromCommit) {
+						await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, root)]);
+						await rm(root, { recursive: true, force: true });
+						await runGit(this.repositoryRoot, ["switch", originalBranch]);
+						await runGit(this.repositoryRoot, ["branch", "-D", delivery.workingBranch]);
+					} else {
+						recovery.push(`preserved ${delivery.workingBranch} at ${tip}; it advanced beyond transaction baseline ${originalHead}`);
+						await runGit(this.repositoryRoot, ["switch", originalBranch]);
+					}
+				} else if ((await this.currentBranch()) !== originalBranch) await runGit(this.repositoryRoot, ["switch", originalBranch]);
+			} catch (rollbackError) {
+				recovery.push(`branch recovery failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+			}
+			if (recovery.length) throw new HarnessError("GIT_OPERATION_FAILED", `Canonical work-item creation failed: ${error instanceof Error ? error.message : String(error)}. Blocking recovery is required: ${recovery.join("; ")}`, { originalBranch, originalHead, workingBranch: delivery?.workingBranch });
+			throw error;
 		} finally {
 			await rm(temporary, { recursive: true, force: true });
 		}
 	}
 
 	async reviseWorkItem(input: { workItemId: string; title?: string; kind?: WorkItemKind; delivery?: WorkItemDelivery; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
+		return this.coordinator.run(`work-item-revise:${input.workItemId}`, () => this.reviseWorkItemUnlocked(input));
+	}
+
+	private async reviseWorkItemUnlocked(input: { workItemId: string; title?: string; kind?: WorkItemKind; delivery?: WorkItemDelivery; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
@@ -365,6 +396,21 @@ export class WorkItemStore {
 	}
 
 	async putArtifact(input: {
+		workItemId: string;
+		id: string;
+		type: MutableArtifactType;
+		content?: string;
+		renderedContent?: string;
+		sections?: SemanticSections;
+		title?: string;
+		narrativeSchemaVersion?: 1 | 2;
+		operation?: "create" | "update" | "upsert";
+		authority?: MutationAuthority;
+	}): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`artifact:${input.workItemId}:${input.id}`, () => this.putArtifactUnlocked(input));
+	}
+
+	private async putArtifactUnlocked(input: {
 		workItemId: string;
 		id: string;
 		type: MutableArtifactType;
@@ -443,6 +489,10 @@ export class WorkItemStore {
 	}
 
 	async removeArtifact(workItemId: string, artifactId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`artifact-remove:${workItemId}:${artifactId}`, () => this.removeArtifactUnlocked(workItemId, artifactId, authority));
+	}
+
+	private async removeArtifactUnlocked(workItemId: string, artifactId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -466,8 +516,7 @@ export class WorkItemStore {
 		try {
 			await rm(path);
 			await atomicWriteFile(indexPath, stringify(index));
-			await runGit(this.repositoryRoot, ["add", "-A", "--", relative(this.repositoryRoot, path), relative(this.repositoryRoot, indexPath)]);
-			await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): remove artifact ${artifactId}`, "--", relative(this.repositoryRoot, path), relative(this.repositoryRoot, indexPath)]);
+			await this.commit([path, indexPath], `harness(${workItemId}): remove artifact ${artifactId}`);
 			return index;
 		} catch (error) {
 			await this.restore([{ path, content: previousArtifact }, { path: indexPath, content: previousIndex }]);
@@ -476,6 +525,10 @@ export class WorkItemStore {
 	}
 
 	async linkArtifact(workItemId: string, artifactId: string, links: string[], authority?: MutationAuthority, replace = false): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`artifact-link:${workItemId}:${artifactId}`, () => this.linkArtifactUnlocked(workItemId, artifactId, links, authority, replace));
+	}
+
+	private async linkArtifactUnlocked(workItemId: string, artifactId: string, links: string[], authority?: MutationAuthority, replace = false): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -505,6 +558,10 @@ export class WorkItemStore {
 	}
 
 	async defineTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority?: MutationAuthority }): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`task-define:${input.workItemId}:${input.manifest.id}`, () => this.defineTaskUnlocked(input));
+	}
+
+	private async defineTaskUnlocked(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority?: MutationAuthority }): Promise<WorkItemIndex> {
 		validateId(input.manifest.id, "Task id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		if (narrativeSchemaVersion === 2 && input.manifest.assembly.intermediateState === "partial" && !input.acceptanceSections?.expectedIntermediateState) {
@@ -568,6 +625,10 @@ export class WorkItemStore {
 	}
 
 	async reviseTask(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`task-revise:${input.workItemId}:${input.manifest.id}`, () => this.reviseTaskUnlocked(input));
+	}
+
+	private async reviseTaskUnlocked(input: { workItemId: string; manifest: TaskManifest; brief?: string; acceptance?: string; briefSections?: SemanticSections; acceptanceSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; authority: MutationAuthority }): Promise<WorkItemIndex> {
 		validateId(input.manifest.id, "Task id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		const brief = narrativeSchemaVersion === 2 && input.briefSections !== undefined ? renderArtifact("taskBrief", `Task Brief: ${input.manifest.title}`, input.briefSections) : input.brief;
@@ -628,6 +689,10 @@ export class WorkItemStore {
 	}
 
 	async removeTask(workItemId: string, taskId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`task-remove:${workItemId}:${taskId}`, () => this.removeTaskUnlocked(workItemId, taskId, authority));
+	}
+
+	private async removeTaskUnlocked(workItemId: string, taskId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -643,23 +708,36 @@ export class WorkItemStore {
 		const taskRoot = dirname(join(root, catalog.path));
 		const indexPath = join(root, "index.yaml");
 		const previousIndex = await readFile(indexPath, "utf8");
-		const backup = join(this.artifactRoot, `.${workItemId}-${taskId}.delete-${randomUUID()}`);
+		// Backups are private transaction material, never a sibling of tracked
+		// artifacts.  If post-commit disposal fails, retaining this harmless copy
+		// is safer than rolling back a commit that is already canonical.
+		const backup = join(tmpdir(), "pibox-delete-backups", `${workItemId}-${taskId}-${randomUUID()}`);
 		index.executionStages ??= index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
 		index.tasks = index.tasks.filter((task) => task.id !== taskId);
 		for (const stage of index.executionStages!) stage.tasks = stage.tasks.filter((id) => id !== taskId);
 		index.executionStages = index.executionStages!.filter((stage) => stage.tasks.length > 0);
 		advanceContractRevision(index, authority);
+		let committed = false;
 		try {
+			await mkdir(dirname(backup), { recursive: true, mode: 0o700 });
 			await rename(taskRoot, backup);
 			await atomicWriteFile(indexPath, stringify(index));
-			await runGit(this.repositoryRoot, ["add", "-A", "--", relative(this.repositoryRoot, taskRoot), relative(this.repositoryRoot, indexPath)]);
-			await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): remove task ${taskId}`, "--", relative(this.repositoryRoot, taskRoot), relative(this.repositoryRoot, indexPath)]);
-			await rm(backup, { recursive: true, force: true });
+			await this.commit([taskRoot, indexPath], `harness(${workItemId}): remove task ${taskId}`);
+			committed = true;
+			try { await this.discardBackup(backup); }
+			catch (cleanupError) {
+				throw new HarnessError("GIT_OPERATION_FAILED", `Task ${taskId} was committed, but private backup cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. No rollback was attempted; canonical HEAD/index/worktree are coherent. Retained backup: ${backup}`);
+			}
 			return index;
 		} catch (error) {
-			if (await pathExists(backup)) await rename(backup, taskRoot);
-			await this.restore([{ path: indexPath, content: previousIndex }]);
-			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, taskRoot)]).catch(() => undefined);
+			if (committed) throw error;
+			try {
+				if (await pathExists(backup)) await rename(backup, taskRoot);
+				await this.restore([{ path: indexPath, content: previousIndex }]);
+				await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, taskRoot)]);
+			} catch (rollbackError) {
+				throw new HarnessError("GIT_OPERATION_FAILED", `Canonical task removal failed: ${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. Owned paths: ${relative(this.repositoryRoot, taskRoot)}, ${relative(this.repositoryRoot, indexPath)}. Blocking recovery is required.`);
+			}
 			throw error;
 		}
 	}
@@ -689,6 +767,14 @@ export class WorkItemStore {
 		taskId: string,
 		update: { status?: TaskStatus; runtime?: TaskManifest["runtime"] },
 	): Promise<TaskManifest> {
+		return this.coordinator.run(`task-update:${workItemId}:${taskId}`, () => this.updateTaskUnlocked(workItemId, taskId, update));
+	}
+
+	private async updateTaskUnlocked(
+		workItemId: string,
+		taskId: string,
+		update: { status?: TaskStatus; runtime?: TaskManifest["runtime"] },
+	): Promise<TaskManifest> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -714,6 +800,10 @@ export class WorkItemStore {
 	}
 
 	async activateDraftTasks(workItemId: string): Promise<TaskManifest[]> {
+		return await this.coordinator.run(`task-activate:${workItemId}`, () => this.activateDraftTasksUnlocked(workItemId));
+	}
+
+	private async activateDraftTasksUnlocked(workItemId: string): Promise<TaskManifest[]> {
 		await assertCleanRepository(this.repositoryRoot);
 		const item = await this.read(workItemId);
 		await this.assertWorkingBranch(item);
@@ -735,6 +825,10 @@ export class WorkItemStore {
 	}
 
 	async refreshReadyTasks(workItemId: string): Promise<TaskManifest[]> {
+		return await this.coordinator.run(`task-refresh:${workItemId}`, () => this.refreshReadyTasksUnlocked(workItemId));
+	}
+
+	private async refreshReadyTasksUnlocked(workItemId: string): Promise<TaskManifest[]> {
 		const item = await this.read(workItemId);
 		const changed: TaskManifest[] = [];
 		for (const catalog of item.tasks) {
@@ -747,6 +841,10 @@ export class WorkItemStore {
 	}
 
 	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n", authority?: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`evaluation-define:${workItemId}:${manifest.id}`, () => this.defineEvaluationUnlocked(workItemId, manifest, report, authority));
+	}
+
+	private async defineEvaluationUnlocked(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n", authority?: MutationAuthority): Promise<WorkItemIndex> {
 		validateId(manifest.id, "Evaluation id");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
@@ -788,6 +886,10 @@ export class WorkItemStore {
 	}
 
 	async reviseEvaluation(workItemId: string, manifest: EvaluationManifest, authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`evaluation-revise:${workItemId}:${manifest.id}`, () => this.reviseEvaluationUnlocked(workItemId, manifest, authority));
+	}
+
+	private async reviseEvaluationUnlocked(workItemId: string, manifest: EvaluationManifest, authority: MutationAuthority): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -821,6 +923,10 @@ export class WorkItemStore {
 	}
 
 	async removeEvaluation(workItemId: string, evaluationId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`evaluation-remove:${workItemId}:${evaluationId}`, () => this.removeEvaluationUnlocked(workItemId, evaluationId, authority));
+	}
+
+	private async removeEvaluationUnlocked(workItemId: string, evaluationId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -833,25 +939,41 @@ export class WorkItemStore {
 		const evaluationRoot = dirname(join(root, catalog.path));
 		const indexPath = join(root, "index.yaml");
 		const previousIndex = await readFile(indexPath, "utf8");
-		const backup = join(this.artifactRoot, `.${workItemId}-${evaluationId}.delete-${randomUUID()}`);
+		// Keep deletion backups outside the tracked tree so cleanup failure cannot
+		// create a new canonical artifact or an untracked recovery surprise.
+		const backup = join(tmpdir(), "pibox-delete-backups", `${workItemId}-${evaluationId}-${randomUUID()}`);
 		index.evaluations = index.evaluations.filter((evaluation) => evaluation.id !== evaluationId);
 		advanceContractRevision(index, authority);
+		let committed = false;
 		try {
+			await mkdir(dirname(backup), { recursive: true, mode: 0o700 });
 			await rename(evaluationRoot, backup);
 			await atomicWriteFile(indexPath, stringify(index));
-			await runGit(this.repositoryRoot, ["add", "-A", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, indexPath)]);
-			await runGit(this.repositoryRoot, ["commit", "-m", `harness(${workItemId}): remove evaluation ${evaluationId}`, "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, indexPath)]);
-			await rm(backup, { recursive: true, force: true });
+			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): remove evaluation ${evaluationId}`);
+			committed = true;
+			try { await this.discardBackup(backup); }
+			catch (cleanupError) {
+				throw new HarnessError("GIT_OPERATION_FAILED", `Evaluation ${evaluationId} was committed, but private backup cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}. No rollback was attempted; canonical HEAD/index/worktree are coherent. Retained backup: ${backup}`);
+			}
 			return index;
 		} catch (error) {
-			if (await pathExists(backup)) await rename(backup, evaluationRoot);
-			await this.restore([{ path: indexPath, content: previousIndex }]);
-			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot)]).catch(() => undefined);
+			if (committed) throw error;
+			try {
+				if (await pathExists(backup)) await rename(backup, evaluationRoot);
+				await this.restore([{ path: indexPath, content: previousIndex }]);
+				await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot)]);
+			} catch (rollbackError) {
+				throw new HarnessError("GIT_OPERATION_FAILED", `Canonical evaluation removal failed: ${error instanceof Error ? error.message : String(error)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. Owned paths: ${relative(this.repositoryRoot, evaluationRoot)}, ${relative(this.repositoryRoot, indexPath)}. Blocking recovery is required.`);
+			}
 			throw error;
 		}
 	}
 
 	async putExecutionStage(workItemId: string, stage: NonNullable<WorkItemIndex["executionStages"]>[number], authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`stage-put:${workItemId}:${stage.id}`, () => this.putExecutionStageUnlocked(workItemId, stage, authority));
+	}
+
+	private async putExecutionStageUnlocked(workItemId: string, stage: NonNullable<WorkItemIndex["executionStages"]>[number], authority: MutationAuthority): Promise<WorkItemIndex> {
 		validateId(stage.id, "Execution-stage id");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
@@ -892,6 +1014,10 @@ export class WorkItemStore {
 	}
 
 	async putIntegrationUnit(workItemId: string, unit: WorkItemIndex["integrationUnits"][number], authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`integration-put:${workItemId}:${unit.id}`, () => this.putIntegrationUnitUnlocked(workItemId, unit, authority));
+	}
+
+	private async putIntegrationUnitUnlocked(workItemId: string, unit: WorkItemIndex["integrationUnits"][number], authority: MutationAuthority): Promise<WorkItemIndex> {
 		validateId(unit.id, "Integration-unit id");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
@@ -918,6 +1044,10 @@ export class WorkItemStore {
 	}
 
 	async removeIntegrationUnit(workItemId: string, unitId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`integration-remove:${workItemId}:${unitId}`, () => this.removeIntegrationUnitUnlocked(workItemId, unitId, authority));
+	}
+
+	private async removeIntegrationUnitUnlocked(workItemId: string, unitId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
@@ -957,6 +1087,10 @@ export class WorkItemStore {
 	}
 
 	async ensureFinalEvaluations(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
+		return await this.coordinator.run(`ensure-final-evaluations:${workItemId}`, () => this.ensureFinalEvaluationsUnlocked(workItemId, maxIterations));
+	}
+
+	private async ensureFinalEvaluationsUnlocked(workItemId: string, maxIterations = 2): Promise<EvaluationManifest[]> {
 		const item = await this.read(workItemId);
 		if (!item.artifacts.some((artifact) => artifact.type === "e2e-matrix" && artifact.status === "approved")) throw new HarnessError("INVALID_HANDOFF", `Work item ${workItemId} cannot launch final E2E without an e2e-matrix artifact`);
 		let existing = await Promise.all(item.evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
@@ -1000,6 +1134,10 @@ export class WorkItemStore {
 	}
 
 	async updateEvaluationLoop(workItemId: string, evaluationId: string, update: Partial<NonNullable<EvaluationManifest["loop"]>>, status?: EvaluationManifest["status"]): Promise<EvaluationManifest> {
+		return this.coordinator.run(`evaluation-loop:${workItemId}:${evaluationId}`, () => this.updateEvaluationLoopUnlocked(workItemId, evaluationId, update, status));
+	}
+
+	private async updateEvaluationLoopUnlocked(workItemId: string, evaluationId: string, update: Partial<NonNullable<EvaluationManifest["loop"]>>, status?: EvaluationManifest["status"]): Promise<EvaluationManifest> {
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
 		await this.assertWorkingBranch(index);
@@ -1036,10 +1174,7 @@ export class WorkItemStore {
 		findings?: NonNullable<EvaluationManifest["findings"]>;
 		residualRisks?: string[];
 	}): Promise<EvaluationManifest> {
-		// Keep the lock outside the working tree so assertCleanRepository never sees
-		// the lock itself as an uncommitted canonical artifact.
-		const lock = new RepositoryMutex(join(this.repositoryRoot, ".git", "pibox-evaluation-lock"));
-		return lock.run(`evaluation-record:${input.workItemId}:${input.evaluationId}`, () => this.recordEvaluationUnlocked(input));
+		return this.coordinator.run(`evaluation-record:${input.workItemId}:${input.evaluationId}`, () => this.recordEvaluationUnlocked(input));
 	}
 
 	private async recordEvaluationUnlocked(input: {
@@ -1053,6 +1188,7 @@ export class WorkItemStore {
 	}): Promise<EvaluationManifest> {
 		if (!input.report.trim()) throw new HarnessError("INVALID_ARTIFACT", "Evaluation report must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
+		const baseHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
 		const root = this.workItemRoot(input.workItemId);
 		const index = await this.read(input.workItemId);
 		await this.assertWorkingBranch(index);
@@ -1125,23 +1261,22 @@ export class WorkItemStore {
 			await this.commit([evaluationRoot, evidenceRoot, indexPath], `harness(${input.workItemId}): record evaluation ${input.evaluationId}`);
 			return evaluation;
 		} catch (error) {
-			await atomicWriteFile(evaluationPath, previousEvaluation);
-			await atomicWriteFile(indexPath, previousIndex);
-			if (previousReport === undefined) await rm(reportPath, { force: true });
-			else await atomicWriteFile(reportPath, previousReport);
-			await rm(attemptReportPath, { force: true });
-			await rm(evidenceRoot, { recursive: true, force: true });
-			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, evidenceRoot), relative(this.repositoryRoot, indexPath)]).catch(() => undefined);
-			throw error;
+			return this.rollbackCanonical(baseHead, [
+				{ path: evaluationPath, content: previousEvaluation },
+				{ path: indexPath, content: previousIndex },
+				{ path: reportPath, ...(previousReport === undefined ? {} : { content: previousReport }) },
+				{ path: attemptReportPath },
+				{ path: evidenceRoot },
+			], error);
 		}
 	}
 
 	/** Approve a review with explicitly selected, durable residual risks. The manifest and
 	 * report are committed together so a failed canonical mutation cannot imply approval. */
 	async approveEvaluation(workItemId: string, evaluationId: string, acceptedRisks: Array<{ findingId: string; rationale: string; userConfirmed?: boolean }>): Promise<EvaluationManifest> {
-		const lock = new RepositoryMutex(join(this.repositoryRoot, ".git", "pibox-evaluation-lock"));
-		return lock.run(`evaluation-approve:${workItemId}:${evaluationId}`, async () => {
+		return this.coordinator.run(`evaluation-approve:${workItemId}:${evaluationId}`, async () => {
 			await assertCleanRepository(this.repositoryRoot);
+			const baseHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
 			const root = this.workItemRoot(workItemId);
 			const index = await this.read(workItemId);
 			await this.assertWorkingBranch(index);
@@ -1187,15 +1322,20 @@ export class WorkItemStore {
 				await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): approve evaluation ${evaluationId} with risk`);
 				return evaluation;
 			} catch (error) {
-				await atomicWriteFile(evaluationPath, previousEvaluation); await atomicWriteFile(indexPath, previousIndex);
-				if (previousRisk === undefined) await rm(riskPath, { force: true }); else await atomicWriteFile(riskPath, previousRisk);
-				await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, evaluationRoot), relative(this.repositoryRoot, indexPath)]).catch(() => undefined);
-				throw error;
+				return this.rollbackCanonical(baseHead, [
+					{ path: evaluationPath, content: previousEvaluation },
+					{ path: indexPath, content: previousIndex },
+					{ path: riskPath, ...(previousRisk === undefined ? {} : { content: previousRisk }) },
+				], error);
 			}
 		});
 	}
 
 	async completeWorkItem(workItemId: string, outcome?: string, outcomeSections?: { delivered: string[]; deviations?: string[]; residualRisks?: string[]; followUp?: string[] }): Promise<WorkItemIndex> {
+		return this.coordinator.run(`complete:${workItemId}`, () => this.completeWorkItemUnlocked(workItemId, outcome, outcomeSections));
+	}
+
+	private async completeWorkItemUnlocked(workItemId: string, outcome?: string, outcomeSections?: { delivered: string[]; deviations?: string[]; residualRisks?: string[]; followUp?: string[] }): Promise<WorkItemIndex> {
 		if (!outcome?.trim() && !outcomeSections) throw new HarnessError("INVALID_ARTIFACT", "Outcome must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
@@ -1227,6 +1367,7 @@ export class WorkItemStore {
 		const outcomePath = join(root, "outcome.md");
 		const previousIndex = await readFile(indexPath, "utf8");
 		const previousOutcome = await readFile(outcomePath, "utf8").catch(() => undefined);
+		const baseHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
 		index.phase = "complete";
 		index.state = "complete";
 		if (!index.artifacts.some((artifact) => artifact.id === "outcome")) {
@@ -1250,15 +1391,18 @@ export class WorkItemStore {
 			await this.commit([outcomePath, indexPath], `harness(${workItemId}): complete work item`);
 			return index;
 		} catch (error) {
-			await atomicWriteFile(indexPath, previousIndex);
-			if (previousOutcome === undefined) await rm(outcomePath, { force: true });
-			else await atomicWriteFile(outcomePath, previousOutcome);
-			await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, indexPath), relative(this.repositoryRoot, outcomePath)]).catch(() => undefined);
-			throw error;
+			return this.rollbackCanonical(baseHead, [
+				{ path: indexPath, content: previousIndex },
+				{ path: outcomePath, ...(previousOutcome === undefined ? {} : { content: previousOutcome }) },
+			], error);
 		}
 	}
 
 	async transitionWorkItem(id: string, action: "postpone" | "pause" | "resume" | "archive" | "reopen" | "request-user", reason: string): Promise<WorkItemIndex> {
+		return this.coordinator.run(`work-item-transition:${id}`, () => this.transitionWorkItemUnlocked(id, action, reason));
+	}
+
+	private async transitionWorkItemUnlocked(id: string, action: "postpone" | "pause" | "resume" | "archive" | "reopen" | "request-user", reason: string): Promise<WorkItemIndex> {
 		if (!reason.trim()) throw new HarnessError("INVALID_ARTIFACT", "Transition reason is required");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(id);
@@ -1291,6 +1435,10 @@ export class WorkItemStore {
 	}
 
 	async submitPlanning(id: string): Promise<WorkItemIndex> {
+		return this.coordinator.run(`work-item-submit-planning:${id}`, () => this.submitPlanningUnlocked(id));
+	}
+
+	private async submitPlanningUnlocked(id: string): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const index = await this.read(id);
 		await this.assertWorkingBranch(index);
@@ -1302,6 +1450,10 @@ export class WorkItemStore {
 	}
 
 	async beginExecution(id: string): Promise<WorkItemIndex> {
+		return this.coordinator.run(`work-item-begin-execution:${id}`, () => this.beginExecutionUnlocked(id));
+	}
+
+	private async beginExecutionUnlocked(id: string): Promise<WorkItemIndex> {
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(id);
 		const indexPath = join(root, "index.yaml");
@@ -1348,10 +1500,43 @@ export class WorkItemStore {
 		}
 	}
 
+	/** Commit only harness-owned canonical metadata. The explicit path check is the
+	 * policy boundary for --no-verify; contributor/source commits never use this helper. */
 	private async commit(paths: string[], message: string): Promise<void> {
-		const relativePaths = paths.map((path) => relative(this.repositoryRoot, path));
-		await runGit(this.repositoryRoot, ["add", "--", ...relativePaths]);
-		await runGit(this.repositoryRoot, ["commit", "-m", message, "--", ...relativePaths]);
+		await this.coordinator.run(`canonical-commit:${message}`, () => this.coordinator.commitHarness(paths, message));
+	}
+
+	/** Cleanup is deliberately outside canonical rollback. */
+	private async discardBackup(path: string): Promise<void> {
+		await rm(path, { recursive: true, force: true });
+	}
+
+	private async rollbackCanonical(baseHead: string, files: Array<{ path: string; content?: string }>, original: unknown): Promise<never> {
+		const paths = files.map((file) => relative(this.repositoryRoot, file.path).replaceAll("\\", "/"));
+		if (paths.some((path) => !path || path === ".." || path.startsWith("../") || !path.startsWith("agent-artifacts/"))) throw new HarnessError("GIT_OPERATION_FAILED", `Rollback path is outside transaction-owned harness metadata: ${paths.join(", ")}`);
+		try {
+			const head = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+			// A concurrent/external advance is never ours to rewind. A transaction-owned
+			// metadata commit may be moved back, but only when every intervening commit
+			// is harness-owned and changed only our explicit paths.
+			if (head !== baseHead) {
+				const subjects = (await runGit(this.repositoryRoot, ["log", "--format=%s", `${baseHead}..HEAD`])).split("\n").filter(Boolean);
+				const changed = (await runGit(this.repositoryRoot, ["diff", "--name-only", `${baseHead}..HEAD`])).split("\n").filter(Boolean);
+				if (subjects.some((subject) => !subject.startsWith("harness(")) || changed.some((path) => !paths.some((owned) => path === owned || path.startsWith(`${owned}/`)))) throw new Error(`canonical branch advanced outside owned paths (base=${baseHead}, current=${head})`);
+				await runGit(this.repositoryRoot, ["reset", "--soft", baseHead]);
+			}
+			await runGit(this.repositoryRoot, ["reset", "HEAD", "--", ...paths]);
+			for (const file of files) {
+				if (file.content === undefined) await rm(file.path, { recursive: true, force: true });
+				else await atomicWriteFile(file.path, file.content);
+			}
+			const finalHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+			const status = await runGit(this.repositoryRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
+			if (finalHead !== baseHead || status) throw new Error(`rollback verification failed (HEAD=${finalHead}, status=${status || "clean"})`);
+		} catch (rollbackError) {
+			throw new HarnessError("GIT_OPERATION_FAILED", `Canonical mutation failed: ${original instanceof Error ? original.message : String(original)}; rollback failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. Owned paths: ${paths.join(", ")}. Blocking recovery is required.`, { baseHead, paths });
+		}
+		throw original;
 	}
 
 	private async restore(files: Array<{ path: string; content: string | undefined }>): Promise<void> {
@@ -1359,11 +1544,9 @@ export class WorkItemStore {
 			if (file.content === undefined) await rm(file.path, { force: true });
 			else await atomicWriteFile(file.path, file.content);
 		}
-		await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", ...files.map((file) => relative(this.repositoryRoot, file.path))]).catch(
-			() => undefined,
-		);
+		await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", ...files.map((file) => relative(this.repositoryRoot, file.path))]);
 		for (const directory of new Set(files.map((file) => dirname(file.path)))) {
-			if (basename(directory) !== basename(this.artifactRoot)) await rm(directory, { recursive: false }).catch(() => undefined);
+			if (basename(directory) !== basename(this.artifactRoot)) await rm(directory, { recursive: false });
 		}
 	}
 }

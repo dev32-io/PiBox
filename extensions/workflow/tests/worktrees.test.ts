@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -96,6 +96,50 @@ test("derives parallel worktrees and merges the stage through one atomic barrier
 	assert.equal(completed.phase, "complete");
 	assert.match(await readFile(join(root, "agent-artifacts", "feature", "outcome.md"), "utf8"), /QUALITY-001/);
 	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("direct mergeTask and concurrent canonical metadata mutation share one coordinator", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "serialized", title: "Serialized", kind: "change", branchKind: "feature", intent: "serialize" });
+	await store.defineTask({ workItemId: "serialized", manifest: task("merge-me", "delivery"), brief: "Merge contribution", acceptance: "merged" });
+	await store.defineEvaluation("serialized", { schemaVersion: 1, id: "review", type: "deterministic", scope: { workItem: "serialized" }, status: "planned", required: true, attempt: 0, methods: ["test"] });
+	await store.submitPlanning("serialized");
+	const manager = new WorktreeManager(identity); await manager.validateWorkingBranch("serialized");
+	const allocation = await manager.allocate("serialized", await store.readTask("serialized", "merge-me"));
+	await store.updateTask("serialized", "merge-me", { status: "running", runtime: { executionMode: allocation.isolation, branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+	await writeFile(join(allocation.path, "merge-me.txt"), "merged\n"); await git(allocation.path, "add", "merge-me.txt"); await git(allocation.path, "commit", "--quiet", "-m", "implement merge-me");
+	await store.updateTask("serialized", "merge-me", { status: "contribution_complete", runtime: { completedCommit: await git(allocation.path, "rev-parse", "HEAD") } });
+	await Promise.all([
+		manager.mergeTask("serialized", "merge-me"),
+		store.recordEvaluation({ workItemId: "serialized", evaluationId: "review", verdict: "pass", report: "clean", evidence: [], findings: [] }),
+	]);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+	assert.equal(await git(root, "diff", "--cached", "--name-only"), "");
+	await assert.rejects(access(join(root, ".git", "index.lock")), /ENOENT/);
+	await assert.rejects(git(root, "show-ref", "--verify", "refs/pibox/does-not-exist"));
+});
+
+test("surfaces post-merge settlement failure without silently dropping the stage ref", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "settlement-failure", title: "Settlement failure", kind: "change", branchKind: "feature", intent: "settle" });
+	await store.defineTask({ workItemId: "settlement-failure", manifest: task("first", "delivery"), brief: "first", acceptance: "first" });
+	await addParallelSibling(store, "settlement-failure", "delivery");
+	await store.submitPlanning("settlement-failure");
+	const manager = new WorktreeManager(identity);
+	const allocations = await Promise.all(["first", "sibling"].map(async (id) => manager.allocate("settlement-failure", await store.readTask("settlement-failure", id))));
+	for (let i = 0; i < allocations.length; i++) {
+		const id = ["first", "sibling"][i]!; const allocation = allocations[i]!;
+		await store.updateTask("settlement-failure", id, { status: "running", runtime: { executionMode: allocation.isolation, branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+		await writeFile(join(allocation.path, `${id}.txt`), `${id}\n`); await git(allocation.path, "add", `${id}.txt`); await git(allocation.path, "commit", "--quiet", "-m", id);
+		await store.updateTask("settlement-failure", id, { status: "contribution_complete", runtime: { completedCommit: await git(allocation.path, "rev-parse", "HEAD") } });
+	}
+	const failing = manager.workItems as unknown as { refreshReadyTasks: () => Promise<TaskManifest[]> };
+	failing.refreshReadyTasks = async () => { throw new Error("refresh settlement failure"); };
+	await assert.rejects(manager.mergeTask("settlement-failure", "first"), /managed recovery/);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+	await git(root, "show-ref", "--verify", "refs/pibox/stages/settlement-failure/delivery");
 });
 
 test("explicit concurrent stages allocate independent worktrees from one pinned base", async (t) => {

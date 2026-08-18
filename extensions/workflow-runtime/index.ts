@@ -172,15 +172,17 @@ export default function workflows(pi: ExtensionAPI): void {
 					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind)} `)}${kind} · ${step.title}`);
 				}
 			} else if (reviewActive) {
-				let reviewNumber = 0;
 				for (const step of reviewSteps) {
-					const queuedFix = /fix requested/i.test(step.title) || /fix requested/i.test(step.detail ?? "");
-					const isFix = queuedFix || /fixing/i.test(step.detail ?? "");
-					const recordedIteration = Number((step.detail ?? step.title).match(/(?:iteration|#)\s*(\d+)/i)?.[1] ?? (++reviewNumber));
-					// The loop iteration advances after a successful fix. While fixing,
-					// iteration N therefore represents the upcoming Fix #(N + 1).
-					const number = Math.max(1, recordedIteration + (isFix && !queuedFix ? 1 : 0));
-					const label = queuedFix ? "Fix requested" : `${isFix ? "Fix" : "Review"} #${number}`;
+					// The adapter's title is the canonical phase. Do not infer activity
+					// from durable-state words here: queued re-review must not become a
+					// generic Review #N (or an active re-review) in the dashboard.
+					const phase = step.title.includes(" · ") ? step.title.split(" · ").pop()! : undefined;
+					// Keep the established compact repair marker in the dashboard while
+					// retaining the fuller canonical phase in step titles/events. The
+					// detail fallback is only for legacy/third-party adapters without a
+					// canonical phase title.
+					const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
+					const label = (phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
 					lines.push(`  ${ctx.ui.theme.fg(step.status === "attention" ? "error" : step.status === "done" ? "success" : "accent", `${stateIcon(step.status, step.kind)} `)}${label}`);
 				}
 			}
@@ -245,7 +247,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const attention = Boolean(settled.attention || settled.state === "blocked" || settled.state === "failed");
 			const terminalSnapshot = workflowRef ? await adapter.snapshot(workflowRef, ctx).catch(() => undefined) : undefined;
 			const terminalStep = terminalSnapshot?.steps.find((candidate) => candidate.ref === step.ref);
-			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
+			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${terminalStep?.title ?? step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
 			// Completion feedback is reserved for the canonical merge barrier. A worker
 			// handoff is useful progress, but is not task completion yet.
 			const taskMerged = step.kind === "merge" && terminalStep?.status === "done";

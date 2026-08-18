@@ -7,7 +7,6 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { HarnessError } from "../errors.js";
 import { validateExecutionTopology } from "../execution-topology.js";
-import { RepositoryMutex } from "../idempotency.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { parseTaskManifest, parseWorkItemIndex, WorkItemStore } from "../work-items.js";
 
@@ -143,22 +142,97 @@ test("renders schema-v2 intent, artifacts, and task contracts from semantic valu
 	await assert.rejects(store.defineEvaluation("structured", dangling), /Dangling criterion reference/);
 });
 
-test("serializes complete canonical commits across independent mutex instances", async (t) => {
+test("serializes complete canonical commits across independent WorkItemStore instances", async (t) => {
 	const root = await repository(t);
-	const store = new WorkItemStore(root);
-	await store.create({ id: "concurrent", title: "Concurrent", kind: "change", intent: "Exercise canonical serialization" });
-	const privateRoot = await mkdtemp(join(tmpdir(), "pibox-private-mutex-"));
-	t.after(() => rm(privateRoot, { recursive: true, force: true }));
-	const first = new RepositoryMutex(privateRoot);
-	const second = new RepositoryMutex(privateRoot);
+	const firstStore = new WorkItemStore(root);
+	const secondStore = new WorkItemStore(root);
+	await firstStore.create({ id: "concurrent", title: "Concurrent", kind: "change", intent: "Exercise canonical serialization" });
 	await Promise.all([
-		first.run("first-artifact", () => store.putArtifact({ workItemId: "concurrent", id: "first", type: "spec", content: "# First\n\nFirst contract.", operation: "create" })),
-		second.run("second-artifact", () => store.putArtifact({ workItemId: "concurrent", id: "second", type: "design", content: "# Second\n\nSecond contract.", operation: "create" })),
+		firstStore.putArtifact({ workItemId: "concurrent", id: "first", type: "spec", content: "# First\n\nFirst contract.", operation: "create" }),
+		secondStore.putArtifact({ workItemId: "concurrent", id: "second", type: "design", content: "# Second\n\nSecond contract.", operation: "create" }),
 	]);
+	const store = firstStore;
 	const item = await store.read("concurrent");
 	assert.equal(item.planning.revision, 3);
 	assert.deepEqual(item.artifacts.map((artifact) => artifact.id).sort(), ["first", "intent", "second"]);
 	assert.equal(await git(root, "rev-list", "--count", "HEAD"), "4");
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("removeTask and removeEvaluation report original and rollback failures with owned paths", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "rollback-removals", title: "Rollback removals", kind: "change", intent: "Exercise removal rollback reporting" });
+	await store.defineEvaluation("rollback-removals", { schemaVersion: 1, id: "review", type: "deterministic", scope: { workItem: "rollback-removals" }, status: "planned", required: true, attempt: 0, methods: ["test"] });
+	const task: TaskManifest = {
+		schemaVersion: 1, id: "planned-task", title: "Planned task", status: "draft", dependsOn: [], references: { specs: [], designs: [], decisions: [] },
+		execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "rollback fixture" } },
+		assembly: { stageId: "delivery", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "rollback fixture" },
+	};
+	await store.defineTask({ workItemId: "rollback-removals", manifest: task, brief: "Do it", acceptance: "It works" });
+	const failing = store as unknown as { commit: () => Promise<void>; restore: () => Promise<void> };
+	failing.commit = async () => { throw new Error("original commit failure"); };
+	failing.restore = async () => { throw new Error("rollback restore failure"); };
+	await assert.rejects(store.removeTask("rollback-removals", "planned-task", { rationale: "test" }), (error: unknown) => {
+		assert.match(String(error), /original commit failure/); assert.match(String(error), /rollback restore failure/); assert.match(String(error), /agent-artifacts/); return true;
+	});
+	const evaluationRoot = await repository(t);
+	const evaluationStore = new WorkItemStore(evaluationRoot);
+	await evaluationStore.create({ id: "rollback-evaluation", title: "Rollback evaluation", kind: "change", intent: "Exercise evaluation rollback reporting" });
+	await evaluationStore.defineEvaluation("rollback-evaluation", { schemaVersion: 1, id: "review", type: "deterministic", scope: { workItem: "rollback-evaluation" }, status: "planned", required: true, attempt: 0, methods: ["test"] });
+	const evaluationFailing = evaluationStore as unknown as { commit: () => Promise<void>; restore: () => Promise<void> };
+	evaluationFailing.commit = async () => { throw new Error("original commit failure"); };
+	evaluationFailing.restore = async () => { throw new Error("rollback restore failure"); };
+	await assert.rejects(evaluationStore.removeEvaluation("rollback-evaluation", "review", { rationale: "test" }), (error: unknown) => {
+		assert.match(String(error), /original commit failure/); assert.match(String(error), /rollback restore failure/); assert.match(String(error), /agent-artifacts/); return true;
+	});
+});
+
+test("does not roll back committed removal when private backup cleanup fails", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "cleanup-atomic", title: "Cleanup", kind: "change", intent: "cleanup" });
+	const task: TaskManifest = {
+		schemaVersion: 1, id: "delete-me", title: "Delete me", status: "draft", dependsOn: [], references: { specs: [], designs: [], decisions: [] },
+		execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "cleanup" } },
+		assembly: { stageId: "cleanup", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "cleanup" },
+	};
+	await store.defineTask({ workItemId: "cleanup-atomic", manifest: task, brief: "delete", acceptance: "deleted" });
+	const failing = store as unknown as { discardBackup: () => Promise<void> };
+	failing.discardBackup = async () => { throw new Error("cleanup failure"); };
+	await assert.rejects(store.removeTask("cleanup-atomic", "delete-me", { rationale: "test" }), /No rollback was attempted/);
+	assert.equal((await store.read("cleanup-atomic")).tasks.length, 0);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+	assert.equal(await git(root, "diff", "--cached", "--name-only"), "");
+	assert.match(await git(root, "log", "-1", "--pretty=%s"), /remove task delete-me/);
+});
+
+test("independent stores on linked worktrees share the common-dir canonical lock", async (t) => {
+	const root = await repository(t);
+	const linked = await mkdtemp(join(tmpdir(), "pibox-linked-worktree-"));
+	await rm(linked, { recursive: true, force: true });
+	await git(root, "worktree", "add", "--quiet", "-b", "linked-lock", linked, "develop");
+	t.after(async () => { await git(root, "worktree", "remove", "--force", linked).catch(() => undefined); await rm(linked, { recursive: true, force: true }); });
+	const mainStore = new WorkItemStore(root);
+	const linkedStore = new WorkItemStore(linked);
+	assert.equal(mainStore.coordinator.mutex.path, linkedStore.coordinator.mutex.path);
+	assert.match(mainStore.coordinator.mutex.path, /[\\/]locks[\\/]canonical$/);
+	let order = "";
+	await Promise.all([
+		mainStore.coordinator.run("main", async () => { order += "a"; await new Promise((resolve) => setTimeout(resolve, 20)); order += "b"; }),
+		linkedStore.coordinator.run("linked", async () => { order += "c"; }),
+	]);
+	assert.ok(order === "abc" || order === "cab");
+});
+
+test("restores the original branch and removes only the transaction-owned branch after create failure", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	const failing = store as unknown as { commit: () => Promise<void> };
+	failing.commit = async () => { throw new Error("canonical create failure"); };
+	await assert.rejects(store.create({ id: "atomic-create", title: "Atomic create", kind: "change", branchKind: "feature", intent: "rollback" }), /canonical create failure/);
+	assert.equal(await git(root, "branch", "--show-current"), "develop");
+	await assert.rejects(git(root, "show-ref", "--verify", "refs/heads/feature/atomic-create"));
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

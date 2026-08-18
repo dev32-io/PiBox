@@ -200,14 +200,23 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// A fixer or
 				// reviewer can be active while the canonical loop is still being settled.
 				if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "skipped") status = "done";
-				else if (activity.running) { status = "running"; detail = evaluation.loop?.state === "fixing" ? "fixing" : evaluation.loop?.state === "rereviewing" ? "re-reviewing" : "reviewing"; }
+				else if (activity.running) { status = "running"; detail = evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, (evaluation.loop?.iteration ?? 0) + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"; }
 				else if (activity.attention) { status = "attention"; detail = activity.attention; }
 				else if (dependencyAttention) { status = "attention"; detail = `blocked by ${dependencyAttention.title}`; }
-				else if (evaluation.loop?.state === "fixing" || evaluation.loop?.state === "rereviewing") { status = dependenciesDone ? "ready" : "pending"; detail = `${evaluation.loop.state.replace("rereviewing", "re-reviewing")} · iteration ${evaluation.loop.iteration}`; }
-				else if (evaluation.loop?.state === "awaiting_manager" || ["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.loop?.state === "awaiting_manager" ? `awaiting manager · iteration ${evaluation.loop.iteration}` : evaluation.status; }
+				else if (evaluation.loop?.state === "fixing" || evaluation.loop?.state === "rereviewing") { status = dependenciesDone ? "ready" : "pending"; detail = evaluation.loop.state === "fixing" ? "Fix requested" : "Re-review requested"; }
+				else if (evaluation.loop?.state === "awaiting_manager" || ["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes" : evaluation.status; }
 				else if (evaluation.status === "running") { status = "attention"; detail = "stale process state"; }
 				else if (dependenciesDone) status = "ready";
-				const phase = evaluation.loop?.state === "rereviewing" ? `re-reviewing #${evaluation.loop.iteration}` : evaluation.loop?.state === "fixing" ? activity.running ? `fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : "Fix requested" : ["passed", "not_applicable"].includes(evaluation.status) ? "Approved" : evaluation.loop?.state === "awaiting_manager" ? "Needs attention" : "Reviewing";
+				// Durable loop states describe intent, not process activity. Keep this as the
+				// canonical user-facing phase so queued work and settled reports cannot look
+				// like an active worker in the dashboard or workflow events.
+				const phase = ["passed", "not_applicable"].includes(evaluation.status) ? "Approved"
+					: activity.running ? evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"
+					: evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
+					: activity.attention === "result pending reconciliation" ? "Review report ready"
+					: evaluation.loop?.state === "fixing" ? "Fix requested"
+					: evaluation.loop?.state === "rereviewing" ? "Re-review requested"
+					: "Review requested";
 				const findings = evaluation.findings ?? [];
 				const open = findings.filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 				const blocking = open.filter((finding) => finding.blocking);
@@ -286,8 +295,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			}
 			return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
 				if (action === "approve") {
+					const current = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
 					const risks = checkpointOptions?.acceptedRisks ?? [];
-					const critical = risks.filter((risk) => evaluation.findings?.find((finding) => finding.id === risk.findingId)?.severity === "critical");
+					const critical = risks.filter((risk) => current.findings?.find((finding) => finding.id === risk.findingId)?.severity === "critical");
 					if (critical.length) {
 						if (!ctx.hasUI || !(await confirmCriticalRisk(ctx, ref, critical.map((risk) => risk.findingId)))) throw new Error("USER_DECISION_REQUIRED: Explicit user confirmation is required before accepting Critical risk; approval was not recorded.");
 					}

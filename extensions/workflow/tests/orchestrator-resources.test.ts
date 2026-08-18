@@ -261,6 +261,8 @@ test("writes complete plans with explicit create and revision-pinned update iden
 	await assert.rejects(service.transaction("harness: reject invalid complete plan", () => service.writePlan({ mode: "create", plan: { ...createPlan, workItem: { ...createPlan.workItem, id: "broken-plan" }, tasks: [{ ...firstTask, manifest: { ...firstTask.manifest, references: { specs: ["missing-spec"], designs: [], decisions: [] } } }] } }, mutation)), /Unknown spec reference/);
 	assert.equal(await git(root, "rev-parse", "HEAD"), createBase);
 	await assert.rejects(store.read("broken-plan"), /does not exist/);
+	// The failed transaction preserves its checkout; return deliberately to develop.
+	await git(root, "switch", "develop");
 	await service.transaction("harness: create complete plan", () => service.writePlan({ mode: "create", plan: createPlan }, mutation));
 	const created = await store.read("fresh-plan");
 	assert.deepEqual(created.tasks.map((entry) => entry.id), ["first-task"]);

@@ -67,8 +67,51 @@ test("renders a review-fix loop as one checkpoint step with phase and iteration"
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.length, 1);
-	assert.match(snapshot.steps[0]!.title, /Review loop final-review · re-reviewing #2/);
+	assert.match(snapshot.steps[0]!.title, /Review loop final-review · Re-review requested/);
+	assert.doesNotMatch(snapshot.steps[0]!.title, /Re-reviewing/);
 	assert.equal(snapshot.steps[0]!.status, "ready");
+});
+
+test("an active reviewer is the only source of Re-reviewing wording", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "planned", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3, reviewerAgentId: "reviewer" } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running" }] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
+	assert.equal(step.status, "running");
+	assert.match(step.title, /Re-reviewing #2/);
+});
+
+test("a settled re-review report uses report wording, not active wording", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3, reviewerAgentId: "reviewer" } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited" }] };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
+	assert.match(step.title, /Review report ready/);
+	assert.doesNotMatch(step.title, /Re-reviewing/);
+});
+
+test("settled awaiting_manager with a persistent reported reviewer uses explicit manager checkpoint wording", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "awaiting_manager", iteration: 1, maxIterations: 3 } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "reported", updatedAt: new Date().toISOString(), attempts: [{ id: "attempt", state: "exited" }], currentAttemptId: "attempt" };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
+	assert.match(step.title, /Needs attention · Approve or Request changes/);
+	assert.doesNotMatch(step.title, /Review report ready/);
+});
+
+test("awaiting manager presents an explicit review checkpoint", async () => {
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "failed", scope: { workItem: "example" }, loop: { state: "awaiting_manager", iteration: 1, maxIterations: 3 } };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
+	assert.match(step.title, /Needs attention · Approve or Request changes/);
 });
 
 test("a reported prior reviewer does not shadow a queued fixer", async () => {
@@ -81,6 +124,18 @@ test("a reported prior reviewer does not shadow a queued fixer", async () => {
 	const step = snapshot.steps[0]!;
 	assert.equal(step.status, "ready");
 	assert.match(step.title, /Fix requested/);
+});
+
+test("downstream blocked re-review keeps requested wording in its detail", async () => {
+	const tasks: any[] = [task("blocked-task", "failed")];
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: "blocked-task" }], executionStages: [{ id: "delivery", tasks: ["blocked-task"] }], integrationUnits: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", stageId: "delivery", status: "planned", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return evaluation; } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const step = (await adapter.snapshot("work-item:example", {} as any)).steps.find((candidate) => candidate.kind === "evaluation")!;
+	assert.match(step.title, /Re-review requested/);
+	assert.match(step.detail ?? "", /blocked by blocked-task/);
+	assert.doesNotMatch(`${step.title} ${step.detail ?? ""}`, /Re-reviewing/);
 });
 
 test("a failed fixer remains actionable during fixing", async () => {
