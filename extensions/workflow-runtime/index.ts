@@ -6,7 +6,7 @@ import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CO
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { formatSubagentRoute, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
-import { formatAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { formatAgentProgress, initialAgentProgress, type AgentProgress } from "./agent-progress.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -42,6 +42,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const active = new Map<string, "running" | "paused">();
 	const ownership = new Map<string, number>();
 	const inFlight = new Map<string, number>();
+	const inFlightProgress = new Map<string, AgentProgress>();
 	let currentRef: string | undefined;
 	let currentSnapshot: WorkflowSnapshot | undefined;
 	let subagentPulseTimer: NodeJS.Timeout | undefined;
@@ -150,6 +151,8 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const displayStatus = (step: WorkflowStep): WorkflowStep["status"] => inFlight.has(step.ref) && step.status !== "done" ? "running" : step.status;
+	const displayProgress = (step: WorkflowStep, status: WorkflowStep["status"]): string =>
+		status === "running" ? formatAgentProgress(step.progress ?? inFlightProgress.get(step.ref)) : "";
 	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
 	const stateIcon = (status: WorkflowStep["status"], kind: string): string => {
 		if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? DEFAULT_RUNNING_FRAMES; return frames[frame % frames.length]!; }
@@ -174,7 +177,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const status = displayStatus(step);
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
-			const progress = includeProgress && status === "running" ? formatAgentProgress(step.progress) : "";
+			const progress = includeProgress ? displayProgress(step, status) : "";
 			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 		}
 		return lines;
@@ -210,7 +213,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					const shownStatus = visualStatus(step, status);
 					const kind = stepLabel(step, status);
 					const color: "success" | "error" | "muted" | "accent" = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
-					const progress = includeProgress && status === "running" ? formatAgentProgress(step.progress) : "";
+					const progress = includeProgress ? displayProgress(step, status) : "";
 					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind)} `)}${kind} · ${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
 			} else if (reviewActive) {
@@ -225,8 +228,11 @@ export default function workflows(pi: ExtensionAPI): void {
 					// detail fallback is only for legacy/third-party adapters without a
 					// canonical phase title.
 					const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
-					const label = (phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
-					const progress = includeProgress && status === "running" ? formatAgentProgress(step.progress) : "";
+					const queuedFix = status === "running" && /fix requested/i.test(phase ?? step.detail ?? "")
+						? /iteration\s+(\d+)\//i.exec(step.detail ?? "")
+						: undefined;
+					const label = (queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
+					const progress = includeProgress ? displayProgress(step, status) : "";
 					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
 			}
@@ -329,7 +335,10 @@ export default function workflows(pi: ExtensionAPI): void {
 			}
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · failed`, detail, attention: true, kind: step.kind, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 		} finally {
-			if (inFlight.get(step.ref) === epoch) inFlight.delete(step.ref);
+			if (inFlight.get(step.ref) === epoch) {
+				inFlight.delete(step.ref);
+				inFlightProgress.delete(step.ref);
+			}
 			if (settlementIsLive(workflowRef, epoch)) requestTick(ctx, epoch);
 		}
 	};
@@ -337,6 +346,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const startStep = (adapter: WorkflowAdapter, step: WorkflowStep, ctx: ExtensionContext, epoch: number, signal?: AbortSignal): Promise<WorkflowRunResult> => {
 		if (inFlight.has(step.ref)) throw new Error(`Step is already running: ${step.ref}`);
 		inFlight.set(step.ref, epoch);
+		inFlightProgress.set(step.ref, initialAgentProgress(new Date().toISOString()));
 		sendEvent({ workflowRef: step.ref.split("/")[0]!, title: step.kind === "merge" ? `Assembling integration candidate · ${step.title}` : `Starting ${step.title}`, attention: false, kind: step.kind, toStatus: "running" });
 		return adapter.runStep(step.ref, ctx, signal);
 	};
@@ -523,7 +533,10 @@ export default function workflows(pi: ExtensionAPI): void {
 				tickRequested = false;
 				stopLifecycle(params.ref);
 				active.delete(params.ref);
-				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) inFlight.delete(stepRef);
+				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) {
+					inFlight.delete(stepRef);
+					inFlightProgress.delete(stepRef);
+				}
 			}
 			if (params.action !== "resume") await adapter.controlWorkflow(params.ref, params.action, ctx);
 			if (params.action === "resume") active.set(params.ref, "running"); else if (params.action === "pause") active.set(params.ref, "paused"); else { active.delete(params.ref); ownership.delete(params.ref); }
@@ -779,6 +792,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		for (const ref of lifecycleSubscriptions.keys()) stopLifecycle(ref);
 		active.clear();
 		ownership.clear();
+		inFlight.clear();
+		inFlightProgress.clear();
 		currentRef = undefined;
 		currentSnapshot = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);

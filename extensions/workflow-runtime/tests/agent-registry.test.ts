@@ -63,6 +63,22 @@ test("publishes each durable lifecycle transition once and replay does not dupli
 	assert.equal((await registry.list()).length, 1);
 });
 
+test("same-instance watch publishes a durable transition immediately and exactly once", async (t) => {
+	const { registry } = await fixture(t);
+	const events: string[] = [];
+	let wake!: () => void;
+	const seen = new Promise<void>((resolve) => { wake = resolve; });
+	const dispose = await registry.watch((event) => {
+		events.push(event.type);
+		wake();
+	});
+	await registry.reserve(input(1));
+	await seen;
+	await new Promise((resolve) => setImmediate(resolve));
+	dispose();
+	assert.deepEqual(events, ["agent.reserved"]);
+});
+
 test("persists progress and wakes another registry instance from the durable event log", async (t) => {
 	const { root, registry } = await fixture(t);
 	const observer = new SessionAgentRegistry(root, "session-1", 16, 1);

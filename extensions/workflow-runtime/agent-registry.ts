@@ -189,6 +189,14 @@ export class SessionAgentRegistry {
 		let closed = false;
 		let replaying = false;
 		let replayAgain = false;
+		const accept = (event: AgentRegistryEvent) => {
+			if (closed || event.sequence <= cursor) return;
+			cursor = event.sequence;
+			listener(event);
+		};
+		// Same-process publication is deterministic and occurs only after the event
+		// is durable. The file watcher remains the cross-process wake-up hint.
+		const unsubscribeLocal = this.subscribe(accept);
 		const replay = async () => {
 			if (replaying) { replayAgain = true; return; }
 			replaying = true;
@@ -199,10 +207,7 @@ export class SessionAgentRegistry {
 					for (const line of content.split("\n")) {
 						if (!line.trim()) continue;
 						try {
-							const event = JSON.parse(line) as AgentRegistryEvent;
-							if (event.sequence <= cursor) continue;
-							cursor = event.sequence;
-							listener(event);
+							accept(JSON.parse(line) as AgentRegistryEvent);
 						} catch { /* malformed private history is handled by registry reads */ }
 					}
 				} while (replayAgain && !closed);
@@ -211,7 +216,7 @@ export class SessionAgentRegistry {
 		const watcher = watch(this.eventsPath, { persistent: false }, () => { if (!closed) void replay(); });
 		watcher.on("error", () => { /* durable replay remains available on the next attachment */ });
 		await replay();
-		const dispose = () => { if (closed) return; closed = true; watcher.close(); };
+		const dispose = () => { if (closed) return; closed = true; unsubscribeLocal(); watcher.close(); };
 		if (signal) {
 			if (signal.aborted) dispose();
 			else signal.addEventListener("abort", dispose, { once: true });

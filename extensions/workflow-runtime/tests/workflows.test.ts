@@ -550,6 +550,28 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("an in-flight fixer shows starting progress before its Pi process reports", async () => {
+	const f = fixture();
+	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
+	const snapshot: WorkflowSnapshot = {
+		ref: "work-item:calendar", title: "Calendar", status: "ready",
+		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fix requested", kind: "evaluation", status: "ready", detail: "Fix requested · findings 2 (blocking 2); iteration 0/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"), async snapshot() { return snapshot; },
+		async runStep() { return neverSettles; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "work-item:calendar" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	assert.ok(rendered.some((line) => /Fix #2 · \d+s · starting/.test(line)), "scheduled fixer renders as starting before agent progress arrives");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("renders durable integration and verification phases instead of generic ready-to-merge labels", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
