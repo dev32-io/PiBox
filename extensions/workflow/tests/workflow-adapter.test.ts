@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import { SessionAgentRegistry } from "../../workflow-runtime/agent-registry.js";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
 
 function task(id: string, status: string, dependsOn: string[] = [], stageId = "delivery") {
@@ -23,6 +27,22 @@ test("exposes dynamic agent delegation through the workflow adapter", async () =
 	const request: any = { operationId: "spawn-1", agent: "plan-critic", task: "Review" };
 	assert.equal(await adapter.spawnSubagent?.(request, {} as any), expected);
 	assert.deepEqual(captured, request);
+});
+
+test("lifecycle subscription wakes across registry instances after session replacement", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-lifecycle-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const observed = new SessionAgentRegistry(root, "session-1");
+	await observed.initialize();
+	const writer = new SessionAgentRegistry(root, "session-1");
+	const runtime: any = { agents: observed };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let wake!: () => void;
+	const awakened = new Promise<void>((resolve) => { wake = resolve; });
+	const dispose = await adapter.subscribeLifecycle?.("work-item:example", {} as any, wake);
+	await writer.reserve({ operationId: "cross-instance", parentAgentId: "main:session-1", parentDepth: 0, role: "repair-implementer", provider: "test", model: "fake", effort: "low", assignment: {}, workItemId: "example" });
+	await Promise.race([awakened, new Promise((_, reject) => setTimeout(() => reject(new Error("adapter lifecycle wake-up timed out")), 1_000))]);
+	if (typeof dispose === "function") dispose();
 });
 
 test("workflow preparation serializes branch setup, execution state, and task activation", async () => {
@@ -82,12 +102,14 @@ test("renders a review-fix loop as one checkpoint step with phase and iteration"
 test("an active reviewer is the only source of Re-reviewing wording", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "planned", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3, reviewerAgentId: "reviewer" } };
-	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", activity: { kind: "review", generation: 2 } }] };
+	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", activity: { kind: "review", generation: 2 }, progress: { startedAt: "2026-01-01T00:00:00.000Z", lastEventAt: "2026-01-01T00:00:05.000Z", turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1450, reasoningTokens: 20 } }] };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
 	assert.equal(step.status, "running");
 	assert.match(step.title, /Re-reviewing #2/);
+	assert.equal(step.progress?.turns, 2);
+	assert.equal(step.progress?.outputTokens, 1450);
 });
 
 test("a settled re-review report uses report wording, not active wording", async () => {

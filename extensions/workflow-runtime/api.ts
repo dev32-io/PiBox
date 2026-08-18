@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { AgentProgress } from "./agent-progress.js";
 
 export const WORKFLOW_ADAPTER_DISCOVERY_EVENT = "pibox:workflow:discover-adapters";
 export const WORKFLOW_CONTROL_EVENT = "pibox:workflow:control";
@@ -33,6 +34,7 @@ export interface WorkflowStep {
 	parallelism: "allowed" | "serial";
 	resourceClaims: string[];
 	detail?: string;
+	progress?: AgentProgress;
 }
 
 export interface WorkflowStageSnapshot {
@@ -125,7 +127,7 @@ export interface WorkflowAdapter {
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
 	/** Optional dynamic agent/task launcher used by the main-session subagent_spawn tool. */
-	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void): Promise<WorkflowRunResult>;
+	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
 	/** Trusted, validated definitions available to the generic launcher. */
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	controlWorkflow(ref: string, action: "pause" | "resume" | "stop", ctx: ExtensionContext): Promise<void>;

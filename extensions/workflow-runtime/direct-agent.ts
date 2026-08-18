@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
+import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -56,6 +57,60 @@ function extractText(event: unknown): string {
 	return value.message.content?.filter((part) => part.type === "text").map((part) => part.text ?? "").join("\n") ?? "";
 }
 
+export interface JsonlObserver {
+	drain(): Promise<void>;
+	close(): Promise<void>;
+}
+
+/** Offset-based observer for a child-owned append-only JSONL stream. Filesystem
+ * notifications are hints; close performs an authoritative final drain. */
+export async function observeJsonl(path: string, onEvent: (event: unknown) => void, onMalformed?: (line: string) => void): Promise<JsonlObserver> {
+	let offset = 0;
+	let remainder = "";
+	let closed = false;
+	let queued = Promise.resolve();
+	let watcher: FSWatcher | undefined;
+	const consume = async () => {
+		const size = (await stat(path).catch(() => undefined))?.size ?? 0;
+		if (size <= offset) return;
+		const file = await open(path, "r");
+		try {
+			const buffer = Buffer.alloc(size - offset);
+			const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
+			offset += bytesRead;
+			remainder += buffer.subarray(0, bytesRead).toString("utf8");
+			const lines = remainder.split("\n");
+			remainder = lines.pop() ?? "";
+			for (const line of lines) {
+				if (!line.trim()) continue;
+				try { onEvent(JSON.parse(line)); }
+				catch { onMalformed?.(line); }
+			}
+		} finally { await file.close(); }
+	};
+	const drain = () => {
+		queued = queued.then(consume, consume);
+		return queued;
+	};
+	watcher = watch(path, { persistent: false }, () => { if (!closed) void drain(); });
+	watcher.on("error", () => { /* final drain remains authoritative */ });
+	await drain();
+	return {
+		drain,
+		async close() {
+			if (closed) return;
+			closed = true;
+			watcher?.close();
+			await drain();
+			if (remainder.trim()) {
+				try { onEvent(JSON.parse(remainder)); }
+				catch { onMalformed?.(remainder); }
+				remainder = "";
+			}
+		},
+	};
+}
+
 export async function runDirectAgent(options: DirectAgentOptions): Promise<DirectAgentResult> {
 	const directory = await mkdtemp(join(tmpdir(), "pibox-agent-"));
 	const promptFile = join(directory, `${options.agent}.md`);
@@ -90,6 +145,13 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 			const stderrPath = join(options.outputDirectory, "stderr.log");
 			const stdoutFile = await open(stdoutPath, "a", 0o600);
 			const stderrFile = await open(stderrPath, "a", 0o600);
+			const processEvent = (event: unknown) => {
+				events.push(event);
+				options.onEvent?.(event);
+				const text = extractText(event);
+				if (text) options.onText?.(text);
+			};
+			const observer = await observeJsonl(stdoutPath, processEvent, (line) => { stderr += `Unparsed child output: ${line}\n`; });
 			let exitCode = 1;
 			try {
 				exitCode = await new Promise<number>((resolveExit) => {
@@ -111,21 +173,9 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				});
 			} finally {
 				await Promise.all([stdoutFile.close(), stderrFile.close()]);
+				await observer.close();
 			}
-			const output = await readFile(stdoutPath, "utf8").catch(() => "");
-			stderr = await readFile(stderrPath, "utf8").catch(() => "");
-			for (const line of output.split("\n")) {
-				if (!line.trim()) continue;
-				try {
-					const event = JSON.parse(line) as unknown;
-					events.push(event);
-					options.onEvent?.(event);
-					const text = extractText(event);
-					if (text) options.onText?.(text);
-				} catch {
-					stderr += `Unparsed child output: ${line}\n`;
-				}
-			}
+			stderr += await readFile(stderrPath, "utf8").catch(() => "");
 			let text = "";
 			for (let index = events.length - 1; index >= 0; index--) {
 				text = extractText(events[index]);

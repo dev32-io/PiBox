@@ -6,6 +6,7 @@ import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEED
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { formatSubagentRoute, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
+import { formatAgentProgress, type AgentProgress } from "./agent-progress.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -25,6 +26,7 @@ type RunningSubagentStatus = {
 	startedAt: number;
 	tier?: string;
 	resolved?: DynamicSubagentStarted;
+	progress?: AgentProgress;
 };
 
 function formatElapsed(startedAt: number): string {
@@ -100,7 +102,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		const dot = subagentPulseDot(subagentPulseFrame);
 		const lines = [...runningSubagents.values()].map((status) => {
 			const route = formatSubagentRoute(status.tier, status.resolved);
-			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `running · ${route} · ${formatElapsed(status.startedAt)}`)}`;
+			const progress = formatAgentProgress(status.progress) || formatElapsed(status.startedAt);
+			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `running · ${route} · ${progress}`)}`;
 		});
 		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
 	};
@@ -159,7 +162,8 @@ export default function workflows(pi: ExtensionAPI): void {
 			const status = displayStatus(step);
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
-			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}`);
+			const progress = status === "running" ? formatAgentProgress(step.progress) : "";
+			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 		}
 		return lines;
 	};
@@ -187,7 +191,8 @@ export default function workflows(pi: ExtensionAPI): void {
 					const status = displayStatus(step);
 					const kind = step.kind === "task" ? (status === "done" ? "Implemented" : "Implementing") : step.kind === "merge" ? (status === "done" ? "Merged" : status === "running" ? "Merging" : "Ready to merge") : step.kind;
 					const color: "success" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" || status === "ready" ? "accent" : "muted";
-					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(status, step.kind)} `)}${kind} · ${step.title}`);
+					const progress = status === "running" ? formatAgentProgress(step.progress) : "";
+					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(status, step.kind)} `)}${kind} · ${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
 			} else if (reviewActive) {
 				for (const step of reviewSteps) {
@@ -202,7 +207,8 @@ export default function workflows(pi: ExtensionAPI): void {
 					// canonical phase title.
 					const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
 					const label = (phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
-					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}`);
+					const progress = status === "running" ? formatAgentProgress(step.progress) : "";
+					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
 				}
 			}
 		}
@@ -558,7 +564,8 @@ export default function workflows(pi: ExtensionAPI): void {
 					runningSubagents.set(toolCallId, { agent: params.agent, mode, startedAt: Date.now(), ...(tier ? { tier } : {}) });
 					renderSubagentStatus();
 				}
-				const runningDetails = () => ({ agent: params.agent, state: "running", tier, resolved: resolvedStatus });
+				let progressStatus: AgentProgress | undefined;
+				const runningDetails = () => ({ agent: params.agent, state: "running", tier, resolved: resolvedStatus, progress: progressStatus });
 				const promise = adapter.spawnSubagent!(
 					request,
 					ctx,
@@ -573,6 +580,14 @@ export default function workflows(pi: ExtensionAPI): void {
 						} else if (onUpdate) {
 							onUpdate(result("", runningDetails()));
 						}
+					},
+					(progress) => {
+						progressStatus = progress;
+						if (mode === "background") {
+							const current = runningSubagents.get(toolCallId);
+							if (current) runningSubagents.set(toolCallId, { ...current, progress });
+							renderSubagentStatus();
+						} else if (onUpdate) onUpdate(result("", runningDetails()));
 					},
 				);
 				if (mode === "foreground") {
@@ -612,6 +627,9 @@ export default function workflows(pi: ExtensionAPI): void {
 				const source = value as Record<string, unknown>;
 				const out: Record<string, unknown> = {};
 				for (const key of ["id", "agentId", "name", "state", "status", "workflowRef", "messageId", "kind", "title", "summary", "updatedAt"]) if (source[key] !== undefined) out[key] = typeof source[key] === "string" ? bounded(source[key], 180) : source[key];
+				const attempts = Array.isArray(source.attempts) ? source.attempts as Array<Record<string, unknown>> : [];
+				const current = attempts.find((attempt) => attempt.id === source.currentAttemptId) ?? attempts.at(-1);
+				if (current?.progress && typeof current.progress === "object") out.progress = current.progress;
 				return out;
 			};
 			const compactAgents = agents.slice(0, 12).map(brief);

@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir } from "node:fs/promises";
+import { watch } from "node:fs";
+import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { atomicWriteFile, readTextIfExists, WorkflowMutex, WorkflowRuntimeError } from "./storage.js";
+import type { AgentProgress } from "./agent-progress.js";
 
 export type AgentState =
 	| "reserved"
@@ -74,6 +76,7 @@ export interface ProcessAttempt {
 	updatedAt: string;
 	exitedAt?: string;
 	exitCode?: number;
+	progress?: AgentProgress;
 }
 
 export interface SessionAgentRecord extends AgentScope {
@@ -174,9 +177,53 @@ export class SessionAgentRegistry {
 		return () => this.listeners.delete(listener);
 	}
 
+	/** Cross-instance lifecycle subscription. The append-only event log is
+	 * authoritative; filesystem notifications only request cursor replay. */
+	async watch(listener: AgentRegistryListener, signal?: AbortSignal): Promise<() => void> {
+		const initialHistory = await readFile(this.eventsPath, "utf8").catch(() => "");
+		let cursor = initialHistory.split("\n").reduce((maximum, line) => {
+			try { return Math.max(maximum, (JSON.parse(line) as { sequence?: number }).sequence ?? 0); }
+			catch { return maximum; }
+		}, 0);
+		let closed = false;
+		let replaying = false;
+		let replayAgain = false;
+		const replay = async () => {
+			if (replaying) { replayAgain = true; return; }
+			replaying = true;
+			try {
+				do {
+					replayAgain = false;
+					const content = await readFile(this.eventsPath, "utf8").catch(() => "");
+					for (const line of content.split("\n")) {
+						if (!line.trim()) continue;
+						try {
+							const event = JSON.parse(line) as AgentRegistryEvent;
+							if (event.sequence <= cursor) continue;
+							cursor = event.sequence;
+							listener(event);
+						} catch { /* malformed private history is handled by registry reads */ }
+					}
+				} while (replayAgain && !closed);
+			} finally { replaying = false; }
+		};
+		const watcher = watch(this.eventsPath, { persistent: false }, () => { if (!closed) void replay(); });
+		watcher.on("error", () => { /* durable replay remains available on the next attachment */ });
+		await replay();
+		const dispose = () => { if (closed) return; closed = true; watcher.close(); };
+		if (signal) {
+			if (signal.aborted) dispose();
+			else signal.addEventListener("abort", dispose, { once: true });
+		}
+		return dispose;
+	}
+
 	async initialize(mainAgentId = `main:${this.sessionId}`): Promise<void> {
 		await this.mutex.run("agent-registry:init", async () => {
-			if (await readTextIfExists(this.snapshotPath)) return;
+			if (await readTextIfExists(this.snapshotPath)) {
+				await appendFile(this.eventsPath, "", { mode: 0o600 });
+				return;
+			}
 			const snapshot: RegistrySnapshot = {
 				schemaVersion: 1,
 				sessionId: this.sessionId,
@@ -188,6 +235,7 @@ export class SessionAgentRegistry {
 				agents: [],
 			};
 			await this.write(snapshot);
+			await appendFile(this.eventsPath, "", { mode: 0o600 });
 		});
 	}
 
@@ -281,6 +329,14 @@ export class SessionAgentRegistry {
 			if (update.summary !== undefined) agent.summary = update.summary;
 			if (update.error !== undefined) agent.error = update.error;
 			if (TERMINAL_AGENT_STATES.has(state)) agent.completedAt = new Date().toISOString();
+		})).agent;
+	}
+
+	async updateProgress(agentId: string, attemptId: string, progress: AgentProgress): Promise<SessionAgentRecord> {
+		return (await this.mutate(agentId, "agent.progress", (agent) => {
+			const attempt = this.attempt(agent, attemptId);
+			attempt.progress = structuredClone(progress);
+			attempt.updatedAt = progress.lastEventAt;
 		})).agent;
 	}
 

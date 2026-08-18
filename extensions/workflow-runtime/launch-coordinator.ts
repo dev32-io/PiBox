@@ -8,6 +8,7 @@ import {
 } from "../provider-fallback/index.js";
 import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
+import { initialAgentProgress, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
 
 export interface CoordinatedLaunchInput extends AgentScope {
 	operationId: string;
@@ -32,6 +33,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
 	onStarted?: (agent: SessionAgentRecord) => void;
+	onProgress?: (progress: AgentProgress) => void;
 	onSpawn?: (pid: number | undefined) => void;
 	invocationResolver?: (args: string[]) => { command: string; args: string[] };
 	deferCompletion?: boolean;
@@ -97,6 +99,8 @@ export class LaunchCoordinator {
 				input.onStarted?.(await this.registry.get(reserved.id));
 				const attemptRoot = join(agentRoot, "attempts", attempt.id);
 				let running: Promise<unknown> | undefined;
+				let progress = initialAgentProgress(attempt.startedAt);
+				let progressWrites = Promise.resolve();
 				const successfulText: string[] = [];
 				const result = await runDirectAgent({
 					agent: input.role,
@@ -129,6 +133,14 @@ export class LaunchCoordinator {
 					...(input.skillPaths ? { skillPaths: input.skillPaths } : {}),
 					...(input.signal ? { signal: input.signal } : {}),
 					onText: (text) => successfulText.push(text),
+					onEvent: (event) => {
+						const next = projectAgentProgress(progress, event);
+						if (next === progress) return;
+						progress = next;
+						const durableProgress = structuredClone(progress);
+						input.onProgress?.(durableProgress);
+						progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
+					},
 					...(invocationResolver ? { invocationResolver } : {}),
 					onSpawn: (pid) => {
 						if (pid) running = this.registry.markRunning(reserved.id, attempt.id, pid);
@@ -136,6 +148,13 @@ export class LaunchCoordinator {
 					},
 				});
 				await running;
+				if (!progress.settledAt) {
+					progress = projectAgentProgress(progress, { type: "agent_settled" });
+					const durableProgress = structuredClone(progress);
+					input.onProgress?.(durableProgress);
+					progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
+				}
+				await progressWrites;
 				const failure = classifyProviderFailure(result, input.signal);
 				const providerFailure = isFallbackEligible(failure);
 				await this.registry.recordExit(reserved.id, attempt.id, providerFailure && result.exitCode === 0 ? 1 : result.exitCode);

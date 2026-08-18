@@ -28,6 +28,7 @@ import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabiliti
 import { SubagentSupervisor } from "./supervisor.js";
 import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
 import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
+import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors } from "./tool-groups.js";
@@ -793,7 +794,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
 	};
 
-	const spawnDynamicSubagent = async (request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void): Promise<WorkflowRunResult> => {
+	const spawnDynamicSubagent = async (request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult> => {
 		try {
 			requireTrusted(ctx);
 			const runtime = await runtimeFor(ctx);
@@ -831,6 +832,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				...(agentDefinition.skills ? { skillPaths: agentDefinition.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) } : {}),
 				...(signal ? { signal } : {}), ...(onText ? { onText } : {}),
 				...(onStarted ? { onStarted: (agent: { id: string; provider: string; model: string; effort: string; startedAt: string }) => onStarted({ agentId: agent.id, provider: agent.provider, model: agent.model, effort: agent.effort, startedAt: agent.startedAt }) } : {}),
+				...(onProgress ? { onProgress } : {}),
 			});
 			const direct = launched.result;
 			await runtime.events.append("subagent.settled", { agentId: launched.agent.id, role: request.agent, exitCode: direct.exitCode, model: `${direct.provider}/${direct.model}`, effort: direct.effort });

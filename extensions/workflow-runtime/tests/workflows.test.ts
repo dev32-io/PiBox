@@ -363,9 +363,11 @@ test("background spawning returns its report to the main agent and shows running
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(input, _ctx, _signal, _onText, onStarted) {
+		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
 			request = input;
-			onStarted?.({ agentId: "one", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", startedAt: new Date().toISOString() });
+			const startedAt = new Date().toISOString();
+			onStarted?.({ agentId: "one", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", startedAt });
+			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1234, reasoningTokens: 50 });
 			await gate;
 			return { ref: "agent:one", agentId: "one", state: "completed", summary: "Background critic completed." };
 		},
@@ -377,7 +379,7 @@ test("background spawning returns its report to the main agent and shows running
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s/);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic running · High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s · 2 turns · 3 tools · ↓ 1\.2k/);
 	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
 	release();
@@ -400,8 +402,10 @@ test("foreground spawning waits for the delegated result without using the backg
 		id: "test", canHandle: () => false,
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(request, _ctx, _signal, _onText, onStarted) {
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", startedAt: new Date().toISOString() });
+		async spawnSubagent(request, _ctx, _signal, _onText, onStarted, onProgress) {
+			const startedAt = new Date().toISOString();
+			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", startedAt });
+			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 });
 			await gate;
 			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${request.agent}: ready` };
 		},
@@ -417,6 +421,7 @@ test("foreground spawning waits for the delegated result without using the backg
 		{ agent: updates.at(-1)?.details.agent, tier: updates.at(-1)?.details.tier, provider: updates.at(-1)?.details.resolved?.provider, model: updates.at(-1)?.details.resolved?.model, effort: updates.at(-1)?.details.resolved?.effort },
 		{ agent: "plan-critic", tier: "medium", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max" },
 	);
+	assert.equal(updates.at(-1)?.details.progress.outputTokens, 800);
 	release();
 	const settled = await pending;
 	assert.equal(settled.content[0].text, "plan-critic: ready");
@@ -461,7 +466,7 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:workflow", title: "Active states", status: "running",
 		steps: [
-			{ ref: "test:task", title: "Implement", kind: "task", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
+			{ ref: "test:task", title: "Implement", kind: "task", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [], progress: { startedAt: new Date(Date.now() - 61_000).toISOString(), lastEventAt: new Date().toISOString(), turns: 3, toolCalls: 4, toolErrors: 0, outputTokens: 1450, reasoningTokens: 22 } },
 			{ ref: "test:merge", title: "Merge", kind: "merge", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
 			{ ref: "test:evaluation", title: "Evaluate", kind: "evaluation", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
 		],
@@ -477,10 +482,12 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	await new Promise((resolve) => setTimeout(resolve, 10));
 	const widget = f.widget() as ((...args: any[]) => any);
 	let invalidations = 0;
-	const rendered = widget?.({ requestRender: () => { invalidations++; } }, f.ctx.ui.theme).render(70) as string[];
+	const rendered = widget?.({ requestRender: () => { invalidations++; } }, f.ctx.ui.theme).render(120) as string[];
 	await new Promise((resolve) => setTimeout(resolve, 120));
 	assert.ok(invalidations > 0, "fast visual timer requests real TUI redraws");
 	assert.equal(rendered.some((line) => /\b(running|merging)\b/.test(line)), false);
+	assert.equal(rendered.some((line) => line.includes("↓ 1.5k")), true);
+	assert.equal(rendered.some((line) => /\bout\b/i.test(line)), false);
 	const icons = rendered.slice(1).map((line) => line.trimStart()[0]);
 	assert.equal(new Set(icons).size, 3, "task, merge, and evaluation activity have distinct animated icon families");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);

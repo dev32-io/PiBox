@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import type { DynamicSubagentRequest, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
+import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
@@ -32,7 +33,7 @@ export interface HarnessWorkflowAdapterOptions {
 	launchRepair?(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	/** Harness-owned repair assignment for a preserved stage merge conflict. */
 	launchIntegrationRepair?(ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
-	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void): Promise<WorkflowRunResult>;
+	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: { agentId: string; provider: string; model: string; effort: string; startedAt: string }) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	validateWorkingBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
@@ -49,14 +50,20 @@ function agentAttention(agent: SessionAgentRecord): string | undefined {
 	return agent.state.replaceAll("_", " ");
 }
 
-function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean): { running: boolean; attention?: string } {
+function currentProgress(agent: SessionAgentRecord | undefined): AgentProgress | undefined {
+	return agent?.attempts.find((attempt) => attempt.id === agent.currentAttemptId)?.progress;
+}
+
+function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean): { running: boolean; attention?: string; progress?: AgentProgress } {
 	const matching = agents.filter((agent) => agent[scope] === id && (!relevant || relevant(agent)));
-	if (matching.some(isAgentProcessActive)) return { running: true };
+	const active = matching.find(isAgentProcessActive);
+	const progress = currentProgress(active);
+	if (active) return { running: true, ...(progress ? { progress } : {}) };
 	const attention = matching.map(agentAttention).find((detail): detail is string => Boolean(detail));
 	return { running: false, ...(attention ? { attention } : {}) };
 }
 
-function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): { running: boolean; attention?: string } {
+function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): { running: boolean; attention?: string; progress?: AgentProgress } {
 	const loop = evaluation.loop;
 	const fixing = loop?.state === "fixing";
 	const rereviewing = loop?.state === "rereviewing";
@@ -72,7 +79,9 @@ function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: stri
 	// The activity descriptor, rather than attempt sequence, is the durable
 	// generation boundary. This also makes provider fallback attempts in one
 	// generation equivalent while excluding historical reports and exits.
-	if (current.some(({ agent }) => isAgentProcessActive(agent))) return { running: true };
+	const active = current.find(({ agent }) => isAgentProcessActive(agent));
+	const progress = currentProgress(active?.agent);
+	if (active) return { running: true, ...(progress ? { progress } : {}) };
 	if (current.some(({ agent }) => agent.state === "reported")) return { running: false, attention: "result pending reconciliation" };
 	const failed = current.find(({ agent }) => ["failed", "protocol_failed", "recovery_required"].includes(agent.state));
 	if (failed) return { running: false, attention: agentAttention(failed.agent) ?? "failed" };
@@ -179,15 +188,16 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 		subscribeLifecycle(ref, ctx, listener, signal) {
 			const match = WORK_ITEM.exec(ref);
 			if (!match || signal?.aborted) return () => undefined;
-			return options.runtimeFor(ctx).then((runtime) => {
+			return options.runtimeFor(ctx).then(async (runtime) => {
 				if (signal?.aborted) return () => undefined;
 				const unsubscribers: Array<() => void> = [];
-				unsubscribers.push(runtime.agents.subscribe((event) => {
+				const agentWatcher = await runtime.agents.watch((event) => {
 					if (signal?.aborted || !event.data.agentId) return;
 					void runtime.agents.get(event.data.agentId).then((agent) => {
 						if (!signal?.aborted && agent.workItemId === match[1]) listener();
 					}).catch(() => undefined);
-				}));
+				}, signal);
+				unsubscribers.push(agentWatcher);
 				// Cross-process event notifications are wake-up hints. The supervisor
 				// rereads durable state, so duplicate or missed filesystem notifications
 				// cannot become workflow facts by themselves.
@@ -222,11 +232,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const parallelStageReadyToMerge = topology.mode === "sequential" || topology.stageSize === 1 || topology.stageTasks.every((id) => contributionStates.has(taskById.get(id)?.status ?? ""));
 				const mergeBarrierOwner = topology.mode === "sequential" || topology.stageSize === 1 || topology.stageTasks[0] === task.id;
 				let mapped = taskStatus(task.status, priorStagesDone && dependenciesDone && priorSequentialTaskDone);
+				const activity = scopeActivity(agents, "taskId", task.id);
 				if (isMergeState && (!priorSequentialTaskDone || !parallelStageReadyToMerge || !mergeBarrierOwner)) mapped = { status: "pending", detail: !priorSequentialTaskDone ? "waiting for prior sequential task" : parallelStageReadyToMerge ? "waiting for stage merge barrier" : "waiting for parallel contributions" };
-				if (mapped.status === "running") {
-					const activity = scopeActivity(agents, "taskId", task.id);
-					if (!activity.running) mapped = { status: "attention", detail: activity.attention ?? "stale process state" };
-				}
+				if (mapped.status === "running" && !activity.running) mapped = { status: "attention", detail: activity.attention ?? "stale process state" };
 				return {
 					ref: `work-item:${item.id}/task:${task.id}`,
 					title: task.title,
@@ -235,6 +243,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					dependsOn: [...task.dependsOn.map((id) => `work-item:${item.id}/task:${id}`), ...(topology.stageIndex > 0 && stageReviews.get(stages[topology.stageIndex - 1]!.id) ? [`work-item:${item.id}/evaluation:${stageReviews.get(stages[topology.stageIndex - 1]!.id)!.id}`] : [])],
 					parallelism: isMergeState ? "serial" : topology.parallelism,
 					resourceClaims: isMergeState || topology.isolation === "repository" ? ["working-branch"] : task.execution.resourceClaims,
+					...(activity.progress ? { progress: activity.progress } : {}),
 				};
 			});
 			const finalJourneyRefs = evaluations
@@ -287,7 +296,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const blocking = open.filter((finding) => finding.blocking);
 				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
-				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
+				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `Review loop ${evaluation.id} · ${phase}`, kind: "evaluation", status, ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));
@@ -327,7 +336,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
-		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void) { return options.spawnSubagent!(request, ctx, signal, onText); } } : {}),
+		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: { agentId: string; provider: string; model: string; effort: string; startedAt: string }) => void, onProgress?: (progress: AgentProgress) => void) { return options.spawnSubagent!(request, ctx, signal, onText, onStarted, onProgress); } } : {}),
 		...(options.listSpawnableAgents ? { async listSpawnableAgents(ctx: ExtensionContext) { return options.listSpawnableAgents!(ctx); } } : {}),
 		async controlCheckpoint(ref, action, checkpointOptions, ctx) {
 			const match = STEP.exec(ref);

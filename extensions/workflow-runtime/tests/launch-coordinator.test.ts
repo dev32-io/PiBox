@@ -14,9 +14,16 @@ test("launches a direct child through the registry with file-backed process outp
 	await registry.initialize("main:session-1");
 	let effectiveSystemPrompt = "";
 	let started: { id: string; model: string; effort: string } | undefined;
+	const progressUpdates: number[] = [];
 	const coordinator = new LaunchCoordinator(registry, "main:session-1");
 	const fake = join(root, "fake-child.mjs");
-	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"mapped repository"}]}}));\n`);
+	await writeFile(fake, [
+		`console.log(JSON.stringify({type:"tool_execution_start",toolName:"grep",args:{pattern:"private"}}));`,
+		`console.log(JSON.stringify({type:"tool_execution_end",toolName:"grep",isError:false}));`,
+		`console.log(JSON.stringify({type:"turn_end",message:{usage:{output:1234,reasoning:42,totalTokens:9000}}}));`,
+		`console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"mapped repository"}]}}));`,
+		`console.log(JSON.stringify({type:"agent_settled"}));`,
+	].join("\n"));
 
 	const launched = await coordinator.launch({
 		operationId: "direct-1",
@@ -32,6 +39,7 @@ test("launches a direct child through the registry with file-backed process outp
 		additionalPrompt: "Workflow protocol.",
 		persistentContext: "Persistent canonical context.",
 		onStarted: (agent) => { started = { id: agent.id, model: agent.model, effort: agent.effort }; },
+		onProgress: (progress) => progressUpdates.push(progress.outputTokens),
 		invocationResolver: (args) => {
 			const promptIndex = args.indexOf("--append-system-prompt");
 			effectiveSystemPrompt = readFileSync(args[promptIndex + 1]!, "utf8");
@@ -47,6 +55,11 @@ test("launches a direct child through the registry with file-backed process outp
 	const record = await registry.get(launched.agent.id);
 	assert.equal(record.attempts.length, 1);
 	assert.equal(record.attempts[0]?.exitCode, 0);
+	assert.equal(record.attempts[0]?.progress?.turns, 1);
+	assert.equal(record.attempts[0]?.progress?.toolCalls, 1);
+	assert.equal(record.attempts[0]?.progress?.outputTokens, 1234);
+	assert.ok(record.attempts[0]?.progress?.settledAt);
+	assert.ok(progressUpdates.includes(1234));
 	const attemptRoot = join(registry.root, "agents", record.id, "attempts", record.attempts[0]!.id);
 	await access(join(attemptRoot, "stdout.jsonl"));
 	assert.match(await readFile(join(attemptRoot, "stdout.jsonl"), "utf8"), /mapped repository/);

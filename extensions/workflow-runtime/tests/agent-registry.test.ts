@@ -63,6 +63,23 @@ test("publishes each durable lifecycle transition once and replay does not dupli
 	assert.equal((await registry.list()).length, 1);
 });
 
+test("persists progress and wakes another registry instance from the durable event log", async (t) => {
+	const { root, registry } = await fixture(t);
+	const observer = new SessionAgentRegistry(root, "session-1", 16, 1);
+	const agent = await registry.reserve(input(1));
+	const { attempt } = await registry.startAttempt(agent.id);
+	await registry.markRunning(agent.id, attempt.id, 1234);
+	let wake: (() => void) | undefined;
+	const seen = new Promise<void>((resolve) => { wake = resolve; });
+	const dispose = await observer.watch((event) => { if (event.type === "agent.progress") wake?.(); });
+	await registry.updateProgress(agent.id, attempt.id, { startedAt: attempt.startedAt, lastEventAt: "2026-01-01T00:00:01.000Z", turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 345, reasoningTokens: 12 });
+	await Promise.race([seen, new Promise((_, reject) => setTimeout(() => reject(new Error("durable progress wake-up timed out")), 1_000))]);
+	dispose();
+	const persisted = (await observer.get(agent.id)).attempts[0]!.progress;
+	assert.equal(persisted?.turns, 1);
+	assert.equal(persisted?.outputTokens, 345);
+});
+
 test("releases a slot only after a terminal logical transition", async (t) => {
 	const { registry } = await fixture(t, 1);
 	const agent = await registry.reserve(input(1));
