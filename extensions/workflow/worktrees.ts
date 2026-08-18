@@ -117,8 +117,8 @@ export class WorktreeManager {
 		this.worktreeRoot = join(identity.root, ".worktree", "pibox");
 	}
 
-	async validateWorkingBranch(workItemId: string): Promise<ValidatedWorkingBranch> {
-		await assertCleanRepository(this.identity.root);
+	async validateWorkingBranch(workItemId: string, options: { allowDirty?: boolean } = {}): Promise<ValidatedWorkingBranch> {
+		if (!options.allowDirty) await assertCleanRepository(this.identity.root);
 		const item = await this.workItems.read(workItemId).catch((error) => error instanceof HarnessError && ["WORK_ITEM_NOT_FOUND", "CAPABILITY_DENIED"].includes(error.code) ? undefined : Promise.reject(error));
 		const delivery = item?.delivery ?? await this.workItems.findDelivery(workItemId);
 		if (!delivery) throw new HarnessError("INVALID_ARTIFACT", `Work item ${workItemId} has no workingBranch contract`);

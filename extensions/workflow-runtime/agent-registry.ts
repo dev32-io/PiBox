@@ -24,6 +24,7 @@ export type AgentState =
 	| "cancelled";
 
 export const TERMINAL_AGENT_STATES = new Set<AgentState>(["completed", "failed", "protocol_failed", "cancelled"]);
+const RETRYABLE_AGENT_STATES = new Set<AgentState>(["failed", "protocol_failed", "reported", "recovery_required"]);
 
 export function isAgentProcessActive(agent: SessionAgentRecord): boolean {
 	if (agent.state === "reserved") return true;
@@ -319,6 +320,15 @@ export class SessionAgentRegistry {
 			attempt.pid = pid;
 			attempt.updatedAt = new Date().toISOString();
 			agent.state = "running";
+		})).agent;
+	}
+
+	async prepareRetry(agentId: string): Promise<SessionAgentRecord> {
+		return (await this.mutate(agentId, "agent.retry_prepared", (agent) => {
+			if (!RETRYABLE_AGENT_STATES.has(agent.state)) throw this.invalidTransition(agent.state, "reserved");
+			agent.state = "reserved";
+			delete agent.error;
+			delete agent.summary;
 		})).agent;
 	}
 

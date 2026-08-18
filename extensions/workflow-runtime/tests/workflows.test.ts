@@ -138,6 +138,24 @@ test("session restore establishes durable ownership before ticking a legacy runn
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("failed resume preparation does not publish running control intent", async () => {
+	const f = fixture();
+	let controls = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running", generation: 2, ownerSessionId: "test-session" }; },
+		async controlWorkflow(_ref, action) { if (action === "resume") throw new Error("preserved repair workspace changed"); },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await assert.rejects(f.tools.get("workflow_control").execute("call", { ref: "test:workflow", action: "resume" }, undefined, undefined, f.ctx), /preserved repair workspace changed/);
+	assert.equal(controls, 0);
+	assert.equal(f.entries.some((entry) => entry.data?.state === "running"), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("late failed settlement after stop is inert", async () => {
 	const f = fixture();
 	let rejectRun!: (error: Error) => void;

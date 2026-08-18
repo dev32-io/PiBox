@@ -513,6 +513,9 @@ export default function workflows(pi: ExtensionAPI): void {
 		parameters: Type.Object({ ref: Type.String(), action: StringEnum(["pause", "resume", "stop"] as const) }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			const adapter = adapterFor(params.ref);
+			// Resume preparation must succeed before publishing running intent. Pause
+			// and stop fence first so late settlements cannot race their teardown.
+			if (params.action === "resume") await adapter.controlWorkflow(params.ref, params.action, ctx);
 			const control = await adapter.controlExecution?.(params.ref, params.action, `tool:${toolCallId}`, ctx);
 			if (control) ownership.set(params.ref, control.generation);
 			if (params.action === "stop") {
@@ -522,7 +525,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				active.delete(params.ref);
 				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) inFlight.delete(stepRef);
 			}
-			await adapter.controlWorkflow(params.ref, params.action, ctx);
+			if (params.action !== "resume") await adapter.controlWorkflow(params.ref, params.action, ctx);
 			if (params.action === "resume") active.set(params.ref, "running"); else if (params.action === "pause") active.set(params.ref, "paused"); else { active.delete(params.ref); ownership.delete(params.ref); }
 			currentRef = params.ref; persist(params.ref, params.action === "stop" ? "stopped" : params.action === "resume" ? "running" : "paused");
 			if (params.action === "stop") {

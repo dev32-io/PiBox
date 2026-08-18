@@ -9,6 +9,7 @@ import { readTextIfExists } from "./repository.js";
 import type { WorkItemStore } from "./work-items.js";
 import { orderedExecutionStages, preflightTaskChecks, resolveStageMode, taskExecutionTopology } from "./execution-topology.js";
 import { WorktreeManager } from "./worktrees.js";
+import { HarnessError } from "./errors.js";
 import type { RepositoryMutex } from "./idempotency.js";
 import { readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { confirmCriticalRisk } from "../permissions/runtime.js";
@@ -16,6 +17,7 @@ import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 import { WorkflowEventJournal, type WorkflowDomainEventType } from "./workflow-events.js";
 import type { RepositoryEventStore } from "./event-store.js";
 import { readStageVerificationActivity } from "./verification-runner.js";
+import { RepairRecoveryStore, type RepairRecoveryRecord } from "./repair-recovery.js";
 
 
 export interface HarnessWorkflowRuntime {
@@ -37,7 +39,7 @@ export interface HarnessWorkflowAdapterOptions {
 	launchIntegrationRepair?(ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: { agentId: string; provider: string; model: string; effort: string; startedAt: string }) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
-	validateWorkingBranch?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
+	validateWorkingBranch?(runtime: HarnessWorkflowRuntime, workItemId: string, options?: { allowDirty?: boolean }): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
 }
 
@@ -81,14 +83,14 @@ function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: stri
 	// The activity descriptor, rather than attempt sequence, is the durable
 	// generation boundary. This also makes provider fallback attempts in one
 	// generation equivalent while excluding historical reports and exits.
-	const active = current.find(({ agent }) => isAgentProcessActive(agent));
+	const active = current.find(({ agent, attempt }) => isAgentProcessActive(agent) && (attempt?.state === "launching" || attempt?.state === "running"));
 	const progress = currentProgress(active?.agent);
 	if (active) return { running: true, ...(progress ? { progress } : {}) };
 	if (current.some(({ agent }) => agent.state === "reported")) return { running: false, attention: "result pending reconciliation" };
 	const failed = current.find(({ agent }) => ["failed", "protocol_failed", "recovery_required"].includes(agent.state));
 	if (failed) return { running: false, attention: agentAttention(failed.agent) ?? "failed" };
 	if (current.some(({ agent }) => agent.state === "launching" || agent.state === "running")) return { running: false, attention: "stale process state" };
-	if (current.some(({ attempt }) => attempt?.state === "failed")) return { running: false, attention: "failed" };
+	if (current.some(({ agent, attempt }) => agent.state !== "reserved" && attempt?.state === "failed")) return { running: false, attention: "failed" };
 	if (current.some(({ attempt }) => attempt?.state === "exited")) return { running: false, attention: "stale process state" };
 	return { running: false };
 }
@@ -321,6 +323,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const phase = ["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" ? "Approved"
 					: evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
 					: activity.running ? evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"
+					: activity.attention && evaluation.loop?.state === "fixing" ? "Fix failed · Resume"
 					: activity.attention === "result pending reconciliation" ? "Review report ready"
 					: evaluation.loop?.state === "fixing" ? "Fix requested"
 					: evaluation.loop?.state === "rereviewing" ? "Re-review requested"
@@ -396,9 +399,25 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					if (current.checkpoint === "final-review" && currentFindings.filter((finding) => finding.blocking).length === 0) throw new Error("Final branch review has no blocking findings; non-blocking findings may only be accepted as residual risk.");
 					if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
 					if (currentLoop.iteration >= currentLoop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
+					// A pre-recovery-version fixer may have failed after editing the canonical
+					// checkout and then been projected back to awaiting_manager. Replaying the
+					// exact same manager decision explicitly adopts that preserved workspace,
+					// keeps the logical fixer identity, and makes one fresh process attempt.
+					const expectedGeneration = currentLoop.iteration + 1;
+					const priorFixer = currentLoop.managerPrompt?.trim() === prompt.trim()
+						? (await runtime.agents?.list?.() ?? [])
+							.filter((agent) => agent.evaluationId === evaluationId && agent.role === "repair-implementer" && ["failed", "protocol_failed", "reported", "recovery_required"].includes(agent.state))
+							.filter((agent) => agent.attempts.find((attempt) => attempt.id === agent.currentAttemptId)?.activity?.kind === "repair" && agent.attempts.find((attempt) => attempt.id === agent.currentAttemptId)?.activity?.generation === expectedGeneration)
+							.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
+						: undefined;
+					const updated = await runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", managerPrompt: prompt, ...(priorFixer ? { fixerAgentId: priorFixer.id } : {}) });
+					if (priorFixer) {
+						await new RepairRecoveryStore(runtime.identity).record({ workItemId: workItemId!, evaluationId: evaluationId!, agentId: priorFixer.id, operationId: priorFixer.operationId, iteration: expectedGeneration });
+						await runtime.agents.prepareRetry(priorFixer.id);
+					}
 					// Record authorization only. The runner owns fixer launch, settlement,
 					// and automatic re-review.
-					return runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", managerPrompt: prompt });
+					return updated;
 				});
 			}
 			return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
@@ -420,6 +439,28 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const workItemId = workflow[1]!;
 			if (action === "resume") {
 				const item = await runtime.mutex.run(`workflow-begin:${workItemId}`, async () => {
+					const current = await runtime.workItems.read(workItemId);
+					const recoverable: Array<{ evaluationId: string; agentId: string; record: RepairRecoveryRecord }> = [];
+					const recoveryStore = new RepairRecoveryStore(runtime.identity);
+					for (const entry of current.evaluations) {
+						const evaluation = await runtime.workItems.readEvaluation(workItemId, entry.id);
+						if (evaluation.loop?.state !== "fixing" || !evaluation.loop.fixerAgentId) continue;
+						const agent = await runtime.agents.get(evaluation.loop.fixerAgentId).catch(() => undefined);
+						if (!agent || !["failed", "protocol_failed", "reported", "recovery_required", "reserved"].includes(agent.state)) continue;
+						const record = await recoveryStore.read(workItemId, evaluation.id);
+						if (!record || record.agentId !== agent.id) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Failed fixer ${agent.id} has no matching durable repair recovery record; preserved work requires user-directed recovery`);
+						recoverable.push({ evaluationId: evaluation.id, agentId: agent.id, record });
+					}
+					if (recoverable.length > 1) throw new HarnessError("RESOURCE_LOCKED", `Multiple failed canonical fixers require recovery: ${recoverable.map((entry) => entry.evaluationId).join(", ")}`);
+					if (recoverable.length === 1) {
+						const recovery = recoverable[0]!;
+						await recoveryStore.assertCurrent(recovery.record);
+						if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, workItemId, { allowDirty: recovery.record.dirty });
+						else await new WorktreeManager(runtime.identity).validateWorkingBranch(workItemId, { allowDirty: recovery.record.dirty });
+						const agent = await runtime.agents.get(recovery.agentId);
+						if (agent.state !== "reserved") await runtime.agents.prepareRetry(recovery.agentId);
+						return current;
+					}
 					await runtime.workItems.submitPlanning(workItemId);
 					if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, workItemId);
 					else await new WorktreeManager(runtime.identity).validateWorkingBranch(workItemId);

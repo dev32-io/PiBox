@@ -82,6 +82,26 @@ test("treats a terminal assistant error as failure when Pi exits zero", async (t
 	assert.equal(launched.agent.attempts[0]?.exitCode, 1);
 });
 
+test("retries an explicitly prepared failed agent in the same Pi session", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-failed-retry-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-retry");
+	await registry.initialize("main:session-retry");
+	const failure = join(root, "failure.mjs");
+	const success = join(root, "success.mjs");
+	await writeFile(failure, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[],stopReason:"error",errorMessage:"provider rejected turn"}}));\n`);
+	await writeFile(success, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"continued repair"}]}}));\n`);
+	const first = await new LaunchCoordinator(registry, "main:session-retry", () => ({ command: process.execPath, args: [failure] })).launch({ operationId: "repair-1", role: "repair-implementer", task: "Repair", assignment: {}, cwd: root, provider: "test", model: "fake", effort: "low", tools: [] });
+	assert.equal(first.agent.state, "failed");
+	await registry.prepareRetry(first.agent.id);
+	let sessionFile = "";
+	const second = await new LaunchCoordinator(registry, "main:session-retry", (args) => { sessionFile = args[args.indexOf("--session") + 1] ?? ""; return { command: process.execPath, args: [success] }; }).launch({ operationId: "repair-1:retry:1", existingAgentId: first.agent.id, role: "repair-implementer", task: "Continue", assignment: {}, cwd: root, provider: "test", model: "fake", effort: "low", tools: [] });
+	assert.equal(second.agent.id, first.agent.id);
+	assert.equal(second.agent.attempts.length, 2);
+	assert.equal(second.result.text, "continued repair");
+	assert.equal(sessionFile, join(registry.root, "agents", first.agent.id, "pi-session.jsonl"));
+});
+
 test("resumes a waiting assignment as another process attempt under the same slot and Pi session", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-resume-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

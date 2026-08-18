@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import test from "node:test";
 import { SessionAgentRegistry } from "../../workflow-runtime/agent-registry.js";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
 import { RepositoryEventStore } from "../event-store.js";
+import { discoverRepository } from "../repository.js";
+import { RepairRecoveryStore } from "../repair-recovery.js";
+
+const exec = promisify(execFile);
 
 function task(id: string, status: string, dependsOn: string[] = [], stageId = "delivery") {
 	return { id, title: id, status, dependsOn, execution: { resourceClaims: [id] }, assembly: { stageId } };
@@ -106,6 +112,36 @@ test("resume prepares stopped tasks from current dependency state", async () => 
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), validateWorkingBranch: async () => {} });
 	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
 	assert.deepEqual(updates, [["second", "ready"], ["third", "blocked"]]);
+});
+
+test("resume preserves and reopens the same failed fixer on its unchanged dirty workspace", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-repair-resume-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await exec("git", ["init", "-q"], { cwd: root });
+	await exec("git", ["config", "user.email", "test@example.com"], { cwd: root });
+	await exec("git", ["config", "user.name", "Test"], { cwd: root });
+	await writeFile(join(root, ".gitignore"), ".pibox/\n");
+	await writeFile(join(root, "source.txt"), "base\n");
+	await exec("git", ["add", "."], { cwd: root });
+	await exec("git", ["commit", "-qm", "fixture"], { cwd: root });
+	const identity = await discoverRepository(root);
+	await writeFile(join(root, "source.txt"), "partial repair\n");
+	const recovery = new RepairRecoveryStore(identity);
+	await recovery.record({ workItemId: "example", evaluationId: "review", agentId: "fixer", operationId: "repair:example:review:1", iteration: 1 });
+	const item: any = { id: "example", tasks: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", loop: { state: "fixing", iteration: 0, fixerAgentId: "fixer" } };
+	let prepared = ""; let allowDirty: boolean | undefined;
+	const runtime: any = {
+		identity,
+		workItems: { async read() { return item; }, async readEvaluation() { return evaluation; }, async readTask() { throw new Error("none"); } },
+		agents: { async get() { return { id: "fixer", state: "failed" }; }, async prepareRetry(id: string) { prepared = id; } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), validateWorkingBranch: async (_runtime, _id, options) => { allowDirty = options?.allowDirty; } });
+	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
+	assert.equal(prepared, "fixer");
+	assert.equal(allowDirty, true);
+	assert.equal(await readFile(join(root, "source.txt"), "utf8"), "partial repair\n");
 });
 
 test("renders a review-fix loop as one checkpoint step with phase and iteration", async () => {
@@ -248,9 +284,13 @@ test("a failed fixer remains actionable during fixing", async () => {
 	const fixer = { id: "fixer", role: "repair-implementer", evaluationId: "review", state: "failed", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "failed", activity: { kind: "repair", generation: 2 } }] };
 	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [fixer]; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
-	const snapshot = await adapter.snapshot("work-item:example", {} as any);
+	let snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps[0]!.status, "attention");
+	assert.match(snapshot.steps[0]!.title, /Fix failed · Resume/);
 	assert.match(snapshot.steps[0]!.detail ?? "", /failed/);
+	fixer.state = "reserved";
+	snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps[0]!.status, "ready", "an explicitly prepared persistent fixer becomes runnable without a duplicate logical agent");
 });
 
 test("request_changes records a fixing step without synchronously launching repair or re-review", async () => {
@@ -277,6 +317,34 @@ test("request_changes records a fixing step without synchronously launching repa
 	assert.equal(replay.loop.iteration, 1);
 	assert.equal(replay.loop.managerPrompt, "Fix F1");
 	assert.equal(repairs, 0, "replaying fixing must not launch a duplicate repair");
+});
+
+test("an exact legacy change-request replay adopts preserved failed-fixer work without creating a new identity", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-legacy-repair-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await exec("git", ["init", "-q"], { cwd: root });
+	await exec("git", ["config", "user.email", "test@example.com"], { cwd: root });
+	await exec("git", ["config", "user.name", "Test"], { cwd: root });
+	await writeFile(join(root, ".gitignore"), ".pibox/\n");
+	await writeFile(join(root, "source.txt"), "base\n");
+	await exec("git", ["add", "."], { cwd: root });
+	await exec("git", ["commit", "-qm", "fixture"], { cwd: root });
+	await writeFile(join(root, "source.txt"), "partial legacy repair\n");
+	const identity = await discoverRepository(root);
+	let evaluation: any = { id: "review", checkpoint: "stage-review", status: "failed", findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "awaiting_manager", iteration: 0, maxIterations: 3, managerPrompt: "Fix F1" } };
+	const failedFixer: any = { id: "fixer", role: "repair-implementer", state: "failed", evaluationId: "review", operationId: "repair:example:review:1", updatedAt: new Date().toISOString(), currentAttemptId: "a1", attempts: [{ id: "a1", state: "failed", activity: { kind: "repair", generation: 1 } }] };
+	let prepared = "";
+	const runtime: any = {
+		identity, config: { limits: { repairRounds: 3 } },
+		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any) { evaluation = { ...evaluation, loop: { ...evaluation.loop, ...update } }; return evaluation; } },
+		agents: { async list() { return [failedFixer]; }, async prepareRetry(id: string) { prepared = id; } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
+	const result: any = await adapter.controlCheckpoint?.("work-item:example/evaluation:review", "request_changes", { prompt: "Fix F1" }, {} as any);
+	assert.equal(result.loop.fixerAgentId, "fixer");
+	assert.equal(prepared, "fixer");
+	assert.equal((await new RepairRecoveryStore(identity).read("example", "review"))?.agentId, "fixer");
 });
 
 test("request_changes cannot rewind a re-review or exceed the repair limit", async () => {

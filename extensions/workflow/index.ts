@@ -34,6 +34,7 @@ import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./p
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors } from "./tool-groups.js";
 import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment } from "./mcp-capabilities.js";
 import { resourceDisplayDiff } from "./resource-diff.js";
+import { RepairRecoveryStore } from "./repair-recovery.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
@@ -688,25 +689,35 @@ export default function workflow(pi: ExtensionAPI): void {
 		// Keep the common-dir lock for the child lifetime and settlement; unlike
 		// evaluators, repair agents do not need evaluation_record while running.
 		return runtime.mutex.run(`repair-child:${workItemId}:${evaluationId}`, async () => {
-		try {
-			const launched = await runtime.coordinator.launch({
-				operationId, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
-				task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }),
-				assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }, cwd: runtime.identity.root,
-				activity: { kind: "repair", generation: repairIteration },
-				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
-				workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
-				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
-				promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
-			});
-			if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
-			await assertCleanRepository(runtime.identity.root);
-			await runtime.mutex.run(`repair-settled:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "rereviewing", iteration: repairIteration, fixerAgentId: launched.agent.id }, "planned"));
-			return textResult(`Repair iteration ${repairIteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: launched.agent.id, iteration: repairIteration });
-		} catch (error) {
-			await runtime.mutex.run(`repair-failed:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "awaiting_manager", iteration: loop.iteration, managerPrompt: loop.managerPrompt! }, evaluation.status));
-			throw error;
-		}
+			let launched: Awaited<ReturnType<LaunchCoordinator["launch"]>> | undefined;
+			try {
+				if (existing?.state === "reserved") {
+					const recovery = await new RepairRecoveryStore(runtime.identity).read(workItemId, evaluationId);
+					if (!recovery || recovery.agentId !== existing.id) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Retry-ready fixer ${existing.id} has no matching durable repair recovery record`);
+					await new RepairRecoveryStore(runtime.identity).assertCurrent(recovery);
+				} else await assertCleanRepository(runtime.identity.root);
+				launched = await runtime.coordinator.launch({
+					operationId, ...(existing ? { existingAgentId: existing.id } : {}), role: "repair-implementer",
+					task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }),
+					assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }, cwd: runtime.identity.root,
+					activity: { kind: "repair", generation: repairIteration },
+					provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
+					workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
+					env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
+					promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
+				});
+				if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Repair agent failed");
+				const settledFixerId = launched.agent.id;
+				await assertCleanRepository(runtime.identity.root);
+				await runtime.mutex.run(`repair-settled:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "rereviewing", iteration: repairIteration, fixerAgentId: settledFixerId }, "planned"));
+				await new RepairRecoveryStore(runtime.identity).clear(workItemId, evaluationId);
+				return textResult(`Repair iteration ${repairIteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: settledFixerId, iteration: repairIteration });
+			} catch (error) {
+				const fixerAgentId = launched?.agent.id ?? existing?.id;
+				await runtime.mutex.run(`repair-failed:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "fixing", iteration: loop.iteration, managerPrompt: loop.managerPrompt!, ...(fixerAgentId ? { fixerAgentId } : {}) }, evaluation.status));
+				if (fixerAgentId) await new RepairRecoveryStore(runtime.identity).record({ workItemId, evaluationId, agentId: fixerAgentId, operationId, iteration: repairIteration });
+				throw error;
+			}
 		});
 	};
 

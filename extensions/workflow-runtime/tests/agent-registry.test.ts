@@ -129,6 +129,22 @@ test("persists blocking requests and responses without releasing the logical slo
 	await assert.rejects(registry.respondMessage(agent.id, message.id, "Again"), /already answered/);
 });
 
+test("explicitly prepares one failed logical agent for a fresh process attempt", async (t) => {
+	const { registry } = await fixture(t);
+	const agent = await registry.reserve(input(1));
+	const first = await registry.startAttempt(agent.id, { provider: "test", model: "fake", effort: "low" });
+	await registry.markRunning(agent.id, first.attempt.id, 1234);
+	await registry.recordExit(agent.id, first.attempt.id, 1);
+	await registry.transition(agent.id, "failed", { error: "provider rejected the turn" });
+	await assert.rejects(registry.startAttempt(agent.id), /Invalid agent transition/);
+	const prepared = await registry.prepareRetry(agent.id);
+	assert.equal(prepared.state, "reserved");
+	assert.equal(prepared.id, agent.id);
+	const second = await registry.startAttempt(agent.id, { provider: "test", model: "fake", effort: "low" });
+	assert.equal(second.agent.id, agent.id);
+	assert.equal(second.attempt.sequence, 2);
+});
+
 test("rejects invalid transitions and preserves ordered lifecycle events", async (t) => {
 	const { root, registry } = await fixture(t);
 	const agent = await registry.reserve(input(1));
