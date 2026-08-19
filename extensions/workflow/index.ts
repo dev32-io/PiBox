@@ -828,12 +828,16 @@ export default function workflow(pi: ExtensionAPI): void {
 			const routing = {
 				tier: inferDynamicSubagentTier(request.tier, preferred?.model) as ModelTier,
 				...(preferred ? { override: preferred } : {}),
+				...(request.model ? { strict: true } : {}),
 			};
 			const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 			const resolution = resolveHarnessModel(runtime.config, availableModels, routing);
 			if (resolution.status === "waiting_model") {
 				const requestedRoute = preferred ? `${preferred.model}${preferred.effort ? `#${preferred.effort}` : ""}` : "the configured local route list";
 				const attempts = resolution.attempts.map((attempt) => `${attempt.provider ? `${attempt.provider}/` : ""}${attempt.model}${attempt.effort ? `#${attempt.effort}` : ""}: ${attempt.status}`).join("; ");
+				if (request.model) {
+					throw new HarnessError("MODEL_UNAVAILABLE", `Explicit model request ${requestedRoute} failed closed without fallback.${attempts ? ` ${attempts}` : ""}`, { attempts: resolution.attempts });
+				}
 				if (routing.tier === "local") {
 					throw new HarnessError("MODEL_UNAVAILABLE", `Local model request ${requestedRoute} failed closed without fallback.${attempts ? ` ${attempts}` : ""}`, { attempts: resolution.attempts });
 				}

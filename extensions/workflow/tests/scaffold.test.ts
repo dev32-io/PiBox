@@ -88,7 +88,7 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(loaded.config.schemaVersion, 2);
 	assert.deepEqual(loaded.config.modelTiers, {
 		max: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro#max"],
-		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"],
+		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro:0813#high"],
 		medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
 		low: ["openai-codex/gpt-5.6-luna#low", "ollama-cloud/deepseek-v4-flash#low"],
 		local: ["local-llm/meta/muse-glimmer#high"],

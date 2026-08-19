@@ -2,7 +2,7 @@
 name: e2e-tester
 description: End-to-end and user-visible behavior verification
 tools: [read, grep, find, bash, mcp:playwright]
-tier: medium
+tier: low
 ---
 
 # End-to-End Evaluation

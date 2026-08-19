@@ -39,7 +39,17 @@ Do not define implementation tasks, stages, assignments, capability tiers, workt
 
 ## Validate, Then Persist
 
-Before writing resources, present a compact story/design checkpoint **and a conservative touched-area E2E matrix**. The matrix must list substantive structured cases with stable IDs, one classification (golden-path, edge, failure, or recovery), journey, setup, actions, expected outcomes, evidence, and safety notes where suitable. This is the last collaborative checkpoint: explicitly discuss and finalize the matrix with the user, including what is deliberately excluded, then ask whether the complete checkpoint represents the user's intent. Prior agreement to “build,” “shape,” or “plan” does not approve this unseen checkpoint.
+Before writing resources, present a compact story/design checkpoint **and a conservative touched-area E2E matrix**.
+
+Derive the matrix outside-in:
+
+- Derive cases from actors, real surfaces, rules, transitions, and material risks—not implementation structure.
+- Use the smallest non-duplicate set. Add variants only when behavior, authority, state, driver, or evidence changes; state questions and exclusions.
+- Each case names its actor, pre-state, external action or event, observable outcome and final state, available source references, and safe setup and cleanup.
+- Treat the user-visible result as the oracle; use internal evidence only for a named hidden invariant.
+- Give every requirement a case or explicit gap; do not invent behavior, duplicate cases, or substitute implementation probes.
+
+The matrix must list substantive structured cases with stable IDs, one classification (golden-path, edge, failure, or recovery), journey, setup, actions, expected outcomes, evidence, and safety notes where suitable. This is the last collaborative checkpoint: explicitly discuss and finalize the matrix with the user, including what is deliberately excluded, then ask whether the complete checkpoint represents the user's intent. Prior agreement to “build,” “shape,” or “plan” does not approve this unseen checkpoint.
 
 After the user validates the checkpoint:
 

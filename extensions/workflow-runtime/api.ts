@@ -113,9 +113,9 @@ export interface DynamicSubagentRequest {
 	task: string;
 	/** Selects a configured capability tier or the provider-isolated local route list. */
 	tier?: DynamicSubagentTier;
-	/** Preferred configured model, optionally provider-qualified or suffixed with #effort. */
+	/** Exact configured model, optionally provider-qualified or suffixed with #effort. Explicit requests fail without fallback. */
 	model?: string;
-	/** Overrides a #effort suffix or the preferred route's configured effort. */
+	/** Overrides a #effort suffix or the explicit route's configured effort. */
 	effort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 }
 

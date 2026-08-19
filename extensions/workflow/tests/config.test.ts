@@ -10,7 +10,7 @@ test("uses cost-aware model-effort pairs plus a provider-isolated local route li
 	assert.equal(DEFAULT_HARNESS_CONFIG.limits.repairRounds, 8, "smaller models receive eight bounded review/fix opportunities by default");
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.modelTiers, {
 		max: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro#max"],
-		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"],
+		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro:0813#high"],
 		medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
 		low: ["openai-codex/gpt-5.6-luna#low", "ollama-cloud/deepseek-v4-flash#low"],
 		local: ["local-llm/meta/muse-glimmer#high"],
@@ -28,6 +28,7 @@ test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.equal(generalPurpose?.canDelegate, false);
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "mcp:playwright"]);
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tier, "low");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "medium");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["repair-implementer"]?.tier, "medium");
 });

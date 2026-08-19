@@ -126,7 +126,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /complete rendered task contract in persistent context/i);
 	assert.match(delivery, /Use `resource_list` to inventory[\s\S]+`resource_read` to inspect each complete task/i);
 	assert.match(delivery, /Check coverage, vagueness, consistency/i);
-	assert.match(delivery, /runtime also owns final whole-branch journey verification and final branch review/i);
+	assert.match(delivery, /runtime owns final whole-branch journey verification and final branch review/i);
 	assert.match(delivery, /Never create an evaluation resource/i);
 	assert.match(delivery, /approved E2E matrix is binding verification context/i);
 	assert.match(delivery, /Preserve every approved E2E matrix case exactly/i);
