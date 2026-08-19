@@ -16,6 +16,7 @@ function fixture(workflowConfirmed = true) {
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool(definition: any) { tools.set(definition.name, definition); },
+		registerMessageRenderer() {},
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		events: {
 			on(name: string, handler: (data: unknown) => void) { const current = bus.get(name) ?? []; current.push(handler); bus.set(name, current); },
@@ -311,7 +312,9 @@ test("a completed review wakes the main session and emits success feedback", asy
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(feedback.filter((event) => event.type === "task-completed" && event.toStatus === "approved").length, 1);
-	assert.equal(f.messages.filter(({ message, options }) => (message as any).customType === "pibox-workflow-event" && (options as any).deliverAs === "followUp" && (options as any).triggerTurn === true).length, 1);
+	const workflowEvents = f.messages.filter(({ message, options }) => (message as any).customType === "pibox-workflow-event" && (options as any).deliverAs === "followUp" && (options as any).triggerTurn === true);
+	assert.equal(workflowEvents.length, 1);
+	assert.equal(workflowEvents[0]?.message.display, true);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

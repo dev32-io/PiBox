@@ -25,6 +25,7 @@ export function createWorkflowBenchHarness(): WorkflowBenchHarness {
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool(definition: any) { tools.set(definition.name, definition); },
+		registerMessageRenderer() {},
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		events: {
 			on(name: string, handler: (data: unknown) => void) { const current = bus.get(name) ?? []; current.push(handler); bus.set(name, current); },

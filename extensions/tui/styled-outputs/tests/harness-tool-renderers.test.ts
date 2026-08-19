@@ -48,7 +48,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
 	const active = lines(activeComponent);
-	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · active · Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · Medium (openai-codex/gpt-5.6-sol#medium)");
 	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
 	assert.equal(narrow.length, 2, "volatile status stays on one detail row");
 	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
@@ -183,4 +183,33 @@ test("collapses verbose foreground subagent results with an expand hint", () => 
 		content: [{ type: "text", text: resultLines.join("\n") }],
 	}, true, theme, false));
 	assert.match(expanded.join("\n"), /line 12/);
+});
+
+test("preserves subagent report and nested output indentation", () => {
+	const rendered = lines(renderHarnessToolResult("subagent_spawn", {
+		content: [{ type: "text", text: [
+			"Research summary",
+			"",
+			"src/example.ts",
+			"  function outer() {",
+			"    return inner();",
+			"  }",
+			"",
+			"Command output:",
+			"    nested value",
+		].join("\n") }],
+	}, true, theme, false));
+
+	assert.deepEqual(rendered, [
+		"└─ Done",
+		"  Research summary",
+		"",
+		"  src/example.ts",
+		"    function outer() {",
+		"      return inner();",
+		"    }",
+		"",
+		"  Command output:",
+		"      nested value",
+	]);
 });

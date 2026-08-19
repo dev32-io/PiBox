@@ -27,19 +27,20 @@ export interface SubagentLiveStatus {
 	startedAt?: string | number;
 }
 
-function formatSubagentProgress(status: SubagentLiveStatus, now: number): string {
+function formatSubagentProgress(status: SubagentLiveStatus, now: number, showActive = true): string {
 	return formatAgentProgress(status.progress, now, {
 		...(status.startedAt !== undefined ? { fallbackStartedAt: status.startedAt } : {}),
 		showStarting: true,
+		showActive,
 	});
 }
 
-/** Inline rows lead with volatile progress and keep route metadata secondary. */
+/** Inline rows lead with volatile progress; the pulsing tool row already communicates active state. */
 export function formatInlineSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
-	return `${formatSubagentProgress(status, now)} · ${formatSubagentRoute(status.tier, status.resolved)}`;
+	return `${formatSubagentProgress(status, now, false)} · ${formatSubagentRoute(status.tier, status.resolved)}`;
 }
 
-/** Footer rows lead with route metadata while sharing the exact live projection. */
+/** Footer rows lead with route metadata and retain explicit process activity. */
 export function formatBackgroundSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
 	return `${formatSubagentRoute(status.tier, status.resolved)} · ${formatSubagentProgress(status, now)}`;
 }

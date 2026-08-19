@@ -8,6 +8,7 @@ import { formatBackgroundSubagentStatus, SUBAGENT_PULSE_INTERVAL_MS, subagentPul
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
 import { formatAgentProgress, initialAgentProgress, type AgentProgress } from "./agent-progress.js";
 import { DEFAULT_SUBAGENT_STATUS_LIMIT, MAX_SUBAGENT_STATUS_LIMIT, projectSubagentStatus, subagentStatusEmptyText, type SubagentStatusFilters } from "./subagent-status.js";
+import { renderWorkflowEventMessage } from "./workflow-event-display.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -32,6 +33,8 @@ type RunningSubagentStatus = {
 };
 
 export default function workflows(pi: ExtensionAPI): void {
+	pi.registerMessageRenderer("pibox-workflow-event", renderWorkflowEventMessage);
+
 	const adapters: WorkflowAdapter[] = [];
 	const active = new Map<string, "running" | "paused">();
 	const ownership = new Map<string, number>();
@@ -135,7 +138,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		if (!safe.attention && !reviewCompleted) return;
 		try {
 			const detail = [safe.detail, safe.cause ? `Cause: ${bounded(safe.cause, 120)}` : undefined, safe.nextAction ? `Next: ${safe.nextAction}` : undefined].filter(Boolean).join("\n");
-			pi.sendMessage({ customType: "pibox-workflow-event", content: `[${safe.attention ? "Workflow attention" : "Workflow progress"}]\n${safe.title}${detail ? `\n${detail}` : ""}`, display: false, details: safe }, { deliverAs: safe.attention ? "steer" : "followUp", triggerTurn: true });
+			pi.sendMessage({ customType: "pibox-workflow-event", content: `[${safe.attention ? "Workflow attention" : "Workflow progress"}]\n${safe.title}${detail ? `\n${detail}` : ""}`, display: true, details: safe }, { deliverAs: safe.attention ? "steer" : "followUp", triggerTurn: true });
 		} catch {
 			// A replacement or closing session will reconcile from durable adapter state.
 		}

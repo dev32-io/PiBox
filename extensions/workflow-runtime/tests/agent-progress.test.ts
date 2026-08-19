@@ -39,6 +39,8 @@ test("tracks startup and activity from the child Pi process instead of event rec
 	assert.equal(formatAgentProgress(starting, Date.parse("2026-01-01T00:00:08.000Z")), "8s · starting");
 	const spawned = markAgentProcessStarted(starting, "2026-01-01T00:00:09.000Z");
 	assert.equal(formatAgentProgress(spawned, Date.parse("2026-01-01T00:00:11.000Z")), "11s · active");
+	assert.equal(formatAgentProgress(spawned, Date.parse("2026-01-01T00:00:11.000Z"), { showActive: false }), "11s");
+	assert.equal(formatAgentProgress(starting, Date.parse("2026-01-01T00:00:08.000Z"), { showActive: false }), "8s · starting");
 	const active = { ...spawned, turns: 1, outputTokens: 120, lastEventAt: "2026-01-01T00:00:10.000Z" };
 	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:00:29.000Z")), /↓ 120 · active$/);
 	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:10:00.000Z")), /↓ 120 · active$/);

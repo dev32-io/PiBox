@@ -115,6 +115,8 @@ export interface AgentProgressFormatOptions {
 	fallbackStartedAt?: string | number;
 	/** Render the lifecycle word even when no progress projection exists yet. */
 	showStarting?: boolean;
+	/** Keep startup visible while allowing compact active surfaces to omit a redundant label. */
+	showActive?: boolean;
 }
 
 /**
@@ -136,6 +138,6 @@ export function formatAgentProgress(progress: AgentProgress | undefined, now = D
 	if (activeTool) parts.push(activeTool);
 	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
 	const processStatus = formatAgentProcessStatus(progress);
-	if (processStatus) parts.push(processStatus);
+	if (processStatus && (processStatus !== "active" || options.showActive !== false)) parts.push(processStatus);
 	return parts.join(" · ");
 }

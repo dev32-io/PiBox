@@ -173,6 +173,25 @@ function appendTreeRows(container: Container, rows: string[], theme: Theme, expa
 	}
 }
 
+function outputRows(text: string): string[] {
+	const rows = text.replace(/\r\n?/g, "\n").split("\n");
+	while (rows.length > 0 && rows[0]!.trim() === "") rows.shift();
+	while (rows.length > 0 && rows[rows.length - 1]!.trim() === "") rows.pop();
+	return rows;
+}
+
+/** Render prose/code output as a block: shell padding plus original line indentation. */
+function appendOutputBlock(container: Container, text: string, theme: Theme, expanded: boolean, collapsedLimit: number): void {
+	const rows = outputRows(text);
+	if (rows.length === 0) return;
+	const shown = expanded ? rows : rows.slice(0, collapsedLimit);
+	container.addChild(new Text(theme.fg("muted", shown.join("\n")), 2, 0));
+	if (rows.length > shown.length) {
+		const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
+		container.addChild(new Text(theme.fg("dim", `… +${rows.length - shown.length} more lines (${toggle} to expand)`), 2, 0));
+	}
+}
+
 export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>, now: () => number = Date.now): Component {
 	return new HarnessCallComponent(name, args, theme, partial, error, details, now);
 }
@@ -239,7 +258,10 @@ export function renderHarnessToolResult(name: string, result: any, expanded: boo
 	if (name === "memory_adapter") return renderMemoryToolResult(result, expanded, theme, error);
 	const component = new Container();
 	const text = firstText(result);
-	const payload = parsePayload(text);
+	// A returned subagent report is prose and often contains code, file excerpts,
+	// or nested command output. Never reinterpret an embedded JSON example as the
+	// tool payload, and retain every line's original indentation.
+	const payload = name === "subagent_spawn" ? undefined : parsePayload(text);
 	const items = structuredItems(payload);
 	const fields = summaryFields(payload, result?.details);
 	const status = error ? theme.fg("error", "Error") : theme.fg("success", "Done");
@@ -269,7 +291,6 @@ export function renderHarnessToolResult(name: string, result: any, expanded: boo
 		appendTreeRows(component, fields.map(([key, value]) => `${key}: ${compact(value, 100)}`), theme, expanded);
 		return component;
 	}
-	const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-	if (lines.length > 0) appendTreeRows(component, lines, theme, expanded, name === "subagent_spawn" ? 10 : 4);
+	appendOutputBlock(component, text, theme, expanded, name === "subagent_spawn" ? 10 : 4);
 	return component;
 }
