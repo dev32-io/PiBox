@@ -21,7 +21,7 @@ Do not create story resources immediately. First work through the technical fron
 2. **Sharpen the domain** — Challenge vague, overloaded, or conflicting terms. Propose precise canonical language and distinguish concepts that have different identity, ownership, state, or lifecycle. If repository vocabulary disagrees with the conversation, surface it immediately.
 3. **Probe with scenarios** — Invent concrete primary, edge, failure, and recovery scenarios. Use them to expose hidden rules, invalid states, boundaries between concepts, and behavior the user has not decided yet.
 4. **Inspect reality** — Cross-reference claims with the code and current interfaces. Follow existing patterns where they serve the outcome; call out contradictions and targeted structural problems that materially affect the design.
-5. **Explore approaches** — Present two or three credible approaches when a consequential design choice exists. Lead with your recommendation, explain tradeoffs, and remove unnecessary scope. Do not manufacture alternatives for trivial choices.
+5. **Explore approaches** — Present credible alternatives when a consequential design choice exists. Lead with your recommendation and explain the tradeoffs; do not manufacture alternatives for trivial choices.
 6. **Present the contract and design** — Walk through the proposed domain language, behavior and acceptance, then high-level technical design. Scale each section to its complexity and pause after each consequential section so the user can correct it. Revisit earlier sections when a scenario changes the model.
 
 Ask one useful question at a time when possible. Prefer a concrete scenario or a small set of choices over a broad questionnaire. Respond substantively before asking the next question.
@@ -30,8 +30,8 @@ Ask one useful question at a time when possible. Prefer a concrete scenario or a
 
 A coherent story captures only durable high-level understanding:
 
-- **Intent** — problem, actors, desired outcome, included and excluded scope, constraints, assumptions, and success signals.
-- **Specification** — canonical domain language, required behavior, concrete scenarios, edge cases, and stable observable acceptance criteria.
+- **Intent** — problem, desired outcome, included and excluded scope, constraints, assumptions, and success signals.
+- **Specification** — actors, canonical domain language, required behavior, concrete scenarios, edge cases, and stable observable acceptance criteria.
 - **Design** — chosen approach, component and interface boundaries, data/control flow, failure and recovery behavior, compatibility, security/privacy, and verification boundaries where relevant.
 - **Decisions** — only choices that are hard to reverse, surprising without context, and the result of a genuine tradeoff.
 
@@ -58,7 +58,9 @@ After the user validates the checkpoint:
 3. Read each written artifact ref back individually and check for placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between acceptance and design. A compact work-item read is not a substitute for reading its child artifacts.
 4. Correct only the affected resource. Include the persisted e2e-matrix in the story review checkpoint and resource refs.
 
-Use these author-facing shapes; the resource API translates them to canonical storage. Creation uses `type`, optional `parent`, and `value`; updates use only `ref` and `value`.
+## Resource Shapes
+
+The resource API translates these author-facing shapes to canonical storage. Creation uses `type`, optional `parent`, and `value`; updates use only `ref` and `value`.
 
 **Story container:**
 
@@ -162,7 +164,7 @@ After persistence, present the story checkpoint and resource refs to the user, t
 
 A later explicit request such as “the story looks right, plan it” enters `plan-delivery`. Requested changes remain in `shape-story`.
 
-## Deliverable
+## Exit States
 
 End with exactly one result:
 

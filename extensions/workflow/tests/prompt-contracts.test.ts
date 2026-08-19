@@ -103,15 +103,15 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /Never create proof-only, test-only, review-only, or verification-only tasks/i);
 	assert.match(delivery, /compiling intermediate work inside a sequential stage/i);
 	assert.match(delivery, /break compilation or make one commit meaningless/i);
-	const calendarDecompression = ["resource class values", "event data contracts", "private routing", "household routing", "schema DDL", "migration ladder", "store factory/class/path guards", "create", "lookup", "list/filter", "update", "delete", "exception persistence", "daily", "weekly/BYDAY", "monthly", "yearly", "COUNT/UNTIL", "EXDATE", "exception application", "all-day", "DST", "visibility", "household write gate"];
-	let calendarCursor = delivery.indexOf("Compressed/decompressed example");
-	assert.ok(calendarCursor >= 0);
-	for (const term of calendarDecompression) {
-		const next = delivery.indexOf(term, calendarCursor);
-		assert.ok(next > calendarCursor, `calendar decomposition order: ${term}`);
-		calendarCursor = next;
+	const genericDecomposition = ["contracts", "schema/migration", "store boundary", "create", "read/list", "update", "delete", "authorization-policy"];
+	let decompositionCursor = delivery.indexOf("Compressed/decompressed example");
+	assert.ok(decompositionCursor >= 0);
+	for (const term of genericDecomposition) {
+		const next = delivery.indexOf(term, decompositionCursor);
+		assert.ok(next > decompositionCursor, `decomposition order: ${term}`);
+		decompositionCursor = next;
 	}
-	assert.match(delivery, /Each ticket owns its implementation and embedded tests\/checks; tests\/checks are never proof tasks/i);
+	assert.match(delivery, /Each owns its implementation and focused tests/i);
 	assert.doesNotMatch(delivery, /decompose vertical slices/i);
 	assert.match(delivery, /explicit ordered concrete implementation\/test steps/i);
 	assert.match(delivery, /interfaces consumed and produced/i);
@@ -126,22 +126,22 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /complete rendered task contract in persistent context/i);
 	assert.match(delivery, /Use `resource_list` to inventory[\s\S]+`resource_read` to inspect each complete task/i);
 	assert.match(delivery, /Check coverage, vagueness, consistency/i);
-	assert.match(delivery, /runtime owns final whole-branch journey verification and final branch review/i);
-	assert.match(delivery, /Never create an evaluation resource/i);
+	assert.match(delivery, /runtime runs final E2E with `e2e-tester` at `low` by default, then final branch review/i);
+	assert.match(delivery, /planner authors tasks, stages, checks, and review policy, but never evaluations/i);
 	assert.match(delivery, /approved E2E matrix is binding verification context/i);
-	assert.match(delivery, /Preserve every approved E2E matrix case exactly/i);
+	assert.match(delivery, /Preserve every approved case exactly/i);
 	assert.match(delivery, /Correct only the affected resource with `resource_write`/i);
 	assert.match(delivery, /Resource Examples/i);
 	assert.match(delivery, /"mode": "sequential"/i);
 	assert.match(delivery, /task_clarify.*escape hatch/is);
-	assert.match(delivery, /planning critique is optional[\s\S]+user explicitly requests it/i);
+	assert.match(delivery, /planning critique is optional[\s\S]+user requests it/i);
 	assert.match(delivery, /`subagent_spawn` with `plan-critic`/i);
 	assert.match(delivery, /ordered tasks may instead share a sequential stage/i);
 	assert.match(delivery, /concurrent tasks must not depend on each other/i);
 	assert.match(delivery, /`medium` is the hard default/i);
 	assert.match(delivery, /Use `medium` by default/i);
 	assert.match(delivery, /ordered list of concrete `provider\/model#effort` pairs/i);
-	assert.match(delivery, /call `workflow_transition` with `submit`/i);
+	assert.match(delivery, /call `workflow_transition` with the work-item `ref`, `action: "submit"`, and a concise `reason`/i);
 	assert.match(delivery, /user can say “start the workflow”[\s\S]+sole execution gate/i);
 	assert.match(delivery, /no separate approval command is required/i);
 	assert.match(run, /clear user request to execute the reviewed workflow is the sole execution gate/i);
