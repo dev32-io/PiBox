@@ -56,11 +56,16 @@ test("registers the generalized workflow and subagent surface", async () => {
 	const f = fixture();
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_status", "subagent_control", "subagent_respond", "subagent_spawn"]);
-	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Background is the default/i);
+	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Foreground is the default/i);
+	assert.match(f.tools.get("subagent_spawn").description, /mode to background.*automatic terminal delivery/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
 	const spawnSchema = JSON.stringify(f.tools.get("subagent_spawn").parameters);
+	assert.match(spawnSchema, /"default":"foreground"/);
 	assert.match(spawnSchema, /tier.*local.*model.*effort/);
 	assert.doesNotMatch(spawnSchema, /tierJustification|strict/);
+	const statusTool = f.tools.get("subagent_status");
+	assert.match(statusTool.description, /diagnostics and recovery.*not a polling mechanism.*automatic terminal reports/is);
+	assert.match(JSON.stringify(statusTool.parameters), /agentId.*workflowRef.*state.*includeSettled.*limit/);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*TUI confirmation.*permission bypass mode/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
@@ -80,6 +85,35 @@ test("refreshes subagent_spawn with the adapter's validated agent catalog", asyn
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	assert.match(f.tools.get("subagent_spawn").description, /project-scout \(project, low\).*Project-specific reconnaissance/);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /Available agents: project-scout/);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("subagent status applies recovery filters and returns a bounded projection", async () => {
+	const f = fixture();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async controlWorkflow() {},
+		async listSubagents() {
+			return [
+				{ id: "other", role: "implementer", state: "running", workItemId: "other", provider: "other", model: "other", effort: "low", updatedAt: "2025-01-03T00:00:00.000Z" },
+				{ id: "target", role: "reviewer", state: "completed", workItemId: "example", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", summary: "Done", updatedAt: "2025-01-02T00:00:00.000Z" },
+			];
+		},
+		async listMessages() { return [{ id: "message", agentId: "target", status: "open", summary: "Decision needed", updatedAt: "2025-01-04T00:00:00.000Z" }]; },
+		async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const status = await f.tools.get("subagent_status").execute("call", { workflowRef: "work-item:example", state: "completed", includeSettled: true, limit: 1 }, undefined, undefined, f.ctx);
+	assert.deepEqual(status.details.agents.map((agent: any) => agent.id), ["target"]);
+	assert.deepEqual(status.details.openMessages.map((message: any) => message.id), ["message"]);
+	assert.equal(status.details.page.limit, 1);
+	assert.deepEqual(status.details.agents[0], {
+		id: "target", role: "reviewer", state: "completed", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high",
+		workflowRef: "work-item:example", updatedAt: "2025-01-02T00:00:00.000Z", summary: "Done", attention: true, openMessageCount: 1,
+	});
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -379,7 +413,7 @@ test("schedules an explicit sequential stage one serial repository task at a tim
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("background spawning returns its report to the main agent and shows running status", async () => {
+test("explicit background spawning returns its report to the main agent and shows running status", async () => {
 	const f = fixture();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -401,7 +435,7 @@ test("background spawning returns its report to the main agent and shows running
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
+	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", mode: "background", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
 	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s · 2 turns · 3 tools · ↓ 1\.2k · active/);
@@ -419,29 +453,32 @@ test("background spawning returns its report to the main agent and shows running
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("foreground spawning waits for the delegated result without using the background footer", async () => {
+test("omitted mode waits in foreground without using the background footer", async () => {
 	const f = fixture();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
+	let request: any;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: () => false,
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(request, _ctx, _signal, _onText, onStarted, onProgress) {
+		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
+			request = input;
 			const startedAt = new Date().toISOString();
 			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", startedAt });
 			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 });
 			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${request.agent}: ready` };
+			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
 		},
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review", mode: "foreground", tier: "medium" }, undefined, (update: any) => updates.push(update), f.ctx);
+	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(f.statuses.has("subagent-dashboard"), false);
+	assert.equal(request.tier, "medium");
 	assert.deepEqual(
 		{ agent: updates.at(-1)?.details.agent, tier: updates.at(-1)?.details.tier, provider: updates.at(-1)?.details.resolved?.provider, model: updates.at(-1)?.details.resolved?.model, effort: updates.at(-1)?.details.resolved?.effort },
 		{ agent: "plan-critic", tier: "medium", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max" },
@@ -526,6 +563,7 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 		ref: "test:workflow", title: "Starting implementation", status: "ready",
 		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [], progress }],
 		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
+		metrics: { elapsedMs: 60_000, runningMs: 60_000, agentActiveMs: 8_000, verificationMs: 0, fixes: 0, retries: 0, agentCount: 1, verificationAttempts: 0, inputTokens: 500, outputTokens: 0, toolErrors: 0 },
 	};
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
@@ -545,8 +583,43 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	const firstDivider = rendered[0]!.indexOf("│");
 	progress.turns = 12; progress.toolCalls = 34; progress.outputTokens = 152_000; progress.lastEventAt = new Date(Date.now() - 45_000).toISOString();
 	const updated = widget?.({}, f.ctx.ui.theme).render(100) as string[];
-	assert.ok(firstDivider > 0, "wide layout shows the event pane");
+	assert.ok(firstDivider > 0, "wide layout shows the metrics pane");
 	assert.equal(updated[0]!.indexOf("│"), firstDivider, "volatile progress does not move the responsive pane divider");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("wide metrics render as a compact aligned four-row table with a narrow one-pane fallback", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:metrics", state: "paused" } });
+	const snapshot: WorkflowSnapshot = {
+		ref: "test:metrics", title: "Metrics", status: "paused",
+		steps: [{ ref: "test:metrics/task:one", title: "Durable projection", kind: "task", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
+		metrics: { elapsedMs: 8_040_000, runningMs: 4_000_000, agentActiveMs: 3_240_000, verificationMs: 1_740_000, fixes: 4, retries: 6, agentCount: 9, verificationAttempts: 12, inputTokens: 123_456, outputTokens: 78_900, toolErrors: 3 },
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const component = (f.widget() as any)?.({}, f.ctx.ui.theme);
+	const wide = component.render(100) as string[];
+	const rows = [["Elapsed", "2h 14m"], ["Agent time", "54m"], ["Verification", "29m"], ["Fixes / retries", "4 / 6"]] as const;
+	assert.equal(wide.length, 4);
+	const dividers = wide.map((line) => line.indexOf("│"));
+	assert.ok(dividers[0]! > 0);
+	assert.equal(new Set(dividers).size, 1, "every metrics row uses the stable structural divider");
+	for (const [index, [label, value]] of rows.entries()) {
+		assert.match(wide[index]!, new RegExp(`${label}\\s+${value.replace("/", "\\/")}`));
+		assert.equal(wide[index]!.lastIndexOf(value) + value.length, wide[index]!.length - 1, "metric values align to the right pane edge");
+	}
+	assert.equal(wide.some((line) => /tokens|agent count|tool errors/i.test(line)), false, "detailed snapshot metrics stay out of the widget");
+	const narrow = component.render(60) as string[];
+	assert.equal(narrow.some((line) => line.includes("│")), false);
+	assert.equal(narrow.some((line) => rows.some(([label]) => line.includes(label))), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -754,6 +827,7 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 	const snapshots = (): WorkflowSnapshot => ({
 		ref: "test:workflow", title: "Example", status: taskDone ? "done" : "ready",
 		steps: [{ ref: "test:task", title: "Implement example", kind: "task", status: taskDone ? "done" : "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }],
+		metrics: { elapsedMs: 1_000, runningMs: 1_000, agentActiveMs: 500, verificationMs: 0, fixes: 0, retries: 0, agentCount: 1, verificationAttempts: 0, inputTokens: 100, outputTokens: 50, toolErrors: 0 },
 	});
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async completionPrompt() { return "Read outcome.md and brief the user."; }, async snapshot() { return snapshots(); },
@@ -777,7 +851,7 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 	const component = widget?.({}, f.ctx.ui.theme);
 	const rendered = component.render(100) as string[];
 	assert.ok(rendered.every((line: string) => line.startsWith(" ") && line.endsWith(" ")));
-	assert.ok(rendered.every((line: string) => line.includes(" │ ")), "wide dashboards visibly separate tasks from workflow events");
-	assert.ok(rendered.every((line: string) => line.indexOf(" │ ") < 65), "the event pane starts near the task content instead of at the far right");
+	assert.ok(rendered.every((line: string) => line.includes(" │ ")), "wide dashboards visibly separate tasks from workflow metrics");
+	assert.ok(rendered.every((line: string) => line.indexOf(" │ ") < 65), "the metrics pane starts near the task content instead of at the far right");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });

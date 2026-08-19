@@ -2,11 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowLifecycleUpdate, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
-import { formatSubagentRoute, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
+import { formatBackgroundSubagentStatus, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
 import { formatAgentProgress, initialAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { DEFAULT_SUBAGENT_STATUS_LIMIT, MAX_SUBAGENT_STATUS_LIMIT, projectSubagentStatus, subagentStatusEmptyText, type SubagentStatusFilters } from "./subagent-status.js";
 
 const TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"];
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -30,13 +31,6 @@ type RunningSubagentStatus = {
 	progress?: AgentProgress;
 };
 
-function formatElapsed(startedAt: number): string {
-	const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1_000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
-}
-
 export default function workflows(pi: ExtensionAPI): void {
 	const adapters: WorkflowAdapter[] = [];
 	const active = new Map<string, "running" | "paused">();
@@ -53,7 +47,6 @@ export default function workflows(pi: ExtensionAPI): void {
 	let visualTimer: NodeJS.Timeout | undefined;
 	let dashboardTui: { requestRender?: () => void } | undefined;
 	let dashboardInvalidate: (() => void) | undefined;
-	const notices = new Map<string, WorkflowNotice>();
 	const runningSubagents = new Map<string, RunningSubagentStatus>();
 	const lifecycleSubscriptions = new Map<string, { controller: AbortController; unsubscribe: (() => void) | undefined }>();
 	let tickRequested = false;
@@ -103,9 +96,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 		const dot = subagentPulseDot(subagentPulseFrame);
 		const lines = [...runningSubagents.values()].map((status) => {
-			const route = formatSubagentRoute(status.tier, status.resolved);
-			const progress = formatAgentProgress(status.progress) || `${formatElapsed(status.startedAt)} · starting`;
-			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", `${route} · ${progress}`)}`;
+			const liveStatus = formatBackgroundSubagentStatus(status);
+			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", liveStatus)}`;
 		});
 		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
 	};
@@ -134,7 +126,6 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const sendEvent = (event: WorkflowNotice & { cause?: string; attempt?: number; iteration?: number; correlationId?: string }) => {
 		const safe = boundedNotice(event);
-		notices.set(safe.workflowRef, safe);
 		if (sessionCtx) renderDashboard(sessionCtx);
 		// Routine lifecycle is a widget concern. Review completion is also a main-
 		// session boundary: the orchestrator may need to honor a deferred user
@@ -246,31 +237,53 @@ export default function workflows(pi: ExtensionAPI): void {
 		return lines;
 	};
 
+	const metricDuration = (milliseconds: number): string => {
+		const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+		if (seconds < 60) return `${seconds}s`;
+		const minutes = Math.floor(seconds / 60);
+		if (minutes < 60) return `${minutes}m`;
+		return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	};
+
+	const metricRows = (metrics: WorkflowMetrics): Array<readonly [string, string]> => [
+		["Elapsed", metricDuration(metrics.elapsedMs)],
+		["Agent time", metricDuration(metrics.agentActiveMs)],
+		["Verification", metricDuration(metrics.verificationMs)],
+		["Fixes / retries", `${metrics.fixes} / ${metrics.retries}`],
+	];
+
 	const dashboardLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number): string[] => {
 		const innerWidth = Math.max(1, width - 2);
 		const tasks = stageTaskLines(snapshot, ctx, true);
 		const structuralTasks = stageTaskLines(snapshot, ctx, false);
 		const separatorWidth = 3;
-		// Volatile progress must not move the two-pane divider. Width stays
-		// responsive to the workflow's structural content rather than fixed.
+		// Volatile progress and detailed metric values must not move the divider.
+		// Its position is controlled only by the workflow's structural left pane.
 		const naturalTaskWidth = Math.max(...structuralTasks.map((task) => visibleWidth(task)));
 		const maxTaskWidth = Math.max(28, Math.floor(innerWidth * 0.58));
 		const compactTaskWidth = Math.min(naturalTaskWidth, maxTaskWidth);
-		const availableEventWidth = innerWidth - compactTaskWidth - separatorWidth;
-		const notice = currentRef ? notices.get(currentRef) : undefined;
-		const showNotice = Boolean(notice && innerWidth >= 72 && availableEventWidth >= 22);
-		const taskWidth = showNotice ? compactTaskWidth : innerWidth;
-		const eventWidth = showNotice ? availableEventWidth : 0;
+		const availableMetricWidth = innerWidth - compactTaskWidth - separatorWidth;
+		const showMetrics = Boolean(snapshot.metrics && innerWidth >= 72 && availableMetricWidth >= 24);
+		const taskWidth = showMetrics ? compactTaskWidth : innerWidth;
+		const metrics = showMetrics && snapshot.metrics ? metricRows(snapshot.metrics) : [];
+		const metricWidth = showMetrics ? availableMetricWidth : 0;
 		const separator = ctx.ui.theme.fg("borderMuted", " │ ");
-		return tasks.map((task, index) => {
+		const rowCount = showMetrics ? Math.max(tasks.length, metrics.length) : tasks.length;
+		return Array.from({ length: rowCount }, (_, index) => {
+			const task = tasks[index] ?? "";
 			const left = truncateToWidth(task, taskWidth, "…");
 			let content = left;
-			if (showNotice && notice) {
+			if (showMetrics) {
 				const leftPane = `${left}${" ".repeat(Math.max(0, taskWidth - visibleWidth(left)))}`;
-				const eventText = index === 0
-					? ctx.ui.theme.fg(notice.attention ? "warning" : "accent", ctx.ui.theme.bold(notice.title))
-					: index === 1 && notice.detail ? ctx.ui.theme.fg("dim", notice.detail.replaceAll("\n", " ")) : "";
-				content = `${leftPane}${separator}${truncateToWidth(eventText, eventWidth, "…")}`;
+				const metric = metrics[index];
+				let metricText = "";
+				if (metric) {
+					const [label, value] = metric;
+					const shownValue = truncateToWidth(value, Math.max(1, metricWidth - visibleWidth(label) - 1), "…");
+					const gap = " ".repeat(Math.max(1, metricWidth - visibleWidth(label) - visibleWidth(shownValue)));
+					metricText = `${ctx.ui.theme.fg("dim", label)}${gap}${ctx.ui.theme.fg("text", shownValue)}`;
+				}
+				content = `${leftPane}${separator}${metricText}`;
 			}
 			const padded = `${content}${" ".repeat(Math.max(0, innerWidth - visibleWidth(content)))}`;
 			return ctx.ui.theme.bg("customMessageBg", ` ${padded} `);
@@ -589,18 +602,18 @@ export default function workflows(pi: ExtensionAPI): void {
 			: "The registered workflow adapter supplies the available definitions at session start.";
 		pi.registerTool({
 			name: "subagent_spawn", label: "Spawn Subagent",
-			description: `Spawn a subagent from one configured agent definition and a complete task prompt. Available agents: ${available} Background is the default and returns immediately; foreground waits for settlement. Choose delegation only when it helps; managed workflow tasks remain internally scheduled by workflow_start/resume.`,
+			description: `Spawn a subagent from one configured agent definition and a complete task prompt. Available agents: ${available} Foreground is the default and waits for settlement; set mode to background to return immediately and receive automatic terminal delivery. Choose delegation only when it helps; managed workflow tasks remain internally scheduled by workflow_start/resume.`,
 			parameters: Type.Object({
 				agent: Type.String({ description: `Exact configured agent name. Available agents: ${catalog.length > 0 ? catalog.map((agent) => agent.name).join(", ") : "resolved at session start"}` }),
 				task: Type.String({ description: "Complete assignment prompt for the child" }),
-				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "background" })),
+				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
 				tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Configured fallback list; use local for local-llm requests. Explicit local model or effort failures return an error without fallback; defaults to medium" })),
 				model: Type.Optional(Type.String({ description: "Preferred configured model; accepts model, provider/model, or either form suffixed with #effort. local-llm models require tier local" })),
 				effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Optional preferred-model effort override" })),
 			}, { additionalProperties: false }),
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const adapter = dynamicAdapter();
-				const mode = params.mode ?? "background";
+				const mode = params.mode ?? "foreground";
 				const tier = inferDynamicSubagentTier(params.tier, params.model);
 				const request: DynamicSubagentRequest = {
 					operationId: toolCallId, agent: params.agent, task: params.task, tier,
@@ -665,24 +678,28 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool({
-		name: "subagent_status", label: "Subagent Status", description: "List logical subagents and open asynchronous messages across registered adapters.", parameters: Type.Object({}),
-		async execute(_id, _params, _signal, _update, ctx) {
+		name: "subagent_status", label: "Subagent Status",
+		description: "Inspect subagents for point-in-time diagnostics and recovery; this is not a polling mechanism. By default it lists actionable non-settled agents, failures, and agents owning open messages with attention/active records first and newest first. Use includeSettled for explicit history inspection, or filters to narrow one recovery query. Do not repeatedly call this while waiting: rely on automatic terminal reports, lifecycle events, or a new user request.",
+		parameters: Type.Object({
+			agentId: Type.Optional(Type.String({ description: "Exact logical subagent ID" })),
+			workflowRef: Type.Optional(Type.String({ description: "Exact workflow reference, such as work-item:example" })),
+			state: Type.Optional(Type.String({ description: "Exact logical agent state to inspect" })),
+			includeSettled: Type.Optional(Type.Boolean({ default: false, description: "Include completed, failed, protocol-failed, and cancelled history" })),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_SUBAGENT_STATUS_LIMIT, default: DEFAULT_SUBAGENT_STATUS_LIMIT, description: `Maximum records in each bounded result list (at most ${MAX_SUBAGENT_STATUS_LIMIT})` })),
+		}, { additionalProperties: false }),
+		async execute(_id, params, _signal, _update, ctx) {
 			const agents = (await Promise.all(adapters.map((adapter) => adapter.listSubagents(ctx)))).flat();
 			const messages = (await Promise.all(adapters.map((adapter) => adapter.listMessages(ctx)))).flat();
-			const brief = (value: unknown): Record<string, unknown> => {
-				if (!value || typeof value !== "object") return { value: bounded(value, 160) };
-				const source = value as Record<string, unknown>;
-				const out: Record<string, unknown> = {};
-				for (const key of ["id", "agentId", "name", "state", "status", "workflowRef", "messageId", "kind", "title", "summary", "updatedAt"]) if (source[key] !== undefined) out[key] = typeof source[key] === "string" ? bounded(source[key], 180) : source[key];
-				const attempts = Array.isArray(source.attempts) ? source.attempts as Array<Record<string, unknown>> : [];
-				const current = attempts.find((attempt) => attempt.id === source.currentAttemptId) ?? attempts.at(-1);
-				if (current?.progress && typeof current.progress === "object") out.progress = current.progress;
-				return out;
+			const filters: SubagentStatusFilters = {
+				...(params.agentId ? { agentId: params.agentId } : {}),
+				...(params.workflowRef ? { workflowRef: params.workflowRef } : {}),
+				...(params.state ? { state: params.state } : {}),
+				...(params.includeSettled !== undefined ? { includeSettled: params.includeSettled } : {}),
+				...(params.limit !== undefined ? { limit: params.limit } : {}),
 			};
-			const compactAgents = agents.slice(0, 12).map(brief);
-			const compactMessages = messages.slice(0, 12).map(brief);
-			const payload = { agents: compactAgents, openMessages: compactMessages, counts: { agents: agents.length, openMessages: messages.length } };
-			return result(agents.length || messages.length ? JSON.stringify(payload, null, 2) : "No subagents recorded.", payload);
+			const payload = projectSubagentStatus(agents, messages, filters);
+			const emptyText = subagentStatusEmptyText(payload, filters);
+			return result(emptyText || JSON.stringify(payload, null, 2), payload);
 		},
 	});
 

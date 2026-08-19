@@ -12,17 +12,25 @@ test("projects only concise semantic progress from child events", () => {
 	apply({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", delta: "private" } }, "2026-01-01T00:00:01.000Z");
 	apply({ type: "tool_execution_start", toolName: "bash", args: { command: "secret" } }, "2026-01-01T00:00:02.000Z");
 	apply({ type: "tool_execution_end", toolName: "bash", isError: false, result: { content: "private" } }, "2026-01-01T00:00:03.000Z");
-	apply({ type: "turn_end", message: { usage: { output: 7804, reasoning: 1978, totalTokens: 78508 } } }, "2026-01-01T00:00:04.000Z");
+	apply({ type: "turn_end", message: { usage: { input: 70_704, output: 7804, reasoning: 1978, totalTokens: 78508 } } }, "2026-01-01T00:00:04.000Z");
 	apply({ type: "agent_settled" }, "2026-01-01T00:03:08.000Z");
 	assert.deepEqual(progress, {
 		startedAt: "2026-01-01T00:00:00.000Z", lastEventAt: "2026-01-01T00:03:08.000Z",
-		turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 7804, reasoningTokens: 1978,
+		turns: 1, toolCalls: 1, toolErrors: 0, inputTokens: 70_704, outputTokens: 7804, reasoningTokens: 1978,
 		contextTokens: 78508, settledAt: "2026-01-01T00:03:08.000Z",
 	});
 	const rendered = formatAgentProgress(progress, Date.parse("2026-01-01T00:04:00.000Z"));
 	assert.equal(rendered, "3m 08s · 1 turn · 1 tool · ↓ 7.8k");
 	assert.doesNotMatch(rendered, /out|private|secret/i);
 	assert.match(formatAgentProgress({ ...progress, outputTokens: 152_000 }), /↓ 152k/);
+});
+
+test("accumulates input tokens from historical progress records that predate the field", () => {
+	const historical: any = { startedAt: "2026-01-01T00:00:00.000Z", lastEventAt: "2026-01-01T00:00:00.000Z", turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 };
+	const first = projectAgentProgress(historical, { type: "turn_end", message: { usage: { input: 125 } } }, "2026-01-01T00:00:01.000Z");
+	const second = projectAgentProgress(first, { type: "turn_end", message: { usage: { input: 75 } } }, "2026-01-01T00:00:02.000Z");
+	assert.equal(second.inputTokens, 200);
+	assert.equal(historical.inputTokens, undefined);
 });
 
 test("tracks startup and activity from the child Pi process instead of event recency", () => {

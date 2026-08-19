@@ -50,6 +50,20 @@ export interface WorkflowStageSnapshot {
 	group?: "planner" | "runtime";
 }
 
+export interface WorkflowMetrics {
+	elapsedMs: number;
+	runningMs: number;
+	agentActiveMs: number;
+	verificationMs: number;
+	fixes: number;
+	retries: number;
+	agentCount: number;
+	verificationAttempts: number;
+	inputTokens: number;
+	outputTokens: number;
+	toolErrors: number;
+}
+
 export interface WorkflowSnapshot {
 	ref: string;
 	title: string;
@@ -57,6 +71,8 @@ export interface WorkflowSnapshot {
 	steps: WorkflowStep[];
 	/** Stage-aware rendering metadata; absent on third-party/legacy adapters. */
 	stages?: WorkflowStageSnapshot[];
+	/** Durable detailed metrics; optional for third-party/legacy adapters. */
+	metrics?: WorkflowMetrics;
 }
 
 export interface WorkflowRunResult {

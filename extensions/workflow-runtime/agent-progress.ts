@@ -8,6 +8,8 @@ export interface AgentProgress {
 	turns: number;
 	toolCalls: number;
 	toolErrors: number;
+	/** Cumulative input usage across observed turns; absent in historical records. */
+	inputTokens?: number;
 	outputTokens: number;
 	reasoningTokens: number;
 	contextTokens?: number;
@@ -45,6 +47,7 @@ export function projectAgentProgress(current: AgentProgress, event: unknown, obs
 			...current,
 			lastEventAt: observedAt,
 			turns: current.turns + 1,
+			inputTokens: (current.inputTokens ?? 0) + nonNegativeInteger(usage.input),
 			outputTokens: current.outputTokens + nonNegativeInteger(usage.output),
 			reasoningTokens: current.reasoningTokens + nonNegativeInteger(usage.reasoning),
 			...(contextTokens > 0 ? { contextTokens } : {}),
@@ -59,7 +62,7 @@ export function projectAgentProgress(current: AgentProgress, event: unknown, obs
 }
 
 export function initialAgentProgress(startedAt: string): AgentProgress {
-	return { startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 };
+	return { startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
 }
 
 export function markAgentProcessStarted(progress: AgentProgress, observedAt = new Date().toISOString()): AgentProgress {
@@ -81,6 +84,13 @@ export function formatAgentProcessStatus(progress: AgentProgress | undefined): "
 	return observedProcessActivity ? "active" : "starting";
 }
 
+const MAX_DISPLAY_COUNT = 1_000_000_000;
+
+function displayCount(value: unknown): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+	return Math.min(MAX_DISPLAY_COUNT, Math.max(0, Math.round(value)));
+}
+
 function compactNumber(value: number): string {
 	if (value < 1_000) return String(value);
 	if (value < 10_000) return `${(Math.round(value / 100) / 10).toFixed(1).replace(/\.0$/, "")}k`;
@@ -88,21 +98,43 @@ function compactNumber(value: number): string {
 	return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`;
 }
 
-function elapsed(from: string, toMs: number): string {
-	const seconds = Math.max(0, Math.floor((toMs - Date.parse(from)) / 1_000));
+function timestamp(value: string | number | undefined): number | undefined {
+	const parsed = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : Number.NaN;
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function elapsed(from: string | number, toMs: number): string {
+	const fromMs = timestamp(from) ?? toMs;
+	const seconds = Math.max(0, Math.floor((toMs - fromMs) / 1_000));
 	if (seconds < 60) return `${seconds}s`;
 	const minutes = Math.floor(seconds / 60);
 	return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
 }
 
-export function formatAgentProgress(progress: AgentProgress | undefined, now = Date.now()): string {
-	if (!progress) return "";
-	const terminalAt = progress.processExitedAt ? Date.parse(progress.processExitedAt) : progress.settledAt ? Date.parse(progress.settledAt) : now;
-	const parts = [elapsed(progress.startedAt, terminalAt)];
-	if (progress.turns > 0) parts.push(`${progress.turns} turn${progress.turns === 1 ? "" : "s"}`);
-	if (progress.toolCalls > 0) parts.push(`${progress.toolCalls} tool${progress.toolCalls === 1 ? "" : "s"}`);
-	if (progress.activeTool) parts.push(progress.activeTool);
-	if (progress.outputTokens > 0) parts.push(`↓ ${compactNumber(progress.outputTokens)}`);
+export interface AgentProgressFormatOptions {
+	fallbackStartedAt?: string | number;
+	/** Render the lifecycle word even when no progress projection exists yet. */
+	showStarting?: boolean;
+}
+
+/**
+ * Format the bounded, semantic live-progress vocabulary shared by inline
+ * subagents, the background footer, and managed workflow task rows.
+ */
+export function formatAgentProgress(progress: AgentProgress | undefined, now = Date.now(), options: AgentProgressFormatOptions = {}): string {
+	if (!progress && options.fallbackStartedAt === undefined && options.showStarting !== true) return "";
+	const safeNow = timestamp(now) ?? Date.now();
+	const startedAt = progress?.startedAt ?? options.fallbackStartedAt;
+	const terminalAt = timestamp(progress?.processExitedAt) ?? timestamp(progress?.settledAt) ?? safeNow;
+	const parts = startedAt === undefined ? [] : [elapsed(startedAt, terminalAt)];
+	const turns = displayCount(progress?.turns);
+	const toolCalls = displayCount(progress?.toolCalls);
+	const outputTokens = displayCount(progress?.outputTokens);
+	if (turns > 0) parts.push(`${turns} turn${turns === 1 ? "" : "s"}`);
+	if (toolCalls > 0) parts.push(`${toolCalls} tool${toolCalls === 1 ? "" : "s"}`);
+	const activeTool = safeToolName(progress?.activeTool);
+	if (activeTool) parts.push(activeTool);
+	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
 	const processStatus = formatAgentProcessStatus(progress);
 	if (processStatus) parts.push(processStatus);
 	return parts.join(" · ");

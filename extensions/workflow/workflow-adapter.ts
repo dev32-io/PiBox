@@ -16,8 +16,9 @@ import { confirmCriticalRisk } from "../permissions/runtime.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 import { WorkflowEventJournal, type WorkflowDomainEventType } from "./workflow-events.js";
 import type { RepositoryEventStore } from "./event-store.js";
-import { readStageVerificationActivity } from "./verification-runner.js";
+import { readStageVerificationActivity, readVerificationAttempts } from "./verification-runner.js";
 import { RepairRecoveryStore, type RepairRecoveryRecord } from "./repair-recovery.js";
+import { projectWorkflowMetrics } from "./workflow-metrics.js";
 
 
 export interface HarnessWorkflowRuntime {
@@ -263,6 +264,12 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const runtime = await options.runtimeFor(ctx);
 			const item = await runtime.workItems.read(match[1]!);
 			const agents = await runtime.agents.list();
+			const metrics = runtime.events ? projectWorkflowMetrics({
+				workItemId: item.id,
+				workflowEvents: await new WorkflowEventJournal(runtime.events).readSince(0, item.id),
+				agents,
+				verificationAttempts: await readVerificationAttempts(runtime.identity, item.id),
+			}) : undefined;
 			const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(item.id, entry.id)));
 			const evaluations = await Promise.all(item.evaluations.map((entry) => runtime.workItems.readEvaluation(item.id, entry.id)));
 			const taskById = new Map(tasks.map((task) => [task.id, task]));
@@ -364,7 +371,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));
 			const runtimeNodes = evaluations.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => `evaluation:${evaluation.id}`);
-			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])] };
+			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])], ...(metrics ? { metrics } : {}) };
 		},
 		async runStep(ref, ctx, _signal): Promise<WorkflowRunResult> {
 			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid workflow step: ${ref}`);

@@ -1,12 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { DEFAULT_HARNESS_CONFIG } from "../config.js";
+import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig } from "../config.js";
+import { inferDynamicSubagentTier } from "../../workflow-runtime/api.js";
 import { normalizeExplicitModelOverride, resolveHarnessModel, supportsEffort } from "../model-resolver.js";
 
 function model(provider: string, id: string, reasoning = true, thinkingLevelMap?: ThinkingLevelMap): Model<Api> {
 	return { provider, id, reasoning, thinkingLevelMap } as unknown as Model<Api>;
 }
+
+test("keeps omitted dynamic routing on medium when a repository config also defines local", () => {
+	const files: Record<string, string> = {
+		"/repo/.pi/harness.yaml": "schemaVersion: 2\nmodelTiers:\n  local:\n    - local-llm/qwen3.8-27b-uncensored#medium\n",
+	};
+	const loaded = loadHarnessConfig("/repo", {
+		home: "/home",
+		exists: (path) => path in files,
+		readFile: (path) => files[path] ?? "",
+	});
+	assert.deepEqual(loaded.config.modelTiers.local, ["local-llm/qwen3.8-27b-uncensored#medium"]);
+	const tier = inferDynamicSubagentTier(undefined, undefined);
+	assert.equal(tier, "medium");
+	const result = resolveHarnessModel(loaded.config, [model("openai-codex", "gpt-5.6-luna", true, { max: "max" })], { tier });
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-5.6-luna#max");
+});
 
 test("resolves the configured model and effort pair from one tier", () => {
 	const available = [model("openai-codex", "gpt-5.6-sol")];

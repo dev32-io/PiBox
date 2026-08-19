@@ -9,6 +9,7 @@ import { SessionAgentRegistry } from "../../workflow-runtime/agent-registry.js";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
 import { RepositoryEventStore } from "../event-store.js";
 import { discoverRepository } from "../repository.js";
+import { WorkflowEventJournal } from "../workflow-events.js";
 import { RepairRecoveryStore } from "../repair-recovery.js";
 
 const exec = promisify(execFile);
@@ -403,6 +404,50 @@ test("the default loop permits iteration eight and rejects a ninth repair", asyn
 	evaluation.loop = { ...evaluation.loop, state: "awaiting_manager", iteration: 8 };
 	await assert.rejects(() => adapter.controlCheckpoint!("work-item:example/evaluation:review", "request_changes", { prompt: "Attempt iteration nine" }, {} as any), /iteration limit/);
 	assert.equal(evaluation.loop.state, "awaiting_manager");
+});
+
+test("snapshot reloads detailed metrics from durable records without mutating them", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-metrics-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const identity: any = { id: "repo", root, privateRoot: join(root, ".pibox") };
+	const events = new RepositoryEventStore(identity);
+	await events.initialize();
+	const journal = new WorkflowEventJournal(events);
+	await journal.append({ type: "workflow.started", workItemId: "example", ownerGeneration: 1, correlationId: "start" });
+	await journal.append({ type: "workflow.completed", workItemId: "example", ownerGeneration: 1, correlationId: "complete" });
+	const verificationRoot = join(identity.privateRoot, "work-items", "example", "verification", "delivery", "unit", "attempts");
+	for (const [id, start, complete] of [["001", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:05.000Z"], ["002", "2026-01-01T00:00:10.000Z", "2026-01-01T00:00:17.000Z"]] as const) {
+		const attemptRoot = join(verificationRoot, id);
+		await mkdir(attemptRoot, { recursive: true });
+		await writeFile(join(attemptRoot, "attempt.yaml"), `schemaVersion: 1\nid: "${id}"\nworkItemId: example\nstageId: delivery\ncheckId: unit\nstate: passed\nstartedAt: ${start}\ncompletedAt: ${complete}\n`);
+	}
+	const agents: any[] = [{
+		id: "fixer", workItemId: "example", evaluationId: "review", attempts: [
+			{ id: "a1", sequence: 1, state: "exited", startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:10.000Z", exitedAt: "2026-01-01T00:00:10.000Z", activity: { kind: "repair", generation: 1 }, progress: { inputTokens: 100, outputTokens: 50, toolErrors: 1 } },
+			{ id: "a2", sequence: 2, state: "exited", startedAt: "2026-01-01T00:00:20.000Z", updatedAt: "2026-01-01T00:00:30.000Z", exitedAt: "2026-01-01T00:00:30.000Z", activity: { kind: "repair", generation: 1 }, progress: { inputTokens: 200, outputTokens: 75, toolErrors: 0 } },
+		],
+	}];
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [] };
+	const runtime = (store: RepositoryEventStore): any => ({ identity, events: store, workItems: { async read() { return item; } }, agents: { async list() { return agents; } } });
+	const create = (store: RepositoryEventStore) => createHarnessWorkflowAdapter({ runtimeFor: async () => runtime(store), launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const before = await readFile(events.eventsPath, "utf8");
+	const first = await create(events).snapshot("work-item:example", {} as any);
+	const reloaded = await create(new RepositoryEventStore(identity)).snapshot("work-item:example", {} as any);
+	assert.deepEqual(first.metrics, reloaded.metrics);
+	assert.deepEqual(first.metrics, {
+		elapsedMs: first.metrics?.elapsedMs,
+		runningMs: first.metrics?.runningMs,
+		agentActiveMs: 20_000,
+		verificationMs: 12_000,
+		fixes: 1,
+		retries: 2,
+		agentCount: 1,
+		verificationAttempts: 2,
+		inputTokens: 300,
+		outputTokens: 125,
+		toolErrors: 1,
+	});
+	assert.equal(await readFile(events.eventsPath, "utf8"), before, "snapshot projection does not append workflow events");
 });
 
 test("snapshot is a pure projection and reported-agent reconciliation is explicit", async () => {

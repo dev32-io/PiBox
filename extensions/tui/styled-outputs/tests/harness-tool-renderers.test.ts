@@ -36,14 +36,22 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	assert.match(rendered[0] ?? "", /^[·•●] e2e-tester Verify one browser flow like a real user/);
 	assert.equal(rendered[1], "└─ starting · Medium (openai-codex/gpt-5.6-sol#medium)");
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
-	const active = lines(renderHarnessToolCall("subagent_spawn", {
+	const activeComponent = renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester", mode: "foreground", tier: "medium", task: "Verify one browser flow like a real user",
 	}, theme, true, false, {
 		tier: "medium",
 		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
-		progress: { startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z", lastEventAt: "2026-01-01T00:00:00.000Z", turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
-	}));
-	assert.equal(active[1], "└─ active · Medium (openai-codex/gpt-5.6-sol#medium)");
+		progress: {
+			startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z",
+			lastEventAt: "2026-01-01T00:01:04.000Z", turns: 2, toolCalls: 3, toolErrors: 0,
+			outputTokens: 1234, reasoningTokens: 50, activeTool: "bash",
+		},
+	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
+	const active = lines(activeComponent);
+	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · active · Medium (openai-codex/gpt-5.6-sol#medium)");
+	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
+	assert.equal(narrow.length, 2, "volatile status stays on one detail row");
+	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
 });
 
 test("renders distillation calls with scope-specific titles", () => {

@@ -1,7 +1,6 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { formatAgentProcessStatus } from "../../../workflow-runtime/agent-progress.js";
-import { currentSubagentPulseDot, formatSubagentRoute } from "../../../workflow-runtime/subagent-display.js";
+import { currentSubagentPulseDot, formatInlineSubagentStatus } from "../../../workflow-runtime/subagent-display.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
 	"evidence_record", "finding_report", "memory_adapter", "work_item_complete", "task_integrate",
@@ -84,6 +83,7 @@ class HarnessCallComponent implements Component {
 		private readonly partial: boolean,
 		private readonly error: boolean,
 		private readonly details?: Record<string, any>,
+		private readonly now: () => number = Date.now,
 	) {}
 
 	render(width: number): string[] {
@@ -96,11 +96,14 @@ class HarnessCallComponent implements Component {
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
 		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
 		if (!this.partial) return [truncateToWidth(headline, width, "…")];
-		const route = this.name === "subagent_spawn"
-			? formatSubagentRoute(this.details?.tier ?? this.args.tier, this.details?.resolved)
-			: undefined;
-		const processStatus = this.name === "subagent_spawn" ? formatAgentProcessStatus(this.details?.progress) : "running";
-		const state = [processStatus, route].filter(Boolean).join(" · ");
+		const state = this.name === "subagent_spawn"
+			? formatInlineSubagentStatus({
+				tier: this.details?.tier ?? this.args.tier,
+				resolved: this.details?.resolved,
+				progress: this.details?.progress,
+				startedAt: this.details?.resolved?.startedAt,
+			}, this.now())
+			: "running";
 		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", state)}`, width, "…")];
 	}
 
@@ -170,8 +173,8 @@ function appendTreeRows(container: Container, rows: string[], theme: Theme, expa
 	}
 }
 
-export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>): Component {
-	return new HarnessCallComponent(name, args, theme, partial, error, details);
+export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>, now: () => number = Date.now): Component {
+	return new HarnessCallComponent(name, args, theme, partial, error, details, now);
 }
 
 function memoryRecordLabel(record: any): string {

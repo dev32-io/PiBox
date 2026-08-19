@@ -63,8 +63,9 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(orchestrator, /problem report[\s\S]+is not by itself permission to start, stop, resume, or amend/i);
 	assert.match(orchestrator, /Create with `type`, optional `parent`, and `value`/i);
 	assert.match(orchestrator, /update one known resource with `ref` and changed `value`/i);
-	assert.match(orchestrator, /Use subagent_spawn for dynamic agent-and-prompt delegation[\s\S]+Managed workflow tasks and evaluations are scheduled internally/i);
-	assert.match(orchestrator, /do not ask the model to launch each planned task separately/i);
+	assert.match(orchestrator, /Use subagent_spawn for dynamic agent-and-prompt delegation[\s\S]+defaults to foreground[\s\S]+`mode: background`[\s\S]+automatic terminal delivery/i);
+	assert.match(orchestrator, /subagent_status only for a point-in-time diagnostic or recovery query, never to poll/i);
+	assert.match(orchestrator, /Managed workflow tasks and evaluations are scheduled internally[\s\S]+do not ask the model to launch each planned task separately/i);
 	assert.match(orchestrator, /Preserve dirty or conflicting work/i);
 	assert.doesNotMatch(orchestrator, /malformed tool call after 16 KiB|whitespaceToolDeltaBytes/);
 	assert.match(discussion, /Think with the user in an open room/i);

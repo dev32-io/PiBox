@@ -23,6 +23,16 @@ export interface StageVerificationActivity {
 	completedAt?: string;
 }
 
+export interface DurableVerificationAttemptRecord {
+	id: string;
+	workItemId: string;
+	stageId: string;
+	checkId: string;
+	state: string;
+	startedAt: string;
+	completedAt?: string;
+}
+
 export interface VerificationAttemptResult {
 	id: string;
 	profile: string;
@@ -107,6 +117,37 @@ function terminalSummary(result: Pick<VerificationAttemptResult, "stdout" | "std
 
 export function verificationFailureSummary(result: VerificationAttemptResult): string {
 	return `${terminalSummary(result)}\nDurable verification evidence: ${result.attemptPath}`;
+}
+
+/** Pure read of every durable verification attempt for workflow metrics. */
+export async function readVerificationAttempts(identity: RepositoryIdentity, workItemId: string): Promise<DurableVerificationAttemptRecord[]> {
+	const verificationRoot = join(identity.privateRoot, "work-items", workItemId, "verification");
+	const stages = await readdir(verificationRoot, { withFileTypes: true }).catch(() => []);
+	const records: DurableVerificationAttemptRecord[] = [];
+	for (const stage of stages) {
+		if (!stage.isDirectory()) continue;
+		const stageRoot = join(verificationRoot, stage.name);
+		const checks = await readdir(stageRoot, { withFileTypes: true }).catch(() => []);
+		for (const check of checks) {
+			if (!check.isDirectory()) continue;
+			const attemptsRoot = join(stageRoot, check.name, "attempts");
+			const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort();
+			for (const id of attempts) {
+				const attempt = await readYaml(join(attemptsRoot, id, "attempt.yaml"));
+				if (!attempt || typeof attempt.startedAt !== "string") continue;
+				records.push({
+					id: typeof attempt.id === "string" ? attempt.id : id,
+					workItemId,
+					stageId: typeof attempt.stageId === "string" ? attempt.stageId : stage.name,
+					checkId: typeof attempt.checkId === "string" ? attempt.checkId : check.name,
+					state: typeof attempt.state === "string" ? attempt.state : "unknown",
+					startedAt: attempt.startedAt,
+					...(typeof attempt.completedAt === "string" ? { completedAt: attempt.completedAt } : {}),
+				});
+			}
+		}
+	}
+	return records;
 }
 
 export async function readStageVerificationActivity(identity: RepositoryIdentity, workItemId: string, stageId: string): Promise<StageVerificationActivity | undefined> {
