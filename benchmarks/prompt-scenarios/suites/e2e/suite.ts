@@ -57,14 +57,14 @@ const scenarios: PromptScenario[] = [
 		id: "calendar-planning-reconciliation",
 		title: "Calendar planning reconciliation with contradiction",
 		description: "Reconcile repository evidence and a seeded approved-matrix contradiction without silent mutation.",
-		metadata: { phase: "planning", sourceIds: ["AC-005", "AC-009", "E2E-001", "E2E-002", "E2E-003", "REPO-1", "REPO-2", "REPO-3"], approvedCaseIds: ["E2E-001", "E2E-002", "E2E-003"], approvedSourceIds: ["AC-005", "AC-009"], contradictionRequired: true, requiredConcepts: ["covering", "week", "update", "delete", "android", "ios", "amendment"], requiredRisks: ["contradiction", "platform", "state transition"], expectedPlatforms: ["web", "android", "ios"], maxCases: 10 },
-		fixture: `Fictional approved contract:\n- AC-005: A query returns recurring occurrences that overlap (cover) its requested window.\n- AC-009: Web users can create, update, and delete events.\n- Approved E2E-001: “Adult creates an event on web and sees it in week view.”\n- Approved E2E-002: “A ten-occurrence series shows all ten occurrences in one week view.”\n- Approved E2E-003: “The mobile app shows a newly created event.” Platform is not named.\n\nRepository evidence:\n- REPO-1: The week view intentionally clips to the selected seven-day window.\n- REPO-2: Existing web drivers cover create and read only; update and delete are affected user paths with stable selectors.\n- REPO-3: Android has a working Maestro driver. The required iOS simulator driver exists and is available, but its selectors differ.\n\nReconcile planning proof against the approved matrix. Preserve unchanged IDs. Do not silently edit approved cases or create runtime evaluation resources.`,
+		metadata: { phase: "planning", sourceIds: ["AC-005", "AC-009", "REPO-1", "REPO-2", "REPO-3"], contradictionRequired: true, requiredConcepts: ["covering", "week", "update", "delete", "android", "ios", "amendment"], requiredRisks: ["contradiction", "platform", "state transition"], expectedPlatforms: ["web", "android", "ios"], maxCases: 10 },
+		fixture: `Fictional approved contract:\n- AC-005: A covering query returns every recurring occurrence that overlaps its requested time window; it does not return occurrences outside that window.\n- AC-009: Web users can create, update, and delete events.\n- Approved journey: An adult creates an event on web and sees it in week view.\n- Approved journey: A ten-occurrence daily series shows all ten occurrences in one selected seven-day week view.\n- Approved journey: The mobile app shows a newly created event. Platform is not named.\n\nRepository evidence:\n- REPO-1: The ten daily occurrences span ten consecutive dates. Only seven fall inside any selected seven-day week; the other three are outside that selected week. The week view intentionally clips to its selected seven-day window, so showing all ten in one week is impossible and would violate AC-005 covering-window semantics.\n- REPO-2: Existing web drivers cover create and read only; update and delete are affected user paths with stable selectors.\n- REPO-3: Android has a working Maestro driver. The required iOS simulator driver exists and is available, but its selectors differ.\n\nReconcile the E2E cases against repository reality. Add missing affected journeys and surface the product contradiction for review. Do not create runtime evaluation resources.`,
 	},
 	{
 		id: "backend-migration-restraint",
 		title: "Backend-only migration restraint",
 		description: "Select operational migration proof while excluding irrelevant UI/platform combinations.",
-		metadata: { phase: "shaping", sourceIds: ["MIG-1", "MIG-2", "MIG-3", "OPS-1", "SCOPE"], requiredConcepts: ["migration", "rollback", "compatibility", "restart", "data"], requiredRisks: ["destructive", "recovery", "compatibility"], forbiddenConcepts: ["viewport matrix", "android", "ios", "browser"], expectedPlatforms: [], maxCases: 5 },
+		metadata: { phase: "shaping", sourceIds: ["MIG-1", "MIG-2", "MIG-3", "OPS-1", "SCOPE"], requiredConcepts: ["migration", "rollback", "compatibility", "restart", "data"], requiredRisks: ["destructive", "recovery", "compatibility"], forbiddenConcepts: ["viewport matrix", "android", "ios", "browser"], expectedPlatforms: [], compatibilityWindow: "two-release", productionEnforcementUnsupported: true, maxCases: 5 },
 		fixture: `Fictional service: Harbor ledger.\n\n- MIG-1: Rename nullable column ledger.memo to ledger.note without changing the public API response field “memo” during a two-release compatibility window.\n- MIG-2: Existing rows, including null and unicode values, must survive forward migration and rollback.\n- MIG-3: A process restart during the migration must stop safely and permit an idempotent retry.\n- OPS-1: The migration runs only against a disposable local database snapshot; never production.\n- SCOPE: Database migration and API compatibility only. No user interface or mobile client changes.\n\nShape the smallest useful outside-in/operational matrix.`,
 	},
 	{
@@ -85,8 +85,8 @@ const scenarios: PromptScenario[] = [
 		id: "unavailable-required-platform",
 		title: "Unavailable required platform handling",
 		description: "Keep an unavailable required platform visible and blocked rather than claiming pass or omitting it.",
-		metadata: { phase: "planning", sourceIds: ["AC-MOB-1", "E2E-MOB-1", "REPO-MOB-1", "REPO-MOB-2"], approvedCaseIds: ["E2E-MOB-1"], approvedSourceIds: ["AC-MOB-1"], unavailablePlatform: "ios", requiredConcepts: ["android", "ios", "blocked", "driver", "amendment"], requiredRisks: ["platform", "feasibility"], expectedPlatforms: ["android", "ios"], maxCases: 6 },
-		fixture: `Fictional approved contract:\n- AC-MOB-1: Exporting a trip must work on both Android and iOS.\n- Approved E2E-MOB-1: “Traveler exports a trip on Android and iOS and sees the system share sheet.”\n\nRepository/environment evidence:\n- REPO-MOB-1: Android emulator and tagged Maestro flow are available.\n- REPO-MOB-2: The iOS implementation is affected and required, but this environment has no Xcode, iOS simulator, or remote iOS driver. Static compilation evidence alone cannot establish the share-sheet journey.\n\nPlan the verification reconciliation. Do not weaken the requirement, omit iOS, or report an unexecuted platform as passed.`,
+		metadata: { phase: "planning", sourceIds: ["AC-MOB-1", "REPO-MOB-1", "REPO-MOB-2"], unavailablePlatform: "ios", infrastructureBlockOnly: true, requiredConcepts: ["android", "ios", "blocked", "driver", "environment"], requiredRisks: ["platform", "feasibility"], expectedPlatforms: ["android", "ios"], maxCases: 6 },
+		fixture: `Fictional approved contract:\n- AC-MOB-1: Exporting a trip must work on both Android and iOS, and each platform must show its system share sheet.\n\nRepository/environment evidence:\n- REPO-MOB-1: Android emulator and tagged Maestro flow are available.\n- REPO-MOB-2: The iOS implementation is affected and required, but this execution environment has no Xcode, iOS simulator, or remote iOS driver. Static compilation evidence alone cannot establish the share-sheet journey. This is an execution-infrastructure limitation, not evidence that approved product behavior or scope must change.\n\nPlan the verification cases. Android proof may proceed; iOS must remain explicit and blocked pending an executable iOS environment. Do not propose a product/matrix amendment unless expected behavior or scope changes; none is evidenced here. Do not weaken the requirement, omit iOS, or report an unexecuted platform as passed.`,
 	},
 ];
 
@@ -107,23 +107,19 @@ const OUTPUT_CONTRACT = `Return exactly one JSON object and no Markdown. Use thi
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.trim().length > 0);
-function instructionSection(record: Record<string, unknown>, key: string): unknown {
-	const artifacts = isRecord(record.instructionArtifacts) ? record.instructionArtifacts : {};
-	return artifacts[key] ?? record[key];
-}
 function validateOutput(value: unknown): string[] {
 	const errors: string[] = [];
 	if (!isRecord(value)) return ["Top-level output must be an object."];
 	if (typeof value.summary !== "string") errors.push("summary must be a string.");
 	for (const field of ["cases", "questions", "exclusions"]) if (!Array.isArray(value[field])) errors.push(`${field} must be an array.`);
-	if (!isRecord(value.instructionArtifacts)) errors.push("instructionArtifacts must be an object.");
+	if (value.instructionArtifacts !== undefined && !isRecord(value.instructionArtifacts)) errors.push("instructionArtifacts must be an object when present.");
 	const validateUnique = (items: unknown[], field: string) => {
 		const ids = new Set<string>();
 		items.forEach((item, index) => { if (!isRecord(item) || typeof item.id !== "string" || !item.id.trim()) errors.push(`${field}[${index}].id must be a non-empty string.`); else if (ids.has(item.id)) errors.push(`${field} IDs must be unique: ${item.id}.`); else ids.add(item.id); });
 		return ids;
 	};
 	const cases = Array.isArray(value.cases) ? value.cases : [];
-	const caseIds = validateUnique(cases, "cases");
+	validateUnique(cases, "cases");
 	cases.forEach((item, index) => {
 		if (!isRecord(item)) { errors.push(`cases[${index}] must be an object.`); return; }
 		for (const field of ["id", "classification", "actor", "entrySurface", "startingState", "finalInvariant", "status"]) if (typeof item[field] !== "string" || !(item[field] as string).trim()) errors.push(`cases[${index}].${field} must be a non-empty string.`);
@@ -135,36 +131,14 @@ function validateOutput(value: unknown): string[] {
 	if (Array.isArray(value.questions) && !strings(value.questions) && value.questions.length) errors.push("questions must contain only non-empty strings.");
 	const exclusions = Array.isArray(value.exclusions) ? value.exclusions : [];
 	exclusions.forEach((item, index) => { if (!isRecord(item) || typeof item.scope !== "string" || typeof item.rationale !== "string" || !strings(item.sourceRefs)) errors.push(`exclusions[${index}] must have scope, rationale, and non-empty sourceRefs.`); });
-	const obligations = instructionSection(value, "obligations");
-	const gaps = instructionSection(value, "gaps");
-	const coverage = instructionSection(value, "obligationCoverage");
-	const amendments = instructionSection(value, "amendments");
-	for (const [field, section] of [["obligations", obligations], ["gaps", gaps], ["obligationCoverage", coverage], ["amendments", amendments]] as const) if (section !== undefined && !Array.isArray(section)) errors.push(`instructionArtifacts.${field} must be an array when present.`);
-	const obligationItems = Array.isArray(obligations) ? obligations : [];
-	const gapItems = Array.isArray(gaps) ? gaps : [];
-	const obligationIds = validateUnique(obligationItems, "obligations");
-	const gapIds = validateUnique(gapItems, "gaps");
-	obligationItems.forEach((item, index) => { if (!isRecord(item) || typeof item.text !== "string" || !strings(item.sourceRefs)) errors.push(`obligations[${index}] must have text and non-empty sourceRefs.`); });
-	gapItems.forEach((item, index) => { if (!isRecord(item) || typeof item.question !== "string" || !strings(item.sourceRefs)) errors.push(`gaps[${index}] must have question and non-empty sourceRefs.`); });
-	const covered = new Map<string, number>();
-	(Array.isArray(coverage) ? coverage : []).forEach((item, index) => {
-		if (!isRecord(item) || typeof item.obligationId !== "string" || !obligationIds.has(item.obligationId)) { errors.push(`obligationCoverage[${index}] must reference a real obligation.`); return; }
-		covered.set(item.obligationId, (covered.get(item.obligationId) ?? 0) + 1);
-		const hasCases = strings(item.caseIds); const hasGap = typeof item.gapId === "string" && item.gapId.trim().length > 0;
-		if (hasCases === hasGap) errors.push(`obligationCoverage[${index}] must use either non-empty caseIds or one gapId.`);
-		if (hasCases) for (const id of item.caseIds as string[]) if (!caseIds.has(id)) errors.push(`obligationCoverage[${index}] references unknown case ${id}.`);
-		if (hasGap && !gapIds.has(item.gapId as string)) errors.push(`obligationCoverage[${index}] references unknown gap ${String(item.gapId)}.`);
-	});
-	for (const id of obligationIds) if (covered.get(id) !== 1) errors.push(`Obligation ${id} must be covered exactly once or deliberately gapped.`);
-	(Array.isArray(amendments) ? amendments : []).forEach((item, index) => { if (!isRecord(item) || typeof item.classification !== "string" || !strings(item.evidenceRefs) || !strings(item.impactedRequirementRefs) || typeof item.proposedDelta !== "string" || typeof item.userReviewRequired !== "boolean") errors.push(`amendments[${index}] is malformed.`); });
 	return errors;
 }
 
 export const e2ePromptBenchmarkSuite: PromptBenchmarkSuite<E2EBenchmarkOutput> = {
 	id: "e2e-outside-in",
 	title: "Outside-in E2E Prompt Benchmark",
-	version: "1.1.0",
-	scorerVersion: "e2e-scorer@1.1.0",
+	version: "1.2.0",
+	scorerVersion: "e2e-scorer@1.2.0",
 	description: "Behavioral comparison of current and candidate E2E matrix derivation/reconciliation instructions.",
 	baselineConditionId: "current-baseline",
 	conditions: [baseline, candidate],
@@ -178,7 +152,10 @@ export const e2ePromptBenchmarkSuite: PromptBenchmarkSuite<E2EBenchmarkOutput> =
 	},
 	parse(rawResponse) {
 		const extracted = extractStructuredJson(rawResponse);
-		if (!extracted.syntaxValid) return extracted as ParseOutcome<E2EBenchmarkOutput>;
+		if (extracted.strategy !== "direct") {
+			const diagnostic = extracted.value === undefined ? "" : ` A nested JSON fragment was recovered for diagnostics via ${extracted.strategy} extraction, but it is not the required exact top-level object.`;
+			return { ...extracted, syntaxValid: false, schemaValid: false, errors: [`Response must be exactly one syntactically valid top-level JSON object.${diagnostic}`, ...extracted.errors] } as ParseOutcome<E2EBenchmarkOutput>;
+		}
 		const schemaErrors = validateOutput(extracted.value);
 		return { ...extracted, schemaValid: schemaErrors.length === 0, errors: schemaErrors, value: extracted.value as E2EBenchmarkOutput };
 	},

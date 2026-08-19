@@ -21,7 +21,7 @@ A comparison is valid only when every condition uses the same suite version, sce
 6. After every subject settles, use one `general-purpose` subagent at `high` tier to review the complete retained run against the tracked rubric. The evaluator must distinguish prompt behavior from fixture/scorer defects and write a Markdown final report into the run directory.
 7. The main session reviews the high-tier report and raw evidence before accepting any prompt change. Never claim improvement from aggregate score alone.
 
-## Approved E2E v1 scenarios
+## Approved E2E v1.2 scenarios
 
 1. `calendar-shaping-replay`
 2. `calendar-planning-reconciliation`
