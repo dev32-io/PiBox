@@ -7,7 +7,7 @@
 - Subjects: `general-purpose`, configured `low` tier
 - Final evaluator: `general-purpose`, configured `high` tier
 - Repetitions: 1 per condition × scenario
-- Raw local evidence: `.benchmark/prompt-scenarios/fanout/2026-08-19T04-51-11Z/`
+- Raw local evidence: `.benchmark/prompt-scenarios/e2e-outside-in/2026-08-19T04-51-11Z/`
 
 ## Result
 

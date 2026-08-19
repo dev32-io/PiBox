@@ -1,6 +1,6 @@
 # Internal prompt-scenario benchmarks
 
-This development-only, domain-neutral framework compares versioned prompt conditions through bounded `general-purpose` subjects. It registers no Pi tool, extension, runtime UI, or API. The E2E schema and scorer remain suite-owned under `suites/e2e/`.
+This development-only, domain-neutral framework compares versioned prompt conditions through bounded `general-purpose` subjects. It registers no Pi tool, extension, runtime UI, or API. E2E semantic quality is reviewed by independent subagents rather than an automatic scorer.
 
 ## Safety and execution
 
@@ -9,7 +9,7 @@ Real model calls are opt-in and generated data must remain under the repository'
 ```bash
 npm run eval:prompt -- --tier local --execute
 npm run eval:prompt -- --tier low --condition current-baseline,outside-in-candidate \
-  --scenario calendar-shaping-replay --repetitions 3 --concurrency 1 --execute
+  --scenario web-upload-recovery --repetitions 3 --concurrency 1 --execute
 npm run eval:prompt -- resume --run .benchmark/prompt-scenarios/e2e-outside-in/<run-id> --execute
 npm run eval:prompt -- report --run .benchmark/prompt-scenarios/e2e-outside-in/<run-id>
 ```
@@ -28,10 +28,8 @@ Parser/scorer exceptions are converted to per-run hard failures, so malformed mo
 
 Original `runs/<key>/result.json` automatic evidence is immutable. `report` creates `scoring-revisions/<revision-id>/` with scorer version, revised parse/automatic records, and a revision report. It never rewrites original results. In `curation.json`, a verdict determines effective pass. Without a verdict, matching assertion overrides affect only schema/hard-failure outcomes in effective scoring; automatic normalized scores and pass values remain untouched.
 
-## Conditions and envelope limitation
+## E2E review method
 
-The suite declares `current-baseline` as the baseline role and identity, so comparison direction does not depend on CLI order. Both conditions share a neutral envelope derived from current matrix fields: summary, cases, questions, exclusions, and optional free-form `instructionArtifacts`. The envelope does not name obligations, traceability, amendment classifications, or candidate rubric concepts. Candidate instructions must elicit those structures themselves.
+The suite declares `current-baseline` as the baseline role and identity, so comparison direction does not depend on launch order. Subjects receive the same concise Markdown output guidance; no rigid matrix schema or automatic semantic dimensions are imposed.
 
-Requiring any common structured envelope can still influence formatting, and free-form `instructionArtifacts` makes adaptation less deterministic. This is an explicit trade-off: it avoids teaching the candidate method to baseline while retaining machine-scoreable shared case fields.
-
-E2E suite `1.2.0` requires one exact top-level JSON object; recovered nested fragments are diagnostic only and receive no rubric scores. It validates unique generated case IDs, stable case-level source references, affected-journey coverage, binding qualifiers, and intended-field concept evidence. Optional free-form artifacts are interpreted semantically for reconciliation evidence; private crosswalk key names are neither prescribed nor required. Keywords placed only in questions, gaps, or exclusions do not earn general behavior coverage, except where an explicit question/gap is the accepted way to preserve an unresolved binding qualifier.
+E2E suite `2.0.0` uses five small scenarios. Automatic handling checks only that a subject returned a non-empty result. A separate reviewer scores each result, then a final high-tier reviewer compares the paired observations and reports variance and limitations. See `FANOUT_METHOD.md`.
