@@ -25,8 +25,9 @@
   ],
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "find extensions skills -name '*.test.ts' -print0 | xargs -0 tsx --test",
+    "test": "find extensions skills benchmarks -name '*.test.ts' -print0 | xargs -0 tsx --test",
     "verify": "npm run check && npm test",
+    "eval:prompt": "tsx benchmarks/prompt-scenarios/cli.ts",
     "eval:workflow": "tsx extensions/workflow-scenarios/run-deterministic.ts",
     "eval:workflow:model": "tsx extensions/workflow-scenarios/run-model-suite.ts",
     "eval:workflow:model:score": "tsx extensions/workflow-scenarios/run-model-score.ts",
