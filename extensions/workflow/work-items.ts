@@ -1359,7 +1359,13 @@ export class WorkItemStore {
 			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
 				throw new HarnessError("INVALID_HANDOFF", `Required evaluation has not passed: ${evaluation.id}`);
 			}
-			if (manifest.findings?.some((finding) => finding.blocking && (finding.status === "open" || finding.status === "accepted" || finding.status === "needs_user"))) {
+			const acceptedRiskIds = new Set(manifest.loop?.acceptedRisks?.map((risk) => risk.findingId) ?? []);
+			const hasRiskAcceptance = Boolean(manifest.result?.riskAcceptance);
+			if (manifest.findings?.some((finding) => {
+				if (!finding.blocking || ["resolved", "rejected", "duplicate"].includes(finding.status)) return false;
+				if (finding.status === "accepted") return !hasRiskAcceptance || !acceptedRiskIds.has(finding.id);
+				return true;
+			})) {
 				throw new HarnessError("INVALID_HANDOFF", `Evaluation has an unresolved blocking finding: ${evaluation.id}`);
 			}
 			for (const finding of manifest.findings ?? []) {

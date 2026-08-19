@@ -142,6 +142,35 @@ test("renders schema-v2 intent, artifacts, and task contracts from semantic valu
 	await assert.rejects(store.defineEvaluation("structured", dangling), /Dangling criterion reference/);
 });
 
+test("completion honors explicitly accepted blocking risks with durable authority", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "accepted-risk", title: "Accepted Risk", kind: "change", intent: "Complete with an authorized residual risk." });
+	await store.defineEvaluation("accepted-risk", { schemaVersion: 1, id: "review", type: "combined-review", scope: { workItem: "accepted-risk" }, status: "planned", required: true, attempt: 0, methods: ["review"] });
+	await store.recordEvaluation({
+		workItemId: "accepted-risk", evaluationId: "review", verdict: "fail", report: "One bounded risk remains.", evidence: [],
+		findings: [{ id: "RISK-001", severity: "high", status: "open", summary: "Known bounded limitation", blocking: true }],
+	});
+	await store.approveEvaluation("accepted-risk", "review", [{ findingId: "RISK-001", rationale: "The manager explicitly accepts this non-critical bounded limitation." }]);
+	const completed = await store.completeWorkItem("accepted-risk", undefined, { delivered: ["Reviewed behavior"], residualRisks: ["RISK-001 remains accepted"] });
+	assert.equal(completed.phase, "complete");
+	const outcome = await readFile(join(root, "agent-artifacts", "accepted-risk", "outcome.md"), "utf8");
+	assert.match(outcome, /RISK-001.*accepted/);
+	assert.match(outcome, /risk report: risk-acceptance\.md/);
+});
+
+test("completion rejects a blocking finding labeled accepted without manager authority", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "unauthorized-risk", title: "Unauthorized Risk", kind: "change", intent: "Reject evaluator-authored acceptance." });
+	await store.defineEvaluation("unauthorized-risk", { schemaVersion: 1, id: "review", type: "combined-review", scope: { workItem: "unauthorized-risk" }, status: "planned", required: true, attempt: 0, methods: ["review"] });
+	await store.recordEvaluation({
+		workItemId: "unauthorized-risk", evaluationId: "review", verdict: "pass", report: "Worker labeled its own risk accepted.", evidence: [],
+		findings: [{ id: "RISK-002", severity: "high", status: "accepted", summary: "Unapproved limitation", blocking: true }],
+	});
+	await assert.rejects(store.completeWorkItem("unauthorized-risk", "# Outcome\n\nShould not complete."), /unresolved blocking finding/);
+});
+
 test("serializes complete canonical commits across independent WorkItemStore instances", async (t) => {
 	const root = await repository(t);
 	const firstStore = new WorkItemStore(root);
