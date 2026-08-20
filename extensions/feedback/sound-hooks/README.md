@@ -7,10 +7,10 @@ Plays user-supplied sounds when Pi settles a response or a managed workflow reac
 | Feedback event | Pi lifecycle event | Behavior |
 |---|---|---|
 | `response-complete` | `agent_settled` | Plays once after retries, compaction recovery, and queued follow-ups have finished |
-| `workflow-task-completed` | PiBox task is merged/integrated into the canonical working branch | Plays once after the merge barrier, never at contribution handoff |
+| `workflow-stage-completed` | PiBox workflow lifecycle reports every node in a stage finished | Plays once after the stage review passes (or the runtime verification stage fully finishes), never for individual workers, merges, or intermediate reviews |
 | `workflow-error` | PiBox workflow pauses for attention | Plays once when failure, blocking work, or a review checkpoint requires intervention |
 
-PiBox intentionally does not use `agent_end`: that lower-level event can fire while Pi still has automatic work to do. Workflow sounds use the workflow runtime's shared feedback event so merge transitions and repeated status refreshes do not replay task-completion or attention audio.
+PiBox intentionally does not use `agent_end`: that lower-level event can fire while Pi still has automatic work to do. Workflow sounds use the workflow runtime's lifecycle event so worker exits, individual merges, intermediate reviews, and repeated status refreshes do not replay stage-completion or attention audio. Schema-v1 custom themes using `workflow-task-completed` remain readable as a compatibility alias.
 
 ## Audio installation
 

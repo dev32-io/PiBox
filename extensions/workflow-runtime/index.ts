@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_LIFECYCLE_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowLifecycleEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { formatBackgroundSubagentStatus, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
@@ -78,9 +78,34 @@ export default function workflows(pi: ExtensionAPI): void {
 		catch { /* Session replacement leaves adapter-owned durable state authoritative. */ }
 	};
 
-	const sendFeedback = (event: WorkflowFeedbackEvent) => {
-		try { pi.events.emit(WORKFLOW_FEEDBACK_EVENT, event); }
+	const observedStageCompletions = new Map<string, Set<string>>();
+	const sendLifecycle = (event: WorkflowLifecycleEvent) => {
+		try { pi.events.emit(WORKFLOW_LIFECYCLE_EVENT, event); }
 		catch { /* Session replacement leaves durable workflow state authoritative. */ }
+	};
+	const observeStageCompletions = (snapshot: WorkflowSnapshot) => {
+		if (!snapshot.stages) return;
+		const stepByNode = new Map(snapshot.steps.map((step) => {
+			const match = /\/(task|evaluation):([^/]+)$/.exec(step.ref);
+			return [match ? `${match[1]}:${match[2]}` : step.ref, step] as const;
+		}));
+		const complete = snapshot.stages.filter((stage) => stage.nodes.length > 0 && stage.nodes.every((node) => stepByNode.get(node)?.status === "done"));
+		const observed = observedStageCompletions.get(snapshot.ref);
+		if (!observed) {
+			observedStageCompletions.set(snapshot.ref, new Set(complete.map((stage) => stage.id)));
+			return;
+		}
+		for (const stage of complete) {
+			if (observed.has(stage.id)) continue;
+			observed.add(stage.id);
+			const terminalStep = stepByNode.get(stage.nodes.at(-1)!);
+			const correlationId = `${snapshot.ref}:${stage.id}`;
+			sendLifecycle({
+				type: "stage-completed", workflowRef: snapshot.ref, ...(terminalStep ? { stepRef: terminalStep.ref, kind: terminalStep.kind } : {}),
+				stageId: stage.id, stageIndex: stage.index, title: `Stage ${stage.index + 1} · ${stage.id}`, ...(terminalStep?.detail ? { detail: terminalStep.detail } : {}),
+				toStatus: "done", cause: "stage-settled", correlationId,
+			});
+		}
 	};
 
 	const pauseDurably = async (adapter: WorkflowAdapter, ref: string, operationId: string, ctx: ExtensionContext) => {
@@ -451,17 +476,13 @@ export default function workflows(pi: ExtensionAPI): void {
 			if (!await settlementIsCurrent(adapter, workflowRef, epoch, generation, ctx)) return;
 			const terminalStep = terminalSnapshot?.steps.find((candidate) => candidate.ref === step.ref);
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${terminalStep?.title ?? step.title} · ${settled.state}`, detail: settled.summary, attention, kind: step.kind, ...(terminalStep?.status ? { toStatus: terminalStep.status } : {}), cause: attention ? "step-settled-with-attention" : "step-settled" });
-			// Completion feedback is reserved for the canonical merge barrier. A worker
-			// handoff is useful progress, but is not task completion yet.
-			const taskMerged = step.kind === "merge" && terminalStep?.status === "done";
-			const reviewCompleted = step.kind === "evaluation" && terminalStep?.status === "done";
-			if (workflowRef && settled.state === "completed" && !attention && (taskMerged || reviewCompleted)) {
-				sendFeedback({ type: "task-completed", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, toStatus: taskMerged ? "merged" : "approved", terminal: true });
-			}
+			// Observe the stage projection, not a process or merge result. This also keeps
+			// completion tied to the stage boundary when approval happens out of band.
+			if (terminalSnapshot) observeStageCompletions(terminalSnapshot);
 			if (attention) {
 				if (workflowRef) {
 					await pauseDurably(adapter, workflowRef, `settlement:${step.ref}:${generation ?? epoch}:attention`, ctx);
-					sendFeedback({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, cause: "step-attention", nextAction: "Resolve the step and resume or decide at its checkpoint." });
+					sendLifecycle({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail: settled.summary, cause: "step-attention", nextAction: "Resolve the step and resume or decide at its checkpoint." });
 				}
 			}
 		} catch (error) {
@@ -469,7 +490,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const detail = error instanceof Error ? error.message : String(error);
 			if (workflowRef) {
 				await pauseDurably(adapter, workflowRef, `settlement:${step.ref}:${generation ?? epoch}:exception`, ctx);
-				sendFeedback({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
+				sendLifecycle({ type: "error", workflowRef, stepRef: step.ref, kind: step.kind, title: step.title, detail, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 			}
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · failed`, detail, attention: true, kind: step.kind, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 		} finally {
@@ -525,12 +546,13 @@ export default function workflows(pi: ExtensionAPI): void {
 					if (state === "running") {
 						const detail = error instanceof Error ? error.message : String(error);
 						await pauseDurably(adapter, ref, `snapshot:${ref}:${ownership.get(ref) ?? epoch}:failed`, ctx);
-						sendFeedback({ type: "error", workflowRef: ref, title: ref, detail, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
+						sendLifecycle({ type: "error", workflowRef: ref, title: ref, detail, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
 						sendEvent({ workflowRef: ref, title: `${ref} · attention`, detail, attention: true, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
 					}
 					continue;
 				}
 				if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
+				observeStageCompletions(snapshot);
 				if (ref === currentRef) {
 					currentSnapshot = { ...snapshot, steps: snapshot.steps.map((step) => isCurrentInFlight(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) };
 					renderDashboard(ctx);
@@ -547,7 +569,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					await pauseDurably(adapter, ref, `attention:${actionableAttentionSteps.map((step) => step.ref).join(",")}:${ownership.get(ref) ?? epoch}`, ctx);
 					const checkpoint = actionableAttentionSteps.find((step) => step.kind === "evaluation");
 					const guidance = `${detail || "Workflow needs intervention."}${checkpoint ? `\nUse workflow_checkpoint on ${checkpoint.ref}: Approve (optionally naming accepted risks) or Request changes. Do not manipulate Git or task state manually.` : ""}`;
-					sendFeedback({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref, kind: attentionSteps[0].kind } : {}), title: snapshot.title, detail: guidance, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
+					sendLifecycle({ type: "error", workflowRef: ref, ...(attentionSteps[0] ? { stepRef: attentionSteps[0].ref, kind: attentionSteps[0].kind } : {}), title: snapshot.title, detail: guidance, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
 					sendEvent({ workflowRef: ref, title: `${snapshot.title} · attention`, detail: guidance, attention: true, cause: "checkpoint-required", nextAction: checkpoint ? "Approve or request changes at the review checkpoint." : "Resolve the attention state and resume." });
 					continue;
 				}
@@ -565,7 +587,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			}
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			if (currentRef) sendFeedback({ type: "error", workflowRef: currentRef, title: "Workflow runner", detail, cause: "runner-exception" });
+			if (currentRef) sendLifecycle({ type: "error", workflowRef: currentRef, title: "Workflow runner", detail, cause: "runner-exception" });
 			sendEvent({ workflowRef: currentRef ?? "workflow", title: "Workflow runner · attention", detail, attention: true, cause: "runner-exception" });
 		} finally {
 			ticking = false;
@@ -632,7 +654,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				const preflight = await adapter.preflightWorkflow?.(params.ref, ctx);
 				if (preflight && !preflight.ok) {
 					const detail = preflight.detail ?? "Workflow preflight failed. Resolve the declared prerequisites and retry.";
-					sendFeedback({ type: "error", workflowRef: params.ref, title: "Workflow preflight · attention", detail, cause: "preflight-failed", nextAction: "Configure the declared prerequisites without guessing values, then retry workflow_start." });
+					sendLifecycle({ type: "error", workflowRef: params.ref, title: "Workflow preflight · attention", detail, cause: "preflight-failed", nextAction: "Configure the declared prerequisites without guessing values, then retry workflow_start." });
 					sendEvent({ workflowRef: params.ref, title: "Workflow preflight · attention", detail, attention: true, cause: "preflight-failed", nextAction: "Configure the declared prerequisites, then retry workflow_start." });
 					return result(detail, { ref: params.ref, attention: true, preflight });
 				}
@@ -914,6 +936,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		stopAgentLive();
 		agentLive.clear();
 		dynamicViews.clear();
+		observedStageCompletions.clear();
 		runtimeEpoch++;
 		shuttingDown = true;
 		tickRequestedEpoch = undefined;

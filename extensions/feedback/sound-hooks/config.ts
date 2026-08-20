@@ -2,9 +2,10 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve, sep } from "node:path";
 
 export const RESPONSE_COMPLETE_EVENT = "response-complete" as const;
-export const WORKFLOW_TASK_COMPLETED_EVENT = "workflow-task-completed" as const;
+export const WORKFLOW_STAGE_COMPLETED_EVENT = "workflow-stage-completed" as const;
 export const WORKFLOW_ERROR_EVENT = "workflow-error" as const;
-export const FEEDBACK_EVENTS = [RESPONSE_COMPLETE_EVENT, WORKFLOW_TASK_COMPLETED_EVENT, WORKFLOW_ERROR_EVENT] as const;
+export const FEEDBACK_EVENTS = [RESPONSE_COMPLETE_EVENT, WORKFLOW_STAGE_COMPLETED_EVENT, WORKFLOW_ERROR_EVENT] as const;
+const LEGACY_WORKFLOW_TASK_COMPLETED_EVENT = "workflow-task-completed" as const;
 export type FeedbackEvent = typeof FEEDBACK_EVENTS[number];
 
 export interface SoundTheme {
@@ -50,6 +51,9 @@ export function parseSoundTheme(value: unknown): SoundTheme | undefined {
 		if (filename !== undefined && typeof filename !== "string") return undefined;
 		if (filename !== undefined) sounds[event] = filename;
 	}
+	const legacyCompletion = value.sounds[LEGACY_WORKFLOW_TASK_COMPLETED_EVENT];
+	if (legacyCompletion !== undefined && typeof legacyCompletion !== "string") return undefined;
+	if (!sounds[WORKFLOW_STAGE_COMPLETED_EVENT] && legacyCompletion) sounds[WORKFLOW_STAGE_COMPLETED_EVENT] = legacyCompletion;
 
 	return { schemaVersion: 1, id: value.id, label: value.label, sounds };
 }

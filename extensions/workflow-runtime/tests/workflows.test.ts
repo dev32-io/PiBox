@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
-import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_LIFECYCLE_EVENT, type WorkflowAdapter, type WorkflowLifecycleEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
 import type { AgentLiveProjection } from "../agent-live-projection.js";
 import { installPermissionRuntime } from "../../permissions/runtime.js";
 
@@ -270,7 +270,7 @@ test("background step failure pauses instead of retrying unchanged state", async
 test("does not emit completion feedback when a task contribution completes before merge", async () => {
 	const f = fixture();
 	let done = false;
-	const feedback: WorkflowFeedbackEvent[] = [];
+	const feedback: WorkflowLifecycleEvent[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async snapshot() {
@@ -279,7 +279,7 @@ test("does not emit completion feedback when a task contribution completes befor
 		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Contribution completed." }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => feedback.push(event as WorkflowLifecycleEvent));
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
@@ -288,58 +288,103 @@ test("does not emit completion feedback when a task contribution completes befor
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("emits one completion feedback after a merge settles", async () => {
+test("an individual merge does not emit completion before its stage review finishes", async () => {
 	const f = fixture();
-	let done = false;
-	const feedback: WorkflowFeedbackEvent[] = [];
+	let merged = false;
+	const lifecycle: WorkflowLifecycleEvent[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async snapshot() { return { ref: "test:workflow", title: "Merge", status: done ? "done" : "ready", steps: [{ ref: "test:merge", title: "Merge task", kind: "merge", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
-		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Merged." }; },
+		async snapshot() {
+			return {
+				ref: "test:workflow", title: "Merge", status: "ready",
+				steps: [
+					{ ref: "test:workflow/task:task", title: "Merge task", kind: "merge", status: merged ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] },
+					{ ref: "test:workflow/evaluation:stage-review", title: "Stage review", kind: "evaluation", checkpoint: "stage-review", status: "pending", dependsOn: ["test:workflow/task:task"], parallelism: "serial", resourceClaims: [] },
+				],
+				stages: [{ id: "delivery", index: 0, nodes: ["task:task", "evaluation:stage-review"], parallel: false, group: "planner" }],
+			};
+		},
+		async runStep(ref) { merged = true; return { ref, state: "completed", summary: "Merged." }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => lifecycle.push(event as WorkflowLifecycleEvent));
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.equal(feedback.filter((event) => event.type === "task-completed").length, 1);
-	assert.equal(feedback.find((event) => event.type === "task-completed")?.toStatus, "merged");
+	assert.equal(lifecycle.some((event) => event.type === "stage-completed"), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("a completed review wakes the main session and emits success feedback", async () => {
+test("a fully finished stage emits one lifecycle completion and wakes the main session", async () => {
 	const f = fixture();
 	let done = false;
-	const feedback: WorkflowFeedbackEvent[] = [];
+	const lifecycle: WorkflowLifecycleEvent[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async snapshot() { return { ref: "test:workflow", title: "Review boundary", status: done ? "done" : "ready", steps: [{ ref: "test:evaluation", title: "Stage review", kind: "evaluation", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async snapshot() {
+			return {
+				ref: "test:workflow", title: "Review boundary", status: done ? "done" : "ready",
+				steps: [{ ref: "test:workflow/evaluation:stage-review", title: "Stage review", kind: "evaluation", checkpoint: "stage-review", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+				stages: [{ id: "delivery", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
+			};
+		},
 		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Review passed." }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => lifecycle.push(event as WorkflowLifecycleEvent));
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.equal(feedback.filter((event) => event.type === "task-completed" && event.toStatus === "approved").length, 1);
+	assert.deepEqual(lifecycle.filter((event) => event.type === "stage-completed"), [{
+		type: "stage-completed", workflowRef: "test:workflow", stepRef: "test:workflow/evaluation:stage-review", kind: "evaluation",
+		stageId: "delivery", stageIndex: 0, title: "Stage 1 · delivery", toStatus: "done", cause: "stage-settled", correlationId: "test:workflow:delivery",
+	}]);
 	const workflowEvents = f.messages.filter(({ message, options }) => (message as any).customType === "pibox-workflow-event" && (options as any).deliverAs === "followUp" && (options as any).triggerTurn === true);
 	assert.equal(workflowEvents.length, 1);
 	assert.equal(workflowEvents[0]?.message.display, true);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("checkpoint approval publishes stage completion from the workflow projection", async () => {
+	const f = fixture();
+	let approved = false;
+	const lifecycle: WorkflowLifecycleEvent[] = [];
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() {
+			return {
+				ref: "test:workflow", title: "Approval boundary", status: approved ? "done" : "attention",
+				steps: [{ ref: "test:workflow/evaluation:stage-review", title: "Stage review", kind: "evaluation", checkpoint: "stage-review", status: approved ? "done" : "attention", detail: approved ? "Approved" : "Needs attention · Approve or Request changes", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+				stages: [{ id: "delivery", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
+			};
+		},
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async controlExecution(ref, command) { return { workflowRef: ref, generation: 1, mode: command === "pause" || command === "detach" ? "paused" : command === "complete" ? "completed" : command === "stop" ? "stopped" : "running" }; }, async controlWorkflow() {},
+		async controlCheckpoint() { approved = true; return { status: "passed" }; },
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => lifecycle.push(event as WorkflowLifecycleEvent));
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	await f.tools.get("workflow_checkpoint").execute("checkpoint", { ref: "test:workflow/evaluation:stage-review", action: "approve" }, undefined, undefined, f.ctx);
+	assert.equal(lifecycle.filter((event) => event.type === "stage-completed" && event.stageId === "delivery").length, 1);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("emits workflow error feedback when a step pauses for attention", async () => {
 	const f = fixture();
-	const feedback: WorkflowFeedbackEvent[] = [];
+	const feedback: WorkflowLifecycleEvent[] = [];
 	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Feedback", status: "ready", steps: [{ ref: "test:task", title: "Blocked feedback", kind: "task", status: "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }] };
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
 		async runStep(ref) { return { ref, state: "blocked", summary: "Needs user attention.", attention: true }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_FEEDBACK_EVENT, (event: unknown) => feedback.push(event as WorkflowFeedbackEvent));
+	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => feedback.push(event as WorkflowLifecycleEvent));
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);

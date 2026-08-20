@@ -4,13 +4,17 @@ import type { AgentLiveListener, AgentLiveProjection } from "./agent-live-projec
 
 export const WORKFLOW_ADAPTER_DISCOVERY_EVENT = "pibox:workflow:discover-adapters";
 export const WORKFLOW_CONTROL_EVENT = "pibox:workflow:control";
-export const WORKFLOW_FEEDBACK_EVENT = "pibox:workflow:feedback";
+export const WORKFLOW_LIFECYCLE_EVENT = "pibox:workflow:lifecycle";
+/** @deprecated Use WORKFLOW_LIFECYCLE_EVENT. */
+export const WORKFLOW_FEEDBACK_EVENT = WORKFLOW_LIFECYCLE_EVENT;
 
-export interface WorkflowFeedbackEvent {
-	type: "task-completed" | "error";
+export interface WorkflowLifecycleEvent {
+	type: "stage-completed" | "error";
 	workflowRef: string;
 	stepRef?: string;
 	kind?: string;
+	stageId?: string;
+	stageIndex?: number;
 	title: string;
 	detail?: string;
 	fromStatus?: string;
@@ -21,8 +25,10 @@ export interface WorkflowFeedbackEvent {
 	nextAction?: string;
 	/** Correlates workflow feedback with the turn that caused it when available. */
 	correlationId?: string;
-	terminal?: boolean;
 }
+
+/** @deprecated Use WorkflowLifecycleEvent. */
+export type WorkflowFeedbackEvent = WorkflowLifecycleEvent;
 
 export type WorkflowStepStatus = "pending" | "ready" | "running" | "done" | "attention" | "cancelled";
 
