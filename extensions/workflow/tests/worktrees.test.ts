@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { discoverRepository } from "../repository.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
-import { ResourceLockSet, WorktreeManager } from "../worktrees.js";
+import { ResourceLockSet, WorktreeManager, type WorktreeListOptions } from "../worktrees.js";
 
 const exec = promisify(execFile);
 async function git(cwd: string, ...args: string[]): Promise<string> {
@@ -335,7 +335,7 @@ test("resumes a dirty worktree recorded for the same task assignment", async (t)
 	assert.equal(await readFile(join(resumed.path, "partial.txt"), "utf8"), "retained\n");
 });
 
-test("lists and safely cleans only inactive clean PiBox worktrees", async (t) => {
+test("lists and safely cleans only inactive clean PiBox worktrees in one inventory pass", async (t) => {
 	const { root, identity } = await fixture(t);
 	const store = new WorkItemStore(root);
 	await store.create({ id: "cleanup", title: "Cleanup", kind: "change", branchKind: "fix", intent: "Test retained worktree cleanup" });
@@ -343,15 +343,54 @@ test("lists and safely cleans only inactive clean PiBox worktrees", async (t) =>
 	await store.defineTask({ workItemId: "cleanup", manifest, brief: "No-op", acceptance: "No-op" });
 	await addParallelSibling(store, "cleanup", "feature-unit");
 	await store.submitPlanning("cleanup");
-	const manager = new WorktreeManager(identity);
+	class CountingWorktreeManager extends WorktreeManager {
+		listCalls = 0;
+		override async listManaged(options: WorktreeListOptions = {}) {
+			this.listCalls += 1;
+			return super.listManaged(options);
+		}
+	}
+	const manager = new CountingWorktreeManager(identity);
 	await manager.validateWorkingBranch("cleanup");
 	const allocation = await manager.allocate("cleanup", await store.readTask("cleanup", manifest.id));
 	await store.updateTask("cleanup", manifest.id, { status: "running", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
-	assert.deepEqual((await manager.listManaged()).map(({ name, status, active }) => ({ name, status, active })), [{ name: "cleanup/add-feature", status: "clean", active: true }]);
+	const lightweight = await manager.listManaged();
+	assert.deepEqual(lightweight.map(({ name, status, active }) => ({ name, status, active })), [{ name: "cleanup/add-feature", status: "clean", active: true }]);
+	assert.equal(lightweight[0]?.bytes, undefined, "ordinary inventory does not recursively measure disk usage");
+	assert.ok((await manager.listManaged({ includeBytes: true }))[0]!.bytes! > 0, "size measurement remains explicitly available");
+	manager.listCalls = 0;
 	assert.equal((await manager.cleanupManaged()).length, 0);
+	assert.equal(manager.listCalls, 1, "cleanup performs one lightweight inventory");
 	await store.updateTask("cleanup", manifest.id, { status: "cancelled" });
+	manager.listCalls = 0;
 	assert.equal((await manager.cleanupManaged()).length, 1);
+	assert.equal(manager.listCalls, 1, "targeted removal does not relist every worktree");
 	assert.equal((await manager.listManaged()).length, 0);
+});
+
+test("cleanup cancellation stops before the next inactive worktree", async (t) => {
+	const { root, identity } = await fixture(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "cancel-cleanup", title: "Cancel cleanup", kind: "change", branchKind: "fix", intent: "Cancel retained cleanup" });
+	for (const id of ["first", "second"]) await store.defineTask({ workItemId: "cancel-cleanup", manifest: task(id, "delivery"), brief: id, acceptance: id });
+	await store.submitPlanning("cancel-cleanup");
+	const manager = new WorktreeManager(identity);
+	await manager.validateWorkingBranch("cancel-cleanup");
+	for (const id of ["first", "second"]) {
+		const allocation = await manager.allocate("cancel-cleanup", await store.readTask("cancel-cleanup", id));
+		await store.updateTask("cancel-cleanup", id, { status: "cancelled", runtime: { branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
+	}
+	const controller = new AbortController();
+	await assert.rejects(
+		manager.cleanupManaged({
+			signal: controller.signal,
+			onProgress: (progress) => { if (progress.phase === "removed") controller.abort(); },
+		}),
+		(error: unknown) => error instanceof Error && error.name === "AbortError",
+	);
+	const remaining = await manager.listManaged();
+	assert.equal(remaining.length, 1, "the second worktree remains after cancellation");
+	assert.equal(remaining[0]?.status, "clean");
 });
 
 test("refuses allocation when the repository-local worktree root is not ignored", async (t) => {

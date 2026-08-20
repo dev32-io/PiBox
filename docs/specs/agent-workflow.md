@@ -1147,7 +1147,7 @@ Locks protect repository integration, worktree allocation, canonical artifact mu
 
 ### 17.4 Retention
 
-Operational history is retained by default. The harness does not automatically delete transcripts, command output, branches, or worktrees. `/harness worktrees` inventories PiBox-owned worktrees, and `cleanupAll` removes only clean inactive ones; a dirty worktree requires an explicit named `--force` removal. Export and redaction commands remain deferred.
+Operational history is retained by default. The harness does not automatically delete transcripts, command output, branches, or worktrees. `/harness worktrees` inventories PiBox-owned worktrees without recursively measuring disk usage; exact sizes are an explicit slower operation. `cleanupAll` performs one lightweight inventory, serially revalidates and removes only clean inactive worktrees, remains cancellable, and retains every branch. A dirty worktree requires an explicit named `--force` removal. Export and redaction commands remain deferred.
 
 ## 18. Lifecycle and recovery
 

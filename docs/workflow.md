@@ -105,9 +105,12 @@ A task can intentionally be partial. Required stage review/fix follows stage che
 /workflow stop <task-id>
 /workflow recover
 /harness worktrees
+/harness worktrees sizes
 /harness worktrees cleanupAll
 /harness worktrees remove <work-item/task> [--force]
 ```
+
+The default worktree inventory reports ownership, activity, and Git status without recursively scanning build outputs. Use `sizes` only when exact per-worktree disk usage is needed. Inspection and cleanup show live progress in the TUI and can be cancelled with Escape; session shutdown requests the same cancellation. Read-only inspection stops immediately, while cleanup finishes the current Git removal before stopping at the next safe boundary. Cleanup inspects once, revalidates each candidate immediately before serial removal, and retains every worktree branch.
 
 Every model-backed direct child is registered under the stable main Pi session identity before process creation. The main session is depth zero; children are depth one and cannot delegate. A logical child retains one of sixteen default slots through running, waiting, blocking, pausing, interruption, handoff reporting, and later process attempts. Only a terminal completion, failure, protocol failure, or cancellation releases the slot.
 
@@ -192,7 +195,7 @@ Ignored repository-local operational records:
 .pibox/
 ```
 
-These records include append-only events, run projections, transcripts, checkpoints, handoffs, operation receipts, locks, and recovery metadata. They are retained by default and never committed. `/harness worktrees cleanupAll` removes only clean, inactive PiBox task worktrees; dirty or active worktrees require explicit recovery or a named forced removal.
+These records include append-only events, run projections, transcripts, checkpoints, handoffs, operation receipts, locks, and recovery metadata. They are retained by default and never committed. `/harness worktrees cleanupAll` removes only clean, inactive PiBox task worktrees; dirty or active worktrees require explicit recovery or a named forced removal. Ignored build output inside a clean inactive worktree is disposable and is removed with that worktree.
 
 ## Trust and limitations
 

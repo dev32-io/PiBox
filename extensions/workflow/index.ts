@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -27,7 +27,7 @@ import { WorkItemStore } from "./work-items.js";
 import { CanonicalMutationCoordinator, runManagedChild } from "./canonical-mutation.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
 import { SubagentSupervisor } from "./supervisor.js";
-import { ResourceLockSet, WorktreeManager } from "./worktrees.js";
+import { ResourceLockSet, WorktreeManager, type WorktreeProgress } from "./worktrees.js";
 import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapterDiscovery, type WorkflowRunResult } from "../workflow-runtime/api.js";
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
@@ -414,6 +414,20 @@ function formatBytes(bytes: number): string {
 	return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`;
 }
 
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === "AbortError";
+}
+
+function formatWorktreeProgress(progress: WorktreeProgress): string {
+	if (progress.phase === "inventory") return "Discovering PiBox worktrees…";
+	const count = progress.total > 0 ? ` ${progress.current}/${progress.total}` : "";
+	const name = progress.name ? ` · ${progress.name}` : "";
+	if (progress.phase === "status") return `Inspecting${count}${name}`;
+	if (progress.phase === "size") return `Measuring sizes${count}${name}`;
+	if (progress.phase === "removing") return `Removing${count}${name}`;
+	return `Removed${count}${name}`;
+}
+
 async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot> {
 	const workItems = await runtime.workItems.list();
 	const taskCounts: Record<string, Record<string, number>> = {};
@@ -522,6 +536,8 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 export default function workflow(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
+	let sessionShuttingDown = false;
+	const worktreeOperations = new Set<AbortController>();
 	const supervisor = new SubagentSupervisor();
 	resetActiveFastModePolicy();
 	pi.events.on(FAST_MODE_POLICY_EVENT, (value: unknown) => {
@@ -543,6 +559,40 @@ export default function workflow(pi: ExtensionAPI): void {
 			return sessionRuntime;
 		}
 		return createRuntime(ctx);
+	};
+
+	const runWorktreeOperation = async <T>(
+		ctx: ExtensionContext,
+		label: string,
+		operation: (signal: AbortSignal, onProgress: (progress: WorktreeProgress) => void) => Promise<T>,
+	): Promise<T> => {
+		const shutdownController = new AbortController();
+		worktreeOperations.add(shutdownController);
+		const update = (progress: WorktreeProgress) => {
+			if (ctx.hasUI && !sessionShuttingDown) ctx.ui.setStatus("pibox-worktrees", formatWorktreeProgress(progress));
+		};
+		try {
+			if (ctx.mode !== "tui") return await operation(shutdownController.signal, update);
+			type Outcome = { ok: true; value: T } | { ok: false; error: unknown };
+			const outcome = await ctx.ui.custom<Outcome>((tui, theme, _keybindings, done) => {
+				const loader = new BorderedLoader(tui, theme, label);
+				const signal = AbortSignal.any([shutdownController.signal, loader.signal]);
+				loader.onAbort = () => {
+					if (ctx.hasUI) ctx.ui.setStatus("pibox-worktrees", "Cancelling after the current safe boundary…");
+				};
+				operation(signal, update).then(
+					(value) => done({ ok: true, value }),
+					(error) => done({ ok: false, error }),
+				);
+				return loader;
+			});
+			if (!outcome) throw new Error("PiBox worktree operation closed without a result");
+			if (!outcome.ok) throw outcome.error;
+			return outcome.value;
+		} finally {
+			worktreeOperations.delete(shutdownController);
+			if (ctx.hasUI && !sessionShuttingDown) ctx.ui.setStatus("pibox-worktrees", undefined);
+		}
 	};
 
 	const initializeRepository = async (ctx: ExtensionContext, profile: HarnessScaffoldProfile, overwrite = false): Promise<{ runtime: HarnessRuntime; scaffold: HarnessScaffoldResult }> => {
@@ -1496,6 +1546,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		description: "Initialize PiBox or manage operational state: init [standard|economy] | worktrees [...]",
 		handler: async (args, ctx) => {
 			const [command, action = "list", target, ...extra] = args.trim().split(/\s+/).filter(Boolean);
+			const usage = "Usage: /harness init [standard|economy] | worktrees [sizes | cleanupAll | remove <work-item/task> [--force]]";
 			try {
 				if (command === "init" && !target && extra.length === 0 && (action === "list" || action === "standard" || action === "economy")) {
 					const profile = (action === "list" ? "standard" : action) as HarnessScaffoldProfile;
@@ -1504,33 +1555,77 @@ export default function workflow(pi: ExtensionAPI): void {
 					return;
 				}
 				if (command !== "worktrees") {
-					ctx.ui.notify("Usage: /harness init [standard|economy] | worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
+					ctx.ui.notify(usage, "warning");
 					return;
 				}
 				const runtime = await runtimeFor(ctx);
 				const manager = new WorktreeManager(runtime.identity);
-				if (action === "list" && !target) {
-					const worktrees = await manager.listManaged();
-					const total = worktrees.reduce((sum, worktree) => sum + worktree.bytes, 0);
-					ctx.ui.notify(worktrees.length ? `PiBox worktrees: ${worktrees.length}, ${formatBytes(total)}\n${worktrees.map((worktree) => `${worktree.name} — ${worktree.status}${worktree.active ? ", active" : ""}, ${formatBytes(worktree.bytes)}${worktree.branch ? ` (${worktree.branch})` : ""}`).join("\n")}` : "No PiBox worktrees.", "info");
+				const includeBytes = (action === "sizes" && !target) || (action === "list" && target === "--sizes" && extra.length === 0);
+				if ((action === "list" && !target) || includeBytes) {
+					let worktrees;
+					try {
+						worktrees = await runWorktreeOperation(ctx, includeBytes ? "Measuring PiBox worktrees…" : "Inspecting PiBox worktrees…", (signal, onProgress) =>
+							manager.listManaged({ includeBytes, signal, onProgress }));
+					} catch (error) {
+						if (isAbortError(error)) {
+							if (!sessionShuttingDown) ctx.ui.notify("PiBox worktree inspection cancelled.", "info");
+							return;
+						}
+						throw error;
+					}
+					if (sessionShuttingDown) return;
+					const total = worktrees.reduce((sum, worktree) => sum + (worktree.bytes ?? 0), 0);
+					const heading = includeBytes ? `PiBox worktrees: ${worktrees.length}, ${formatBytes(total)}` : `PiBox worktrees: ${worktrees.length}`;
+					const rows = worktrees.map((worktree) => `${worktree.name} — ${worktree.status}${worktree.active ? ", active" : ""}${worktree.bytes === undefined ? "" : `, ${formatBytes(worktree.bytes)}`}${worktree.branch ? ` (${worktree.branch})` : ""}`);
+					ctx.ui.notify(worktrees.length ? `${heading}\n${rows.join("\n")}${includeBytes ? "" : "\nUse /harness worktrees sizes for exact disk usage."}` : "No PiBox worktrees.", "info");
 					return;
 				}
 				if (action === "cleanupAll" && !target) {
 					requireTrusted(ctx);
-					const removed = await manager.cleanupManaged();
+					const removedNames: string[] = [];
+					let removed;
+					try {
+						removed = await runWorktreeOperation(ctx, "Cleaning inactive PiBox worktrees…", (signal, onProgress) => manager.cleanupManaged({
+							signal,
+							onProgress: (progress) => {
+								onProgress(progress);
+								if (progress.phase === "removed" && progress.name) removedNames.push(progress.name);
+							},
+						}));
+					} catch (error) {
+						if (isAbortError(error)) {
+							if (!sessionShuttingDown) {
+								await runtime.events.append("worktrees.cleanup_cancelled", { count: removedNames.length, worktrees: removedNames });
+								ctx.ui.notify(`PiBox worktree cleanup cancelled${removedNames.length ? ` after removing ${removedNames.length}: ${removedNames.join(", ")}` : " before removing any worktrees"}.`, "warning");
+							}
+							return;
+						}
+						throw error;
+					}
+					if (sessionShuttingDown) return;
 					await runtime.events.append("worktrees.cleaned", { count: removed.length, worktrees: removed.map((worktree) => worktree.name) });
 					ctx.ui.notify(removed.length ? `Removed ${removed.length} clean inactive PiBox worktree(s): ${removed.map((worktree) => worktree.name).join(", ")}.` : "No clean inactive PiBox worktrees to remove.", "info");
 					return;
 				}
 				if (action === "remove" && target && extra.every((value) => value === "--force")) {
 					requireTrusted(ctx);
-					const removed = await manager.removeManaged(target, extra.includes("--force"));
+					const removed = await runWorktreeOperation(ctx, `Removing PiBox worktree ${target}…`, async (signal, onProgress) => {
+						onProgress({ phase: "removing", current: 1, total: 1, name: target });
+						const result = await manager.removeManaged(target, extra.includes("--force"), { signal });
+						onProgress({ phase: "removed", current: 1, total: 1, name: target });
+						return result;
+					});
+					if (sessionShuttingDown) return;
 					await runtime.events.append("worktree.removed", { name: removed.name, forced: extra.includes("--force") });
 					ctx.ui.notify(`Removed PiBox worktree ${removed.name}. Its branch ${removed.branch ?? "(detached)"} was retained.`, "info");
 					return;
 				}
-				ctx.ui.notify("Usage: /harness init [standard|economy] | worktrees [cleanupAll | remove <work-item/task> [--force]]", "warning");
+				ctx.ui.notify(usage, "warning");
 			} catch (error) {
+				if (isAbortError(error)) {
+					if (!sessionShuttingDown) ctx.ui.notify("PiBox worktree operation cancelled.", "info");
+					return;
+				}
 				ctx.ui.notify(describeHarnessError(error), "error");
 			}
 		},
@@ -1542,6 +1637,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		sessionShuttingDown = false;
 		const disallowed = new Set<string>();
 		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
@@ -1600,6 +1696,9 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event) => {
+		sessionShuttingDown = true;
+		for (const controller of worktreeOperations) controller.abort(new DOMException("PiBox session is shutting down", "AbortError"));
+		worktreeOperations.clear();
 		resetActiveFastModePolicy();
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		if (isSubagentProcess() && process.env.PIBOX_SUBAGENT_ROOT && process.env.PIBOX_SUBAGENT_ATTEMPT_ID) {

@@ -26,6 +26,20 @@ test("Git failures surface stdout when stderr is empty", async (t) => {
 	await assert.rejects(runGit(root, ["commit", "-m", "duplicate"]), /nothing to commit/i);
 });
 
+test("abortable Git operations terminate a live child and preserve cancellation", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-abort-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await git(root, "init", "--quiet");
+	const controller = new AbortController();
+	const startedAt = Date.now();
+	setTimeout(() => controller.abort(), 25);
+	await assert.rejects(
+		runGit(root, ["hash-object", "--stdin"], { signal: controller.signal }),
+		(error: unknown) => error instanceof Error && error.name === "AbortError",
+	);
+	assert.ok(Date.now() - startedAt < 1_000, "cancellation does not wait for the Git child to finish naturally");
+});
+
 test("uses one stable repository identity across linked worktrees", async (t) => {
 	const parent = await mkdtemp(join(tmpdir(), "pibox-harness-repo-"));
 	t.after(() => rm(parent, { recursive: true, force: true }));

@@ -56,16 +56,74 @@ export interface ManagedWorktree {
 	branch?: string;
 	status: "clean" | "modified";
 	active: boolean;
-	bytes: number;
+	bytes?: number;
 }
 
-async function directorySize(path: string): Promise<number> {
+export type WorktreeProgressPhase = "inventory" | "status" | "size" | "removing" | "removed";
+
+export interface WorktreeProgress {
+	phase: WorktreeProgressPhase;
+	current: number;
+	total: number;
+	name?: string;
+}
+
+export interface WorktreeListOptions {
+	includeBytes?: boolean | undefined;
+	signal?: AbortSignal | undefined;
+	onProgress?: ((progress: WorktreeProgress) => void) | undefined;
+}
+
+export interface WorktreeCleanupOptions {
+	signal?: AbortSignal | undefined;
+	onProgress?: ((progress: WorktreeProgress) => void) | undefined;
+}
+
+const WORKTREE_INSPECTION_TIMEOUT_MS = 60_000;
+const WORKTREE_REMOVE_TIMEOUT_MS = 5 * 60_000;
+const STATUS_CONCURRENCY = 4;
+const SIZE_CONCURRENCY = 2;
+const DIRECTORY_CONCURRENCY = 8;
+const STAT_CONCURRENCY = 32;
+
+function throwIfAborted(signal?: AbortSignal): void {
+	signal?.throwIfAborted();
+}
+
+async function mapConcurrent<T, R>(values: T[], concurrency: number, operation: (value: T, index: number) => Promise<R>): Promise<R[]> {
+	const results = new Array<R>(values.length);
+	let cursor = 0;
+	const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+		while (cursor < values.length) {
+			const index = cursor++;
+			results[index] = await operation(values[index]!, index);
+		}
+	});
+	await Promise.all(workers);
+	return results;
+}
+
+async function directorySize(path: string, signal?: AbortSignal): Promise<number> {
 	let total = 0;
-	for (const entry of await readdir(path, { withFileTypes: true })) {
-		const child = join(path, entry.name);
-		const info = await lstat(child);
-		if (info.isDirectory()) total += await directorySize(child);
-		else total += info.size;
+	const directories = [path];
+	while (directories.length > 0) {
+		throwIfAborted(signal);
+		const batch = directories.splice(0, DIRECTORY_CONCURRENCY);
+		const listings = await Promise.all(batch.map((directory) => readdir(directory, { withFileTypes: true })));
+		const files: string[] = [];
+		for (const [index, entries] of listings.entries()) {
+			const directory = batch[index]!;
+			for (const entry of entries) {
+				const child = join(directory, entry.name);
+				if (entry.isDirectory()) directories.push(child);
+				else files.push(child);
+			}
+		}
+		const sizes = await mapConcurrent(files, STAT_CONCURRENCY, async (file) => {
+			throwIfAborted(signal);
+			return (await lstat(file)).size;
+		});
+		for (const size of sizes) total += size;
 	}
 	return total;
 }
@@ -192,46 +250,104 @@ export class WorktreeManager {
 		return { path, branch, baseCommit, isolation: "worktree" };
 	}
 
-	async listManaged(): Promise<ManagedWorktree[]> {
+	private async activeWorktreePaths(signal?: AbortSignal): Promise<Set<string>> {
 		const activePaths = new Set<string>();
 		for (const item of await this.workItems.list()) {
-			for (const entry of item.tasks) {
-				const task = await this.workItems.readTask(item.id, entry.id);
+			throwIfAborted(signal);
+			for (const task of await this.workItems.readTasks(item.id)) {
 				if (task.runtime?.worktree && !["merged", "integrated", "cancelled"].includes(task.status)) activePaths.add(task.runtime.worktree);
 			}
 		}
-		const output = await runGit(this.identity.root, ["worktree", "list", "--porcelain"]);
-		const records: ManagedWorktree[] = [];
-		for (const block of output.split("\n\n")) {
+		return activePaths;
+	}
+
+	private async managedGitRecords(signal?: AbortSignal): Promise<Array<{ name: string; path: string; branch?: string }>> {
+		throwIfAborted(signal);
+		const output = await runGit(this.identity.root, ["worktree", "list", "--porcelain"], { signal, timeoutMs: WORKTREE_INSPECTION_TIMEOUT_MS });
+		const candidates = output.split("\n\n").flatMap((block) => {
 			const lines = block.split("\n");
 			const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-			if (!path || !path.startsWith(`${this.worktreeRoot}/`) || !(await exists(path))) continue;
-			const name = relative(this.worktreeRoot, path);
+			if (!path || !path.startsWith(`${this.worktreeRoot}/`)) return [];
 			const branchRef = lines.find((line) => line.startsWith("branch "))?.slice("branch ".length);
-			const porcelain = await runGit(path, ["status", "--porcelain=v1"]);
-			records.push({ name, path, ...(branchRef ? { branch: branchRef.replace("refs/heads/", "") } : {}), status: porcelain ? "modified" : "clean", active: activePaths.has(path), bytes: await directorySize(path) });
+			return [{ name: relative(this.worktreeRoot, path), path, ...(branchRef ? { branch: branchRef.replace("refs/heads/", "") } : {}) }];
+		});
+		const present = await mapConcurrent(candidates, STATUS_CONCURRENCY, async (candidate) => {
+			throwIfAborted(signal);
+			return await exists(candidate.path) ? candidate : undefined;
+		});
+		return present.filter((candidate): candidate is { name: string; path: string; branch?: string } => candidate !== undefined);
+	}
+
+	async listManaged(options: WorktreeListOptions = {}): Promise<ManagedWorktree[]> {
+		options.onProgress?.({ phase: "inventory", current: 0, total: 0 });
+		const [activePaths, candidates] = await Promise.all([
+			this.activeWorktreePaths(options.signal),
+			this.managedGitRecords(options.signal),
+		]);
+		let statusesCompleted = 0;
+		const records = await mapConcurrent(candidates, STATUS_CONCURRENCY, async (candidate) => {
+			throwIfAborted(options.signal);
+			const porcelain = await runGit(candidate.path, ["status", "--porcelain=v1"], { signal: options.signal, timeoutMs: WORKTREE_INSPECTION_TIMEOUT_MS });
+			options.onProgress?.({ phase: "status", current: ++statusesCompleted, total: candidates.length, name: candidate.name });
+			return { ...candidate, status: porcelain ? "modified" as const : "clean" as const, active: activePaths.has(candidate.path) };
+		});
+		if (!options.includeBytes) return records.sort((left, right) => left.name.localeCompare(right.name));
+		let sizesCompleted = 0;
+		const sized = await mapConcurrent(records, SIZE_CONCURRENCY, async (record) => {
+			throwIfAborted(options.signal);
+			const bytes = await directorySize(record.path, options.signal);
+			options.onProgress?.({ phase: "size", current: ++sizesCompleted, total: records.length, name: record.name });
+			return { ...record, bytes };
+		});
+		return sized.sort((left, right) => left.name.localeCompare(right.name));
+	}
+
+	private async isActiveManagedWorktree(name: string, path: string, signal?: AbortSignal): Promise<boolean> {
+		throwIfAborted(signal);
+		const segments = name.split("/");
+		if (segments.length !== 2) throw new HarnessError("INVALID_ARTIFACT", `Malformed PiBox worktree name: ${name}`);
+		try {
+			const task = await this.workItems.readTask(segments[0]!, segments[1]!);
+			return task.runtime?.worktree === path && !["merged", "integrated", "cancelled"].includes(task.status);
+		} catch (error) {
+			if (error instanceof HarnessError && (error.code === "WORK_ITEM_NOT_FOUND" || (error.code === "INVALID_ARTIFACT" && error.message.includes("Unknown task")))) return false;
+			throw error;
 		}
-		return records.sort((left, right) => left.name.localeCompare(right.name));
 	}
 
-	async removeManaged(name: string, force = false): Promise<ManagedWorktree> {
-		return this.coordinator.run(`remove-worktree:${name}`, () => this.removeManagedUnlocked(name, force));
+	async removeManaged(name: string, force = false, options: { signal?: AbortSignal | undefined } = {}): Promise<ManagedWorktree> {
+		throwIfAborted(options.signal);
+		return this.coordinator.run(`remove-worktree:${name}`, () => this.removeManagedUnlocked(name, force, options.signal));
 	}
 
-	private async removeManagedUnlocked(name: string, force = false): Promise<ManagedWorktree> {
-		const worktree = (await this.listManaged()).find((candidate) => candidate.name === name);
-		if (!worktree) throw new HarnessError("INVALID_ARTIFACT", `Unknown PiBox worktree: ${name}`);
-		if (worktree.active) throw new HarnessError("CAPABILITY_DENIED", `Worktree is active and cannot be removed: ${name}`);
+	private async removeManagedUnlocked(name: string, force = false, signal?: AbortSignal): Promise<ManagedWorktree> {
+		throwIfAborted(signal);
+		const candidate = (await this.managedGitRecords(signal)).find((record) => record.name === name);
+		if (!candidate) throw new HarnessError("INVALID_ARTIFACT", `Unknown PiBox worktree: ${name}`);
+		const active = await this.isActiveManagedWorktree(candidate.name, candidate.path, signal);
+		if (active) throw new HarnessError("CAPABILITY_DENIED", `Worktree is active and cannot be removed: ${name}`);
+		const porcelain = await runGit(candidate.path, ["status", "--porcelain=v1"], { signal, timeoutMs: WORKTREE_INSPECTION_TIMEOUT_MS });
+		const worktree: ManagedWorktree = { ...candidate, status: porcelain ? "modified" : "clean", active };
 		if (worktree.status === "modified" && !force) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Worktree has uncommitted changes: ${name}. Re-run with --force only after preserving the changes.`);
-		await runGit(this.identity.root, ["worktree", "remove", ...(force ? ["--force"] : []), "--", worktree.path]);
+		throwIfAborted(signal);
+		// Do not terminate Git midway through destructive cleanup. Cancellation stops
+		// at the next worktree boundary so Git metadata and the checkout stay coherent.
+		await runGit(this.identity.root, ["worktree", "remove", ...(force ? ["--force"] : []), "--", worktree.path], { timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS });
 		await rm(dirname(worktree.path), { recursive: false, force: true }).catch(() => undefined);
 		return worktree;
 	}
 
-	async cleanupManaged(): Promise<ManagedWorktree[]> {
-		const removable = (await this.listManaged()).filter((worktree) => !worktree.active && worktree.status === "clean");
-		for (const worktree of removable) await this.removeManaged(worktree.name);
-		return removable;
+	async cleanupManaged(options: WorktreeCleanupOptions = {}): Promise<ManagedWorktree[]> {
+		const removable = (await this.listManaged({ signal: options.signal, onProgress: options.onProgress }))
+			.filter((worktree) => !worktree.active && worktree.status === "clean");
+		const removed: ManagedWorktree[] = [];
+		for (const [index, worktree] of removable.entries()) {
+			throwIfAborted(options.signal);
+			options.onProgress?.({ phase: "removing", current: index + 1, total: removable.length, name: worktree.name });
+			removed.push(await this.removeManaged(worktree.name, false, { signal: options.signal }));
+			options.onProgress?.({ phase: "removed", current: index + 1, total: removable.length, name: worktree.name });
+		}
+		return removed;
 	}
 
 	/** Return private conflict evidence captured after the canonical checkout was rolled back clean. */

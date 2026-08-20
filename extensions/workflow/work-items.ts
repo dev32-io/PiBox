@@ -209,8 +209,11 @@ export class WorkItemStore {
 	constructor(repositoryRoot: string, coordinator?: CanonicalMutationCoordinator) {
 		this.repositoryRoot = resolve(repositoryRoot);
 		this.artifactRoot = join(this.repositoryRoot, "agent-artifacts");
-		const commonDir = discoverCommonDirSync(this.repositoryRoot);
-		this.coordinator = coordinator ?? new CanonicalMutationCoordinator(this.repositoryRoot, commonDir ?? this.repositoryRoot);
+		if (coordinator) this.coordinator = coordinator;
+		else {
+			const commonDir = discoverCommonDirSync(this.repositoryRoot);
+			this.coordinator = new CanonicalMutationCoordinator(this.repositoryRoot, commonDir ?? this.repositoryRoot);
+		}
 	}
 
 	workItemRoot(id: string): string {
@@ -780,6 +783,15 @@ export class WorkItemStore {
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		return parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path);
+	}
+
+	/** Read every task from one validated work-item snapshot without repeating index and branch checks per task. */
+	async readTasks(workItemId: string): Promise<TaskManifest[]> {
+		const root = this.workItemRoot(workItemId);
+		const index = await this.read(workItemId);
+		await this.assertWorkingBranch(index);
+		return Promise.all(index.tasks.map(async (catalog) =>
+			parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path)));
 	}
 
 	async updateTask(
