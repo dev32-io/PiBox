@@ -2,11 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_FEEDBACK_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowFeedbackEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { formatBackgroundSubagentStatus, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
-import { formatAgentProgress, initialAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { formatAgentProgress } from "./agent-progress.js";
+import { agentLiveProcessStatus, type AgentLiveProjection } from "./agent-live-projection.js";
 import { DEFAULT_SUBAGENT_STATUS_LIMIT, MAX_SUBAGENT_STATUS_LIMIT, projectSubagentStatus, subagentStatusEmptyText, type SubagentStatusFilters } from "./subagent-status.js";
 import { renderWorkflowEventMessage } from "./workflow-event-display.js";
 
@@ -23,13 +24,11 @@ const SUBAGENT_STATUS_KEY = "subagent-dashboard";
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
 type WorkflowNotice = { workflowRef: string; title: string; detail?: string; attention: boolean; kind?: string; fromStatus?: string; toStatus?: string; nextAction?: string };
-type RunningSubagentStatus = {
+type DynamicSubagentView = {
 	agent: string;
 	mode: "background" | "foreground";
-	startedAt: number;
 	tier?: string;
-	resolved?: DynamicSubagentStarted;
-	progress?: AgentProgress;
+	onUpdate?: (update: ReturnType<typeof result>) => void;
 };
 
 export default function workflows(pi: ExtensionAPI): void {
@@ -39,7 +38,6 @@ export default function workflows(pi: ExtensionAPI): void {
 	const active = new Map<string, "running" | "paused">();
 	const ownership = new Map<string, number>();
 	const inFlight = new Map<string, number>();
-	const inFlightProgress = new Map<string, AgentProgress>();
 	let currentRef: string | undefined;
 	let currentSnapshot: WorkflowSnapshot | undefined;
 	let subagentPulseTimer: NodeJS.Timeout | undefined;
@@ -50,7 +48,10 @@ export default function workflows(pi: ExtensionAPI): void {
 	let visualTimer: NodeJS.Timeout | undefined;
 	let dashboardTui: { requestRender?: () => void } | undefined;
 	let dashboardInvalidate: (() => void) | undefined;
-	const runningSubagents = new Map<string, RunningSubagentStatus>();
+	const agentLive = new Map<string, AgentLiveProjection>();
+	const dynamicViews = new Map<string, DynamicSubagentView>();
+	let agentLiveSubscription: { controller: AbortController; unsubscribe?: () => void; epoch: number } | undefined;
+	let agentLiveAuthoritative = false;
 	const lifecycleSubscriptions = new Map<string, { controller: AbortController; unsubscribe: (() => void) | undefined }>();
 	let tickRequestedEpoch: number | undefined;
 	let runtimeEpoch = 0;
@@ -90,19 +91,90 @@ export default function workflows(pi: ExtensionAPI): void {
 		persist(ref, "paused");
 	};
 
+	const liveDetails = (projection: AgentLiveProjection, tier?: string) => ({
+		agent: projection.role,
+		state: projection.state,
+		...(tier ? { tier } : {}),
+		resolved: { agentId: projection.agentId, provider: projection.provider, model: projection.model, effort: projection.effort, fast: projection.fast === true, startedAt: projection.startedAt },
+		...(agentLiveProcessStatus(projection) ? { processStatus: agentLiveProcessStatus(projection) } : {}),
+		...(projection.progress ? { progress: projection.progress } : {}),
+	});
+
+	const backgroundAgents = () => [...agentLive.values()].filter((projection) => {
+		if (!projection.active || projection.workItemId || projection.taskId || projection.evaluationId) return false;
+		return dynamicViews.get(projection.operationId)?.mode !== "foreground";
+	});
+
 	const renderSubagentStatus = () => {
 		const ctx = sessionCtx;
 		if (!ctx?.hasUI) return;
-		if (runningSubagents.size === 0) {
+		const agents = backgroundAgents();
+		if (agents.length === 0) {
 			ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
 			return;
 		}
 		const dot = subagentPulseDot(subagentPulseFrame);
-		const lines = [...runningSubagents.values()].map((status) => {
-			const liveStatus = formatBackgroundSubagentStatus(status);
-			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", status.agent)} ${ctx.ui.theme.fg("dim", liveStatus)}`;
+		const lines = agents.map((projection) => {
+			const view = dynamicViews.get(projection.operationId);
+			const processStatus = agentLiveProcessStatus(projection);
+			const liveStatus = formatBackgroundSubagentStatus({
+				...(view?.tier ? { tier: view.tier } : {}),
+				resolved: { provider: projection.provider, model: projection.model, effort: projection.effort, fast: projection.fast === true },
+				...(projection.progress ? { progress: projection.progress } : {}),
+				...(processStatus ? { processStatus } : {}),
+				startedAt: projection.startedAt,
+			});
+			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", view?.agent ?? projection.role)} ${ctx.ui.theme.fg("dim", liveStatus)}`;
 		});
 		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
+	};
+
+	const stopAgentLive = () => {
+		agentLiveSubscription?.controller.abort();
+		agentLiveSubscription?.unsubscribe?.();
+		agentLiveSubscription = undefined;
+		agentLiveAuthoritative = false;
+	};
+
+	const acceptAgentLive = (projection: AgentLiveProjection, epoch: number) => {
+		if (shuttingDown || epoch !== runtimeEpoch) return;
+		const view = dynamicViews.get(projection.operationId);
+		if (projection.active || view) agentLive.set(projection.agentId, projection);
+		else agentLive.delete(projection.agentId);
+		if (view?.mode === "foreground" && view.onUpdate) view.onUpdate(result("", liveDetails(projection, view.tier)));
+		renderSubagentStatus();
+		dashboardInvalidate?.();
+		dashboardTui?.requestRender?.();
+	};
+
+	const watchAgentLive = (ctx: ExtensionContext) => {
+		stopAgentLive();
+		agentLive.clear();
+		const adapter = adapters.find((candidate) => candidate.subscribeAgentLive);
+		if (!adapter) return;
+		const epoch = runtimeEpoch;
+		const controller = new AbortController();
+		const subscription: { controller: AbortController; unsubscribe?: () => void; epoch: number } = { controller, epoch };
+		agentLiveSubscription = subscription;
+		agentLiveAuthoritative = true;
+		void Promise.resolve(adapter.subscribeAgentLive!(ctx, (projection) => acceptAgentLive(projection, epoch), controller.signal)).then((unsubscribe) => {
+			if (controller.signal.aborted || shuttingDown || epoch !== runtimeEpoch || agentLiveSubscription !== subscription) {
+				if (typeof unsubscribe === "function") unsubscribe();
+				return;
+			}
+			if (typeof unsubscribe === "function") subscription.unsubscribe = unsubscribe;
+		}).catch(() => {
+			if (agentLiveSubscription === subscription) {
+				agentLiveSubscription = undefined;
+				agentLiveAuthoritative = false;
+			}
+		});
+	};
+
+	const releaseDynamicView = (operationId: string) => {
+		dynamicViews.delete(operationId);
+		for (const [agentId, projection] of agentLive) if (projection.operationId === operationId && !projection.active) agentLive.delete(agentId);
+		renderSubagentStatus();
 	};
 
 	const deliverBackgroundSubagentResult = (agent: string, settled: WorkflowRunResult) => {
@@ -146,8 +218,25 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const isCurrentInFlight = (ref: string): boolean => inFlight.get(ref) === runtimeEpoch;
 	const displayStatus = (step: WorkflowStep): WorkflowStep["status"] => isCurrentInFlight(step.ref) && step.status !== "done" ? "running" : step.status;
-	const displayProgress = (step: WorkflowStep, status: WorkflowStep["status"]): string =>
-		status === "running" ? formatAgentProgress(step.progress ?? inFlightProgress.get(step.ref)) : "";
+	const liveAgentForStep = (step: WorkflowStep): AgentLiveProjection | undefined => {
+		const workItemId = /^work-item:([^/]+)/.exec(step.ref)?.[1];
+		if (!workItemId) return undefined;
+		const taskId = /\/task:([^/]+)$/.exec(step.ref)?.[1];
+		const evaluationId = /\/evaluation:([^/]+)$/.exec(step.ref)?.[1];
+		if (!taskId && !evaluationId) return undefined;
+		return [...agentLive.values()].find((projection) => projection.active && projection.workItemId === workItemId &&
+			(taskId ? projection.taskId === taskId : projection.evaluationId === evaluationId));
+	};
+	const displayProgress = (step: WorkflowStep, status: WorkflowStep["status"]): string => {
+		if (status !== "running") return "";
+		const live = liveAgentForStep(step);
+		if (live) {
+			const processStatus = agentLiveProcessStatus(live);
+			return formatAgentProgress(live.progress, Date.now(), { fallbackStartedAt: live.startedAt, ...(processStatus ? { processStatus } : {}), showStarting: true });
+		}
+		return agentLiveAuthoritative ? "" : formatAgentProgress(step.progress);
+	};
+	const displayFast = (step: WorkflowStep): boolean => liveAgentForStep(step)?.fast === true || (!agentLiveAuthoritative && step.fast === true);
 	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
 	const stateIcon = (status: WorkflowStep["status"], kind: string): string => {
 		if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? DEFAULT_RUNNING_FRAMES; return frames[frame % frames.length]!; }
@@ -174,7 +263,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
 			const progress = includeProgress ? displayProgress(step, status) : "";
-			const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+			const liveStatus = [displayFast(step) ? "Fast" : "", progress].filter(Boolean).join(" · ");
 			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}`);
 			if (liveStatus) lines.push(`  ${ctx.ui.theme.fg("dim", liveStatus)}`);
 		}
@@ -219,7 +308,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					const kind = stepLabel(step, status);
 					const color: "success" | "error" | "muted" | "accent" = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
 					const progress = includeProgress ? displayProgress(step, status) : "";
-					const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+					const liveStatus = [displayFast(step) ? "Fast" : "", progress].filter(Boolean).join(" · ");
 					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind)} `)}${kind} · ${step.title}`);
 					if (liveStatus) lines.push(`    ${ctx.ui.theme.fg("dim", liveStatus)}`);
 				}
@@ -240,7 +329,7 @@ export default function workflows(pi: ExtensionAPI): void {
 						: undefined;
 					const label = (runtimeStage ? step.title : queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
 					const progress = includeProgress ? displayProgress(step, status) : "";
-					const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+					const liveStatus = [displayFast(step) ? "Fast" : "", progress].filter(Boolean).join(" · ");
 					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}`);
 					if (liveStatus) lines.push(`    ${ctx.ui.theme.fg("dim", liveStatus)}`);
 				}
@@ -384,10 +473,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			}
 			sendEvent({ workflowRef: workflowRef ?? step.ref, title: `${step.title} · failed`, detail, attention: true, kind: step.kind, cause: "step-exception", nextAction: "Inspect the failure and resume or decide at the checkpoint." });
 		} finally {
-			if (inFlight.get(step.ref) === epoch) {
-				inFlight.delete(step.ref);
-				inFlightProgress.delete(step.ref);
-			}
+			if (inFlight.get(step.ref) === epoch) inFlight.delete(step.ref);
 			if (settlementIsLive(workflowRef, epoch)) requestTick(ctx, epoch);
 		}
 	};
@@ -395,7 +481,6 @@ export default function workflows(pi: ExtensionAPI): void {
 	const startStep = (adapter: WorkflowAdapter, step: WorkflowStep, ctx: ExtensionContext, epoch: number, signal?: AbortSignal): Promise<WorkflowRunResult> => {
 		if (inFlight.has(step.ref)) throw new Error(`Step is already running: ${step.ref}`);
 		inFlight.set(step.ref, epoch);
-		inFlightProgress.set(step.ref, initialAgentProgress(new Date().toISOString()));
 		const startTitle = step.checkpoint ? `Starting ${step.title.split(" · ")[0]}` : step.kind === "merge" ? `Assembling integration candidate · ${step.title}` : `Starting ${step.title}`;
 		sendEvent({ workflowRef: step.ref.split("/")[0]!, title: startTitle, attention: false, kind: step.kind, toStatus: "running" });
 		return adapter.runStep(step.ref, ctx, signal);
@@ -590,10 +675,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				tickRequestedEpoch = undefined;
 				stopLifecycle(params.ref);
 				active.delete(params.ref);
-				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) {
-					inFlight.delete(stepRef);
-					inFlightProgress.delete(stepRef);
-				}
+				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) inFlight.delete(stepRef);
 			}
 			if (params.action !== "resume") await adapter.controlWorkflow(params.ref, params.action, ctx);
 			if (params.action === "resume") active.set(params.ref, "running"); else if (params.action === "pause") active.set(params.ref, "paused"); else { active.delete(params.ref); ownership.delete(params.ref); }
@@ -653,54 +735,29 @@ export default function workflows(pi: ExtensionAPI): void {
 				const mode = params.mode ?? "foreground";
 				const tier = inferDynamicSubagentTier(params.tier, params.model);
 				const request: DynamicSubagentRequest = {
-					operationId: toolCallId, agent: params.agent, task: params.task, tier,
+					operationId: toolCallId, agent: params.agent, task: params.task, tier, presentation: mode,
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}),
 				};
-				let resolvedStatus: DynamicSubagentStarted | undefined;
-				if (mode === "background") {
-					runningSubagents.set(toolCallId, { agent: params.agent, mode, startedAt: Date.now(), ...(tier ? { tier } : {}) });
-					renderSubagentStatus();
-				}
-				let progressStatus: AgentProgress | undefined;
-				const runningDetails = () => ({ agent: params.agent, state: "running", tier, resolved: resolvedStatus, progress: progressStatus });
+				dynamicViews.set(toolCallId, { agent: params.agent, mode, tier, ...(mode === "foreground" && onUpdate ? { onUpdate } : {}) });
+				const projection = () => [...agentLive.values()].find((candidate) => candidate.operationId === toolCallId);
+				const startingDetails = () => ({ agent: params.agent, state: "starting", tier });
 				const promise = adapter.spawnSubagent!(
 					request,
 					ctx,
 					mode === "foreground" ? signal : undefined,
-					mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, runningDetails())) : undefined,
-					(resolved) => {
-						resolvedStatus = resolved;
-						if (mode === "background") {
-							const current = runningSubagents.get(toolCallId);
-							if (current) runningSubagents.set(toolCallId, { ...current, resolved });
-							renderSubagentStatus();
-						} else if (onUpdate) {
-							onUpdate(result("", runningDetails()));
-						}
-					},
-					(progress) => {
-						progressStatus = progress;
-						if (mode === "background") {
-							const current = runningSubagents.get(toolCallId);
-							if (current) runningSubagents.set(toolCallId, { ...current, progress });
-							renderSubagentStatus();
-						} else if (onUpdate) onUpdate(result("", runningDetails()));
-					},
+					mode === "foreground" && onUpdate ? (text) => {
+						const live = projection();
+						onUpdate(result(text, live ? liveDetails(live, tier) : startingDetails()));
+					} : undefined,
 				);
 				if (mode === "foreground") {
 					try {
 						const settled = await promise;
 						if (settled.state === "failed") throw new Error(settled.summary);
-						return result(settled.summary, {
-							...settled,
-							agent: params.agent,
-							tier,
-							...(resolvedStatus ? { resolved: resolvedStatus } : {}),
-							...(progressStatus ? { progress: progressStatus } : {}),
-						});
+						const live = projection();
+						return result(settled.summary, { ...settled, ...(live ? liveDetails(live, tier) : startingDetails()) });
 					} finally {
-						runningSubagents.delete(toolCallId);
-						renderSubagentStatus();
+						releaseDynamicView(toolCallId);
 					}
 				}
 				void promise
@@ -711,10 +768,7 @@ export default function workflows(pi: ExtensionAPI): void {
 						summary: error instanceof Error ? error.message : String(error),
 						attention: true,
 					}))
-					.finally(() => {
-						runningSubagents.delete(toolCallId);
-						renderSubagentStatus();
-					});
+					.finally(() => releaseDynamicView(toolCallId));
 				return result(`Spawned ${params.agent} in background. Its terminal report will be returned to this session and trigger a response.`, { agent: params.agent, state: "starting" });
 			},
 		});
@@ -792,7 +846,6 @@ export default function workflows(pi: ExtensionAPI): void {
 		// agent state below reconstructs active work without letting stale startup
 		// overlays pin the replacement dashboard at `starting`.
 		inFlight.clear();
-		inFlightProgress.clear();
 		if (process.env.PIBOX_SUBAGENT_ID) { pi.setActiveTools(pi.getActiveTools().filter((name) => !TOOL_NAMES.includes(name))); return; }
 		adapters.length = 0;
 		pi.events.emit(WORKFLOW_ADAPTER_DISCOVERY_EVENT, { register(adapter: WorkflowAdapter) { if (!adapters.some((candidate) => candidate.id === adapter.id)) adapters.push(adapter); } } satisfies WorkflowAdapterDiscovery);
@@ -800,6 +853,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		const catalog = catalogAdapter ? await catalogAdapter.listSpawnableAgents!(ctx).catch(() => []) : [];
 		registerSubagentSpawn(catalog);
 		sessionCtx = ctx;
+		watchAgentLive(ctx);
 		const entries = ctx.sessionManager.getEntries();
 		const states = new Map<string, "running" | "paused" | "stopped">();
 		for (const entry of entries) {
@@ -841,7 +895,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		if (currentRef) requestTick(ctx);
 		startVisualTimer();
 		subagentPulseTimer = setInterval(() => {
-			if (runningSubagents.size === 0) return;
+			if (backgroundAgents().length === 0) return;
 			subagentPulseFrame++;
 			renderSubagentStatus();
 		}, SUBAGENT_PULSE_INTERVAL_MS);
@@ -857,7 +911,9 @@ export default function workflows(pi: ExtensionAPI): void {
 		if (visualTimer) clearTimeout(visualTimer);
 		visualTimer = undefined;
 		subagentPulseTimer = undefined;
-		runningSubagents.clear();
+		stopAgentLive();
+		agentLive.clear();
+		dynamicViews.clear();
 		runtimeEpoch++;
 		shuttingDown = true;
 		tickRequestedEpoch = undefined;
@@ -865,7 +921,6 @@ export default function workflows(pi: ExtensionAPI): void {
 		active.clear();
 		ownership.clear();
 		inFlight.clear();
-		inFlightProgress.clear();
 		currentRef = undefined;
 		currentSnapshot = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);

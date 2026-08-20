@@ -44,4 +44,9 @@ test("surface composition differs without duplicating startup and elapsed logic"
 	assert.equal(formatAgentProgress(undefined, now, { fallbackStartedAt: pending.startedAt }), "5s · starting");
 	assert.equal(formatInlineSubagentStatus(pending, now), "5s · starting · Low");
 	assert.equal(formatBackgroundSubagentStatus(pending, now), "Low · 5s · starting");
+	assert.equal(
+		formatBackgroundSubagentStatus({ ...pending, processStatus: "active" }, now),
+		"Low · 5s · active",
+		"manager-derived process state does not wait for the first progress event",
+	);
 });

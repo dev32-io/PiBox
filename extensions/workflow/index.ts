@@ -866,7 +866,8 @@ export default function workflow(pi: ExtensionAPI): void {
 			}
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
-				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(preferred ? { model: preferred.model, ...(preferred.effort ? { effort: preferred.effort } : {}) } : {}) }, cwd: runtime.identity.root,
+				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.presentation ? { presentation: request.presentation } : {}), ...(request.tier ? { tier: request.tier } : {}), ...(preferred ? { model: preferred.model, ...(preferred.effort ? { effort: preferred.effort } : {}) } : {}) }, cwd: runtime.identity.root,
+				...(request.presentation ? { presentation: request.presentation } : {}),
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: routing.tier, providerCandidates: resolution.candidates,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workspace: runtime.identity.root,

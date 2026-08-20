@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
 import type { DynamicSubagentRequest, DynamicSubagentStarted, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
+import { AgentLiveProjectionManager } from "../workflow-runtime/agent-live-projection.js";
 import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
@@ -140,6 +141,14 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 	return {
 		id: "workflow",
 		canHandle(ref) { return WORK_ITEM.test(ref) || STEP.test(ref); },
+		async listAgentLive(ctx) {
+			const runtime = await options.runtimeFor(ctx);
+			return new AgentLiveProjectionManager(runtime.agents).list();
+		},
+		async subscribeAgentLive(ctx, listener, signal) {
+			const runtime = await options.runtimeFor(ctx);
+			return new AgentLiveProjectionManager(runtime.agents).watch(listener, signal);
+		},
 		async controlExecution(ref, command, operationId, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);

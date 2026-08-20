@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentProgress } from "./agent-progress.js";
+import type { AgentLiveListener, AgentLiveProjection } from "./agent-live-projection.js";
 
 export const WORKFLOW_ADAPTER_DISCOVERY_EVENT = "pibox:workflow:discover-adapters";
 export const WORKFLOW_CONTROL_EVENT = "pibox:workflow:control";
@@ -136,6 +137,8 @@ export interface DynamicSubagentRequest {
 	operationId: string;
 	agent: string;
 	task: string;
+	/** Persisted presentation hint; recovered foreground agents fall back to the footer. */
+	presentation?: "foreground" | "background";
 	/** Selects a configured capability tier or the provider-isolated local route list. */
 	tier?: DynamicSubagentTier;
 	/** Exact configured model, optionally provider-qualified or suffixed with #effort. Explicit requests fail without fallback. */
@@ -176,7 +179,7 @@ export interface WorkflowLifecycleUpdate {
 export interface WorkflowAdapter {
 	id: string;
 	canHandle(ref: string): boolean;
-	/** Subscribe to durable worker lifecycle transitions for event-driven refreshes. Setup may be asynchronous. */
+	/** Subscribe to semantic workflow transitions; subagent process state uses subscribeAgentLive. */
 	subscribeLifecycle?(ref: string, ctx: ExtensionContext, listener: (update?: WorkflowLifecycleUpdate) => void, signal?: AbortSignal): void | (() => void) | Promise<void | (() => void)>;
 	/** Durable workflow ownership boundary. Commands are idempotent by operationId. */
 	controlExecution?(ref: string, command: "start" | "pause" | "resume" | "stop" | "complete" | "detach" | "attach", operationId: string, ctx: ExtensionContext): Promise<WorkflowExecutionControl>;
@@ -190,6 +193,9 @@ export interface WorkflowAdapter {
 	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;
 	runStep(ref: string, ctx: ExtensionContext, signal?: AbortSignal): Promise<WorkflowRunResult>;
+	/** Manager-owned current-attempt process feed shared by every presentation surface. */
+	subscribeAgentLive?(ctx: ExtensionContext, listener: AgentLiveListener, signal?: AbortSignal): void | (() => void) | Promise<void | (() => void)>;
+	listAgentLive?(ctx: ExtensionContext): Promise<AgentLiveProjection[]>;
 	/** Optional dynamic agent/task launcher used by the main-session subagent_spawn tool. */
 	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
 	/** Trusted, validated definitions available to the generic launcher. */

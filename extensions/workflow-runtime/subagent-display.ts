@@ -24,6 +24,7 @@ export interface SubagentLiveStatus {
 	resolved?: { provider: string; model: string; effort: string; fast?: boolean };
 	fast?: boolean;
 	progress?: AgentProgress;
+	processStatus?: "starting" | "active";
 	/** Launch time used before the first semantic progress projection arrives. */
 	startedAt?: string | number;
 }
@@ -31,6 +32,7 @@ export interface SubagentLiveStatus {
 function formatSubagentProgress(status: SubagentLiveStatus, now: number, showActive = true): string {
 	return formatAgentProgress(status.progress, now, {
 		...(status.startedAt !== undefined ? { fallbackStartedAt: status.startedAt } : {}),
+		...(status.processStatus ? { processStatus: status.processStatus } : {}),
 		showStarting: true,
 		showActive,
 	});

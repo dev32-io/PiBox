@@ -113,6 +113,8 @@ function elapsed(from: string | number, toMs: number): string {
 
 export interface AgentProgressFormatOptions {
 	fallbackStartedAt?: string | number;
+	/** Manager-derived process state; lifecycle facts remain authoritative over event timing. */
+	processStatus?: "starting" | "active";
 	/** Render the lifecycle word even when no progress projection exists yet. */
 	showStarting?: boolean;
 	/** Keep startup visible while allowing compact active surfaces to omit a redundant label. */
@@ -137,7 +139,7 @@ export function formatAgentProgress(progress: AgentProgress | undefined, now = D
 	const activeTool = safeToolName(progress?.activeTool);
 	if (activeTool) parts.push(activeTool);
 	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
-	const processStatus = formatAgentProcessStatus(progress);
+	const processStatus = options.processStatus ?? formatAgentProcessStatus(progress);
 	if (processStatus && (processStatus !== "active" || options.showActive !== false)) parts.push(processStatus);
 	return parts.join(" · ");
 }

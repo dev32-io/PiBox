@@ -90,6 +90,8 @@ export interface SessionAgentRecord extends AgentScope {
 	depth: number;
 	role: string;
 	state: AgentState;
+	/** Original dynamic-spawn presentation. Managed workflow agents omit this. */
+	presentation?: "foreground" | "background";
 	provider: string;
 	model: string;
 	effort: string;
@@ -149,6 +151,7 @@ export interface ReserveAgentInput extends AgentScope {
 	parentAgentId: string;
 	parentDepth: number;
 	role: string;
+	presentation?: "foreground" | "background";
 	provider: string;
 	model: string;
 	effort: string;
@@ -273,6 +276,7 @@ export class SessionAgentRegistry {
 				depth,
 				role: input.role,
 				state: "reserved",
+				...(input.presentation ? { presentation: input.presentation } : {}),
 				operationId: input.operationId,
 				assignmentDigest,
 				provider: input.provider,

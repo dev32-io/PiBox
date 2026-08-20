@@ -18,6 +18,7 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	role: string;
 	task: string;
 	assignment: unknown;
+	presentation?: "foreground" | "background";
 	cwd: string;
 	provider: string;
 	model: string;
@@ -81,6 +82,7 @@ export class LaunchCoordinator {
 				parentAgentId: this.mainAgentId,
 				parentDepth: 0,
 				role: input.role,
+				...(input.presentation ? { presentation: input.presentation } : {}),
 				provider: primary.provider,
 				model: primary.model,
 				effort: primary.effort,

@@ -103,6 +103,7 @@ class HarnessCallComponent implements Component {
 				resolved: this.details?.resolved,
 				fast: this.details?.fast,
 				progress: this.details?.progress,
+				processStatus: this.details?.processStatus,
 				startedAt: this.details?.resolved?.startedAt ?? this.details?.progress?.startedAt,
 			}, this.now())
 			: "running";

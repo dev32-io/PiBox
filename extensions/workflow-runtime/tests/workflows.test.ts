@@ -3,7 +3,19 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
 import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_FEEDBACK_EVENT, type WorkflowAdapter, type WorkflowFeedbackEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
+import type { AgentLiveProjection } from "../agent-live-projection.js";
 import { installPermissionRuntime } from "../../permissions/runtime.js";
+
+function liveProjection(overrides: Partial<AgentLiveProjection> = {}): AgentLiveProjection {
+	const startedAt = new Date().toISOString();
+	return {
+		agentId: "agent", operationId: "operation", role: "implementer", state: "running",
+		provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", startedAt,
+		attemptId: "attempt", attemptSequence: 1, attemptState: "running", active: true,
+		progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
+		...overrides,
+	};
+}
 
 function fixture(workflowConfirmed = true) {
 	const tools = new Map<string, any>();
@@ -421,16 +433,18 @@ test("explicit background spawning returns its report to the main agent and show
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	let request: any;
+	let publish!: (projection: AgentLiveProjection) => void;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
+		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
+		async spawnSubagent(input) {
 			request = input;
 			const startedAt = new Date().toISOString();
-			onStarted?.({ agentId: "one", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", fast: true, startedAt });
-			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1234, reasoningTokens: 50 });
+			publish(liveProjection({ agentId: "one", operationId: input.operationId, role: "plan-critic", presentation: "background", fast: true, startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1234, reasoningTokens: 50 } }));
 			await gate;
+			publish(liveProjection({ agentId: "one", operationId: input.operationId, role: "plan-critic", presentation: "background", state: "completed", attemptState: "exited", active: false, startedAt }));
 			return { ref: "agent:one", agentId: "one", state: "completed", summary: "Background critic completed." };
 		},
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
@@ -440,7 +454,7 @@ test("explicit background spawning returns its report to the main agent and show
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", mode: "background", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
-	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
+	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort, presentation: request.presentation }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high", presentation: "background" });
 	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic High \(openai-codex\/gpt-5\.6-sol#high\) · Fast · \d+s · 2 turns · 3 tools · ↓ 1\.2k · active/);
 	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
@@ -461,16 +475,18 @@ test("omitted mode waits in foreground without using the background footer", asy
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	let request: any;
+	let publish!: (projection: AgentLiveProjection) => void;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: () => false,
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
+		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
+		async spawnSubagent(input) {
 			request = input;
 			const startedAt = new Date().toISOString();
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, startedAt });
-			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 });
+			publish(liveProjection({ agentId: "critic", operationId: input.operationId, role: "plan-critic", presentation: "foreground", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 } }));
 			await gate;
+			publish(liveProjection({ agentId: "critic", operationId: input.operationId, role: "plan-critic", presentation: "foreground", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, state: "completed", attemptState: "exited", active: false, startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, processExitedAt: new Date().toISOString(), turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 } }));
 			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
 		},
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
@@ -497,6 +513,27 @@ test("omitted mode waits in foreground without using the background footer", asy
 		"settled foreground results retain the resolved Fast request evidence",
 	);
 	assert.equal(f.statuses.has("subagent-dashboard"), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("a foreground dynamic subagent recovered without its inline renderer moves to the footer", async () => {
+	const f = fixture();
+	const startedAt = new Date(Date.now() - 5_000).toISOString();
+	const recovered = liveProjection({
+		agentId: "recovered", operationId: "prior-tool-call", role: "explorer", presentation: "foreground",
+		startedAt, progress: { startedAt, lastEventAt: new Date().toISOString(), processStartedAt: startedAt, turns: 3, toolCalls: 4, toolErrors: 0, outputTokens: 900, reasoningTokens: 20 },
+	});
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		subscribeAgentLive(_ctx, listener) { listener(recovered); return () => undefined; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async spawnSubagent() { return { ref: "agent:unused", state: "completed", summary: "unused" }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /explorer Configured \(openai-codex\/gpt-5\.6-sol#high\).*3 turns.*4 tools.*active/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -690,9 +727,16 @@ test("an in-flight fixer shows starting progress before its Pi process reports",
 		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fix requested", kind: "evaluation", status: "ready", detail: "Fix requested · findings 2 (blocking 2); iteration 0/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
 		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
 	};
+	let publish!: (projection: AgentLiveProjection) => void;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"), async snapshot() { return snapshot; },
-		async runStep() { return neverSettles; }, async controlWorkflow() {},
+		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
+		async runStep() {
+			const starting = liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "launching", state: "launching" });
+			delete starting.progress;
+			publish(starting);
+			return neverSettles;
+		}, async controlWorkflow() {},
 		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
@@ -706,24 +750,28 @@ test("an in-flight fixer shows starting progress before its Pi process reports",
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("reload catch-up replaces a stale fixer startup projection with durable live progress", async () => {
+test("manager progress replaces reused fixer startup while workflow reconciliation remains blocked", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "running" } });
-	let durableRunning = false;
-	let releaseSubscription!: () => void;
-	const subscriptionReady = new Promise<void>((resolve) => { releaseSubscription = resolve; });
+	let publish!: (projection: AgentLiveProjection) => void;
 	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
-	const progress = { startedAt: new Date(Date.now() - 120_000).toISOString(), lastEventAt: new Date().toISOString(), processStartedAt: new Date(Date.now() - 119_000).toISOString(), turns: 12, toolCalls: 27, toolErrors: 1, outputTokens: 8441, reasoningTokens: 4681 };
-	const snapshot = (): WorkflowSnapshot => ({
-		ref: "work-item:calendar", title: "Calendar", status: durableRunning ? "running" : "ready",
-		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: durableRunning ? "Review loop stage-review · Fixing #2" : "Review loop stage-review · Fix requested", kind: "evaluation", status: durableRunning ? "running" : "ready", ...(durableRunning ? { progress } : {}), detail: durableRunning ? "Fixing #2" : "Fix requested · findings 2 (blocking 2); iteration 0/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+	const staleSnapshot: WorkflowSnapshot = {
+		ref: "work-item:calendar", title: "Calendar", status: "ready",
+		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fix requested", kind: "evaluation", status: "ready", detail: "Fix requested · findings 2 (blocking 2); iteration 1/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
 		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
-	});
+	};
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
 		async controlExecution(ref) { return { workflowRef: ref, mode: "running", generation: 2, ownerSessionId: "test-session" }; },
-		subscribeLifecycle() { return subscriptionReady.then(() => () => undefined); },
-		async snapshot() { return snapshot(); },
+		subscribeLifecycle() { return neverSettles.then(() => () => undefined); },
+		subscribeAgentLive(_ctx, listener) {
+			publish = listener;
+			const starting = liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", state: "launching", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "launching" });
+			delete starting.progress;
+			listener(starting);
+			return () => undefined;
+		},
+		async snapshot() { return staleSnapshot; },
 		async runStep() { return neverSettles; }, async controlWorkflow() {},
 		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
@@ -735,11 +783,8 @@ test("reload catch-up replaces a stale fixer startup projection with durable liv
 	assert.ok(fixerIndex > 0);
 	assert.match(rendered[fixerIndex + 1]!.trimStart(), /^\d+s · starting/);
 
-	// The child became durable before the replacement extension finished
-	// installing its lifecycle watcher, so no live callback is available to emit.
-	durableRunning = true;
-	releaseSubscription();
-	await new Promise((resolve) => setTimeout(resolve, 20));
+	const startedAt = new Date(Date.now() - 120_000).toISOString();
+	publish(liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "running", startedAt, progress: { startedAt, lastEventAt: new Date().toISOString(), processStartedAt: new Date(Date.now() - 119_000).toISOString(), turns: 12, toolCalls: 27, toolErrors: 1, outputTokens: 8441, reasoningTokens: 4681 } }));
 	rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
 	fixerIndex = rendered.findIndex((line) => line.includes("Fix #2"));
 	assert.ok(fixerIndex > 0);
@@ -845,7 +890,9 @@ test("animates candidate verification from the semantic verification phase", asy
 		stages: [{ id: "mobile-platform", index: 0, nodes: ["task:android"], parallel: false, group: "planner" }],
 	};
 	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("work-item:"), async snapshot() { return snapshot; }, async runStep() { return neverSettles; }, async controlWorkflow() {},
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		subscribeAgentLive() { return () => undefined; },
+		async snapshot() { return snapshot; }, async runStep() { return neverSettles; }, async controlWorkflow() {},
 		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
@@ -856,6 +903,7 @@ test("animates candidate verification from the semantic verification phase", asy
 	const verifying = rendered.filter((line) => line.includes("Verifying candidate"));
 	assert.equal(verifying.length, 2);
 	assert.ok(verifying.every((line) => /[◐◓◑◒]/.test(line)));
+	assert.equal(rendered.some((line) => /\b(starting|active)\b/.test(line)), false, "a harness merge/verification step has no synthetic subagent process status");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
