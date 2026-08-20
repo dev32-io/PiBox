@@ -5,13 +5,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { discoverRepository } from "../repository.js";
+import { discoverRepository, runGit } from "../repository.js";
 
 const exec = promisify(execFile);
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
 	await exec("git", args, { cwd });
 }
+
+test("Git failures surface stdout when stderr is empty", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-error-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await git(root, "init", "--quiet");
+	await git(root, "config", "user.name", "Harness Test");
+	await git(root, "config", "user.email", "harness@example.test");
+	await writeFile(join(root, "README.md"), "fixture\n");
+	await git(root, "add", "README.md");
+	await git(root, "commit", "--quiet", "-m", "initial");
+
+	await assert.rejects(runGit(root, ["commit", "-m", "duplicate"]), /nothing to commit/i);
+});
 
 test("uses one stable repository identity across linked worktrees", async (t) => {
 	const parent = await mkdtemp(join(tmpdir(), "pibox-harness-repo-"));

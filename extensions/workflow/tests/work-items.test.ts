@@ -188,6 +188,38 @@ test("serializes complete canonical commits across independent WorkItemStore ins
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("duplicate task completion settlement is an idempotent no-op", async (t) => {
+	const root = await repository(t);
+	const firstStore = new WorkItemStore(root);
+	const secondStore = new WorkItemStore(root);
+	await firstStore.create({ id: "duplicate-settlement", title: "Duplicate settlement", kind: "change", intent: "Settle one task once." });
+	await firstStore.defineTask({
+		workItemId: "duplicate-settlement",
+		manifest: {
+			schemaVersion: 1, id: "task", title: "Task", status: "ready", dependsOn: [], references: { specs: [], designs: [], decisions: [] },
+			execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "Race regression fixture" } },
+			assembly: { stageId: "delivery", intermediateState: "complete" },
+			verification: { timing: "task", methods: [], taskChecks: [], rationale: "No-op settlement regression" },
+		},
+		brief: "Complete the task.",
+		acceptance: "Completion is recorded exactly once.",
+	});
+	await firstStore.updateTask("duplicate-settlement", "task", { status: "running", runtime: { lastRunId: "run-1" } });
+	const before = Number(await git(root, "rev-list", "--count", "HEAD"));
+	const settlement = { status: "contribution_complete" as const, runtime: { completedCommit: "a".repeat(40) } };
+
+	await Promise.all([
+		firstStore.updateTask("duplicate-settlement", "task", settlement),
+		secondStore.updateTask("duplicate-settlement", "task", settlement),
+	]);
+
+	const task = await firstStore.readTask("duplicate-settlement", "task");
+	assert.equal(task.status, "contribution_complete");
+	assert.equal(task.runtime?.completedCommit, "a".repeat(40));
+	assert.equal(Number(await git(root, "rev-list", "--count", "HEAD")), before + 1);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
 test("removeTask and removeEvaluation report original and rollback failures with owned paths", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);
@@ -215,6 +247,50 @@ test("removeTask and removeEvaluation report original and rollback failures with
 	await assert.rejects(evaluationStore.removeEvaluation("rollback-evaluation", "review", { rationale: "test" }), (error: unknown) => {
 		assert.match(String(error), /original commit failure/); assert.match(String(error), /rollback restore failure/); assert.match(String(error), /agent-artifacts/); return true;
 	});
+});
+
+test("failed later evaluation recording preserves prior attempt evidence", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "evaluation-rollback", title: "Evaluation rollback", kind: "change", intent: "Preserve historical review evidence" });
+	await store.defineEvaluation("evaluation-rollback", { schemaVersion: 1, id: "review", type: "combined-review", scope: { workItem: "evaluation-rollback" }, status: "planned", required: true, attempt: 0, methods: ["review"] });
+	await store.recordEvaluation({ workItemId: "evaluation-rollback", evaluationId: "review", verdict: "fail", report: "first report", evidence: [{ command: "first-check", result: "failed" }], findings: [{ id: "F1", severity: "high", status: "open", summary: "first finding", blocking: true }] });
+	const evaluationRoot = join(root, "agent-artifacts", "evaluation-rollback", "evaluations", "review");
+	const evidenceRoot = join(root, "agent-artifacts", "evaluation-rollback", "evidence", "review");
+	const before = {
+		evaluation: await readFile(join(evaluationRoot, "evaluation.yaml"), "utf8"),
+		report: await readFile(join(evaluationRoot, "report.md"), "utf8"),
+		evidence: await readFile(join(evidenceRoot, "manifest.yaml"), "utf8"),
+	};
+	const failing = store as unknown as { commit: () => Promise<void> };
+	failing.commit = async () => { throw new Error("second evaluation commit failure"); };
+	await assert.rejects(store.recordEvaluation({ workItemId: "evaluation-rollback", evaluationId: "review", verdict: "pass", report: "second report", evidence: [{ command: "second-check", result: "passed" }], findings: [] }), /second evaluation commit failure/);
+	assert.equal(await readFile(join(evaluationRoot, "evaluation.yaml"), "utf8"), before.evaluation);
+	assert.equal(await readFile(join(evaluationRoot, "report.md"), "utf8"), before.report);
+	assert.equal(await readFile(join(evidenceRoot, "manifest.yaml"), "utf8"), before.evidence);
+	await assert.rejects(readFile(join(evaluationRoot, "attempts", "002-report.md")), /ENOENT/);
+	assert.equal((await store.readEvaluation("evaluation-rollback", "review")).attempt, 1);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("restore preserves the original mutation error without removing existing artifact directories", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "restore-error", title: "Restore error", kind: "change", intent: "Preserve rollback causality" });
+	const task: TaskManifest = {
+		schemaVersion: 1, id: "existing-task", title: "Existing task", status: "draft", dependsOn: [], references: { specs: [], designs: [], decisions: [] },
+		execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "rollback fixture" } },
+		assembly: { stageId: "delivery", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "rollback fixture" },
+	};
+	await store.defineTask({ workItemId: "restore-error", manifest: task, brief: "existing brief", acceptance: "existing acceptance" });
+	const failing = store as unknown as { commit: () => Promise<void> };
+	failing.commit = async () => { throw new Error("original commit failure"); };
+
+	await assert.rejects(store.updateTask("restore-error", "existing-task", { status: "ready" }), /original commit failure/);
+	assert.equal((await store.readTask("restore-error", "existing-task")).status, "draft");
+	await assert.rejects(store.putArtifact({ workItemId: "restore-error", id: "new-design", type: "design", content: "# New design", operation: "create" }), /original commit failure/);
+	await assert.rejects(readFile(join(root, "agent-artifacts", "restore-error", "design", "new-design.md")), /ENOENT/);
+	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
 test("does not roll back committed removal when private backup cleanup fails", async (t) => {

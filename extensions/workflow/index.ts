@@ -9,6 +9,7 @@ import { reconcileReportedAgents } from "./agent-reconciliation.js";
 import { isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
+import { finalizeReviewerAfterSettlement, reusableReviewerAgentId, settleManagedEvaluation } from "./evaluation-settlement.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { isEvaluatorProcess, registerEvaluatorCapabilities } from "./evaluator-capabilities.js";
 import { HarnessRunStore } from "./run-store.js";
@@ -760,7 +761,11 @@ export default function workflow(pi: ExtensionAPI): void {
 			workItemId: item.id,
 		});
 		const persistentContext = await buildReviewPersistentContext(runtime.workItems, item.id, evaluation, reviewedCommit);
-		let logicalAgentId: string | undefined = evaluation.loop?.reviewerAgentId;
+		const persistedReviewerAgentId = evaluation.loop?.reviewerAgentId;
+		let logicalAgentId = await reusableReviewerAgentId(runtime.agents, persistedReviewerAgentId);
+		if (persistedReviewerAgentId && !logicalAgentId) {
+			await runtime.events.append("evaluation.reviewer_replaced", { workItemId: item.id, evaluationId: evaluation.id, priorReviewerAgentId: persistedReviewerAgentId, reason: "missing-or-terminal" });
+		}
 		const runEvaluator = async (taskPrompt: string) => {
 			const coordinated = await runtime.coordinator.launch({
 				operationId: created.record.id, ...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}), role: agentName, task: taskPrompt,
@@ -807,14 +812,22 @@ export default function workflow(pi: ExtensionAPI): void {
 			if (logicalAgentId) await runtime.agents.transition(logicalAgentId, "protocol_failed", { error: "Missing or invalid evaluation_complete handoff" }).catch(() => undefined);
 			return textResult(`PROTOCOL_FAILED: Evaluator ${evaluation.id} omitted its structured handoff.`, { runId: created.record.id, agentId: logicalAgentId, direct });
 		}
-		await runtime.mutex.run(`evaluation-loop:${evaluation.id}:${created.record.id}`, async () => {
-			await assertCleanRepository(runtime.identity.root);
-			await runtime.workItems.updateEvaluationLoop(item.id, evaluation.id, { state: evaluation.loop?.state === "rereviewing" ? "rereviewing" : "reviewing", ...(logicalAgentId ? { reviewerAgentId: logicalAgentId } : {}), reviewedCommit });
+		if (!logicalAgentId) throw new HarnessError("INVALID_HANDOFF", `Evaluator ${evaluation.id} completed without a logical agent identity`);
+		const settlement = await settleManagedEvaluation({
+			workItems: runtime.workItems,
+			runs,
+			workItemId: item.id,
+			evaluationId: evaluation.id,
+			runId: created.record.id,
+			handoff,
+			reviewerAgentId: logicalAgentId,
+			reviewedCommit,
+			exitCode: direct.exitCode,
+			completionEvent: "run.completed",
 		});
-		const recorded = await runtime.workItems.recordEvaluation({ workItemId: item.id, evaluationId: evaluation.id, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
-		await runs.update(created.record.id, { state: "completed", exitCode: direct.exitCode }, "run.completed");
+		await finalizeReviewerAfterSettlement(runtime.agents, logicalAgentId, handoff.verdict);
 		await runtime.events.append("evaluation.run_completed", { workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, agentId: logicalAgentId, verdict: handoff.verdict });
-		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${recorded.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: recorded, handoff });
+		return textResult(`Evaluation ${evaluation.id} recorded ${handoff.verdict} on attempt ${settlement.evaluation.attempt}.`, { runId: created.record.id, agentId: logicalAgentId, evaluation: settlement.evaluation, handoff });
 	};
 
 	const spawnDynamicSubagent = async (request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult> => {

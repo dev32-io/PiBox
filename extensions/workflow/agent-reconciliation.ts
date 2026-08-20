@@ -1,4 +1,5 @@
 import { SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import { finalizeReviewerAfterSettlement, settleManagedEvaluation } from "./evaluation-settlement.js";
 import { RepositoryMutex } from "./idempotency.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { runGit } from "./repository.js";
@@ -51,27 +52,24 @@ export async function reconcileReportedAgents(input: {
 				const runs = new HarnessRunStore(input.identity.privateRoot, agent.workItemId);
 				const handoff = await runs.readEvaluationHandoff(agent.runId);
 				if (!handoff) { result.pending.push(agent.id); continue; }
-				// The attempt check, canonical record, and run settlement are one mutation:
-				// a second reconciler cannot observe the old attempt between these steps.
-				const settled = await input.workItems.coordinator.run(`reconcile-evaluation:${agent.id}`, async () => {
-					// The run must be read after acquiring the canonical lock. Otherwise an
-					// evaluation checkpoint can race this settlement and produce a second
-					// completion event from stale state.
-					const run = await runs.read(agent.runId!);
-					const current = await input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
-					if (current.attempt < run.attempt) await input.workItems.recordEvaluation({ workItemId: agent.workItemId!, evaluationId: agent.evaluationId!, verdict: handoff.verdict, report: handoff.report, evidence: handoff.evidence, findings: handoff.findings, ...(handoff.residualRisks ? { residualRisks: handoff.residualRisks } : {}) });
-					const freshRun = await runs.read(agent.runId!);
-					if (freshRun.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
-					return input.workItems.readEvaluation(agent.workItemId!, agent.evaluationId!);
+				const run = await runs.read(agent.runId);
+				await settleManagedEvaluation({
+					workItems: input.workItems,
+					runs,
+					workItemId: agent.workItemId,
+					evaluationId: agent.evaluationId,
+					runId: agent.runId,
+					handoff,
+					reviewerAgentId: agent.id,
+					reviewedCommit: run.baseCommit,
+					exitCode: 0,
+					completionEvent: "run.reconciled_completed",
 				});
-				// A failed review is a checkpoint, not the end of the logical reviewer.
-				// Keep it reported so a later repair/re-review can reuse its identity.
-				if (settled.loop?.state === "awaiting_manager" || settled.loop?.state === "fixing" || settled.loop?.state === "rereviewing") {
-					result.pending.push(agent.id);
-					continue;
-				}
-				await input.registry.transition(agent.id, "completed", { summary: `Evaluation ${agent.evaluationId}: ${handoff.verdict}` });
-				result.completed.push(agent.id);
+				// Verdict, not a potentially stale legacy loop label, owns reviewer
+				// lifetime. Failed/blocked reviewers persist for repair and re-review.
+				const reviewerSettlement = await finalizeReviewerAfterSettlement(input.registry, agent.id, handoff.verdict);
+				if (reviewerSettlement !== "completed") result.pending.push(agent.id);
+				else result.completed.push(agent.id);
 				continue;
 			}
 

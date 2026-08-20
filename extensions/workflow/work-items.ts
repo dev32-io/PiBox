@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { parse, stringify } from "yaml";
@@ -809,8 +809,14 @@ export class WorkItemStore {
 			manifest.status = update.status;
 		}
 		if (update.runtime) manifest.runtime = { ...manifest.runtime, ...update.runtime };
+		const next = stringify(manifest);
+		// Normal supervision and reported-agent reconciliation can race to settle the
+		// same completed run. The canonical lock makes the second writer observe the
+		// first writer's state; treat that identical settlement as success instead of
+		// invoking `git commit` with an empty index and pausing the workflow.
+		if (next === previous) return manifest;
 		try {
-			await atomicWriteFile(path, stringify(manifest));
+			await atomicWriteFile(path, next);
 			await this.commit([path], `harness(${workItemId}): update task ${taskId}`);
 			return manifest;
 		} catch (error) {
@@ -1193,6 +1199,10 @@ export class WorkItemStore {
 		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
 		findings?: NonNullable<EvaluationManifest["findings"]>;
 		residualRisks?: string[];
+		/** Managed evaluator attempt guard; ordinary curated evaluations omit it. */
+		expectedAttempt?: number;
+		/** Reviewer identity and commit recorded atomically with a managed verdict. */
+		reviewContext?: { reviewerAgentId: string; reviewedCommit: string };
 	}): Promise<EvaluationManifest> {
 		return this.coordinator.run(`evaluation-record:${input.workItemId}:${input.evaluationId}`, () => this.recordEvaluationUnlocked(input));
 	}
@@ -1205,6 +1215,8 @@ export class WorkItemStore {
 		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
 		findings?: NonNullable<EvaluationManifest["findings"]>;
 		residualRisks?: string[];
+		expectedAttempt?: number;
+		reviewContext?: { reviewerAgentId: string; reviewedCommit: string };
 	}): Promise<EvaluationManifest> {
 		if (!input.report.trim()) throw new HarnessError("INVALID_ARTIFACT", "Evaluation report must not be empty");
 		await assertCleanRepository(this.repositoryRoot);
@@ -1222,11 +1234,19 @@ export class WorkItemStore {
 		const evidenceRoot = join(root, "evidence", input.evaluationId);
 		const manifestPath = join(evidenceRoot, "manifest.yaml");
 		const previousEvaluation = await readFile(evaluationPath, "utf8");
-		const attemptNumber = (parse(previousEvaluation) as EvaluationManifest).attempt + 1;
+		const evaluation = parse(previousEvaluation) as EvaluationManifest;
+		if (input.expectedAttempt !== undefined) {
+			if (evaluation.attempt > input.expectedAttempt) throw new HarnessError("INVALID_HANDOFF", `Evaluation ${input.evaluationId} advanced past expected attempt ${input.expectedAttempt}`);
+			if (evaluation.attempt === input.expectedAttempt) {
+				if (evaluation.result?.verdict !== input.verdict) throw new HarnessError("INVALID_HANDOFF", `Evaluation ${input.evaluationId} attempt ${input.expectedAttempt} has a conflicting verdict`);
+				return evaluation;
+			}
+			if (evaluation.attempt + 1 !== input.expectedAttempt) throw new HarnessError("INVALID_HANDOFF", `Evaluation ${input.evaluationId} cannot skip from attempt ${evaluation.attempt} to ${input.expectedAttempt}`);
+		}
+		const attemptNumber = evaluation.attempt + 1;
 		const attemptReportPath = join(evaluationRoot, "attempts", `${String(attemptNumber).padStart(3, "0")}-report.md`);
 		const previousIndex = await readFile(indexPath, "utf8");
 		const previousReport = await readFile(reportPath, "utf8").catch(() => undefined);
-		const evaluation = parse(previousEvaluation) as EvaluationManifest;
 		const evidenceEntries: Array<Record<string, unknown>> = [];
 		await mkdir(join(evidenceRoot, "files"), { recursive: true });
 		try {
@@ -1254,6 +1274,7 @@ export class WorkItemStore {
 				iteration: evaluation.loop?.iteration ?? 0,
 				maxIterations: evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS,
 				...evaluation.loop,
+				...input.reviewContext,
 				state: input.verdict === "pass" || input.verdict === "not_applicable" ? "passed" : "awaiting_manager",
 			};
 			if (input.findings) evaluation.findings = input.findings;
@@ -1552,9 +1573,16 @@ export class WorkItemStore {
 				await runGit(this.repositoryRoot, ["reset", "--soft", baseHead]);
 			}
 			await runGit(this.repositoryRoot, ["reset", "HEAD", "--", ...paths]);
-			for (const file of files) {
-				if (file.content === undefined) await rm(file.path, { recursive: true, force: true });
-				else await atomicWriteFile(file.path, file.content);
+			for (let index = 0; index < files.length; index += 1) {
+				const file = files[index]!;
+				const ownedPath = paths[index]!;
+				if (file.content !== undefined) {
+					await atomicWriteFile(file.path, file.content);
+					continue;
+				}
+				const existedAtBase = await runGit(this.repositoryRoot, ["cat-file", "-e", `${baseHead}:${ownedPath}`]).then(() => true, () => false);
+				if (existedAtBase) await runGit(this.repositoryRoot, ["restore", "--source", baseHead, "--staged", "--worktree", "--", ownedPath]);
+				else await rm(file.path, { recursive: true, force: true });
 			}
 			const finalHead = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
 			const status = await runGit(this.repositoryRoot, ["status", "--porcelain=v1", "--untracked-files=all"]);
@@ -1567,12 +1595,21 @@ export class WorkItemStore {
 
 	private async restore(files: Array<{ path: string; content: string | undefined }>): Promise<void> {
 		for (const file of files) {
+			// restore() owns file paths only. Never recursively remove a path that
+			// unexpectedly resolves to a pre-existing directory.
 			if (file.content === undefined) await rm(file.path, { force: true });
 			else await atomicWriteFile(file.path, file.content);
 		}
 		await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", ...files.map((file) => relative(this.repositoryRoot, file.path))]);
-		for (const directory of new Set(files.map((file) => dirname(file.path)))) {
-			if (basename(directory) !== basename(this.artifactRoot)) await rm(directory, { recursive: false });
+		const createdParents = [...new Set(files.filter((file) => file.content === undefined).map((file) => dirname(file.path)))].sort((left, right) => right.length - left.length);
+		for (const directory of createdParents) {
+			if (basename(directory) === basename(this.artifactRoot)) continue;
+			try {
+				await rmdir(directory);
+			} catch (error) {
+				const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+				if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+			}
 		}
 	}
 }

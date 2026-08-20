@@ -22,7 +22,8 @@ export async function runGit(cwd: string, args: string[]): Promise<string> {
 		return result.stdout.trim();
 	} catch (error) {
 		const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr).trim() : "";
-		throw new HarnessError("GIT_OPERATION_FAILED", stderr || `git ${args.join(" ")} failed`, { args });
+		const stdout = typeof error === "object" && error !== null && "stdout" in error ? String(error.stdout).trim() : "";
+		throw new HarnessError("GIT_OPERATION_FAILED", stderr || stdout || `git ${args.join(" ")} failed`, { args });
 	}
 }
 
