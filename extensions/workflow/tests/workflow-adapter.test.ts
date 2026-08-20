@@ -204,7 +204,8 @@ test("settled awaiting_manager with a persistent reported reviewer uses explicit
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
 	assert.match(step.title, /Needs attention · Approve or Request changes/);
-	assert.doesNotMatch(step.title, /Review report ready/);
+	assert.match(step.detail ?? "", /Needs attention · Approve or Request changes/);
+	assert.doesNotMatch(`${step.title} ${step.detail ?? ""}`, /result pending reconciliation|Review report ready/);
 });
 
 test("passed status overrides a stale awaiting-manager loop during recovery", async () => {
@@ -312,7 +313,7 @@ test("a failed fixer remains actionable during fixing", async () => {
 test("request_changes records a fixing step without synchronously launching repair or re-review", async () => {
 	let evaluation: any = { id: "stage-delivery-review", checkpoint: "stage-review", status: "failed", attempt: 1, findings: [{ id: "F1", status: "open", blocking: true }], loop: { state: "awaiting_manager", iteration: 1, maxIterations: 3, reviewerAgentId: "reviewer" } };
 	const runtime: any = {
-		config: { limits: { repairRounds: 3 } },
+		config: { limits: { repairRounds: 6 } },
 		workItems: { async readEvaluation() { return evaluation; }, async updateEvaluationLoop(_w: string, _e: string, update: any, status?: string) { evaluation = { ...evaluation, ...(status ? { status } : {}), loop: { ...evaluation.loop, ...update } }; return evaluation; } },
 		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
 	};
@@ -322,6 +323,7 @@ test("request_changes records a fixing step without synchronously launching repa
 	assert.equal(decision.loop.state, "fixing");
 	assert.equal(decision.loop.iteration, 1, "iteration advances only after repair settlement");
 	assert.equal(decision.loop.managerPrompt, "Fix F1");
+	assert.equal(decision.loop.maxIterations, 6, "current repository policy replaces the stale budget persisted when the gate was created");
 	assert.equal(repairs, 0, "the workflow runner owns background repair launch");
 	assert.equal(reviews, 0, "the workflow runner owns automatic re-review launch");
 
@@ -660,7 +662,7 @@ test("projects the independent fix budget at the current review boundary", async
 		executionStages: [{ id: "first", tasks: ["first"] }, { id: "second", tasks: ["second"] }], integrationUnits: [], evaluations: evaluations.map(({ id }) => ({ id })),
 	};
 	const runtime: any = {
-		identity: { root: "/repo" }, config: { limits: { repairRounds: 3 } },
+		identity: { root: "/repo" }, config: { limits: { repairRounds: 6 } },
 		workItems: {
 			async read() { return item; },
 			async readTask(_workItemId: string, id: string) { return tasks.find((entry) => entry.id === id); },
@@ -670,19 +672,20 @@ test("projects the independent fix budget at the current review boundary", async
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:budgets", {} as any);
-	assert.deepEqual(snapshot.repairLoop, { label: "Stage 2 fix loop", iteration: 0, maxIterations: 3, evaluationRef: "work-item:budgets/evaluation:stage-second-review" });
+	assert.deepEqual(snapshot.repairLoop, { label: "Stage 2 fix loop", iteration: 0, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:stage-second-review" });
+	assert.match(snapshot.steps.find((step) => step.ref.endsWith("stage-second-review"))?.detail ?? "", /iteration 0\/6/, "step guidance uses current repository policy after reload");
 	evaluations[1].status = "failed"; evaluations[1].loop = { state: "fixing", iteration: 0, maxIterations: 3 };
 	snapshot = await adapter.snapshot("work-item:budgets", {} as any);
-	assert.deepEqual(snapshot.repairLoop, { label: "Stage 2 fix loop", iteration: 1, maxIterations: 3, evaluationRef: "work-item:budgets/evaluation:stage-second-review" }, "the authorized in-flight repair round counts against the visible budget");
+	assert.deepEqual(snapshot.repairLoop, { label: "Stage 2 fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:stage-second-review" }, "the authorized in-flight repair round counts against the visible budget");
 
 	evaluations[1].status = "passed"; evaluations[1].loop = { state: "passed", iteration: 1, maxIterations: 3 };
 	evaluations[2].status = "failed"; evaluations[2].loop = { state: "awaiting_manager", iteration: 1, maxIterations: 3 };
 	snapshot = await adapter.snapshot("work-item:budgets", {} as any);
-	assert.deepEqual(snapshot.repairLoop, { label: "E2E fix loop", iteration: 1, maxIterations: 3, evaluationRef: "work-item:budgets/evaluation:final-e2e" });
+	assert.deepEqual(snapshot.repairLoop, { label: "E2E fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:final-e2e" });
 
 	evaluations[2].status = "passed"; evaluations[2].loop = { state: "passed", iteration: 1, maxIterations: 3 };
 	snapshot = await adapter.snapshot("work-item:budgets", {} as any);
-	assert.deepEqual(snapshot.repairLoop, { label: "Final fix loop", iteration: 0, maxIterations: 3, evaluationRef: "work-item:budgets/evaluation:final-review" });
+	assert.deepEqual(snapshot.repairLoop, { label: "Final fix loop", iteration: 0, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:final-review" });
 });
 
 test("final branch review follows an adopted semantic journey gate instead of a fixed evaluation id", async () => {

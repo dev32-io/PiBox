@@ -952,6 +952,41 @@ test("animates candidate verification from the semantic verification phase", asy
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("a recovered reviewer settlement wakes the main session at the canonical manager checkpoint", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:review", state: "running" } });
+	let phase: "running" | "awaiting-manager" = "running";
+	let lifecycle!: () => void;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		subscribeLifecycle(_ref, _ctx, listener) { lifecycle = listener; return () => undefined; },
+		async snapshot(ref) {
+			const attention = phase === "awaiting-manager";
+			return {
+				ref, title: "Recovered review", status: attention ? "attention" : "running",
+				steps: [{
+					ref: `${ref}/evaluation:stage-review`, title: attention ? "Review loop · Needs attention · Approve or Request changes" : "Review loop · Reviewing",
+					kind: "evaluation", checkpoint: "stage-review", status: attention ? "attention" : "running",
+					detail: attention ? "Needs attention · Approve or Request changes" : "Reviewing", dependsOn: [], parallelism: "serial", resourceClaims: [],
+				}],
+			};
+		},
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	phase = "awaiting-manager";
+	lifecycle();
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	const notice = f.messages.find(({ message }) => (message as any).customType === "pibox-workflow-event" && String(message.content).includes("Approve or Request changes"));
+	assert.ok(notice, "reload recovery must deliver the canonical checkpoint even without the original in-flight settlement callback");
+	assert.equal(notice?.options.deliverAs, "steer");
+	assert.equal(notice?.options.triggerTurn, true);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("lifecycle callbacks refresh a queued review into its active dashboard state", async () => {
 	const f = fixture();
 	let phase: "queued" | "running" = "queued";
@@ -1050,16 +1085,25 @@ test("stopping during asynchronous lifecycle setup prevents late listener instal
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("workflow runner derives ready steps from refreshed adapter snapshots and renders the widget", async () => {
+test("workflow runner refreshes and freezes terminal metrics before rendering completion", async () => {
 	const f = fixture();
+	const sampledAtMs = Date.now();
 	let taskDone = false;
+	let completedAt: number | undefined;
+	let snapshotReads = 0;
 	const snapshots = (): WorkflowSnapshot => ({
 		ref: "test:workflow", title: "Example", status: taskDone ? "done" : "ready",
 		steps: [{ ref: "test:task", title: "Implement example", kind: "task", status: taskDone ? "done" : "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }],
-		metrics: { elapsedMs: 1_000, runningMs: 1_000, agentActiveMs: 500, verificationMs: 0, fixes: 0, retries: 0, agentCount: 1, verificationAttempts: 0, inputTokens: 100, outputTokens: 50, toolErrors: 0 },
+		metrics: {
+			elapsedMs: completedAt === undefined ? 0 : completedAt - sampledAtMs,
+			runningMs: completedAt === undefined ? 0 : completedAt - sampledAtMs,
+			agentActiveMs: 500, verificationMs: 0, fixes: 0, retries: 0, agentCount: 1, verificationAttempts: 0, inputTokens: 100, outputTokens: 50, toolErrors: 0,
+			live: { sampledAtMs: completedAt ?? sampledAtMs, elapsed: completedAt === undefined, running: completedAt === undefined, activeAgents: 0, activeVerifications: 0 },
+		},
 	});
 	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("test:"), async completionPrompt() { return "Read outcome.md and brief the user."; }, async snapshot() { return snapshots(); },
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async completionPrompt() { return "Read outcome.md and brief the user."; }, async snapshot() { snapshotReads++; return snapshots(); },
+		async controlExecution(ref, command) { if (command === "complete") completedAt = Date.now(); return { workflowRef: ref, mode: command === "complete" ? "completed" : "running", generation: 1, ownerSessionId: "test-session" }; },
 		async runStep(ref) { taskDone = true; return { ref, state: "completed", summary: "Implementation done." }; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
 		async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
@@ -1070,6 +1114,8 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 	assert.match(started.content[0].text, /Started workflow/);
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(taskDone, true);
+	assert.ok(completedAt, "the runtime records its terminal control boundary");
+	assert.ok(snapshotReads >= 3, "completion refreshes the snapshot after recording the terminal boundary");
 	assert.ok(f.widget());
 	assert.equal(f.entries.some((entry) => entry.data.ref === "test:workflow"), true);
 	const completion = f.messages.find((entry) => entry.message.customType === "pibox-workflow-complete");
@@ -1082,5 +1128,7 @@ test("workflow runner derives ready steps from refreshed adapter snapshots and r
 	assert.ok(rendered.every((line: string) => line.startsWith(" ") && line.endsWith(" ")));
 	assert.ok(rendered.every((line: string) => line.includes(" │ ")), "wide dashboards visibly separate tasks from workflow metrics");
 	assert.ok(rendered.every((line: string) => line.indexOf(" │ ") < 65), "the metrics pane starts near the task content instead of at the far right");
+	await new Promise((resolve) => setTimeout(resolve, 1_100));
+	assert.deepEqual(component.render(100), rendered, "every displayed metric stays frozen after workflow completion");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });

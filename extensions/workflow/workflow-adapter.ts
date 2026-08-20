@@ -73,6 +73,11 @@ function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluati
 
 function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): ActiveProcessProjection {
 	const loop = evaluation.loop;
+	// Once canonical settlement reaches the manager checkpoint, the durable
+	// decision boundary owns presentation. Failed/blocked reviewers intentionally
+	// remain reported for repair and re-review reuse; they are no longer pending
+	// reconciliation and must not suppress the recovered workflow attention event.
+	if (loop?.state === "awaiting_manager") return { running: false };
 	const fixing = loop?.state === "fixing";
 	const rereviewing = loop?.state === "rereviewing";
 	const expected = fixing
@@ -273,6 +278,11 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const match = WORK_ITEM.exec(ref);
 			if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
+			// Repository policy is the live authority for repair opportunities. The
+			// value persisted on an evaluation records the budget in force when that
+			// gate was created, but must not pin an active/reloaded workflow to stale
+			// configuration.
+			const configuredRepairLimit = runtime.config?.limits.repairRounds;
 			const item = await runtime.workItems.read(match[1]!);
 			const agents = await runtime.agents.list();
 			const metrics = runtime.events ? projectWorkflowMetrics({
@@ -385,7 +395,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const findings = evaluation.findings ?? [];
 				const open = findings.filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 				const blocking = open.filter((finding) => finding.blocking);
-				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
+				const evaluationRepairLimit = configuredRepairLimit ?? evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS;
+				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluationRepairLimit}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention || (status === "pending" && !dependenciesDone) ? detail : [detail, guidance].filter(Boolean).join(" · ");
 				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), ...(activity.fast ? { fast: true } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
@@ -401,7 +412,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				...evaluations.filter((evaluation) => evaluation.checkpoint === "final-review").map((evaluation) => ({ evaluation, label: "Final fix loop" })),
 			];
 			const currentRepairBoundary = repairBoundaries.find(({ evaluation }) => !["passed", "not_applicable"].includes(evaluation.status) && !["passed", "skipped"].includes(evaluation.loop?.state ?? ""));
-			const currentRepairLimit = currentRepairBoundary?.evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS;
+			const currentRepairLimit = configuredRepairLimit ?? currentRepairBoundary?.evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS;
 			const settledRepairRounds = currentRepairBoundary?.evaluation.loop?.iteration ?? 0;
 			const currentRepairRound = Math.min(currentRepairLimit, settledRepairRounds + (currentRepairBoundary?.evaluation.loop?.state === "fixing" ? 1 : 0));
 			const repairLoop = currentRepairBoundary ? {
@@ -459,7 +470,8 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// judged against the durable phase, not the snapshot read before locking.
 				return runtime.mutex.run(`checkpoint:${workItemId}:${evaluationId}`, async () => {
 					const current = await runtime.workItems.readEvaluation(workItemId!, evaluationId!);
-					const currentLoop = current.loop ?? { state: "planned" as const, iteration: 0, maxIterations: runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS };
+					const configuredRepairLimit = runtime.config?.limits.repairRounds ?? current.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS;
+					const currentLoop = current.loop ?? { state: "planned" as const, iteration: 0, maxIterations: configuredRepairLimit };
 					if (currentLoop.state === "fixing") {
 						if (!prompt?.trim() || prompt.trim() !== currentLoop.managerPrompt?.trim()) throw new Error(`Evaluation ${evaluationId} is already fixing; only the existing repair decision may be replayed`);
 						// Idempotent recovery: retain the fixer identity, prompt, and iteration.
@@ -470,7 +482,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					const currentFindings = (current.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 					if (current.checkpoint === "final-review" && currentFindings.filter((finding) => finding.blocking).length === 0) throw new Error("Final branch review has no blocking findings; non-blocking findings may only be accepted as residual risk.");
 					if (!prompt?.trim()) throw new Error("request_changes requires a repair prompt");
-					if (currentLoop.iteration >= currentLoop.maxIterations) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
+					if (currentLoop.iteration >= configuredRepairLimit) throw new Error(`Review/fix iteration limit reached for ${evaluationId}`);
 					// A pre-recovery-version fixer may have failed after editing the canonical
 					// checkout and then been projected back to awaiting_manager. Replaying the
 					// exact same manager decision explicitly adopts that preserved workspace,
@@ -482,7 +494,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 							.filter((agent) => agent.attempts.find((attempt) => attempt.id === agent.currentAttemptId)?.activity?.kind === "repair" && agent.attempts.find((attempt) => attempt.id === agent.currentAttemptId)?.activity?.generation === expectedGeneration)
 							.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]
 						: undefined;
-					const updated = await runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", managerPrompt: prompt, ...(priorFixer ? { fixerAgentId: priorFixer.id } : {}) });
+					const updated = await runtime.workItems.updateEvaluationLoop(workItemId!, evaluationId!, { state: "fixing", maxIterations: configuredRepairLimit, managerPrompt: prompt, ...(priorFixer ? { fixerAgentId: priorFixer.id } : {}) });
 					if (priorFixer) {
 						await new RepairRecoveryStore(runtime.identity).record({ workItemId: workItemId!, evaluationId: evaluationId!, agentId: priorFixer.id, operationId: priorFixer.operationId, iteration: expectedGeneration });
 						await runtime.agents.prepareRetry(priorFixer.id);

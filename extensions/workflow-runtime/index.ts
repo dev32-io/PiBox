@@ -372,9 +372,21 @@ export default function workflows(pi: ExtensionAPI): void {
 		return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${shownSeconds}s`;
 	};
 
-	const projectedMetric = (metrics: WorkflowMetrics, base: number, activeIntervals: number): number => {
+	const projectedMetric = (metrics: WorkflowMetrics, base: number, activeIntervals: number, now = Date.now()): number => {
 		if (!metrics.live || activeIntervals <= 0) return base;
-		return base + Math.max(0, Date.now() - metrics.live.sampledAtMs) * activeIntervals;
+		return base + Math.max(0, now - metrics.live.sampledAtMs) * activeIntervals;
+	};
+
+	const freezeMetricProjection = (metrics: WorkflowMetrics, now = Date.now()): WorkflowMetrics => {
+		if (!metrics.live) return metrics;
+		return {
+			...metrics,
+			elapsedMs: projectedMetric(metrics, metrics.elapsedMs, metrics.live.elapsed ? 1 : 0, now),
+			runningMs: projectedMetric(metrics, metrics.runningMs, metrics.live.running ? 1 : 0, now),
+			agentActiveMs: projectedMetric(metrics, metrics.agentActiveMs, metrics.live.activeAgents, now),
+			verificationMs: projectedMetric(metrics, metrics.verificationMs, metrics.live.activeVerifications, now),
+			live: { sampledAtMs: now, elapsed: false, running: false, activeAgents: 0, activeVerifications: 0 },
+		};
 	};
 
 	const metricRows = (snapshot: WorkflowSnapshot): Array<readonly [string, string]> => {
@@ -574,7 +586,20 @@ export default function workflows(pi: ExtensionAPI): void {
 					continue;
 				}
 				if (snapshot.steps.length > 0 && snapshot.steps.every((step) => step.status === "done")) {
-					await adapter.controlExecution?.(ref, "complete", `complete:${ref}:${ownership.get(ref) ?? epoch}`, ctx).catch(() => undefined);
+					// Persist the terminal boundary before claiming completion. A failed control
+					// write must remain visible as runner attention rather than leaving the
+					// durable elapsed interval open behind a successful dashboard state.
+					await adapter.controlExecution?.(ref, "complete", `complete:${ref}:${ownership.get(ref) ?? epoch}`, ctx);
+					const completedAt = Date.now();
+					// The snapshot used to detect completion predates workflow.completed and its
+					// live rates. Refresh it so durable metrics use the exact event timestamp;
+					// if that read fails, freeze the known projection at the terminal boundary.
+					const refreshed = await adapter.snapshot(ref, ctx).catch(() => snapshot);
+					const terminalSnapshot = refreshed.metrics ? { ...refreshed, metrics: freezeMetricProjection(refreshed.metrics, completedAt) } : refreshed;
+					if (ref === currentRef) {
+						currentSnapshot = terminalSnapshot;
+						renderDashboard(ctx);
+					}
 					active.delete(ref); ownership.delete(ref); persist(ref, "stopped"); sendEvent({ workflowRef: ref, title: `${snapshot.title} · complete`, detail: "Finished all workflow steps.", attention: false, toStatus: "integrated", cause: "workflow-terminal" });
 					const prompt = await adapter.completionPrompt?.(ref, ctx) ?? renderBuiltInPrompt("default-workflow-completion", { workflowRef: ref });
 					try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* session recovery can inspect canonical completion state */ }
