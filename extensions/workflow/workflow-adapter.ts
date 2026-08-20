@@ -343,10 +343,16 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// A durable manager checkpoint is authoritative, even when a persistent
 				// reviewer still has a reported process record.
 				if (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" || evaluation.loop?.state === "skipped") status = "done";
-				else if (evaluation.loop?.state === "awaiting_manager") { status = "attention"; detail = "Needs attention · Approve or Request changes"; }
 				else if (activity.running) { status = "running"; detail = evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, (evaluation.loop?.iteration ?? 0) + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"; }
 				else if (activity.attention) { status = "attention"; detail = activity.attention; }
-				else if (dependencyAttention) { status = "attention"; detail = `blocked by ${dependencyAttention.title}`; }
+				// Only the upstream checkpoint is actionable. Downstream final gates stay
+				// visibly queued instead of inheriting its Approve/Request-changes warning.
+				else if (dependencyAttention) {
+					status = "pending";
+					const dependencyName = dependencyAttention.title.split(" · ")[0] ?? dependencyAttention.title;
+					detail = evaluation.checkpoint === "final-e2e" || evaluation.checkpoint === "final-review" ? `waiting for ${dependencyName}` : `blocked by ${dependencyName}`;
+				}
+				else if (evaluation.loop?.state === "awaiting_manager") { status = "attention"; detail = "Needs attention · Approve or Request changes"; }
 				else if (evaluation.loop?.state === "fixing" || evaluation.loop?.state === "rereviewing") { status = dependenciesDone ? "ready" : "pending"; detail = evaluation.loop.state === "fixing" ? "Fix requested" : "Re-review requested"; }
 				else if (["failed", "blocked"].includes(evaluation.status)) { status = "attention"; detail = evaluation.status; }
 				else if (evaluation.status === "running") { status = "attention"; detail = "stale process state"; }
@@ -355,7 +361,10 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				// canonical user-facing phase so queued work and settled reports cannot look
 				// like an active worker in the dashboard or workflow events.
 				const finalValidation = finalValidationDisplay(evaluation, activity);
-				const phase = finalValidation?.phase ?? (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" ? "Approved"
+				const dependencyPhase = dependencyAttention
+					? evaluation.checkpoint === "final-e2e" ? "Journey run queued" : evaluation.checkpoint === "final-review" ? "Whole-branch review queued" : undefined
+					: undefined;
+				const phase = dependencyPhase ?? finalValidation?.phase ?? (["passed", "not_applicable"].includes(evaluation.status) || evaluation.loop?.state === "passed" ? "Approved"
 					: evaluation.loop?.state === "awaiting_manager" ? "Needs attention · Approve or Request changes"
 					: activity.running ? evaluation.loop?.state === "fixing" ? `Fixing #${Math.max(2, evaluation.loop.iteration + 1)}` : evaluation.loop?.state === "rereviewing" ? `Re-reviewing #${evaluation.loop.iteration}` : "Reviewing"
 					: activity.attention && evaluation.loop?.state === "fixing" ? "Fix failed · Resume"
@@ -368,7 +377,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const open = findings.filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
 				const blocking = open.filter((finding) => finding.blocking);
 				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
-				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
+				const stepDetail = activity.attention || dependencyAttention || (status === "pending" && !dependenciesDone) ? detail : [detail, guidance].filter(Boolean).join(" · ");
 				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), ...(activity.fast ? { fast: true } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";

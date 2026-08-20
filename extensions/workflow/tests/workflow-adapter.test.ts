@@ -559,6 +559,7 @@ test("gates each stage on its harness review while preserving parallel merge bar
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.status, "ready");
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:left"))?.kind, "merge");
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:right"))?.status, "pending");
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:right"))?.detail, "waiting for stage merge barrier");
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-parallel-review"))?.status, "pending", "the concurrent stage review remains gated by the listed merge barrier");
 });
 
@@ -605,6 +606,44 @@ test("orders a three-task sequential stage and gates the next stage on review", 
 	reviews[0].status = "passed"; reviews[0].loop.state = "passed";
 	snapshot = await adapter.snapshot("work-item:ordered", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:next"))?.status, "ready");
+});
+
+test("an upstream review checkpoint keeps final validation queued instead of duplicating attention", async () => {
+	const tasks: any[] = [task("implementation", "merged")];
+	const evaluations: any[] = [
+		{ id: "stage-delivery-review", type: "combined-review", checkpoint: "stage-review", stageId: "delivery", status: "failed", scope: { workItem: "checkpoint" }, loop: { state: "awaiting_manager", iteration: 0, maxIterations: 3 } },
+		{ id: "final-e2e", type: "e2e", checkpoint: "final-e2e", status: "planned", scope: { workItem: "checkpoint" }, loop: { state: "planned", iteration: 0, maxIterations: 3 } },
+		{ id: "final-review", type: "combined-review", checkpoint: "final-review", status: "planned", scope: { workItem: "checkpoint" }, loop: { state: "planned", iteration: 0, maxIterations: 3 } },
+	];
+	const item: any = {
+		id: "checkpoint", title: "Checkpoint", planning: { revision: 1 }, tasks: [{ id: "implementation" }],
+		executionStages: [{ id: "delivery", tasks: ["implementation"] }], integrationUnits: [], evaluations: evaluations.map(({ id }) => ({ id })),
+	};
+	const runtime: any = {
+		identity: { root: "/repo" },
+		workItems: {
+			async read() { return item; },
+			async readTask() { return tasks[0]; },
+			async readEvaluation(_workItemId: string, id: string) { return evaluations.find((evaluation) => evaluation.id === id); },
+		},
+		agents: { async list() { return []; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const snapshot = await adapter.snapshot("work-item:checkpoint", {} as any);
+	const stageReview = snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-delivery-review"))!;
+	const finalE2e = snapshot.steps.find((step) => step.ref.endsWith("evaluation:final-e2e"))!;
+	const finalReview = snapshot.steps.find((step) => step.ref.endsWith("evaluation:final-review"))!;
+
+	assert.equal(stageReview.status, "attention");
+	assert.match(stageReview.title, /Approve or Request changes/);
+	for (const downstream of [finalE2e, finalReview]) {
+		assert.equal(downstream.status, "pending");
+		assert.doesNotMatch(`${downstream.title} ${downstream.detail ?? ""}`, /Approve or Request changes/);
+	}
+	assert.match(finalE2e.detail ?? "", /waiting for/i);
+	assert.match(finalE2e.title, /Journey run queued/);
+	assert.match(finalReview.title, /Whole-branch review queued/);
+	assert.equal(snapshot.status, "attention", "only the upstream checkpoint owns workflow attention");
 });
 
 test("final branch review follows an adopted semantic journey gate instead of a fixed evaluation id", async () => {

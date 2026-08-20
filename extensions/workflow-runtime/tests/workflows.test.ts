@@ -657,6 +657,47 @@ test("an in-flight fixer shows starting progress before its Pi process reports",
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("reload catch-up replaces a stale fixer startup projection with durable live progress", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "running" } });
+	let durableRunning = false;
+	let releaseSubscription!: () => void;
+	const subscriptionReady = new Promise<void>((resolve) => { releaseSubscription = resolve; });
+	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
+	const progress = { startedAt: new Date(Date.now() - 120_000).toISOString(), lastEventAt: new Date().toISOString(), processStartedAt: new Date(Date.now() - 119_000).toISOString(), turns: 12, toolCalls: 27, toolErrors: 1, outputTokens: 8441, reasoningTokens: 4681 };
+	const snapshot = (): WorkflowSnapshot => ({
+		ref: "work-item:calendar", title: "Calendar", status: durableRunning ? "running" : "ready",
+		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: durableRunning ? "Review loop stage-review · Fixing #2" : "Review loop stage-review · Fix requested", kind: "evaluation", status: durableRunning ? "running" : "ready", ...(durableRunning ? { progress } : {}), detail: durableRunning ? "Fixing #2" : "Fix requested · findings 2 (blocking 2); iteration 0/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
+	});
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "running", generation: 2, ownerSessionId: "test-session" }; },
+		subscribeLifecycle() { return subscriptionReady.then(() => () => undefined); },
+		async snapshot() { return snapshot(); },
+		async runStep() { return neverSettles; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	let rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	assert.ok(rendered.some((line) => /Fix #2 · \d+s · starting/.test(line)));
+
+	// The child became durable before the replacement extension finished
+	// installing its lifecycle watcher, so no live callback is available to emit.
+	durableRunning = true;
+	releaseSubscription();
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	const fixer = rendered.find((line) => line.includes("Fix #2"));
+	assert.ok(fixer);
+	assert.match(fixer!, /active/);
+	assert.doesNotMatch(fixer!, /starting/);
+	assert.match(fixer!, /↓ 8\.4k/);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("renders final validation as distinct E2E and whole-branch fix loops", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
@@ -709,6 +750,35 @@ test("renders durable integration and verification phases instead of generic rea
 	assert.ok(rendered.some((line) => line.includes("⚠ Verification failed · Android calendar")));
 	assert.ok(rendered.some((line) => line.includes("◆ Contribution ready · iOS calendar")));
 	assert.equal(rendered.some((line) => line.includes("Ready to merge")), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("communicates every contribution participating in an active concurrent merge barrier", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
+	const snapshot: WorkflowSnapshot = {
+		ref: "work-item:calendar", title: "Calendar", status: "running",
+		steps: [
+			{ ref: "work-item:calendar/task:android", title: "Android calendar", kind: "merge", status: "running", phase: "ready-to-integrate", dependsOn: [], parallelism: "serial", resourceClaims: ["working-branch"] },
+			{ ref: "work-item:calendar/task:ios", title: "iOS calendar", kind: "merge", status: "pending", phase: "contribution-ready", detail: "waiting for stage merge barrier", dependsOn: [], parallelism: "serial", resourceClaims: ["working-branch"] },
+		],
+		stages: [{ id: "mobile-platform", index: 0, nodes: ["task:android", "task:ios"], parallel: true, group: "planner" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	const owner = rendered.find((line) => line.includes("Assembling candidate · Android calendar"));
+	const sibling = rendered.find((line) => line.includes("Waiting for shared merge barrier · iOS calendar"));
+	assert.ok(owner);
+	assert.ok(sibling);
+	assert.match(owner!, /[⇢→⇒]/);
+	assert.match(sibling!, /[⇢→⇒]/, "waiting contributions share the active barrier animation without becoming separately runnable");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

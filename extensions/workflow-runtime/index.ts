@@ -52,7 +52,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	let dashboardInvalidate: (() => void) | undefined;
 	const runningSubagents = new Map<string, RunningSubagentStatus>();
 	const lifecycleSubscriptions = new Map<string, { controller: AbortController; unsubscribe: (() => void) | undefined }>();
-	let tickRequested = false;
+	let tickRequestedEpoch: number | undefined;
 	let runtimeEpoch = 0;
 	let shuttingDown = false;
 
@@ -144,7 +144,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 	};
 
-	const displayStatus = (step: WorkflowStep): WorkflowStep["status"] => inFlight.has(step.ref) && step.status !== "done" ? "running" : step.status;
+	const isCurrentInFlight = (ref: string): boolean => inFlight.get(ref) === runtimeEpoch;
+	const displayStatus = (step: WorkflowStep): WorkflowStep["status"] => isCurrentInFlight(step.ref) && step.status !== "done" ? "running" : step.status;
 	const displayProgress = (step: WorkflowStep, status: WorkflowStep["status"]): string =>
 		status === "running" ? formatAgentProgress(step.progress ?? inFlightProgress.get(step.ref)) : "";
 	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
@@ -160,6 +161,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		if (status === "done" || step.phase === "integrated") return "Integrated";
 		if (status === "running") return step.phase === "verifying-candidate" ? "Verifying candidate" : "Assembling candidate";
 		if (step.phase === "verification-failed") return "Verification failed";
+		if (step.detail === "waiting for stage merge barrier") return "Waiting for shared merge barrier";
 		if (step.phase === "contribution-ready") return "Contribution ready";
 		return "Ready to integrate";
 	};
@@ -188,9 +190,9 @@ export default function workflows(pi: ExtensionAPI): void {
 			const stageStatus = primary ? displayStatus(primary) : "pending";
 			const reviewSteps = stageSteps.filter((step) => step.kind === "evaluation");
 			const mergeSteps = stageSteps.filter((step) => step.kind === "merge");
-			const reviewActive = reviewSteps.some((step) => step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref));
-			const implementationActive = !reviewActive && stageSteps.some((step) => step.kind === "task" && (step.status === "running" || step.status === "ready" || step.status === "attention" || inFlight.has(step.ref)));
-			const integrationActive = !reviewActive && !implementationActive && mergeSteps.some((step) => !["done", "cancelled"].includes(step.status) || inFlight.has(step.ref));
+			const reviewActive = reviewSteps.some((step) => step.status === "running" || step.status === "ready" || step.status === "attention" || isCurrentInFlight(step.ref));
+			const implementationActive = !reviewActive && stageSteps.some((step) => step.kind === "task" && (step.status === "running" || step.status === "ready" || step.status === "attention" || isCurrentInFlight(step.ref)));
+			const integrationActive = !reviewActive && !implementationActive && mergeSteps.some((step) => !["done", "cancelled"].includes(step.status) || isCurrentInFlight(step.ref));
 			const runningMerge = mergeSteps.find((step) => displayStatus(step) === "running");
 			const verificationFailed = !runningMerge && mergeSteps.some((step) => step.phase === "verification-failed");
 			const verifying = runningMerge?.phase === "verifying-candidate";
@@ -211,7 +213,8 @@ export default function workflows(pi: ExtensionAPI): void {
 			if (implementationActive || integrationActive) {
 				for (const step of stageSteps.filter((candidate) => candidate.kind !== "evaluation")) {
 					const status = displayStatus(step);
-					const shownStatus = visualStatus(step, status);
+					const waitingOnActiveBarrier = step.detail === "waiting for stage merge barrier" && Boolean(runningMerge);
+					const shownStatus = waitingOnActiveBarrier ? "running" : visualStatus(step, status);
 					const kind = stepLabel(step, status);
 					const color: "success" | "error" | "muted" | "accent" = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
 					const progress = includeProgress ? displayProgress(step, status) : "";
@@ -299,7 +302,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const startVisualTimer = () => {
 		if (visualTimer || !sessionCtx) return;
 		visualTimer = setInterval(() => {
-			const visibleActive = Boolean(currentRef && currentSnapshot && (active.has(currentRef) || currentSnapshot.steps.some((step) => step.status === "running" || inFlight.has(step.ref))));
+			const visibleActive = Boolean(currentRef && currentSnapshot && (active.has(currentRef) || currentSnapshot.steps.some((step) => step.status === "running" || isCurrentInFlight(step.ref))));
 			if (!visibleActive) { clearInterval(visualTimer); visualTimer = undefined; return; }
 			frame++;
 			dashboardInvalidate?.();
@@ -378,8 +381,8 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const runnable = (snapshot: WorkflowSnapshot): WorkflowStep[] => {
-		const ready = snapshot.steps.filter((step) => step.status === "ready" && !inFlight.has(step.ref));
-		const running = snapshot.steps.filter((step) => step.status === "running" || inFlight.has(step.ref));
+		const ready = snapshot.steps.filter((step) => step.status === "ready" && !isCurrentInFlight(step.ref));
+		const running = snapshot.steps.filter((step) => step.status === "running" || isCurrentInFlight(step.ref));
 		if (running.some((step) => step.parallelism === "serial")) return [];
 		const serial = ready.find((step) => step.parallelism === "serial");
 		if (serial) return running.length === 0 ? [serial] : [];
@@ -400,7 +403,7 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const tick = async (ctx: ExtensionContext, epoch = runtimeEpoch) => {
 		if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
-		if (ticking) { tickRequested = true; return; }
+		if (ticking) { tickRequestedEpoch = epoch; return; }
 		ticking = true;
 		try {
 			frame++;
@@ -423,17 +426,17 @@ export default function workflows(pi: ExtensionAPI): void {
 				}
 				if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
 				if (ref === currentRef) {
-					currentSnapshot = { ...snapshot, steps: snapshot.steps.map((step) => inFlight.has(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) };
+					currentSnapshot = { ...snapshot, steps: snapshot.steps.map((step) => isCurrentInFlight(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) };
 					renderDashboard(ctx);
 				}
 				if (state !== "running") continue;
 				// An adapter snapshot can briefly observe canonical settlement between child exit
 				// and runStep completion. The in-flight promise remains authoritative until it
 				// settles; only attention with no active step should pause the workflow.
-				const hasIndependentReadyWork = snapshot.steps.some((step) => step.status === "ready" && !inFlight.has(step.ref));
+				const hasIndependentReadyWork = snapshot.steps.some((step) => step.status === "ready" && !isCurrentInFlight(step.ref));
 				const attentionSteps = snapshot.steps.filter((step) => step.status === "attention");
 				const actionableAttentionSteps = attentionSteps.filter((step) => step.detail !== "result pending reconciliation");
-				if (snapshot.status === "attention" && actionableAttentionSteps.length > 0 && !snapshot.steps.some((step) => inFlight.has(step.ref)) && !hasIndependentReadyWork) {
+				if (snapshot.status === "attention" && actionableAttentionSteps.length > 0 && !snapshot.steps.some((step) => isCurrentInFlight(step.ref)) && !hasIndependentReadyWork) {
 					const detail = actionableAttentionSteps.map((step) => `${step.ref}: ${step.detail ?? "needs intervention"}`).join("\n");
 					await pauseDurably(adapter, ref, `attention:${actionableAttentionSteps.map((step) => step.ref).join(",")}:${ownership.get(ref) ?? epoch}`, ctx);
 					const checkpoint = actionableAttentionSteps.find((step) => step.kind === "evaluation");
@@ -460,10 +463,12 @@ export default function workflows(pi: ExtensionAPI): void {
 			sendEvent({ workflowRef: currentRef ?? "workflow", title: "Workflow runner · attention", detail, attention: true, cause: "runner-exception" });
 		} finally {
 			ticking = false;
-			if (tickRequested) {
-				tickRequested = false;
-				if (!shuttingDown && epoch === runtimeEpoch) requestTick(ctx, epoch);
-			}
+			const requestedEpoch = tickRequestedEpoch;
+			tickRequestedEpoch = undefined;
+			// A session replacement can request a new-epoch tick while the old tick is
+			// unwinding. Always hand that request to the current session context rather
+			// than dropping it with the stale tick's epoch.
+			if (!shuttingDown && requestedEpoch === runtimeEpoch && sessionCtx) requestTick(sessionCtx, requestedEpoch);
 		}
 	};
 
@@ -486,6 +491,11 @@ export default function workflows(pi: ExtensionAPI): void {
 				return;
 			}
 			subscription.unsubscribe = typeof unsubscribe === "function" ? unsubscribe : undefined;
+			// Close the subscribe-after-snapshot race. Agent activity may become durable
+			// while a replacement extension is still installing its watcher; one
+			// immediate catch-up snapshot gives live status a recovery path even when no
+			// later lifecycle event arrives.
+			listener();
 		}).catch(() => undefined);
 	};
 
@@ -556,7 +566,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			if (control) ownership.set(params.ref, control.generation);
 			if (params.action === "stop") {
 				runtimeEpoch++;
-				tickRequested = false;
+				tickRequestedEpoch = undefined;
 				stopLifecycle(params.ref);
 				active.delete(params.ref);
 				for (const stepRef of inFlight.keys()) if (stepRef === params.ref || stepRef.startsWith(`${params.ref}/`)) {
@@ -757,6 +767,11 @@ export default function workflows(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		runtimeEpoch++;
 		shuttingDown = false;
+		// In-memory promises belong to the prior extension epoch. Durable adapter and
+		// agent state below reconstructs active work without letting stale startup
+		// overlays pin the replacement dashboard at `starting`.
+		inFlight.clear();
+		inFlightProgress.clear();
 		if (process.env.PIBOX_SUBAGENT_ID) { pi.setActiveTools(pi.getActiveTools().filter((name) => !TOOL_NAMES.includes(name))); return; }
 		adapters.length = 0;
 		pi.events.emit(WORKFLOW_ADAPTER_DISCOVERY_EVENT, { register(adapter: WorkflowAdapter) { if (!adapters.some((candidate) => candidate.id === adapter.id)) adapters.push(adapter); } } satisfies WorkflowAdapterDiscovery);
@@ -824,7 +839,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		runningSubagents.clear();
 		runtimeEpoch++;
 		shuttingDown = true;
-		tickRequested = false;
+		tickRequestedEpoch = undefined;
 		for (const ref of lifecycleSubscriptions.keys()) stopLifecycle(ref);
 		active.clear();
 		ownership.clear();
