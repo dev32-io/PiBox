@@ -557,10 +557,13 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	assert.ok(invalidations > 0, "fast visual timer requests real TUI redraws");
 	assert.equal(rendered.some((line) => /\b(running|merging)\b/.test(line)), false);
 	assert.equal(rendered.some((line) => line.includes("↓ 1.5k")), true);
-	assert.equal(rendered.some((line) => /Implement · Fast ·/.test(line)), true);
+	const taskLine = rendered.findIndex((line) => line.includes("Implement"));
+	assert.ok(taskLine > 0);
+	assert.equal(rendered[taskLine]!.includes("Fast"), false, "the task title keeps the full row");
+	assert.match(rendered[taskLine + 1]!.trimStart(), /^Fast ·/, "live subagent status moves to an aligned continuation row");
 	assert.equal(rendered.filter((line) => line.includes("Fast")).length, 1, "Fast is omitted for ordinary workflow agents");
 	assert.equal(rendered.some((line) => /\bout\b/i.test(line)), false);
-	const icons = rendered.slice(1).map((line) => line.trimStart()[0]);
+	const icons = ["Implement", "Merge", "Evaluate"].map((title) => rendered.find((line) => line.includes(title))!.trimStart()[0]);
 	assert.equal(new Set(icons).size, 3, "task, merge, and evaluation activity have distinct animated icon families");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
@@ -571,7 +574,7 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	const progress = { startedAt: new Date().toISOString(), lastEventAt: new Date().toISOString(), turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 };
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:workflow", title: "Starting implementation", status: "ready",
-		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", fast: true, dependsOn: [], parallelism: "serial", resourceClaims: [], progress }],
+		steps: [{ ref: "test:workflow/task:one", title: "Add atomic this-and-following series deletion", kind: "task", status: "ready", fast: true, dependsOn: [], parallelism: "serial", resourceClaims: [], progress }],
 		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
 		metrics: { elapsedMs: 60_000, runningMs: 60_000, agentActiveMs: 8_000, verificationMs: 0, fixes: 0, retries: 0, agentCount: 1, verificationAttempts: 0, inputTokens: 500, outputTokens: 0, toolErrors: 0 },
 	};
@@ -591,7 +594,9 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	assert.ok(activeLines.every((line) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line)), "in-flight ready state uses animated task frames instead of a static ready diamond");
 	assert.ok(activeLines.every((line) => !line.includes("◆")));
 	const fastVisible = widget?.({}, f.ctx.ui.theme).render(160) as string[];
-	assert.equal(fastVisible.filter((line) => line.includes("Implementing") && line.includes("Fast")).length, 1, "stage-aware implementation detail retains the Fast marker when it fits");
+	const implementationLine = fastVisible.findIndex((line) => line.includes("Implementing · Add atomic this-and-following series deletion"));
+	assert.ok(implementationLine > 0, "the complete task phase and title retain their own row");
+	assert.match(fastVisible[implementationLine + 1]!.trimStart(), /^Fast ·/, "live subagent status starts on the next row aligned beneath the phase text");
 	const firstDivider = rendered[0]!.indexOf("│");
 	progress.turns = 12; progress.toolCalls = 34; progress.outputTokens = 152_000; progress.lastEventAt = new Date(Date.now() - 45_000).toISOString();
 	const updated = widget?.({}, f.ctx.ui.theme).render(100) as string[];
@@ -695,7 +700,9 @@ test("an in-flight fixer shows starting progress before its Pi process reports",
 	await f.tools.get("workflow_start").execute("call", { ref: "work-item:calendar" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	assert.ok(rendered.some((line) => /Fix #2 · \d+s · starting/.test(line)), "scheduled fixer renders as starting before agent progress arrives");
+	const fixer = rendered.findIndex((line) => line.includes("Fix #2"));
+	assert.ok(fixer > 0);
+	assert.match(rendered[fixer + 1]!.trimStart(), /^\d+s · starting/, "scheduled fixer renders starting status on its continuation row");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -724,7 +731,9 @@ test("reload catch-up replaces a stale fixer startup projection with durable liv
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
 	let rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	assert.ok(rendered.some((line) => /Fix #2 · \d+s · starting/.test(line)));
+	let fixerIndex = rendered.findIndex((line) => line.includes("Fix #2"));
+	assert.ok(fixerIndex > 0);
+	assert.match(rendered[fixerIndex + 1]!.trimStart(), /^\d+s · starting/);
 
 	// The child became durable before the replacement extension finished
 	// installing its lifecycle watcher, so no live callback is available to emit.
@@ -732,11 +741,12 @@ test("reload catch-up replaces a stale fixer startup projection with durable liv
 	releaseSubscription();
 	await new Promise((resolve) => setTimeout(resolve, 20));
 	rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	const fixer = rendered.find((line) => line.includes("Fix #2"));
-	assert.ok(fixer);
-	assert.match(fixer!, /active/);
-	assert.doesNotMatch(fixer!, /starting/);
-	assert.match(fixer!, /↓ 8\.4k/);
+	fixerIndex = rendered.findIndex((line) => line.includes("Fix #2"));
+	assert.ok(fixerIndex > 0);
+	const fixerStatus = rendered[fixerIndex + 1]!;
+	assert.match(fixerStatus, /active/);
+	assert.doesNotMatch(fixerStatus, /starting/);
+	assert.match(fixerStatus, /↓ 8\.4k/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -762,7 +772,9 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(140) as string[];
 	assert.ok(rendered.some((line) => line.includes("Final validation · E2E journey/fix loop · 2 gates")));
-	assert.ok(rendered.some((line) => line.includes("E2E journey/fix loop · Running journeys") && line.includes("4 turns") && line.includes("13 tools") && line.includes("Fast")), "stage-aware review detail retains the Fast marker");
+	const journey = rendered.findIndex((line) => line.includes("E2E journey/fix loop · Running journeys"));
+	assert.ok(journey > 0);
+	assert.match(rendered[journey + 1]!.trimStart(), /^Fast · .*4 turns · 13 tools/, "stage-aware review detail puts live agent status on its own continuation row");
 	assert.ok(rendered.some((line) => line.includes("Whole-branch review/fix loop · Whole-branch review queued")));
 	assert.equal(rendered.some((line) => line.includes("Runtime verification") || line.includes("0 tasks")), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);

@@ -174,8 +174,9 @@ export default function workflows(pi: ExtensionAPI): void {
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
 			const progress = includeProgress ? displayProgress(step, status) : "";
-			const liveSuffix = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
-			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
+			const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}`);
+			if (liveStatus) lines.push(`  ${ctx.ui.theme.fg("dim", liveStatus)}`);
 		}
 		return lines;
 	};
@@ -218,8 +219,9 @@ export default function workflows(pi: ExtensionAPI): void {
 					const kind = stepLabel(step, status);
 					const color: "success" | "error" | "muted" | "accent" = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
 					const progress = includeProgress ? displayProgress(step, status) : "";
-					const liveSuffix = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
-					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind)} `)}${kind} · ${step.title}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
+					const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind)} `)}${kind} · ${step.title}`);
+					if (liveStatus) lines.push(`    ${ctx.ui.theme.fg("dim", liveStatus)}`);
 				}
 			} else if (reviewActive) {
 				for (const step of reviewSteps) {
@@ -238,8 +240,9 @@ export default function workflows(pi: ExtensionAPI): void {
 						: undefined;
 					const label = (runtimeStage ? step.title : queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
 					const progress = includeProgress ? displayProgress(step, status) : "";
-					const liveSuffix = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
-					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
+					const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}`);
+					if (liveStatus) lines.push(`    ${ctx.ui.theme.fg("dim", liveStatus)}`);
 				}
 			}
 		}

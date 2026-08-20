@@ -15,7 +15,7 @@ import {
 	type ExtensionAPI,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { getKeybindings, Markdown, Spacer, visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
 import { decorateHexColors } from "./color-preview.js";
 import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "./config.js";
 import { createPrefixedMarkdown } from "./components/message-layout.js";
@@ -23,21 +23,28 @@ import { renderToolCall, renderToolResult } from "./components/tool-renderers.js
 import { LinePrefixedComponent } from "./components/tool-shell.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
-const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v3");
-// Version tool patches separately so /reload can replace an older shell patch
-// without re-wrapping the already-installed user/assistant message patches.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v10");
+const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
+// Version tool patches separately so /reload can replace an older shell patch.
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v11");
+const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 const STYLED_TOOL_NAMES = new Set<string>(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
 interface GlobalStyleState {
 	theme: Theme | undefined;
+	toolGroupBoundaryPending: boolean;
 }
 
 function globalState(): GlobalStyleState {
 	const root = globalThis as typeof globalThis & { [STATE_KEY]?: GlobalStyleState };
-	return (root[STATE_KEY] ??= { theme: undefined });
+	return (root[STATE_KEY] ??= { theme: undefined, toolGroupBoundaryPending: false });
+}
+
+// Coding-agent packages may resolve their own pi-tui copy. Component identity
+// therefore cannot rely on instanceof across the package boundary.
+function isComponent(value: any, name: string): boolean {
+	return value?.constructor?.name === name;
 }
 
 function installMessagePatches(): void {
@@ -45,7 +52,14 @@ function installMessagePatches(): void {
 	if (!assistantPrototype[PATCH_FLAG]) {
 		const originalUpdateContent = assistantPrototype.updateContent;
 		assistantPrototype.updateContent = function piBoxAssistantUpdate(message: any, isStreaming?: boolean) {
+			const previouslyHadToolCalls = this.hasToolCalls === true;
+			const content = Array.isArray(message?.content) ? message.content : [];
+			const hasToolCalls = content.some((block: any) => block?.type === "toolCall");
+			const hasVisibleContent = content.some((block: any) =>
+				(block?.type === "text" && block.text?.trim()) || (block?.type === "thinking" && block.thinking?.trim()),
+			);
 			originalUpdateContent.call(this, message, isStreaming);
+			if (!previouslyHadToolCalls && hasToolCalls) globalState().toolGroupBoundaryPending = !hasVisibleContent;
 			// Pi must retain the normalized error internally to trigger overflow
 			// recovery, but the transcript does not need to show that recovered
 			// failure above the auto-compaction status.
@@ -64,19 +78,19 @@ function installMessagePatches(): void {
 			// Thinking remains in the session and model context, but is presented live
 			// in the working row instead of accumulating in transcript history.
 			this.contentContainer.children = children.filter((child: any) =>
-				!(child instanceof Markdown && (child as any).defaultTextStyle?.italic),
+				!(isComponent(child, "Markdown") && child.defaultTextStyle?.italic),
 			);
 			const visibleChildren = this.contentContainer.children;
-			if (visibleChildren.every((child: any) => child instanceof Spacer)) {
+			if (visibleChildren.every((child: any) => isComponent(child, "Spacer"))) {
 				this.contentContainer.clear();
 				return;
 			}
-			// User messages own the turn's trailing gap, so remove Pi's conditional
-			// assistant-leading spacer. This keeps text and tool-only turns aligned.
-			if (visibleChildren[0] instanceof Spacer) visibleChildren[0].setLines(0);
+			// Assistant text owns its leading transcript boundary. A tool-only
+			// assistant message delegates that boundary to its first tool row below.
+			if (isComponent(visibleChildren[0], "Spacer")) visibleChildren[0].setLines(1);
 			for (let index = 0; index < visibleChildren.length; index++) {
 				const child = visibleChildren[index];
-				if (!(child instanceof Markdown)) continue;
+				if (!isComponent(child, "Markdown")) continue;
 				const text = (child as any).text;
 				if (text) visibleChildren[index] = createPrefixedMarkdown(text, this.markdownTheme, theme, {
 					prefix: "●",
@@ -97,7 +111,7 @@ function installMessagePatches(): void {
 			if (!theme || !Array.isArray(box?.children)) return;
 			for (let index = 0; index < box.children.length; index++) {
 				const child = box.children[index];
-				if (!(child instanceof Markdown)) continue;
+				if (!isComponent(child, "Markdown")) continue;
 				const text = (child as any).text;
 				if (text) box.children[index] = createPrefixedMarkdown(text, this.markdownTheme, theme, {
 					prefix: "❯",
@@ -105,11 +119,13 @@ function installMessagePatches(): void {
 					bodyColor: "text",
 				});
 			}
-			// Own one stable trailing row here instead of relying on the next assistant
-			// component, which omits its leading spacer for tool-only responses.
+			// Boundaries are owned by the following top-level block. This avoids
+			// doubling the gap before assistant text while the first tool in a
+			// tool-only response still receives one leading row.
 			box.paddingX = 0;
 			box.paddingY = 0;
-			this.addChild(new Spacer(1));
+			const trailing = this.children?.[this.children.length - 1];
+			if (isComponent(trailing, "Spacer")) this.removeChild(trailing);
 		};
 		userPrototype[PATCH_FLAG] = true;
 	}
@@ -121,10 +137,14 @@ function installToolPatch(): void {
 	const originalUpdateDisplay = prototype.updateDisplay;
 	prototype.updateDisplay = function piBoxToolUpdateDisplay() {
 		originalUpdateDisplay.call(this);
-		// Native tool rows begin with a Spacer(1). That is useful for boxed tools,
-		// but makes a sequence of compact calls look double-spaced.
+		// Keep exactly one starter row before a tool-only assistant response while
+		// preserving compact spacing between sibling calls in the same response.
+		if (this[TOOL_BOUNDARY_FLAG] === undefined) {
+			this[TOOL_BOUNDARY_FLAG] = globalState().toolGroupBoundaryPending;
+			globalState().toolGroupBoundaryPending = false;
+		}
 		const leadingSpacer = this.children?.[0];
-		if (leadingSpacer instanceof Spacer) leadingSpacer.setLines(0);
+		if (isComponent(leadingSpacer, "Spacer")) leadingSpacer.setLines(this[TOOL_BOUNDARY_FLAG] ? 1 : 0);
 
 		const renderContainer = this.getRenderShell?.() === "self" ? this.selfRenderContainer : this.contentBox;
 		if (this.contentBox) {
