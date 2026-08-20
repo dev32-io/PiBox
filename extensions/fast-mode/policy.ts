@@ -3,6 +3,9 @@ import type { Model } from "@earendil-works/pi-ai";
 export const FAST_MODE_ENTRY_TYPE = "pibox-fast-mode";
 export const FAST_MODE_STATUS_KEY = "fast-mode";
 export const FAST_MODE_CHILD_ENV = "PIBOX_FAST_CHILD_ENABLED";
+/** Cross-extension policy propagation. Pi loads each extension through an
+ * isolated module graph, so launchers must not rely on a shared singleton. */
+export const FAST_MODE_POLICY_EVENT = "pibox:fast-mode-policy";
 
 export const SUBAGENT_FAST_LIMITS = ["off", "low", "medium", "high", "max"] as const;
 export type SubagentFastLimit = (typeof SUBAGENT_FAST_LIMITS)[number];

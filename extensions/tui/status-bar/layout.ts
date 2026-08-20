@@ -169,7 +169,7 @@ function fastModeSegment(data: StatusRenderData): string {
 	}
 	if (scopes.length === 0 && !status.mainAvailable) return "";
 	const value = scopes.length > 0 ? scopes.join("+") : "OFF";
-	return `${data.theme.fg("dim", "Fast:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
+	return `${data.theme.fg("dim", "Fast req:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
 }
 
 function rowFits(leftParts: string[], rightParts: string[], width: number): boolean {

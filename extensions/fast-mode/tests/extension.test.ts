@@ -3,8 +3,7 @@ import test from "node:test";
 import type { Model } from "@earendil-works/pi-ai";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import fastMode, { applyFastModeSetting, restoreFastModePolicy } from "../index.js";
-import { FAST_MODE_CHILD_ENV, FAST_MODE_ENTRY_TYPE, FAST_MODE_STATUS_KEY, parseFastModeStatus } from "../policy.js";
-import { resetActiveFastModePolicy } from "../runtime.js";
+import { FAST_MODE_CHILD_ENV, FAST_MODE_ENTRY_TYPE, FAST_MODE_POLICY_EVENT, FAST_MODE_STATUS_KEY, parseFastModeStatus } from "../policy.js";
 
 initTheme("dark", false);
 
@@ -26,11 +25,11 @@ test("restores the last valid branch entry and isolates explicit child launch st
 		{ type: "custom", customType: FAST_MODE_ENTRY_TYPE, data: { main: "invalid", subagents: "max" } },
 		{ type: "custom", customType: FAST_MODE_ENTRY_TYPE, data: { main: false, subagents: "high" } },
 	];
-	assert.deepEqual(restoreFastModePolicy(context(entries)), { main: false, subagents: "high" });
+	assert.deepEqual(restoreFastModePolicy(context(entries), {}), { main: false, subagents: "high" });
 	assert.deepEqual(restoreFastModePolicy(context(entries), { PIBOX_SUBAGENT_ID: "agent-1", [FAST_MODE_CHILD_ENV]: "1" }), { main: true, subagents: "off" });
 	assert.deepEqual(restoreFastModePolicy(context(entries), { PIBOX_SUBAGENT_ID: "agent-1", [FAST_MODE_CHILD_ENV]: "0" }), { main: false, subagents: "off" });
 	assert.deepEqual(restoreFastModePolicy(context(entries), { [FAST_MODE_CHILD_ENV]: "1" }), { main: true, subagents: "off" });
-	assert.deepEqual(restoreFastModePolicy(context([])), { main: false, subagents: "off" });
+	assert.deepEqual(restoreFastModePolicy(context([]), {}), { main: false, subagents: "off" });
 });
 
 test("maps the two menu settings without manufacturing combinations", () => {
@@ -41,19 +40,20 @@ test("maps the two menu settings without manufacturing combinations", () => {
 	assert.equal(applyFastModeSetting(initial, "subagents", "Local"), undefined);
 });
 
-test("registers session restoration, request rewriting, status, and cleanup", async (t) => {
-	t.after(resetActiveFastModePolicy);
+test("registers session restoration, request rewriting, status, and cleanup", async () => {
 	const handlers = new Map<string, Array<(event: any, ctx: ExtensionContext) => unknown>>();
 	const commands = new Map<string, { handler: (args: string, ctx: any) => Promise<void> }>();
 	const appended: Array<{ type: string; data: unknown }> = [];
+	const emitted: Array<{ name: string; value: unknown }> = [];
 	const pi = {
+		events: { emit(name: string, value: unknown) { emitted.push({ name, value }); } },
 		on(name: string, handler: (event: any, ctx: ExtensionContext) => unknown) {
 			handlers.set(name, [...(handlers.get(name) ?? []), handler]);
 		},
 		registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, command); },
 		appendEntry(type: string, data: unknown) { appended.push({ type, data }); },
 	} as unknown as ExtensionAPI;
-	fastMode(pi);
+	fastMode(pi, {});
 	assert.ok(commands.has("fast"));
 
 	const statuses = new Map<string, string | undefined>();
@@ -64,6 +64,7 @@ test("registers session restoration, request rewriting, status, and cleanup", as
 	} as unknown as ExtensionContext;
 	await handlers.get("session_start")?.[0]?.({ reason: "reload" }, ctx);
 	assert.deepEqual(parseFastModeStatus(statuses.get(FAST_MODE_STATUS_KEY)), { mainAvailable: true, mainEnabled: true, subagents: "medium" });
+	assert.deepEqual(emitted.at(-1), { name: FAST_MODE_POLICY_EVENT, value: { main: true, subagents: "medium" } });
 
 	const payload = { model: eligibleModel.id, input: "hello" };
 	assert.deepEqual(await handlers.get("before_provider_request")?.[0]?.({ payload }, ctx), { ...payload, service_tier: "priority" });
@@ -75,9 +76,11 @@ test("registers session restoration, request rewriting, status, and cleanup", as
 	} as unknown as ExtensionContext;
 	await handlers.get("session_tree")?.[0]?.({}, treeCtx);
 	assert.deepEqual(parseFastModeStatus(statuses.get(FAST_MODE_STATUS_KEY)), { mainAvailable: true, mainEnabled: false, subagents: "high" });
+	assert.deepEqual(emitted.at(-1), { name: FAST_MODE_POLICY_EVENT, value: { main: false, subagents: "high" } });
 
 	await handlers.get("session_shutdown")?.[0]?.({ reason: "resume" }, treeCtx);
 	assert.equal(statuses.get(FAST_MODE_STATUS_KEY), undefined);
+	assert.deepEqual(emitted.at(-1), { name: FAST_MODE_POLICY_EVENT, value: { main: false, subagents: "off" } });
 	const replacementCtx = { ...context([]), ui: ctx.ui } as unknown as ExtensionContext;
 	await handlers.get("session_start")?.[0]?.({ reason: "resume" }, replacementCtx);
 	assert.deepEqual(parseFastModeStatus(statuses.get(FAST_MODE_STATUS_KEY)), { mainAvailable: true, mainEnabled: false, subagents: "off" }, "replacement session does not inherit prior in-memory policy");
@@ -89,11 +92,12 @@ test("renders the in-place /fast settings menu and persists each complete change
 	let command: { handler: (args: string, ctx: any) => Promise<void> } | undefined;
 	const appended: unknown[] = [];
 	const pi = {
+		events: { emit() {} },
 		on() {},
 		registerCommand(_name: string, value: typeof command) { command = value; },
 		appendEntry(_type: string, data: unknown) { appended.push(data); },
 	} as unknown as ExtensionAPI;
-	fastMode(pi);
+	fastMode(pi, {});
 	let rendered: string[] = [];
 	let component: { render(width: number): string[]; handleInput?(data: string): void } | undefined;
 	const theme = { fg: (_token: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;

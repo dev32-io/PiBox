@@ -441,7 +441,7 @@ test("explicit background spawning returns its report to the main agent and show
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", mode: "background", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
 	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high" });
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic High \(openai-codex\/gpt-5\.6-sol#high\) · \d+s · 2 turns · 3 tools · ↓ 1\.2k · active · Fast/);
+	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic High \(openai-codex\/gpt-5\.6-sol#high\) · Fast · \d+s · 2 turns · 3 tools · ↓ 1\.2k · active/);
 	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
 	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
 	release();
@@ -468,7 +468,7 @@ test("omitted mode waits in foreground without using the background footer", asy
 		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
 			request = input;
 			const startedAt = new Date().toISOString();
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: false, startedAt });
+			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, startedAt });
 			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 });
 			await gate;
 			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
@@ -484,13 +484,18 @@ test("omitted mode waits in foreground without using the background footer", asy
 	assert.equal(request.tier, "medium");
 	assert.deepEqual(
 		{ agent: updates.at(-1)?.details.agent, tier: updates.at(-1)?.details.tier, provider: updates.at(-1)?.details.resolved?.provider, model: updates.at(-1)?.details.resolved?.model, effort: updates.at(-1)?.details.resolved?.effort, fast: updates.at(-1)?.details.resolved?.fast },
-		{ agent: "plan-critic", tier: "medium", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: false },
+		{ agent: "plan-critic", tier: "medium", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true },
 	);
 	assert.equal(updates.at(-1)?.details.progress.outputTokens, 800);
 	release();
 	const settled = await pending;
 	assert.equal(settled.content[0].text, "plan-critic: ready");
 	assert.equal(settled.details.agentId, "critic");
+	assert.deepEqual(
+		{ agent: settled.details.agent, tier: settled.details.tier, fast: settled.details.resolved?.fast, outputTokens: settled.details.progress?.outputTokens },
+		{ agent: "plan-critic", tier: "medium", fast: true, outputTokens: 800 },
+		"settled foreground results retain the resolved Fast request evidence",
+	);
 	assert.equal(f.statuses.has("subagent-dashboard"), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
@@ -552,7 +557,7 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	assert.ok(invalidations > 0, "fast visual timer requests real TUI redraws");
 	assert.equal(rendered.some((line) => /\b(running|merging)\b/.test(line)), false);
 	assert.equal(rendered.some((line) => line.includes("↓ 1.5k")), true);
-	assert.equal(rendered.some((line) => /Implement · .* · Fast/.test(line)), true);
+	assert.equal(rendered.some((line) => /Implement · Fast ·/.test(line)), true);
 	assert.equal(rendered.filter((line) => line.includes("Fast")).length, 1, "Fast is omitted for ordinary workflow agents");
 	assert.equal(rendered.some((line) => /\bout\b/i.test(line)), false);
 	const icons = rendered.slice(1).map((line) => line.trimStart()[0]);
@@ -566,7 +571,7 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	const progress = { startedAt: new Date().toISOString(), lastEventAt: new Date().toISOString(), turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 };
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:workflow", title: "Starting implementation", status: "ready",
-		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [], progress }],
+		steps: [{ ref: "test:workflow/task:one", title: "Build the feature", kind: "task", status: "ready", fast: true, dependsOn: [], parallelism: "serial", resourceClaims: [], progress }],
 		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
 		metrics: { elapsedMs: 60_000, runningMs: 60_000, agentActiveMs: 8_000, verificationMs: 0, fixes: 0, retries: 0, agentCount: 1, verificationAttempts: 0, inputTokens: 500, outputTokens: 0, toolErrors: 0 },
 	};
@@ -585,6 +590,8 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	assert.equal(activeLines.length, 2, "stage and task both render as implementing");
 	assert.ok(activeLines.every((line) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line)), "in-flight ready state uses animated task frames instead of a static ready diamond");
 	assert.ok(activeLines.every((line) => !line.includes("◆")));
+	const fastVisible = widget?.({}, f.ctx.ui.theme).render(160) as string[];
+	assert.equal(fastVisible.filter((line) => line.includes("Implementing") && line.includes("Fast")).length, 1, "stage-aware implementation detail retains the Fast marker when it fits");
 	const firstDivider = rendered[0]!.indexOf("│");
 	progress.turns = 12; progress.toolCalls = 34; progress.outputTokens = 152_000; progress.lastEventAt = new Date(Date.now() - 45_000).toISOString();
 	const updated = widget?.({}, f.ctx.ui.theme).render(100) as string[];
@@ -657,7 +664,7 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 	const snapshot: WorkflowSnapshot = {
 		ref: "work-item:calendar", title: "Calendar", status: "running",
 		steps: [
-			{ ref: "work-item:calendar/evaluation:final-e2e", title: "E2E journey/fix loop · Running journeys", kind: "evaluation", checkpoint: "final-e2e", status: "running", progress, dependsOn: [], parallelism: "serial", resourceClaims: [] },
+			{ ref: "work-item:calendar/evaluation:final-e2e", title: "E2E journey/fix loop · Running journeys", kind: "evaluation", checkpoint: "final-e2e", status: "running", fast: true, progress, dependsOn: [], parallelism: "serial", resourceClaims: [] },
 			{ ref: "work-item:calendar/evaluation:final-branch-review", title: "Whole-branch review/fix loop · Whole-branch review queued", kind: "evaluation", checkpoint: "final-review", status: "pending", dependsOn: ["work-item:calendar/evaluation:final-e2e"], parallelism: "serial", resourceClaims: [] },
 		],
 		stages: [{ id: "runtime-verification", index: 8, nodes: ["evaluation:final-e2e", "evaluation:final-branch-review"], parallel: false, group: "runtime" }],
@@ -672,7 +679,7 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(140) as string[];
 	assert.ok(rendered.some((line) => line.includes("Final validation · E2E journey/fix loop · 2 gates")));
-	assert.ok(rendered.some((line) => line.includes("E2E journey/fix loop · Running journeys") && line.includes("4 turns") && line.includes("13 tools")));
+	assert.ok(rendered.some((line) => line.includes("E2E journey/fix loop · Running journeys") && line.includes("4 turns") && line.includes("13 tools") && line.includes("Fast")), "stage-aware review detail retains the Fast marker");
 	assert.ok(rendered.some((line) => line.includes("Whole-branch review/fix loop · Whole-branch review queued")));
 	assert.equal(rendered.some((line) => line.includes("Runtime verification") || line.includes("0 tasks")), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);

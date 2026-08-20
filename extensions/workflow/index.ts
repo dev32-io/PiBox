@@ -36,6 +36,8 @@ import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironme
 import { resourceDisplayDiff } from "./resource-diff.js";
 import { RepairRecoveryStore } from "./repair-recovery.js";
 import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
+import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/policy.js";
+import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
@@ -520,6 +522,11 @@ export default function workflow(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	const supervisor = new SubagentSupervisor();
+	resetActiveFastModePolicy();
+	pi.events.on(FAST_MODE_POLICY_EVENT, (value: unknown) => {
+		const policy = normalizeFastModePolicy(value);
+		if (policy) setActiveFastModePolicy(policy);
+	});
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
 
@@ -1579,6 +1586,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (event) => {
+		resetActiveFastModePolicy();
 		if (heartbeatTimer) clearInterval(heartbeatTimer);
 		if (isSubagentProcess() && process.env.PIBOX_SUBAGENT_ROOT && process.env.PIBOX_SUBAGENT_ATTEMPT_ID) {
 			await atomicWriteFile(join(process.env.PIBOX_SUBAGENT_ROOT, "attempts", process.env.PIBOX_SUBAGENT_ATTEMPT_ID, "process-exit.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId: process.env.PIBOX_SUBAGENT_ATTEMPT_ID, reason: event.reason, at: new Date().toISOString() }, null, 2)}\n`, 0o600).catch(() => undefined);

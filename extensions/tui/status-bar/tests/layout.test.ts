@@ -79,43 +79,43 @@ test("bypass permission mode is rendered before thinking", () => {
 	assert.match(row, /⚠ Permissions: BYPASS │ Thinking: MEDIUM/);
 });
 
-test("renders compact effective Fast-mode scopes after thinking", () => {
+test("renders compact requested Fast-mode scopes after thinking", () => {
 	const off = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.match(off, /Thinking: MEDIUM │ Fast: OFF/);
+	assert.match(off, /Thinking: MEDIUM │ Fast req: OFF/);
 	const main = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "off" } })[3] ?? "";
-	assert.match(main, /Thinking: MEDIUM │ Fast: MAIN/);
+	assert.match(main, /Thinking: MEDIUM │ Fast req: MAIN/);
 	for (const [limit, label] of [["low", "LOW"], ["medium", "MED"], ["high", "HIGH"], ["max", "MAX"]] as const) {
 		const combined = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: limit } })[3] ?? "";
-		assert.match(combined, new RegExp(`Thinking: MEDIUM │ Fast: MAIN\\+SUB≤${label}`));
+		assert.match(combined, new RegExp(`Thinking: MEDIUM │ Fast req: MAIN\\+SUB≤${label}`));
 		const subagentsOnly = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: limit } })[3] ?? "";
-		assert.match(subagentsOnly, new RegExp(`Thinking: MEDIUM │ Fast: SUB≤${label}`));
+		assert.match(subagentsOnly, new RegExp(`Thinking: MEDIUM │ Fast req: SUB≤${label}`));
 	}
 });
 
-test("colors enabled Fast scopes as premium usage and drops the whole segment at its fit boundary", () => {
+test("colors enabled Fast request scopes as premium usage and drops the whole segment at its fit boundary", () => {
 	const tokenTheme = {
 		fg: (token: string, value: string) => `<${token}>${value}</${token}>`,
 		bold: (value: string) => value,
 	} as unknown as Theme;
 	const enabled = renderStatusBar(400, { ...data, theme: tokenTheme, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "off" } })[3] ?? "";
-	assert.match(enabled, /<dim>Fast:<\/dim> <warning>MAIN<\/warning>/);
+	assert.match(enabled, /<dim>Fast req:<\/dim> <warning>MAIN<\/warning>/);
 	const off = renderStatusBar(400, { ...data, theme: tokenTheme, fastMode: { mainAvailable: true, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.match(off, /<dim>Fast:<\/dim> <dim>OFF<\/dim>/);
+	assert.match(off, /<dim>Fast req:<\/dim> <dim>OFF<\/dim>/);
 
 	const status = { mainAvailable: true, mainEnabled: true, subagents: "max" as const };
-	const firstVisible = Array.from({ length: 129 }, (_, index) => 72 + index).find((width) => (renderStatusBar(width, { ...data, fastMode: status })[3] ?? "").includes("Fast:"));
+	const firstVisible = Array.from({ length: 129 }, (_, index) => 72 + index).find((width) => (renderStatusBar(width, { ...data, fastMode: status })[3] ?? "").includes("Fast req:"));
 	assert.ok(firstVisible && firstVisible > 72);
-	assert.doesNotMatch(renderStatusBar(firstVisible! - 1, { ...data, fastMode: status })[3] ?? "", /Fast:/);
-	assert.match(renderStatusBar(firstVisible!, { ...data, fastMode: status })[3] ?? "", /Fast: MAIN\+SUB≤MAX/);
+	assert.doesNotMatch(renderStatusBar(firstVisible! - 1, { ...data, fastMode: status })[3] ?? "", /Fast req:/);
+	assert.match(renderStatusBar(firstVisible!, { ...data, fastMode: status })[3] ?? "", /Fast req: MAIN\+SUB≤MAX/);
 });
 
 test("hides unavailable or width-constrained Fast-mode status without harming core segments", () => {
 	const unavailable = renderStatusBar(160, { ...data, fastMode: { mainAvailable: false, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.doesNotMatch(unavailable, /Fast:/);
+	assert.doesNotMatch(unavailable, /Fast req:/);
 	const subagents = renderStatusBar(160, { ...data, fastMode: { mainAvailable: false, mainEnabled: false, subagents: "medium" } })[3] ?? "";
-	assert.match(subagents, /Fast: SUB≤MED/);
+	assert.match(subagents, /Fast req: SUB≤MED/);
 	const narrow = renderStatusBar(60, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "max" } })[3] ?? "";
-	assert.doesNotMatch(narrow, /Fast:/);
+	assert.doesNotMatch(narrow, /Fast req:/);
 	assert.equal(narrow, renderStatusBar(60, data)[3]);
 	assert.ok(visibleWidth(narrow) <= 60);
 });

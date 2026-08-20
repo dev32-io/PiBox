@@ -4,6 +4,8 @@ import test from "node:test";
 import { Check } from "typebox/value";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflow, { WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
+import { FAST_MODE_POLICY_EVENT } from "../../fast-mode/policy.js";
+import { getActiveFastModePolicy } from "../../fast-mode/runtime.js";
 
 test("loads workflow, context, and Fast-mode hooks explicitly in spawned agents", () => {
 	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 4);
@@ -21,9 +23,13 @@ test("registers the resource API and hides legacy planning tools from the main s
 	const schemas = new Map<string, unknown>();
 	const descriptions = new Map<string, string>();
 	const definitions = new Map<string, any>();
+	const busHandlers = new Map<string, Array<(value: unknown) => void>>();
 	let activeTools: string[] = [];
 	const pi = {
-		events: { on() {}, emit() {} },
+		events: {
+			on(name: string, handler: (value: unknown) => void) { busHandlers.set(name, [...(busHandlers.get(name) ?? []), handler]); },
+			emit(name: string, value: unknown) { for (const handler of busHandlers.get(name) ?? []) handler(value); },
+		},
 		registerTool(definition: { name: string; description?: string; parameters?: unknown }) {
 			tools.push(definition.name);
 			definitions.set(definition.name, definition);
@@ -42,6 +48,11 @@ test("registers the resource API and hides legacy planning tools from the main s
 	} as unknown as ExtensionAPI;
 
 	workflow(pi);
+	assert.deepEqual(getActiveFastModePolicy(), { main: false, subagents: "off" });
+	pi.events.emit(FAST_MODE_POLICY_EVENT, { main: true, subagents: "low" });
+	assert.deepEqual(getActiveFastModePolicy(), { main: true, subagents: "low" }, "shared event bus bridges isolated extension module graphs");
+	pi.events.emit(FAST_MODE_POLICY_EVENT, { main: "invalid", subagents: "max" });
+	assert.deepEqual(getActiveFastModePolicy(), { main: true, subagents: "low" }, "malformed policy events are ignored");
 	assert.deepEqual(tools, [
 		"task_clarify",
 		"task_checkpoint",
@@ -109,4 +120,6 @@ test("registers the resource API and hides legacy planning tools from the main s
 	for (const preferred of ["resource_list", "resource_read", "resource_write", "resource_delete", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
 	for (const compatibility of ["workflow_list", "workflow_get", "workflow_schema", "workflow_plan_write", "workflow_create", "workflow_patch", "workflow_delete"]) assert.equal(activeTools.includes(compatibility), false, compatibility);
 	assert.equal(activeTools.includes("read"), true);
+	await handlers.get("session_shutdown")?.({ reason: "quit" });
+	assert.deepEqual(getActiveFastModePolicy(), { main: false, subagents: "off" });
 });

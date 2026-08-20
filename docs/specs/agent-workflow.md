@@ -673,7 +673,7 @@ modelTiers:
   high:
     - openai-codex/gpt-5.6-sol#medium
   medium:
-    - openai-codex/gpt-5.6-luna#max
+    - openai-codex/gpt-5.6-luna#high
   low:
     - openai-codex/gpt-5.6-luna#medium
 ```

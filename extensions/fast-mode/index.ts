@@ -6,6 +6,7 @@ import {
 	DEFAULT_FAST_MODE_POLICY,
 	FAST_MODE_CHILD_ENV,
 	FAST_MODE_ENTRY_TYPE,
+	FAST_MODE_POLICY_EVENT,
 	FAST_MODE_STATUS_KEY,
 	normalizeFastModePolicy,
 	projectFastModeStatus,
@@ -14,7 +15,6 @@ import {
 	type FastModePolicy,
 	type SubagentFastLimit,
 } from "./policy.js";
-import { resetActiveFastModePolicy, setActiveFastModePolicy } from "./runtime.js";
 
 export const FAST_MODE_EXTENSION_PATH = fileURLToPath(import.meta.url);
 
@@ -60,7 +60,7 @@ export function applyFastModeSetting(policy: FastModePolicy, id: string, value: 
 	return undefined;
 }
 
-export default function fastMode(pi: ExtensionAPI): void {
+export default function fastMode(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
 	let policy: FastModePolicy = { ...DEFAULT_FAST_MODE_POLICY };
 	let sessionCtx: ExtensionContext | undefined;
 	let childProcess = false;
@@ -72,15 +72,17 @@ export default function fastMode(pi: ExtensionAPI): void {
 
 	const applyPolicy = (next: FastModePolicy, persist: boolean) => {
 		policy = { ...next };
-		setActiveFastModePolicy(policy);
+		// Extensions have isolated module caches. Publish the authoritative policy
+		// over Pi's shared event bus instead of depending on runtime.ts identity.
+		pi.events.emit(FAST_MODE_POLICY_EVENT, { ...policy });
 		if (persist && !childProcess) pi.appendEntry(FAST_MODE_ENTRY_TYPE, policy);
 		publishStatus();
 	};
 
 	const restore = (ctx: ExtensionContext) => {
 		sessionCtx = ctx;
-		childProcess = isChildProcess();
-		applyPolicy(restoreFastModePolicy(ctx), false);
+		childProcess = isChildProcess(env);
+		applyPolicy(restoreFastModePolicy(ctx, env), false);
 	};
 
 	pi.registerCommand("fast", {
@@ -112,7 +114,7 @@ export default function fastMode(pi: ExtensionAPI): void {
 					() => done(undefined),
 				);
 				container.addChild(settings);
-				container.addChild(new Text(theme.fg("dim", "Fast mode uses additional ChatGPT credits · esc close"), 1, 0));
+				container.addChild(new Text(theme.fg("dim", "Requests Fast mode; provider may downgrade · uses additional ChatGPT credits · esc close"), 1, 0));
 				return {
 					render: (width) => container.render(width),
 					invalidate: () => container.invalidate(),
@@ -131,6 +133,6 @@ export default function fastMode(pi: ExtensionAPI): void {
 		sessionCtx = undefined;
 		childProcess = false;
 		policy = { ...DEFAULT_FAST_MODE_POLICY };
-		resetActiveFastModePolicy();
+		pi.events.emit(FAST_MODE_POLICY_EVENT, { ...policy });
 	});
 }

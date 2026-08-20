@@ -21,9 +21,9 @@ test("keeps omitted dynamic routing on medium when a repository config also defi
 	assert.deepEqual(loaded.config.modelTiers.local, ["local-llm/qwen3.8-27b-uncensored#medium"]);
 	const tier = inferDynamicSubagentTier(undefined, undefined);
 	assert.equal(tier, "medium");
-	const result = resolveHarnessModel(loaded.config, [model("openai-codex", "gpt-5.6-luna", true, { max: "max" })], { tier });
+	const result = resolveHarnessModel(loaded.config, [model("openai-codex", "gpt-5.6-luna", true, { high: "high" })], { tier });
 	assert.equal(result.status, "resolved");
-	if (result.status === "resolved") assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-5.6-luna#max");
+	if (result.status === "resolved") assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-5.6-luna#high");
 });
 
 test("resolves the configured model and effort pair from one tier", () => {

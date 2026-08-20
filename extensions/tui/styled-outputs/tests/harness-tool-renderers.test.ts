@@ -48,10 +48,25 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
 	const active = lines(activeComponent);
-	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · Medium (openai-codex/gpt-5.6-sol#medium) · Fast");
+	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · Fast · Medium (openai-codex/gpt-5.6-sol#medium)");
 	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
 	assert.equal(narrow.length, 2, "volatile status stays on one detail row");
 	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
+
+	const settled = lines(renderHarnessToolCall("subagent_spawn", {
+		agent: "e2e-tester", mode: "foreground", tier: "medium", task: "Verify one browser flow like a real user",
+	}, theme, false, false, {
+		tier: "medium",
+		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium", startedAt: "2026-01-01T00:00:00.000Z" },
+		fast: true,
+		progress: {
+			startedAt: "2026-01-01T00:00:00.000Z", settledAt: "2026-01-01T00:01:05.000Z",
+			lastEventAt: "2026-01-01T00:01:05.000Z", turns: 2, toolCalls: 3, toolErrors: 0,
+			outputTokens: 1234, reasoningTokens: 50,
+		},
+	}, () => Date.parse("2026-01-01T00:02:00.000Z")));
+	assert.equal(settled.length, 2, "settled foreground rows retain their resolved request metadata");
+	assert.match(settled[1] ?? "", /Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\)$/);
 });
 
 test("renders distillation calls with scope-specific titles", () => {

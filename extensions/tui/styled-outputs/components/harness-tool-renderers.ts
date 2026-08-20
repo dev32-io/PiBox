@@ -95,13 +95,15 @@ class HarnessCallComponent implements Component {
 			? this.theme.fg("warning", currentSubagentPulseDot())
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
 		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
-		if (!this.partial) return [truncateToWidth(headline, width, "…")];
-		const state = this.name === "subagent_spawn"
+		const showSubagentStatus = this.name === "subagent_spawn" && (this.partial || Boolean(this.details?.resolved));
+		if (!this.partial && !showSubagentStatus) return [truncateToWidth(headline, width, "…")];
+		const state = showSubagentStatus
 			? formatInlineSubagentStatus({
 				tier: this.details?.tier ?? this.args.tier,
 				resolved: this.details?.resolved,
+				fast: this.details?.fast,
 				progress: this.details?.progress,
-				startedAt: this.details?.resolved?.startedAt,
+				startedAt: this.details?.resolved?.startedAt ?? this.details?.progress?.startedAt,
 			}, this.now())
 			: "running";
 		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", state)}`, width, "…")];

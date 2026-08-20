@@ -172,7 +172,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
 			const progress = includeProgress ? displayProgress(step, status) : "";
-			const liveSuffix = [progress, step.fast ? "Fast" : ""].filter(Boolean).join(" · ");
+			const liveSuffix = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
 			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
 		}
 		return lines;
@@ -215,7 +215,8 @@ export default function workflows(pi: ExtensionAPI): void {
 					const kind = stepLabel(step, status);
 					const color: "success" | "error" | "muted" | "accent" = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
 					const progress = includeProgress ? displayProgress(step, status) : "";
-					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind)} `)}${kind} · ${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
+					const liveSuffix = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+					lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind)} `)}${kind} · ${step.title}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
 				}
 			} else if (reviewActive) {
 				for (const step of reviewSteps) {
@@ -234,7 +235,8 @@ export default function workflows(pi: ExtensionAPI): void {
 						: undefined;
 					const label = (runtimeStage ? step.title : queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
 					const progress = includeProgress ? displayProgress(step, status) : "";
-					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
+					const liveSuffix = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
+					lines.push(`  ${ctx.ui.theme.fg(status === "attention" ? "error" : status === "done" ? "success" : "accent", `${stateIcon(status, step.kind)} `)}${label}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
 				}
 			}
 		}
@@ -658,7 +660,13 @@ export default function workflows(pi: ExtensionAPI): void {
 					try {
 						const settled = await promise;
 						if (settled.state === "failed") throw new Error(settled.summary);
-						return result(settled.summary, settled);
+						return result(settled.summary, {
+							...settled,
+							agent: params.agent,
+							tier,
+							...(resolvedStatus ? { resolved: resolvedStatus } : {}),
+							...(progressStatus ? { progress: progressStatus } : {}),
+						});
 					} finally {
 						runningSubagents.delete(toolCallId);
 						renderSubagentStatus();

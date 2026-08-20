@@ -34,6 +34,7 @@ export interface SubagentStatusAgent {
 	provider?: string;
 	model?: string;
 	effort?: string;
+	fast?: boolean;
 	workflowRef?: string;
 	startedAt?: string;
 	updatedAt?: string;
@@ -177,6 +178,7 @@ function projectAgent(value: unknown): ProjectedAgent | undefined {
 	const provider = text(attempt?.provider ?? value.provider, 120);
 	const model = text(attempt?.model ?? value.model, 160);
 	const effort = text(attempt?.effort ?? value.effort, 32);
+	const fast = attempt?.fast === true || (!attempt && value.fast === true);
 	const startedAt = timestamp(value.startedAt);
 	const updatedAt = timestamp(value.updatedAt);
 	const progress = progressOf(value, attempt);
@@ -190,6 +192,7 @@ function projectAgent(value: unknown): ProjectedAgent | undefined {
 		...(provider ? { provider } : {}),
 		...(model ? { model } : {}),
 		...(effort ? { effort } : {}),
+		...(fast ? { fast: true } : {}),
 		...(workflowRef ? { workflowRef } : {}),
 		...(startedAt ? { startedAt } : {}),
 		...(updatedAt ? { updatedAt } : {}),

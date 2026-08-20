@@ -60,7 +60,7 @@ test("settled history is bounded, newest first, and projects only current-attemp
 			attempts: [
 				{ id: "attempt-old", provider: "old-provider", model: "old-model", effort: "low", progress: { turns: 99, toolCalls: 99, toolErrors: 99, outputTokens: 99, reasoningTokens: 99 } },
 				{
-					id: "attempt-current", provider: "ollama-cloud", model: "deepseek-v4-pro", effort: "high",
+					id: "attempt-current", provider: "ollama-cloud", model: "deepseek-v4-pro", effort: "high", fast: true,
 					progress: {
 						startedAt: "2025-03-03T00:00:00.000Z", lastEventAt: "2025-03-03T00:01:00.000Z",
 						turns: 4, toolCalls: 7, toolErrors: 1, outputTokens: 1200, reasoningTokens: 300,
@@ -86,9 +86,10 @@ test("settled history is bounded, newest first, and projects only current-attemp
 			provider: projected.agents[0]?.provider,
 			model: projected.agents[0]?.model,
 			effort: projected.agents[0]?.effort,
+			fast: projected.agents[0]?.fast,
 			workflowRef: projected.agents[0]?.workflowRef,
 		},
-		{ provider: "ollama-cloud", model: "deepseek-v4-pro", effort: "high", workflowRef: "work-item:example" },
+		{ provider: "ollama-cloud", model: "deepseek-v4-pro", effort: "high", fast: true, workflowRef: "work-item:example" },
 	);
 	assert.deepEqual(projected.agents[0]?.progress, {
 		startedAt: "2025-03-03T00:00:00.000Z",

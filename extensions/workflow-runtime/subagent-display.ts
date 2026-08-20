@@ -36,16 +36,17 @@ function formatSubagentProgress(status: SubagentLiveStatus, now: number, showAct
 	});
 }
 
-function fastSuffix(status: SubagentLiveStatus): string {
-	return status.fast === true || status.resolved?.fast === true ? " · Fast" : "";
+function fastLabel(status: SubagentLiveStatus): string {
+	return status.fast === true || status.resolved?.fast === true ? "Fast" : "";
 }
 
-/** Inline rows lead with volatile progress; the pulsing tool row already communicates active state. */
+/** Inline rows lead with volatile progress; keep Fast ahead of the long route so
+ * width truncation cannot silently hide the premium request marker. */
 export function formatInlineSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
-	return `${formatSubagentProgress(status, now, false)} · ${formatSubagentRoute(status.tier, status.resolved)}${fastSuffix(status)}`;
+	return [formatSubagentProgress(status, now, false), fastLabel(status), formatSubagentRoute(status.tier, status.resolved)].filter(Boolean).join(" · ");
 }
 
 /** Footer rows lead with route metadata and retain explicit process activity. */
 export function formatBackgroundSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
-	return `${formatSubagentRoute(status.tier, status.resolved)} · ${formatSubagentProgress(status, now)}${fastSuffix(status)}`;
+	return [formatSubagentRoute(status.tier, status.resolved), fastLabel(status), formatSubagentProgress(status, now)].filter(Boolean).join(" · ");
 }
