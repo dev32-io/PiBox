@@ -40,6 +40,8 @@ export interface WorkflowStep {
 	resourceClaims: string[];
 	detail?: string;
 	progress?: AgentProgress;
+	/** Effective Fast mode for the active subagent process, omitted when inactive. */
+	fast?: boolean;
 }
 
 export interface WorkflowStageSnapshot {
@@ -88,6 +90,7 @@ export interface DynamicSubagentStarted {
 	provider: string;
 	model: string;
 	effort: string;
+	fast: boolean;
 	startedAt: string;
 }
 

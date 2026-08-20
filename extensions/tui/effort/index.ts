@@ -21,9 +21,9 @@ export function configuredLevel(config: EffortConfig, model: Model<any>): ModelT
 	return explicit ?? config.default;
 }
 
-/** Managed children receive an explicit harness `--thinking` value. */
-export function shouldApplyEffortDefault(env: NodeJS.ProcessEnv = process.env): boolean {
-	return !env.PIBOX_SUBAGENT_ID;
+/** Managed children and restored runtime state retain their explicit effort. */
+export function shouldApplyEffortDefault(env: NodeJS.ProcessEnv = process.env, source?: string): boolean {
+	return !env.PIBOX_SUBAGENT_ID && source !== "reload" && source !== "restore";
 }
 
 async function chooseEffort(ctx: ExtensionCommandContext, levels: ModelThinkingLevel[]): Promise<ModelThinkingLevel | undefined> {
@@ -65,13 +65,13 @@ export default function effort(pi: ExtensionAPI): void {
 		pi.setThinkingLevel(safeLevel(model, configuredLevel(config, model)));
 	};
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		config = loadEffortConfig(ctx.cwd);
-		if (shouldApplyEffortDefault() && ctx.model) applyDefault(ctx.model);
+		if (shouldApplyEffortDefault(process.env, event.reason) && ctx.model) applyDefault(ctx.model);
 	});
 
 	pi.on("model_select", (event) => {
-		if (shouldApplyEffortDefault()) applyDefault(event.model);
+		if (shouldApplyEffortDefault(process.env, event.source)) applyDefault(event.model);
 	});
 
 	pi.registerCommand("effort", {

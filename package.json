@@ -36,6 +36,7 @@
   "pi": {
     "extensions": [
       "./extensions/permissions/index.ts",
+      "./extensions/fast-mode/index.ts",
       "./extensions/provider-fallback/index.ts",
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",

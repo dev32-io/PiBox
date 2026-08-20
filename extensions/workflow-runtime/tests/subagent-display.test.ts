@@ -33,6 +33,10 @@ test("inline, footer, and workflow surfaces share one semantic live-progress pro
 		formatBackgroundSubagentStatus(route, now),
 		`Medium (openai-codex/gpt-5.6-sol#medium) · ${shared}`,
 	);
+	const fast = { ...route, resolved: { ...route.resolved, fast: true } };
+	assert.match(formatInlineSubagentStatus(fast, now), / · Fast$/);
+	assert.match(formatBackgroundSubagentStatus(fast, now), / · Fast$/);
+	assert.doesNotMatch(formatInlineSubagentStatus(route, now), /Fast/);
 });
 
 test("surface composition differs without duplicating startup and elapsed logic", () => {

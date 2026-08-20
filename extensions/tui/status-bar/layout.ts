@@ -6,6 +6,7 @@ import type { SessionMetrics } from "./metrics.js";
 import { renderPermissionMode } from "../../permissions/display.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
+import type { FastModeStatus } from "../../fast-mode/policy.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
 
@@ -15,6 +16,7 @@ export interface StatusRenderData {
 	theme: Theme;
 	thinkingLevel: string;
 	permissionMode: "enforce" | "bypass";
+	fastMode?: FastModeStatus;
 	metrics: SessionMetrics;
 	git: GitSnapshot;
 	config: StatusBarConfig;
@@ -156,6 +158,27 @@ function thinkingSegment(data: StatusRenderData): string {
 	return `${data.theme.fg("dim", "Thinking:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? level.toUpperCase())}`;
 }
 
+function fastModeSegment(data: StatusRenderData): string {
+	const status = data.fastMode;
+	if (!status) return "";
+	const scopes: string[] = [];
+	if (status.mainEnabled) scopes.push("MAIN");
+	if (status.subagents !== "off") {
+		const labels = { low: "LOW", medium: "MED", high: "HIGH", max: "MAX" } as const;
+		scopes.push(`SUB≤${labels[status.subagents]}`);
+	}
+	if (scopes.length === 0 && !status.mainAvailable) return "";
+	const value = scopes.length > 0 ? scopes.join("+") : "OFF";
+	return `${data.theme.fg("dim", "Fast:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
+}
+
+function rowFits(leftParts: string[], rightParts: string[], width: number): boolean {
+	const contentWidth = Math.max(0, width - 2);
+	const left = leftParts.filter(Boolean).join(" ");
+	const right = rightParts.filter(Boolean).join(" ");
+	return visibleWidth(left) + visibleWidth(right) + (left && right ? 1 : 0) <= contentWidth;
+}
+
 function tokenSegment(data: StatusRenderData): string {
 	const { metrics, theme } = data;
 	const cached = metrics.cacheRead + metrics.cacheWrite;
@@ -185,7 +208,11 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const quota = quotaSegment(data, mode, width, context);
 	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
-	const row2 = buildRow([permissionSegment(data), divider, thinkingSegment(data)], row2Right, width);
+	const row2BaseLeft = [permissionSegment(data), divider, thinkingSegment(data)];
+	const fastMode = fastModeSegment(data);
+	const row2WithFast = [...row2BaseLeft, ...(fastMode ? [divider, fastMode] : [])];
+	const row2Left = mode !== "narrow" && rowFits(row2WithFast, row2Right, width) ? row2WithFast : row2BaseLeft;
+	const row2 = buildRow(row2Left, row2Right, width);
 	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
 	if (data.serviceStatuses?.length) rows.push(buildRow([data.serviceStatuses.join(` ${divider} `)], [], width));
 	for (const status of data.subagentStatuses ?? []) rows.push(buildRow([status], [], width));

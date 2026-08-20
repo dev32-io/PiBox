@@ -9,11 +9,13 @@ import type { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.j
 import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.js";
-import { taskAgentName, type TaskManifest } from "./types.js";
+import { taskAgentName, type CapabilityTier, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } from "./tool-groups.js";
 import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
+import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
+import { fastModeChildEnvironment } from "../fast-mode/runtime.js";
 
 export interface LaunchModel {
 	provider: string;
@@ -21,6 +23,7 @@ export interface LaunchModel {
 	effort: string;
 	providerCandidates?: Array<{ provider: string; model: string; effort: string }>;
 	requested: string;
+	capabilityTier?: CapabilityTier;
 }
 
 const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
@@ -135,6 +138,7 @@ export class SubagentSupervisor {
 					provider: options.model.provider,
 					model: options.model.model,
 					effort: options.model.effort,
+					...(options.model.capabilityTier ? { capabilityTier: options.model.capabilityTier } : {}),
 					...(options.model.providerCandidates ? { providerCandidates: options.model.providerCandidates } : {}),
 					tools: resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]),
 					...(options.agentPrompt ? { agentPrompt: options.agentPrompt } : { promptPath: join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`) }),
@@ -278,6 +282,7 @@ export class SubagentSupervisor {
 		const tools = resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]);
 		const args = [
 			"-e", HARNESS_EXTENSION_PATH,
+			"-e", FAST_MODE_EXTENSION_PATH,
 			"--mode", "json", "-p", "--no-session",
 			"--model", `${options.model.provider}/${options.model.model}`,
 			"--thinking", options.model.effort,
@@ -300,6 +305,7 @@ export class SubagentSupervisor {
 					env: {
 						...process.env,
 						...mcpLaunchEnvironment(options.tools ?? DEFAULT_SUBAGENT_TOOLS),
+						...fastModeChildEnvironment(options.model.capabilityTier, { provider: options.model.provider, model: options.model.model }),
 						PIBOX_HARNESS_RUN_ID: runId,
 						PIBOX_HARNESS_WORK_ITEM: options.workItemId,
 						PIBOX_HARNESS_TASK: options.task.id,

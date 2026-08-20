@@ -5,11 +5,12 @@ import { Check } from "typebox/value";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflow, { WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
 
-test("loads workflow and memory context hooks explicitly in spawned agents", () => {
-	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 3);
+test("loads workflow, context, and Fast-mode hooks explicitly in spawned agents", () => {
+	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 4);
 	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[0] ?? "", /workflow\/index\.ts$/);
 	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[1] ?? "", /memory-adapter\/index\.ts$/);
 	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[2] ?? "", /distill\/index\.ts$/);
+	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[3] ?? "", /fast-mode\/index\.ts$/);
 });
 
 test("registers the resource API and hides legacy planning tools from the main session", async () => {

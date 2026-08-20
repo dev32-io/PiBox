@@ -172,7 +172,8 @@ export default function workflows(pi: ExtensionAPI): void {
 			const icon = stateIcon(status, step.kind);
 			const color: "success" | "warning" | "error" | "muted" | "accent" = status === "done" ? "success" : status === "attention" ? "error" : status === "running" ? "accent" : "muted";
 			const progress = includeProgress ? displayProgress(step, status) : "";
-			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${progress ? ` · ${ctx.ui.theme.fg("dim", progress)}` : ""}`);
+			const liveSuffix = [progress, step.fast ? "Fast" : ""].filter(Boolean).join(" · ");
+			lines.push(`${ctx.ui.theme.fg(color, `${icon} `)}${step.title}${liveSuffix ? ` · ${ctx.ui.theme.fg("dim", liveSuffix)}` : ""}`);
 		}
 		return lines;
 	};

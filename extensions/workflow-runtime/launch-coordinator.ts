@@ -9,6 +9,8 @@ import {
 import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { fastModeChildEnvironment, isSubagentFastActive } from "../fast-mode/runtime.js";
+import type { FastCapabilityTier } from "../fast-mode/policy.js";
 
 export interface CoordinatedLaunchInput extends AgentScope {
 	operationId: string;
@@ -20,6 +22,8 @@ export interface CoordinatedLaunchInput extends AgentScope {
 	provider: string;
 	model: string;
 	effort: string;
+	/** Capability tier used by the parent session's subagent Fast-mode ceiling. */
+	capabilityTier?: FastCapabilityTier;
 	activity?: WorkflowActivityDescriptor;
 	providerCandidates?: ProviderRoute[];
 	tools: string[];
@@ -95,7 +99,8 @@ export class LaunchCoordinator {
 			for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
 				const route = routes[routeIndex]!;
 				if (!this.cooldowns.available(route.provider)) continue;
-				const { attempt } = await this.registry.startAttempt(reserved.id, route, input.activity);
+				const fast = isSubagentFastActive(input.capabilityTier, route);
+				const { attempt } = await this.registry.startAttempt(reserved.id, route, input.activity, fast);
 				input.onStarted?.(await this.registry.get(reserved.id));
 				const attemptRoot = join(agentRoot, "attempts", attempt.id);
 				let running: Promise<unknown> | undefined;
@@ -115,6 +120,7 @@ export class LaunchCoordinator {
 					sessionFile: join(agentRoot, "pi-session.jsonl"),
 					env: {
 						...input.env,
+						...fastModeChildEnvironment(input.capabilityTier, route),
 						PIBOX_WORKFLOW_SESSION_ID: this.registry.sessionId,
 						PIBOX_SUBAGENT_ID: reserved.id,
 						PIBOX_SUBAGENT_PARENT_ID: this.mainAgentId,

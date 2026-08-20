@@ -25,9 +25,13 @@ test("local and remote models retain configured defaults", () => {
 	assert.equal(configuredLevel(config, other), "high");
 });
 
-test("managed subagents preserve the harness-provided effort", () => {
+test("managed subagents and restored runtime state preserve their effort", () => {
 	assert.equal(shouldApplyEffortDefault({}), true);
 	assert.equal(shouldApplyEffortDefault({ PIBOX_SUBAGENT_ID: "agent-1" }), false);
+	assert.equal(shouldApplyEffortDefault({}, "reload"), false);
+	assert.equal(shouldApplyEffortDefault({}, "restore"), false);
+	assert.equal(shouldApplyEffortDefault({}, "startup"), true);
+	assert.equal(shouldApplyEffortDefault({}, "set"), true);
 });
 
 test("explicit per-model effort overrides the shared default", () => {

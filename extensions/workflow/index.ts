@@ -35,11 +35,12 @@ import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GR
 import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment } from "./mcp-capabilities.js";
 import { resourceDisplayDiff } from "./resource-diff.js";
 import { RepairRecoveryStore } from "./repair-recovery.js";
+import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
 const DISTILL_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../distill/index.ts");
-export const WORKFLOW_CHILD_EXTENSION_PATHS = [WORKFLOW_EXTENSION_PATH, MEMORY_EXTENSION_PATH, DISTILL_EXTENSION_PATH] as const;
+export const WORKFLOW_CHILD_EXTENSION_PATHS = [WORKFLOW_EXTENSION_PATH, MEMORY_EXTENSION_PATH, DISTILL_EXTENSION_PATH, FAST_MODE_EXTENSION_PATH] as const;
 
 const WORKER_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_TASK_TOOL_GROUP]);
 const EVALUATOR_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_EVALUATION_TOOL_GROUP]);
@@ -589,7 +590,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				baseCommit: allocation.baseCommit,
 				executionMode: allocation.isolation,
 				planningRevision: item.planning.revision,
-				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, requested: plannedRouting.tier },
+				model: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, requested: plannedRouting.tier, capabilityTier: plannedRouting.tier },
 				...(agentPolicy.prompt && resolveConfiguredPath(runtime.identity.root, agentPolicy.prompt)
 					? { agentPrompt: readFileSync(resolveConfiguredPath(runtime.identity.root, agentPolicy.prompt) as string, "utf8") }
 					: {}),
@@ -643,7 +644,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const launched = prior?.state === "completed" ? undefined : await runtime.coordinator.launch({
 			operationId: prior && ["failed", "protocol_failed", "cancelled"].includes(prior.state) ? `${operationId}:retry:${Date.now()}` : operationId, role: "repair-implementer", task: prompt,
 			assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt }, cwd: runtime.identity.root,
-			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
+			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: "medium", providerCandidates: resolution.candidates,
 			tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
 			workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"),
 			persistentContext: `${await buildTaskPersistentContext(runtime.workItems, workItemId, task)}\n\n${prompt}`,
@@ -701,7 +702,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }),
 					assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }, cwd: runtime.identity.root,
 					activity: { kind: "repair", generation: repairIteration },
-					provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
+					provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: routing.tier, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 					workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
 					env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
 					promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
@@ -758,7 +759,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				operationId: created.record.id, ...(logicalAgentId ? { existingAgentId: logicalAgentId } : {}), role: agentName, task: taskPrompt,
 				assignment: { schemaVersion: 1, workItemId: item.id, evaluationId: evaluation.id, planningRevision: item.planning.revision },
 				activity: { kind: "review", generation: evaluation.loop?.state === "rereviewing" ? evaluation.loop.iteration : 0 },
-				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
+				cwd: runtime.identity.root, provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: routing.tier, providerCandidates: resolution.candidates,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_EVALUATION_TOOL_GROUP]),
 				deferCompletion: true, workItemId: item.id, evaluationId: evaluation.id, runId: created.record.id, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-review-agent"), persistentContext,
 				env: { ...mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), PIBOX_HARNESS_RUN_ID: created.record.id, PIBOX_HARNESS_WORK_ITEM: item.id, PIBOX_HARNESS_EVALUATION: evaluation.id, PIBOX_HARNESS_CREDENTIAL: created.credential },
@@ -846,7 +847,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			const launched = await runtime.coordinator.launch({
 				operationId: request.operationId, role: request.agent, task: request.task,
 				assignment: { schemaVersion: 1, agent: request.agent, task: request.task, ...(request.tier ? { tier: request.tier } : {}), ...(preferred ? { model: preferred.model, ...(preferred.effort ? { effort: preferred.effort } : {}) } : {}) }, cwd: runtime.identity.root,
-				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, providerCandidates: resolution.candidates,
+				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: routing.tier, providerCandidates: resolution.candidates,
 				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
 				workspace: runtime.identity.root,
 				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
@@ -857,7 +858,10 @@ export default function workflow(pi: ExtensionAPI): void {
 						: {}),
 				...(agentDefinition.skills ? { skillPaths: agentDefinition.skills.map((skill) => resolveConfiguredPath(runtime.identity.root, skill)).filter((path): path is string => Boolean(path)) } : {}),
 				...(signal ? { signal } : {}), ...(onText ? { onText } : {}),
-				...(onStarted ? { onStarted: (agent: { id: string; provider: string; model: string; effort: string; startedAt: string }) => onStarted({ agentId: agent.id, provider: agent.provider, model: agent.model, effort: agent.effort, startedAt: agent.startedAt }) } : {}),
+				...(onStarted ? { onStarted: (agent: { id: string; provider: string; model: string; effort: string; startedAt: string; currentAttemptId?: string; attempts: Array<{ id: string; fast?: boolean }> }) => {
+					const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
+					onStarted({ agentId: agent.id, provider: agent.provider, model: agent.model, effort: agent.effort, fast: attempt?.fast === true, startedAt: agent.startedAt });
+				} } : {}),
 				...(onProgress ? { onProgress } : {}),
 			});
 			const direct = launched.result;

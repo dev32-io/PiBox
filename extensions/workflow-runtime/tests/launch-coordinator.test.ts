@@ -6,6 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { SessionAgentRegistry } from "../agent-registry.js";
 import { LaunchCoordinator } from "../launch-coordinator.js";
+import { FAST_MODE_CHILD_ENV } from "../../fast-mode/policy.js";
+import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../../fast-mode/runtime.js";
 
 test("launches a direct child through the registry with file-backed process output", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-coordinator-"));
@@ -126,13 +128,14 @@ test("resumes a waiting assignment as another process attempt under the same slo
 
 test("falls back through ordered routes without changing logical agent or Pi session", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-fallback-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
+	t.after(async () => { resetActiveFastModePolicy(); await rm(root, { recursive: true, force: true }); });
+	setActiveFastModePolicy({ main: false, subagents: "max" });
 	const registry = new SessionAgentRegistry(root, "session-fallback");
 	await registry.initialize("main:session-fallback");
 	const limited = join(root, "limited.mjs");
 	const success = join(root, "success.mjs");
 	await writeFile(limited, `console.error('HTTP 429 Retry-After: 1'); process.exit(1);\n`);
-	await writeFile(success, `console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'ok'}]}}));\n`);
+	await writeFile(success, `console.log(JSON.stringify({type:'message_end',message:{role:'assistant',content:[{type:'text',text:'ok:' + process.env.${FAST_MODE_CHILD_ENV}}]}}));\n`);
 	const { ProviderCooldowns } = await import("../../provider-fallback/index.js");
 	const seen: string[] = [];
 	const updates: string[] = [];
@@ -141,15 +144,16 @@ test("falls back through ordered routes without changing logical agent or Pi ses
 		const route = args[args.indexOf("--model") + 1]!;
 		seen.push(route);
 		sessions.push(args[args.indexOf("--session") + 1]!);
-		return { command: process.execPath, args: [route === "bad/one" ? limited : success] };
+		return { command: process.execPath, args: [route === "openai-codex/gpt-5.6-luna" ? limited : success] };
 	}, [], new ProviderCooldowns());
-	const result = await coordinator.launch({ operationId: "fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "bad", model: "one", effort: "low", activity: { kind: "review", generation: 0 }, providerCandidates: [{ provider: "bad", model: "one", effort: "low" }, { provider: "good", model: "two", effort: "low" }], tools: [], onText: (text) => updates.push(text) });
-	assert.equal(result.result.text, "ok");
-	assert.deepEqual(seen, ["bad/one", "good/two"]);
-	assert.deepEqual(updates, ["ok"]);
+	const result = await coordinator.launch({ operationId: "fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "openai-codex", model: "gpt-5.6-luna", effort: "low", capabilityTier: "low", activity: { kind: "review", generation: 0 }, providerCandidates: [{ provider: "openai-codex", model: "gpt-5.6-luna", effort: "low" }, { provider: "ollama-cloud", model: "deepseek-v4-flash", effort: "low" }], tools: [], onText: (text) => updates.push(text) });
+	assert.equal(result.result.text, "ok:0");
+	assert.deepEqual(seen, ["openai-codex/gpt-5.6-luna", "ollama-cloud/deepseek-v4-flash"]);
+	assert.deepEqual(updates, ["ok:0"]);
 	assert.equal(new Set(sessions).size, 1);
-	assert.equal(result.agent.provider, "good");
+	assert.equal(result.agent.provider, "ollama-cloud");
 	assert.equal(result.agent.attempts.length, 2);
+	assert.deepEqual(result.agent.attempts.map((attempt) => attempt.fast), [true, false], "fallback recomputes effective Fast mode per resolved route");
 	assert.deepEqual(result.agent.attempts.map((attempt) => attempt.activity), [
 		{ kind: "review", generation: 0 },
 		{ kind: "review", generation: 0 },
@@ -163,4 +167,21 @@ test("does not fallback non-provider failures", async (t) => {
  const coordinator = new LaunchCoordinator(registry, "main:session-no-fallback", () => { calls += 1; return { command: process.execPath, args: [fake] }; });
  const result = await coordinator.launch({ operationId: "no-fallback", role: "explorer", task: "try", assignment: {}, cwd: root, provider: "one", model: "one", effort: "low", providerCandidates: [{ provider: "one", model: "one", effort: "low" }, { provider: "two", model: "two", effort: "low" }], tools: [] });
  assert.equal(calls, 1); assert.equal(result.agent.state, "failed");
+});
+
+test("passes only the tier-filtered Fast decision to each child process", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-fast-mode-"));
+	t.after(async () => { resetActiveFastModePolicy(); await rm(root, { recursive: true, force: true }); });
+	setActiveFastModePolicy({ main: false, subagents: "medium" });
+	const registry = new SessionAgentRegistry(root, "session-fast");
+	await registry.initialize("main:session-fast");
+	const fake = join(root, "fast-env.mjs");
+	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:process.env.${FAST_MODE_CHILD_ENV} ?? "missing"}]}}));\n`);
+	const coordinator = new LaunchCoordinator(registry, "main:session-fast", () => ({ command: process.execPath, args: [fake] }));
+	const low = await coordinator.launch({ operationId: "fast-low", role: "explorer", task: "low", assignment: {}, cwd: root, provider: "openai-codex", model: "gpt-5.6-luna", effort: "low", capabilityTier: "low", tools: [] });
+	const high = await coordinator.launch({ operationId: "fast-high", role: "explorer", task: "high", assignment: {}, cwd: root, provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", capabilityTier: "high", tools: [] });
+	assert.equal(low.result.text, "1");
+	assert.equal(low.agent.attempts[0]?.fast, true);
+	assert.equal(high.result.text, "0");
+	assert.equal(high.agent.attempts[0]?.fast, false);
 });

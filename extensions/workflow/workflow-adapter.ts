@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import type { DynamicSubagentRequest, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
+import type { DynamicSubagentRequest, DynamicSubagentStarted, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
@@ -38,7 +38,7 @@ export interface HarnessWorkflowAdapterOptions {
 	launchRepair?(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	/** Harness-owned repair assignment for a preserved stage merge conflict. */
 	launchIntegrationRepair?(ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
-	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: { agentId: string; provider: string; model: string; effort: string; startedAt: string }) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
+	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
 	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
 	validateWorkingBranch?(runtime: HarnessWorkflowRuntime, workItemId: string, options?: { allowDirty?: boolean }): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
@@ -55,20 +55,22 @@ function agentAttention(agent: SessionAgentRecord): string | undefined {
 	return agent.state.replaceAll("_", " ");
 }
 
-function currentProgress(agent: SessionAgentRecord | undefined): AgentProgress | undefined {
-	return agent?.attempts.find((attempt) => attempt.id === agent.currentAttemptId)?.progress;
+function currentAttempt(agent: SessionAgentRecord | undefined) {
+	return agent?.attempts.find((attempt) => attempt.id === agent.currentAttemptId);
 }
 
-function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean): { running: boolean; attention?: string; progress?: AgentProgress } {
+type ActiveProcessProjection = { running: boolean; attention?: string; progress?: AgentProgress; fast?: boolean };
+
+function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean): ActiveProcessProjection {
 	const matching = agents.filter((agent) => agent[scope] === id && (!relevant || relevant(agent)));
 	const active = matching.find(isAgentProcessActive);
-	const progress = currentProgress(active);
-	if (active) return { running: true, ...(progress ? { progress } : {}) };
+	const attempt = currentAttempt(active);
+	if (active) return { running: true, ...(attempt?.progress ? { progress: attempt.progress } : {}), ...(attempt?.fast === true ? { fast: true } : {}) };
 	const attention = matching.map(agentAttention).find((detail): detail is string => Boolean(detail));
 	return { running: false, ...(attention ? { attention } : {}) };
 }
 
-function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): { running: boolean; attention?: string; progress?: AgentProgress } {
+function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): ActiveProcessProjection {
 	const loop = evaluation.loop;
 	const fixing = loop?.state === "fixing";
 	const rereviewing = loop?.state === "rereviewing";
@@ -85,8 +87,8 @@ function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: stri
 	// generation boundary. This also makes provider fallback attempts in one
 	// generation equivalent while excluding historical reports and exits.
 	const active = current.find(({ agent, attempt }) => isAgentProcessActive(agent) && (attempt?.state === "launching" || attempt?.state === "running"));
-	const progress = currentProgress(active?.agent);
-	if (active) return { running: true, ...(progress ? { progress } : {}) };
+	const attempt = active?.attempt;
+	if (active) return { running: true, ...(attempt?.progress ? { progress: attempt.progress } : {}), ...(attempt?.fast === true ? { fast: true } : {}) };
 	if (current.some(({ agent }) => agent.state === "reported")) return { running: false, attention: "result pending reconciliation" };
 	const failed = current.find(({ agent }) => ["failed", "protocol_failed", "recovery_required"].includes(agent.state));
 	if (failed) return { running: false, attention: agentAttention(failed.agent) ?? "failed" };
@@ -311,6 +313,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					parallelism: isMergeState ? "serial" : topology.parallelism,
 					resourceClaims: isMergeState || topology.isolation === "repository" ? ["working-branch"] : task.execution.resourceClaims,
 					...(activity.progress ? { progress: activity.progress } : {}),
+					...(activity.fast ? { fast: true } : {}),
 				};
 			});
 			const finalJourneyRefs = evaluations
@@ -366,7 +369,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const blocking = open.filter((finding) => finding.blocking);
 				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention ? detail : [detail, guidance].filter(Boolean).join(" · ");
-				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
+				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), ...(activity.fast ? { fast: true } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));
@@ -406,7 +409,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
 			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
-		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: { agentId: string; provider: string; model: string; effort: string; startedAt: string }) => void, onProgress?: (progress: AgentProgress) => void) { return options.spawnSubagent!(request, ctx, signal, onText, onStarted, onProgress); } } : {}),
+		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void) { return options.spawnSubagent!(request, ctx, signal, onText, onStarted, onProgress); } } : {}),
 		...(options.listSpawnableAgents ? { async listSpawnableAgents(ctx: ExtensionContext) { return options.listSpawnableAgents!(ctx); } } : {}),
 		async controlCheckpoint(ref, action, checkpointOptions, ctx) {
 			const match = STEP.exec(ref);

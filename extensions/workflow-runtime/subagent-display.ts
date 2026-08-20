@@ -21,7 +21,8 @@ export function formatSubagentRoute(tier: string | undefined, resolved?: { provi
 
 export interface SubagentLiveStatus {
 	tier?: string;
-	resolved?: { provider: string; model: string; effort: string };
+	resolved?: { provider: string; model: string; effort: string; fast?: boolean };
+	fast?: boolean;
 	progress?: AgentProgress;
 	/** Launch time used before the first semantic progress projection arrives. */
 	startedAt?: string | number;
@@ -35,12 +36,16 @@ function formatSubagentProgress(status: SubagentLiveStatus, now: number, showAct
 	});
 }
 
+function fastSuffix(status: SubagentLiveStatus): string {
+	return status.fast === true || status.resolved?.fast === true ? " · Fast" : "";
+}
+
 /** Inline rows lead with volatile progress; the pulsing tool row already communicates active state. */
 export function formatInlineSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
-	return `${formatSubagentProgress(status, now, false)} · ${formatSubagentRoute(status.tier, status.resolved)}`;
+	return `${formatSubagentProgress(status, now, false)} · ${formatSubagentRoute(status.tier, status.resolved)}${fastSuffix(status)}`;
 }
 
 /** Footer rows lead with route metadata and retain explicit process activity. */
 export function formatBackgroundSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
-	return `${formatSubagentRoute(status.tier, status.resolved)} · ${formatSubagentProgress(status, now)}`;
+	return `${formatSubagentRoute(status.tier, status.resolved)} · ${formatSubagentProgress(status, now)}${fastSuffix(status)}`;
 }

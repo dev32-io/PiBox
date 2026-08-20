@@ -69,6 +69,8 @@ export interface ProcessAttempt {
 	provider?: string;
 	model?: string;
 	effort?: string;
+	/** Effective Fast-mode request policy for this resolved process route. */
+	fast?: boolean;
 	sequence: number;
 	activity?: WorkflowActivityDescriptor;
 	state: "launching" | "running" | "exited" | "failed";
@@ -304,11 +306,11 @@ export class SessionAgentRegistry {
 		})).agent;
 	}
 
-	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }, activity?: WorkflowActivityDescriptor): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
+	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }, activity?: WorkflowActivityDescriptor, fast?: boolean): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");
 			const now = new Date().toISOString();
-			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now, ...(route ?? {}), ...(activity ? { activity } : {}) };
+			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now, ...(route ?? {}), ...(activity ? { activity } : {}), ...(fast !== undefined ? { fast } : {}) };
 			if (route) { agent.provider = route.provider; agent.model = route.model; agent.effort = route.effort; }
 			agent.state = "launching";
 			agent.currentAttemptId = attempt.id;

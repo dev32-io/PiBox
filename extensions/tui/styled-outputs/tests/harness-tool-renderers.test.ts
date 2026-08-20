@@ -40,7 +40,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		agent: "e2e-tester", mode: "foreground", tier: "medium", task: "Verify one browser flow like a real user",
 	}, theme, true, false, {
 		tier: "medium",
-		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium", fast: true },
 		progress: {
 			startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z",
 			lastEventAt: "2026-01-01T00:01:04.000Z", turns: 2, toolCalls: 3, toolErrors: 0,
@@ -48,7 +48,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
 	const active = lines(activeComponent);
-	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · Medium (openai-codex/gpt-5.6-sol#medium) · Fast");
 	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
 	assert.equal(narrow.length, 2, "volatile status stays on one detail row");
 	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
