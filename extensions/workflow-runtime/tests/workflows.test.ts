@@ -608,6 +608,7 @@ test("wide metrics render as a compact aligned four-row table with a narrow one-
 		steps: [{ ref: "test:metrics/task:one", title: "Durable projection", kind: "task", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
 		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
 		metrics: { elapsedMs: 8_040_000, runningMs: 4_000_000, agentActiveMs: 3_240_000, verificationMs: 1_740_000, fixes: 4, retries: 6, agentCount: 9, verificationAttempts: 12, inputTokens: 123_456, outputTokens: 78_900, toolErrors: 3 },
+		repairLoop: { label: "Stage 4 fix loop", iteration: 1, maxIterations: 3, evaluationRef: "test:metrics/evaluation:stage-4-review" },
 	};
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
@@ -619,7 +620,7 @@ test("wide metrics render as a compact aligned four-row table with a narrow one-
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const component = (f.widget() as any)?.({}, f.ctx.ui.theme);
 	const wide = component.render(100) as string[];
-	const rows = [["Elapsed", "2h 14m"], ["Agent time", "54m"], ["Verification", "29m"], ["Fixes / retries", "4 / 6"]] as const;
+	const rows = [["Elapsed", "2h 14m 0s"], ["Agent time", "54m 0s"], ["Verification", "29m 0s"], ["Stage 4 fix loop", "1 / 3"]] as const;
 	assert.equal(wide.length, 4);
 	const dividers = wide.map((line) => line.indexOf("│"));
 	assert.ok(dividers[0]! > 0);
@@ -628,10 +629,51 @@ test("wide metrics render as a compact aligned four-row table with a narrow one-
 		assert.match(wide[index]!, new RegExp(`${label}\\s+${value.replace("/", "\\/")}`));
 		assert.equal(wide[index]!.lastIndexOf(value) + value.length, wide[index]!.length - 1, "metric values align to the right pane edge");
 	}
-	assert.equal(wide.some((line) => /tokens|agent count|tool errors/i.test(line)), false, "detailed snapshot metrics stay out of the widget");
+	assert.equal(wide.some((line) => /fixes|retries|tokens|agent count|tool errors/i.test(line)), false, "aggregate diagnostics stay out of the boundary-oriented widget");
 	const narrow = component.render(60) as string[];
 	assert.equal(narrow.some((line) => line.includes("│")), false);
 	assert.equal(narrow.some((line) => rows.some(([label]) => line.includes(label))), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("open metric intervals advance locally without refreshing the durable snapshot", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:live-metrics", state: "paused" } });
+	let snapshotReads = 0;
+	const sampledAtMs = Date.now();
+	const snapshot: WorkflowSnapshot = {
+		ref: "test:live-metrics", title: "Live metrics", status: "paused",
+		steps: [{ ref: "test:live-metrics/task:one", title: "Waiting", kind: "task", status: "pending", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		metrics: {
+			elapsedMs: 0, runningMs: 0, agentActiveMs: 0, verificationMs: 0, fixes: 0, retries: 0,
+			agentCount: 1, verificationAttempts: 0, inputTokens: 0, outputTokens: 0, toolErrors: 0,
+			live: { sampledAtMs, elapsed: true, running: false, activeAgents: 1, activeVerifications: 0 },
+		},
+		repairLoop: { label: "Stage 1 fix loop", iteration: 0, maxIterations: 3, evaluationRef: "test:live-metrics/evaluation:stage-1-review" },
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async snapshot() { snapshotReads++; return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	let redraws = 0;
+	const component = (f.widget() as any)?.({ requestRender: () => { redraws++; } }, f.ctx.ui.theme);
+	const initial = component.render(100) as string[];
+	const initialElapsed = Number(/Elapsed\s+(\d+)s/.exec(initial[0]!)?.[1]);
+	const initialAgent = Number(/Agent time\s+(\d+)s/.exec(initial[1]!)?.[1]);
+	assert.ok(Number.isFinite(initialElapsed) && Number.isFinite(initialAgent));
+	const readsBeforeWait = snapshotReads;
+	await new Promise((resolve) => setTimeout(resolve, 1_100));
+	const advanced = component.render(100) as string[];
+	const advancedElapsed = Number(/Elapsed\s+(\d+)s/.exec(advanced[0]!)?.[1]);
+	const advancedAgent = Number(/Agent time\s+(\d+)s/.exec(advanced[1]!)?.[1]);
+	assert.ok(advancedElapsed > initialElapsed, "elapsed wall time advances between renders");
+	assert.ok(advancedAgent > initialAgent, "every open agent interval advances between renders");
+	assert.ok(redraws >= 1 && redraws <= 2, `clock-only display redraws at second cadence, observed ${redraws} redraws`);
+	assert.equal(snapshotReads, readsBeforeWait, "visual time interpolation performs no repository snapshot reads");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

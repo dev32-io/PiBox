@@ -48,7 +48,7 @@ function unionDuration(intervals: readonly Interval[]): number {
 	return total + (open ? open[1] - open[0] : 0);
 }
 
-function workflowTiming(events: readonly WorkflowDomainEvent[], now: number): Pick<WorkflowMetrics, "elapsedMs" | "runningMs"> {
+function workflowTiming(events: readonly WorkflowDomainEvent[], now: number): Pick<WorkflowMetrics, "elapsedMs" | "runningMs"> & { elapsedOpen: boolean; runningOpen: boolean } {
 	const ordered = [...events].sort((left, right) => left.sequence - right.sequence);
 	let firstStartedAt: number | undefined;
 	let runningStartedAt: number | undefined;
@@ -73,6 +73,8 @@ function workflowTiming(events: readonly WorkflowDomainEvent[], now: number): Pi
 	return {
 		elapsedMs: duration(firstStartedAt, terminalAt ?? (firstStartedAt === undefined ? undefined : now)),
 		runningMs: unionDuration(runningIntervals),
+		elapsedOpen: firstStartedAt !== undefined && terminalAt === undefined,
+		runningOpen: runningStartedAt !== undefined,
 	};
 }
 
@@ -85,6 +87,14 @@ function processInterval(attempt: ProcessAttempt, now: number): Interval | undef
 	const explicitEnd = time(progress?.processExitedAt ?? attempt.exitedAt ?? progress?.settledAt);
 	const terminalFallback = TERMINAL_ATTEMPT_STATES.has(attempt.state) ? time(attempt.updatedAt) : undefined;
 	return [startedAt, explicitEnd ?? terminalFallback ?? now];
+}
+
+function processIntervalIsOpen(attempt: ProcessAttempt): boolean {
+	if (TERMINAL_ATTEMPT_STATES.has(attempt.state)) return false;
+	const progress = attempt.progress;
+	const startedAt = time(progress?.processStartedAt ?? attempt.startedAt ?? progress?.startedAt);
+	const explicitEnd = time(progress?.processExitedAt ?? attempt.exitedAt ?? progress?.settledAt);
+	return startedAt !== undefined && explicitEnd === undefined;
 }
 
 /** Pure projection from durable workflow, managed-agent, and verification records. */
@@ -114,6 +124,7 @@ export function projectWorkflowMetrics(input: WorkflowMetricProjectionInput): Wo
 		const end = time(attempt.completedAt) ?? (terminal ? start : now);
 		return total + duration(start, end);
 	}, 0);
+	const activeVerifications = verification.filter((attempt) => ["starting", "running"].includes(attempt.state) && time(attempt.startedAt) !== undefined && time(attempt.completedAt) === undefined).length;
 	const verificationGroups = new Map<string, number>();
 	for (const attempt of verification) {
 		const key = `${attempt.stageId}:${attempt.checkId}`;
@@ -122,7 +133,8 @@ export function projectWorkflowMetrics(input: WorkflowMetricProjectionInput): Wo
 	const verificationRetries = [...verificationGroups.values()].reduce((total, count) => total + Math.max(0, count - 1), 0);
 	const timing = workflowTiming(events, now);
 	return {
-		...timing,
+		elapsedMs: timing.elapsedMs,
+		runningMs: timing.runningMs,
 		agentActiveMs,
 		verificationMs,
 		fixes,
@@ -132,5 +144,12 @@ export function projectWorkflowMetrics(input: WorkflowMetricProjectionInput): Wo
 		inputTokens: attempts.reduce((total, { attempt }) => total + nonNegative(attempt.progress?.inputTokens), 0),
 		outputTokens: attempts.reduce((total, { attempt }) => total + nonNegative(attempt.progress?.outputTokens), 0),
 		toolErrors: attempts.reduce((total, { attempt }) => total + nonNegative(attempt.progress?.toolErrors), 0),
+		live: {
+			sampledAtMs: now,
+			elapsed: timing.elapsedOpen,
+			running: timing.runningOpen,
+			activeAgents: attempts.filter(({ attempt }) => processIntervalIsOpen(attempt)).length,
+			activeVerifications,
+		},
 	};
 }

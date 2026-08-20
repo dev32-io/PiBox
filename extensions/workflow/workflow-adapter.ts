@@ -383,7 +383,25 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));
 			const runtimeNodes = evaluations.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => `evaluation:${evaluation.id}`);
-			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])], ...(metrics ? { metrics } : {}) };
+			const repairBoundaries = [
+				...stages.flatMap((stage, index) => {
+					const evaluation = stageReviews.get(stage.id);
+					return evaluation ? [{ evaluation, label: `Stage ${index + 1} fix loop` }] : [];
+				}),
+				...evaluations.filter((evaluation) => evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => ({ evaluation, label: "E2E fix loop" })),
+				...evaluations.filter((evaluation) => evaluation.checkpoint === "final-review").map((evaluation) => ({ evaluation, label: "Final fix loop" })),
+			];
+			const currentRepairBoundary = repairBoundaries.find(({ evaluation }) => !["passed", "not_applicable"].includes(evaluation.status) && !["passed", "skipped"].includes(evaluation.loop?.state ?? ""));
+			const currentRepairLimit = currentRepairBoundary?.evaluation.loop?.maxIterations ?? runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS;
+			const settledRepairRounds = currentRepairBoundary?.evaluation.loop?.iteration ?? 0;
+			const currentRepairRound = Math.min(currentRepairLimit, settledRepairRounds + (currentRepairBoundary?.evaluation.loop?.state === "fixing" ? 1 : 0));
+			const repairLoop = currentRepairBoundary ? {
+				label: currentRepairBoundary.label,
+				iteration: currentRepairRound,
+				maxIterations: currentRepairLimit,
+				evaluationRef: `work-item:${item.id}/evaluation:${currentRepairBoundary.evaluation.id}`,
+			} : undefined;
+			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])], ...(metrics ? { metrics } : {}), ...(repairLoop ? { repairLoop } : {}) };
 		},
 		async runStep(ref, ctx, _signal): Promise<WorkflowRunResult> {
 			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid workflow step: ${ref}`);

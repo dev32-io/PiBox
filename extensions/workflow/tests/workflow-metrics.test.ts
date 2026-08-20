@@ -52,6 +52,7 @@ test("projects pause/resume wall time, concurrent agent sums, repair generations
 		inputTokens: 400,
 		outputTokens: 650,
 		toolErrors: 3,
+		live: { sampledAtMs: Date.parse(at(100)), elapsed: false, running: false, activeAgents: 0, activeVerifications: 0 },
 	});
 });
 
@@ -87,4 +88,24 @@ test("unions duplicate durable running transitions and keeps pause decision time
 	});
 	assert.equal(metrics.elapsedMs, 50_000);
 	assert.equal(metrics.runningMs, 40_000);
+	assert.deepEqual(metrics.live, { sampledAtMs: Date.parse(at(50)), elapsed: true, running: true, activeAgents: 0, activeVerifications: 0 });
+});
+
+test("publishes open interval rates for read-free live projection", () => {
+	const metrics = projectWorkflowMetrics({
+		workItemId: "example",
+		workflowEvents: [event(1, "workflow.started", 0)],
+		agents: [{
+			id: "worker", workItemId: "example", state: "running", attempts: [{
+				id: "attempt", sequence: 1, state: "running", startedAt: at(10), updatedAt: at(10),
+				progress: { processStartedAt: at(10) },
+			}],
+		} as any],
+		verificationAttempts: [{ id: "001", workItemId: "example", stageId: "delivery", checkId: "unit", state: "running", startedAt: at(20) }],
+		now: Date.parse(at(50)),
+	});
+
+	assert.equal(metrics.agentActiveMs, 40_000);
+	assert.equal(metrics.verificationMs, 30_000);
+	assert.deepEqual(metrics.live, { sampledAtMs: Date.parse(at(50)), elapsed: true, running: true, activeAgents: 1, activeVerifications: 1 });
 });

@@ -250,16 +250,25 @@ export default function workflows(pi: ExtensionAPI): void {
 		const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
 		if (seconds < 60) return `${seconds}s`;
 		const minutes = Math.floor(seconds / 60);
-		if (minutes < 60) return `${minutes}m`;
-		return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+		const shownSeconds = seconds % 60;
+		if (minutes < 60) return `${minutes}m ${shownSeconds}s`;
+		return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${shownSeconds}s`;
 	};
 
-	const metricRows = (metrics: WorkflowMetrics): Array<readonly [string, string]> => [
-		["Elapsed", metricDuration(metrics.elapsedMs)],
-		["Agent time", metricDuration(metrics.agentActiveMs)],
-		["Verification", metricDuration(metrics.verificationMs)],
-		["Fixes / retries", `${metrics.fixes} / ${metrics.retries}`],
-	];
+	const projectedMetric = (metrics: WorkflowMetrics, base: number, activeIntervals: number): number => {
+		if (!metrics.live || activeIntervals <= 0) return base;
+		return base + Math.max(0, Date.now() - metrics.live.sampledAtMs) * activeIntervals;
+	};
+
+	const metricRows = (snapshot: WorkflowSnapshot): Array<readonly [string, string]> => {
+		const metrics = snapshot.metrics!;
+		return [
+			["Elapsed", metricDuration(projectedMetric(metrics, metrics.elapsedMs, metrics.live?.elapsed ? 1 : 0))],
+			["Agent time", metricDuration(projectedMetric(metrics, metrics.agentActiveMs, metrics.live?.activeAgents ?? 0))],
+			["Verification", metricDuration(projectedMetric(metrics, metrics.verificationMs, metrics.live?.activeVerifications ?? 0))],
+			[snapshot.repairLoop?.label ?? "Current fix loop", snapshot.repairLoop ? `${snapshot.repairLoop.iteration} / ${snapshot.repairLoop.maxIterations}` : "—"],
+		];
+	};
 
 	const dashboardLines = (snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number): string[] => {
 		const innerWidth = Math.max(1, width - 2);
@@ -274,7 +283,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		const availableMetricWidth = innerWidth - compactTaskWidth - separatorWidth;
 		const showMetrics = Boolean(snapshot.metrics && innerWidth >= 72 && availableMetricWidth >= 24);
 		const taskWidth = showMetrics ? compactTaskWidth : innerWidth;
-		const metrics = showMetrics && snapshot.metrics ? metricRows(snapshot.metrics) : [];
+		const metrics = showMetrics && snapshot.metrics ? metricRows(snapshot) : [];
 		const metricWidth = showMetrics ? availableMetricWidth : 0;
 		const separator = ctx.ui.theme.fg("borderMuted", " │ ");
 		const rowCount = showMetrics ? Math.max(tasks.length, metrics.length) : tasks.length;
@@ -301,14 +310,23 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const startVisualTimer = () => {
 		if (visualTimer || !sessionCtx) return;
-		visualTimer = setInterval(() => {
-			const visibleActive = Boolean(currentRef && currentSnapshot && (active.has(currentRef) || currentSnapshot.steps.some((step) => step.status === "running" || isCurrentInFlight(step.ref))));
-			if (!visibleActive) { clearInterval(visualTimer); visualTimer = undefined; return; }
-			frame++;
-			dashboardInvalidate?.();
-			dashboardTui?.requestRender?.();
-		}, 90);
-		visualTimer.unref();
+		const schedule = () => {
+			if (!currentSnapshot) return;
+			const animated = currentSnapshot.steps.some((step) => step.status === "running" || isCurrentInFlight(step.ref));
+			const live = currentSnapshot.metrics?.live;
+			const timing = Boolean(live && (live.elapsed || live.running || live.activeAgents > 0 || live.activeVerifications > 0));
+			if (!animated && !timing) return;
+			const delay = animated ? 90 : Math.max(50, 1_000 - (Date.now() % 1_000));
+			visualTimer = setTimeout(() => {
+				visualTimer = undefined;
+				if (animated) frame++;
+				dashboardInvalidate?.();
+				dashboardTui?.requestRender?.();
+				schedule();
+			}, delay);
+			visualTimer.unref();
+		};
+		schedule();
 	};
 
 	const renderDashboard = (ctx: ExtensionContext) => {
@@ -833,7 +851,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			if (adapter?.controlExecution && ownership.has(ref)) await adapter.controlExecution(ref, "detach", `session:${ctx.sessionManager.getSessionId()}:detach:${ownership.get(ref)}`, ctx).catch(() => undefined);
 		}
 		if (subagentPulseTimer) clearInterval(subagentPulseTimer);
-		if (visualTimer) clearInterval(visualTimer);
+		if (visualTimer) clearTimeout(visualTimer);
 		visualTimer = undefined;
 		subagentPulseTimer = undefined;
 		runningSubagents.clear();

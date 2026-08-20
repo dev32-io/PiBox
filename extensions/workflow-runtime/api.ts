@@ -52,6 +52,16 @@ export interface WorkflowStageSnapshot {
 	group?: "planner" | "runtime";
 }
 
+export interface WorkflowMetricLiveProjection {
+	/** Wall-clock instant represented by the durable metric totals. */
+	sampledAtMs: number;
+	/** Open intervals that can be advanced locally without another repository read. */
+	elapsed: boolean;
+	running: boolean;
+	activeAgents: number;
+	activeVerifications: number;
+}
+
 export interface WorkflowMetrics {
 	elapsedMs: number;
 	runningMs: number;
@@ -64,6 +74,16 @@ export interface WorkflowMetrics {
 	inputTokens: number;
 	outputTokens: number;
 	toolErrors: number;
+	/** Optional for third-party adapters; managed workflows always provide it. */
+	live?: WorkflowMetricLiveProjection;
+}
+
+export interface WorkflowRepairLoopSnapshot {
+	label: string;
+	/** Settled rounds plus the currently authorized fixing round, when one is active. */
+	iteration: number;
+	maxIterations: number;
+	evaluationRef: string;
 }
 
 export interface WorkflowSnapshot {
@@ -75,6 +95,8 @@ export interface WorkflowSnapshot {
 	stages?: WorkflowStageSnapshot[];
 	/** Durable detailed metrics; optional for third-party/legacy adapters. */
 	metrics?: WorkflowMetrics;
+	/** The independent repair budget at the current stage/E2E/final-review boundary. */
+	repairLoop?: WorkflowRepairLoopSnapshot;
 }
 
 export interface WorkflowRunResult {
