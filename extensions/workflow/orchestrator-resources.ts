@@ -336,7 +336,7 @@ export class OrchestratorResourceService {
 		const body = object(bodyValue, "Resource body");
 		if (type === "work-item") {
 			if (body.kind !== "change" && body.kind !== "story") throw new HarnessError("INVALID_ARTIFACT", "Work-item kind must be change or story");
-			return this.store.create({ id: string(body.id, "id"), title: string(body.title, "title"), kind: body.kind as WorkItemKind, ...(body.workingBranch !== undefined ? { workingBranch: body.workingBranch as string } : {}), branchKind: (body.branchKind ?? "feature") as "feature" | "fix", ...(body.narrativeSchemaVersion ? { narrativeSchemaVersion: body.narrativeSchemaVersion as 1 | 2 } : {}), ...(body.intent ? { intent: body.intent as string } : {}), ...(body.intentSections ? { intentSections: object(body.intentSections, "intentSections") } : {}) });
+			return this.store.create({ id: string(body.id, "id"), title: string(body.title, "title"), kind: body.kind as WorkItemKind, ...(body.workingBranch !== undefined ? { workingBranch: body.workingBranch as string } : {}), ...(body.branchKind !== undefined ? { branchKind: body.branchKind as "feature" | "fix" } : {}), ...(body.narrativeSchemaVersion ? { narrativeSchemaVersion: body.narrativeSchemaVersion as 1 | 2 } : {}), ...(body.intent ? { intent: body.intent as string } : {}), ...(body.intentSections ? { intentSections: object(body.intentSections, "intentSections") } : {}) });
 		}
 		if (!parent) throw new HarnessError("INVALID_ARTIFACT", `${type} creation requires a work-item parent`);
 		const parentRef = parseResourceRef(parent);

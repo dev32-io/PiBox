@@ -262,13 +262,23 @@ export class WorkItemStore {
 		if (current !== index.delivery.workingBranch) throw new HarnessError("CAPABILITY_DENIED", `Work item ${index.id} is bound to ${index.delivery.workingBranch}; current branch is ${current || "detached HEAD"}`);
 	}
 
-	private async prepareWorkingBranch(id: string, requested: string | undefined, kind: WorkingBranchKind | undefined): Promise<WorkItemDelivery> {
+	private async prepareWorkingBranch(id: string, requested: string | undefined, kind: WorkingBranchKind | undefined): Promise<{ delivery: WorkItemDelivery; created: boolean }> {
 		await assertCleanRepository(this.repositoryRoot);
 		const current = await this.currentBranch();
-		if (current !== "develop") throw new HarnessError("CAPABILITY_DENIED", `New work item ${id} must be created from clean develop; current branch is ${current || "detached HEAD"}`);
-		const inferredKind = requested?.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
-		const branchKind = kind ?? inferredKind ?? "feature";
+		const requestedKind = requested?.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
+		const currentKind = current.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
+		const branchKind = kind ?? requestedKind ?? currentKind ?? "feature";
 		if (branchKind !== "feature" && branchKind !== "fix") throw new HarnessError("INVALID_ARTIFACT", "branchKind must be feature or fix");
+
+		if (current !== "develop") {
+			if (!currentKind || PROTECTED_BRANCHES.has(current)) throw new HarnessError("CAPABILITY_DENIED", `New work item ${id} requires clean develop or the checked-out feature/fix branch; current branch is ${current || "detached HEAD"}`);
+			const workingBranch = requested ?? current;
+			if (workingBranch !== current) throw new HarnessError("CAPABILITY_DENIED", `New work item ${id} can only continue the checked-out branch ${current}; requested ${workingBranch}`);
+			if (branchKind !== currentKind) throw new HarnessError("INVALID_ARTIFACT", `branchKind ${branchKind} does not match checked-out branch ${current}`);
+			const createdFromCommit = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+			return { delivery: { workingBranch, createdFromCommit }, created: false };
+		}
+
 		const workingBranch = requested ?? `${branchKind}/${id}`;
 		if (!WORKING_BRANCH_PATTERN.test(workingBranch) || !workingBranch.startsWith(`${branchKind}/`) || PROTECTED_BRANCHES.has(workingBranch)) throw new HarnessError("INVALID_ARTIFACT", `workingBranch must match ${branchKind}/<kebab-case-name>`);
 		const exists = await runGit(this.repositoryRoot, ["show-ref", "--verify", "--quiet", `refs/heads/${workingBranch}`]).then(() => true, () => false);
@@ -277,7 +287,7 @@ export class WorkItemStore {
 		if (hasOrigin) await runGit(this.repositoryRoot, ["pull", "--ff-only", "origin", "develop"]);
 		const createdFromCommit = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
 		await runGit(this.repositoryRoot, ["switch", "-c", workingBranch]);
-		return { workingBranch, createdFromCommit };
+		return { delivery: { workingBranch, createdFromCommit }, created: true };
 	}
 
 	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
@@ -308,9 +318,12 @@ export class WorkItemStore {
 		const requestedBranch = input.delivery?.workingBranch ?? input.workingBranch;
 		const inferredKind = requestedBranch?.match(/^(feature|fix)\//)?.[1] as WorkingBranchKind | undefined;
 		let delivery: WorkItemDelivery | undefined;
+		let createdWorkingBranch = false;
 		const temporary = join(this.artifactRoot, `.${input.id}.tmp-${randomUUID()}`);
 		try {
-			delivery = await this.prepareWorkingBranch(input.id, requestedBranch, input.branchKind ?? inferredKind);
+			const prepared = await this.prepareWorkingBranch(input.id, requestedBranch, input.branchKind ?? inferredKind);
+			delivery = prepared.delivery;
+			createdWorkingBranch = prepared.created;
 			await mkdir(temporary, { recursive: true });
 			await writeFile(join(temporary, "intent.md"), `${intent.trim()}\n`, "utf8");
 			const index: WorkItemIndex = {
@@ -341,11 +354,13 @@ export class WorkItemStore {
 					if (tip === delivery.createdFromCommit) {
 						await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, root)]);
 						await rm(root, { recursive: true, force: true });
-						await runGit(this.repositoryRoot, ["switch", originalBranch]);
-						await runGit(this.repositoryRoot, ["branch", "-D", delivery.workingBranch]);
+						if (createdWorkingBranch) {
+							await runGit(this.repositoryRoot, ["switch", originalBranch]);
+							await runGit(this.repositoryRoot, ["branch", "-D", delivery.workingBranch]);
+						}
 					} else {
 						recovery.push(`preserved ${delivery.workingBranch} at ${tip}; it advanced beyond transaction baseline ${originalHead}`);
-						await runGit(this.repositoryRoot, ["switch", originalBranch]);
+						if (createdWorkingBranch) await runGit(this.repositoryRoot, ["switch", originalBranch]);
 					}
 				} else if ((await this.currentBranch()) !== originalBranch) await runGit(this.repositoryRoot, ["switch", originalBranch]);
 			} catch (rollbackError) {

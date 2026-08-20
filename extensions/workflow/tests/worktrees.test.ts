@@ -289,14 +289,28 @@ test("rejects branch collisions before writing a work item", async (t) => {
 	assert.equal(await git(root, "branch", "--show-current"), "develop");
 });
 
-test("rejects initial creation from a dirty, protected, or wrong checkout", async (t) => {
+test("continues the clean current feature branch without switching or syncing develop", async (t) => {
+	const { root, identity } = await fixture(t);
+	await git(root, "switch", "-c", "feature/existing-work");
+	const store = new WorkItemStore(root);
+	const createdFromCommit = await git(root, "rev-parse", "HEAD");
+	const item = await store.create({ id: "follow-up", title: "Follow-up", kind: "story", intent: "Continue existing work" });
+	assert.equal(item.delivery?.workingBranch, "feature/existing-work");
+	assert.equal(item.delivery?.createdFromCommit, createdFromCommit);
+	assert.equal(await git(root, "branch", "--show-current"), "feature/existing-work");
+	assert.deepEqual(await new WorktreeManager(identity).validateWorkingBranch("follow-up"), item.delivery);
+});
+
+test("rejects initial creation from a dirty, protected, or mismatched checkout", async (t) => {
 	const { root } = await fixture(t);
 	const store = new WorkItemStore(root);
 	await writeFile(join(root, "dirty.txt"), "dirty\n");
 	await assert.rejects(store.create({ id: "dirty", title: "Dirty", kind: "story", branchKind: "feature", intent: "Reject dirty" }), /uncommitted changes/);
 	await rm(join(root, "dirty.txt"));
 	await git(root, "switch", "-c", "feature/existing-work");
-	await assert.rejects(store.create({ id: "wrong", title: "Wrong", kind: "story", workingBranch: "feature/wrong", intent: "Reject wrong branch" }), /must be created from clean develop/);
+	await assert.rejects(store.create({ id: "wrong", title: "Wrong", kind: "story", workingBranch: "feature/wrong", intent: "Reject wrong branch" }), /only continue the checked-out branch/);
+	await git(root, "switch", "-c", "main");
+	await assert.rejects(store.create({ id: "protected-current", title: "Protected current", kind: "story", intent: "Reject protected current branch" }), /requires clean develop or the checked-out feature\/fix branch/);
 	await git(root, "switch", "develop");
 	await assert.rejects(store.create({ id: "protected", title: "Protected", kind: "story", workingBranch: "develop", intent: "Reject protected branch" }), /workingBranch must match/);
 });

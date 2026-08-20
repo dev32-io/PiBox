@@ -6,7 +6,7 @@ export type WorkingBranchKind = "feature" | "fix";
 export interface WorkItemDelivery {
 	/** The sole user-facing branch identity for this work item. */
 	workingBranch: string;
-	/** Immutable harness-owned anchor captured before the working branch is created. */
+	/** Immutable harness-owned anchor captured before the work item is written to its working branch. */
 	createdFromCommit: string;
 	/** Immutable harness-owned anchor captured when execution first starts. */
 	executionStartCommit?: string;

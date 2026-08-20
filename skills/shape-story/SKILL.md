@@ -53,7 +53,7 @@ The matrix must list substantive structured cases with stable IDs, one classific
 
 After the user validates the checkpoint:
 
-1. Create or update the work item with `resource_write`. Initial creation must occur from a clean `develop` checkout; it prepares and binds `feature/<work-item-id>` before writing. For defect work, pass `branchKind: "fix"`; pass `workingBranch` only when an explicit matching feature/fix name is required. Subsequent story mutations stay on that bound branch.
+1. Create or update the work item with `resource_write`. From clean `develop`, initial creation prepares and binds `feature/<work-item-id>` before writing. From a clean existing `feature/*` or `fix/*` checkout, it binds the new work item to that current branch without creating or switching branches. For defect work, pass `branchKind: "fix"`; pass `workingBranch` only when an explicit matching feature/fix name is required. Subsequent story mutations stay on that bound branch.
 2. Write only the specification, design, conservative touched-area `e2e-matrix`, and rare decision artifacts the story needs. Persist the exact user-approved matrix content; do not summarize or replace its cases.
 3. Read each written artifact ref back individually and check for placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between acceptance and design. A compact work-item read is not a substitute for reading its child artifacts.
 4. Correct only the affected resource. Include the persisted e2e-matrix in the story review checkpoint and resource refs.

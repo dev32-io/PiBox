@@ -24,6 +24,18 @@ function task(id = "build-app"): TaskManifest {
 }
 const mutation = { rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
 
+test("resource creation continues the checked-out fix branch when branch hints are omitted", async (t) => {
+	const root = await repository(t);
+	await git(root, "switch", "-c", "fix/ongoing");
+	const store = new WorkItemStore(root);
+	const service = new OrchestratorResourceService(root, store);
+	const createdFromCommit = await git(root, "rev-parse", "HEAD");
+	const item = await service.create("work-item", undefined, { id: "follow-up-fix", title: "Follow-up fix", kind: "change", intent: "Continue the current fix branch." }, mutation) as Awaited<ReturnType<WorkItemStore["create"]>>;
+	assert.equal(item.delivery?.workingBranch, "fix/ongoing");
+	assert.equal(item.delivery?.createdFromCommit, createdFromCommit);
+	assert.equal(await git(root, "branch", "--show-current"), "fix/ongoing");
+});
+
 test("builds a focused persistent implementation packet", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "context-packet", title: "Context packet", kind: "change", intent: "Broad intent that referenced context makes unnecessary." });
