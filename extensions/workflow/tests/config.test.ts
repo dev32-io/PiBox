@@ -23,10 +23,12 @@ test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7"]);
 	const generalPurpose = DEFAULT_HARNESS_CONFIG.agents["general-purpose"];
 	assert.match(generalPurpose?.prompt ?? "", /agent-definitions\/general-purpose\.md$/);
-	assert.equal(generalPurpose?.description, "Open-ended delegation for research, analysis, implementation, testing, and other bounded work");
+	assert.equal(generalPurpose?.description, "General execution of assignments delegated by the main session");
 	assert.deepEqual(generalPurpose?.tools, ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp:playwright", "mcp:context7"]);
 	assert.equal(generalPurpose?.canDelegate, false);
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents.explorer?.tier, "low");
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents.investigator?.tier, "medium");
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "mcp:playwright"]);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tier, "low");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "medium");

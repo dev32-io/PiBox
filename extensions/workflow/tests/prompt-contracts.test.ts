@@ -170,21 +170,31 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(critic, /Prefer narrow end-to-end contributions/i);
 });
 
-test("general-purpose supports open-ended delegation without recursive spawning", async () => {
+test("general-purpose supports arbitrary main-session assignments without recursive spawning", async () => {
 	const content = await readFile(join(root, "agent-definitions/general-purpose.md"), "utf8");
-	const { frontmatter, body } = parseFrontmatter<{ tools?: unknown }>(content);
+	const { frontmatter, body } = parseFrontmatter<{ description?: unknown; tools?: unknown }>(content);
 	assert.deepEqual(frontmatter.tools, ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp:playwright", "mcp:context7"]);
-	assert.match(body, /research, analysis, editing, command execution, and testing directly/i);
+	assert.match(String(frontmatter.description), /assignments delegated by the main session/i);
+	assert.match(body, /Use judgment about the methods needed/i);
 	assert.match(body, /Do not delegate or spawn another agent/i);
-	assert.match(body, /rather than assuming every delegation requires code changes/i);
+	assert.match(body, /Do not silently turn a focused assignment into a broader project/i);
+	assert.doesNotMatch(body, /web_search|fetch_content|playwright|context7|optional `mcp`/i);
 });
 
-test("explorer supports evidence-driven code understanding and diagnosis", async () => {
-	const explorer = await readFile(join(root, "agent-definitions/explorer.md"), "utf8");
-	for (const mode of ["lookup", "map", "trace", "impact", "diagnose", "explain"]) assert.ok(explorer.includes(`\`${mode}\``), mode);
-	assert.match(explorer, /Separate proximate technical cause from an upstream enabling product/i);
-	assert.match(explorer, /do not treat correlation as causation/i);
-	assert.match(explorer, /cheapest next probe/i);
+test("explorer stays lightweight while investigator owns causal diagnosis", async () => {
+	const explorerContent = await readFile(join(root, "agent-definitions/explorer.md"), "utf8");
+	const explorer = parseFrontmatter<{ tier?: unknown }>(explorerContent);
+	assert.equal(explorer.frontmatter.tier, "low");
+	assert.match(explorer.body, /Quickly answer one focused repository question/i);
+	assert.match(explorer.body, /Do not perform causal diagnosis, broad impact analysis/i);
+	assert.match(explorer.body, /smallest next lookup/i);
+
+	const investigatorContent = await readFile(join(root, "agent-definitions/investigator.md"), "utf8");
+	const investigator = parseFrontmatter<{ tier?: unknown }>(investigatorContent);
+	assert.equal(investigator.frontmatter.tier, "medium");
+	assert.match(investigator.body, /competing hypotheses/i);
+	assert.match(investigator.body, /Do not treat correlation, timing, or adjacency as causation/i);
+	assert.match(investigator.body, /cheapest next probe/i);
 });
 
 test("skill descriptions are trigger-only context pointers", async () => {

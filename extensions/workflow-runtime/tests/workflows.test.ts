@@ -69,8 +69,13 @@ test("registers the generalized workflow and subagent surface", async () => {
 	const f = fixture();
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_status", "subagent_control", "subagent_respond", "subagent_spawn"]);
-	assert.match(f.tools.get("subagent_spawn").description, /subagent.*configured agent definition.*complete task prompt.*Foreground is the default/i);
-	assert.match(f.tools.get("subagent_spawn").description, /mode to background.*automatic terminal delivery/i);
+	const spawnDescription = f.tools.get("subagent_spawn").description;
+	assert.match(spawnDescription, /subagent.*configured agent definition.*detailed, self-contained assignment/i);
+	assert.match(spawnDescription, /independent topics or dimensions.*multiple narrowly scoped subagents.*one contribution per child/i);
+	assert.match(spawnDescription, /Keep tightly coupled work together.*small directly tractable work yourself/i);
+	assert.match(spawnDescription, /objective.*context.*scope.*evidence or deliverable.*constraints.*stop conditions/i);
+	assert.match(spawnDescription, /Foreground is the default.*background.*independent work.*automatic terminal delivery/i);
+	assert.match(spawnDescription, /workflow_start\/resume/i);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
 	const spawnSchema = JSON.stringify(f.tools.get("subagent_spawn").parameters);
 	assert.match(spawnSchema, /"default":"foreground"/);

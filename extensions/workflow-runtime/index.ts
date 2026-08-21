@@ -768,10 +768,10 @@ export default function workflows(pi: ExtensionAPI): void {
 			: "The registered workflow adapter supplies the available definitions at session start.";
 		pi.registerTool({
 			name: "subagent_spawn", label: "Spawn Subagent",
-			description: `Spawn a subagent from one configured agent definition and a complete task prompt. Available agents: ${available} Foreground is the default and waits for settlement; set mode to background to return immediately and receive automatic terminal delivery. Choose delegation only when it helps; managed workflow tasks remain internally scheduled by workflow_start/resume.`,
+			description: `Spawn a subagent from one configured agent definition with a detailed, self-contained assignment. Available agents: ${available} Prefer focused delegation: when a request has materially independent topics or dimensions, spawn multiple narrowly scoped subagents—one contribution per child—instead of assigning one child a large multi-part task. Keep tightly coupled work together, and do small directly tractable work yourself. Each assignment should state its objective, relevant context, included and excluded scope, expected evidence or deliverable, constraints, and stop conditions. Foreground is the default and waits for settlement; set mode to background when independent work can proceed concurrently and return through automatic terminal delivery. Managed workflow tasks remain internally scheduled by workflow_start/resume.`,
 			parameters: Type.Object({
 				agent: Type.String({ description: `Exact configured agent name. Available agents: ${catalog.length > 0 ? catalog.map((agent) => agent.name).join(", ") : "resolved at session start"}` }),
-				task: Type.String({ description: "Complete assignment prompt for the child" }),
+				task: Type.String({ description: "Detailed, self-contained assignment for one bounded contribution. Include its objective, relevant context, scope boundaries, expected evidence or deliverable, constraints, and stop conditions." }),
 				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
 				tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Configured fallback list; use local for local-llm requests; defaults to medium" })),
 				model: Type.Optional(Type.String({ description: "Exact configured model; accepts model, provider/model, or either form suffixed with #effort. Explicit model or effort failures return an error without fallback; local-llm models require tier local" })),
