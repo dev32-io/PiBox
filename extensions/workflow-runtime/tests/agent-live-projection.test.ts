@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { initialAgentProgress, markAgentProcessStarted } from "../agent-progress.js";
-import { agentLiveProcessStatus, AgentLiveProjectionManager, projectAgentLive } from "../agent-live-projection.js";
+import { agentLiveProcessStatus, AgentLiveProjectionManager, projectAgentLive, publishAgentLiveProgress } from "../agent-live-projection.js";
 import { SessionAgentRegistry } from "../agent-registry.js";
 
 async function registry(t: test.TestContext): Promise<SessionAgentRegistry> {
@@ -53,21 +53,113 @@ test("manager publishes semantic lifecycle changes while progress checkpoints st
 	const value = await registry(t);
 	const manager = new AgentLiveProjectionManager(value);
 	const seen: string[] = [];
+	let resolveActive!: () => void;
+	const active = new Promise<void>((resolve) => { resolveActive = resolve; });
 	const controller = new AbortController();
 	const unsubscribe = await manager.watch((projection) => {
-		if (projection.operationId === "managed") seen.push(`${projection.attemptSequence ?? 0}:${agentLiveProcessStatus(projection) ?? "settled"}:${projection.progress?.turns ?? 0}`);
+		if (projection.operationId !== "managed") return;
+		const entry = `${projection.attemptSequence ?? 0}:${agentLiveProcessStatus(projection) ?? "settled"}:${projection.progress?.turns ?? 0}`;
+		seen.push(entry);
+		if (entry.startsWith("1:active:")) resolveActive();
 	}, controller.signal);
 	t.after(() => { controller.abort(); unsubscribe(); });
 
 	const agentId = await reserve(value, "managed");
 	const { attempt } = await value.startAttempt(agentId, undefined, { kind: "repair", generation: 2 });
 	await value.markRunning(agentId, attempt.id, 303);
+	await Promise.race([active, new Promise((_, reject) => setTimeout(() => reject(new Error("active lifecycle was not published")), 1_000))]);
+	assert.ok(seen.some((entry) => entry === "1:starting:0"));
+	seen.length = 0;
+	const lifecycle: string[] = [];
+	const unsubscribeLifecycle = value.subscribe((event) => lifecycle.push(event.type));
 	const progress = markAgentProcessStarted({ ...initialAgentProgress(attempt.startedAt), turns: 4 });
 	await value.updateProgress(agentId, attempt.id, progress);
+	unsubscribeLifecycle();
 
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.ok(seen.some((entry) => entry === "1:starting:0"));
-	assert.ok(seen.some((entry) => entry.startsWith("1:active:")));
-	assert.equal(seen.includes("1:active:4"), false, "tool/turn progress does not create a cross-process journal wake-up");
+	assert.deepEqual(lifecycle, [], "durable compatibility checkpoints do not create a lifecycle event");
 	assert.equal(projectAgentLive(await value.get(agentId)).progress?.turns, 4);
+});
+
+test("process-local progress reaches live projections without durable registry writes", async (t) => {
+	const value = await registry(t);
+	const manager = new AgentLiveProjectionManager(value);
+	const seen: number[] = [];
+	let resolveLive!: () => void;
+	const live = new Promise<void>((resolve) => { resolveLive = resolve; });
+	const controller = new AbortController();
+	const unsubscribe = await manager.watch((projection) => {
+		if (projection.operationId !== "volatile") return;
+		seen.push(projection.progress?.turns ?? 0);
+		if (projection.progress?.turns === 3) resolveLive();
+	}, controller.signal);
+	t.after(() => { controller.abort(); unsubscribe(); });
+
+	const agentId = await reserve(value, "volatile");
+	const { attempt } = await value.startAttempt(agentId, undefined, { kind: "review", generation: 2 });
+	await value.markRunning(agentId, attempt.id, 404);
+	publishAgentLiveProgress(value.root, agentId, attempt.id, markAgentProcessStarted({ ...initialAgentProgress(attempt.startedAt), turns: 3 }));
+
+	await Promise.race([live, new Promise((_, reject) => setTimeout(() => reject(new Error("live progress was not published")), 1_000))]);
+	assert.ok(seen.includes(3));
+	assert.equal((await value.get(agentId)).attempts[0]!.progress, undefined, "live progress remains memory-only");
+});
+
+test("a replacement live manager reconstructs an active attempt from its transport", async (t) => {
+	const value = await registry(t);
+	const agentId = await reserve(value, "reattach");
+	const { attempt } = await value.startAttempt(agentId, undefined, { kind: "review", generation: 2 });
+	const attemptRoot = join(value.root, "agents", agentId, "attempts", attempt.id);
+	await mkdir(attemptRoot, { recursive: true });
+	await writeFile(join(attemptRoot, "stdout.jsonl"), `${JSON.stringify({ type: "tool_execution_end", toolName: "read", isError: false })}\n${JSON.stringify({ type: "turn_end", message: { usage: { input: 10, output: 7, reasoning: 2, totalTokens: 19 } } })}\n`);
+	await value.markRunning(agentId, attempt.id, 505);
+
+	const seen: Array<{ turns: number; tools: number }> = [];
+	let resolveRecovered!: () => void;
+	const recovered = new Promise<void>((resolve) => { resolveRecovered = resolve; });
+	const manager = new AgentLiveProjectionManager(value);
+	const unsubscribe = await manager.watch((projection) => {
+		if (projection.operationId !== "reattach") return;
+		const progress = { turns: projection.progress?.turns ?? 0, tools: projection.progress?.toolCalls ?? 0 };
+		seen.push(progress);
+		if (progress.turns === 1 && progress.tools === 1) resolveRecovered();
+	});
+	await Promise.race([recovered, new Promise((_, reject) => setTimeout(() => reject(new Error("transport progress was not recovered")), 1_000))]);
+	assert.ok(seen.some((progress) => progress.turns === 1 && progress.tools === 1));
+
+	let resolveReloaded!: () => void;
+	let resolveAfterOldDispose!: () => void;
+	const reloaded = new Promise<void>((resolve) => { resolveReloaded = resolve; });
+	const afterOldDispose = new Promise<void>((resolve) => { resolveAfterOldDispose = resolve; });
+	const replacement = new AgentLiveProjectionManager(value);
+	const unsubscribeReplacement = await replacement.watch((projection) => {
+		if (projection.operationId !== "reattach") return;
+		if (projection.progress?.turns === 2 && projection.progress.toolCalls === 2) resolveReloaded();
+		if (projection.progress?.turns === 3 && projection.progress.toolCalls === 3) resolveAfterOldDispose();
+	});
+	t.after(unsubscribeReplacement);
+
+	await appendFile(join(attemptRoot, "stdout.jsonl"), `${JSON.stringify({ type: "tool_execution_end", toolName: "grep", isError: false })}\n${JSON.stringify({ type: "turn_end", message: { usage: { input: 5, output: 3, reasoning: 1, totalTokens: 28 } } })}\n`);
+	await Promise.race([reloaded, new Promise((_, reject) => setTimeout(() => reject(new Error("overlapping replacement manager inherited stale fallback progress")), 1_000))]);
+	unsubscribe();
+	await appendFile(join(attemptRoot, "stdout.jsonl"), `${JSON.stringify({ type: "tool_execution_end", toolName: "read", isError: false })}\n${JSON.stringify({ type: "turn_end", message: { usage: { input: 4, output: 2, reasoning: 1, totalTokens: 35 } } })}\n`);
+	await Promise.race([afterOldDispose, new Promise((_, reject) => setTimeout(() => reject(new Error("replacement progress froze after the old manager disposed")), 1_000))]);
+	assert.equal((await value.get(agentId)).attempts[0]!.progress, undefined, "transport recovery does not restore per-event writes");
+});
+
+test("launcher progress supersedes reload fallback observers", async (t) => {
+	const value = await registry(t);
+	const agentId = await reserve(value, "takeover");
+	const { attempt } = await value.startAttempt(agentId, undefined, { kind: "review", generation: 1 });
+	const attemptRoot = join(value.root, "agents", agentId, "attempts", attempt.id);
+	await mkdir(attemptRoot, { recursive: true });
+	await writeFile(join(attemptRoot, "stdout.jsonl"), `${JSON.stringify({ type: "turn_end", message: { usage: { output: 1, totalTokens: 1 } } })}\n`);
+	await value.markRunning(agentId, attempt.id, 606);
+	const manager = new AgentLiveProjectionManager(value);
+	const unsubscribe = await manager.watch(() => undefined);
+	publishAgentLiveProgress(value.root, agentId, attempt.id, markAgentProcessStarted({ ...initialAgentProgress(attempt.startedAt), turns: 9 }));
+	await appendFile(join(attemptRoot, "stdout.jsonl"), `${JSON.stringify({ type: "turn_end", message: { usage: { output: 1, totalTokens: 2 } } })}\n`);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	unsubscribe();
+	const projection = (await new AgentLiveProjectionManager(value).list()).find((candidate) => candidate.agentId === agentId)!;
+	assert.equal(projection.progress?.turns, 9, "an older fallback cannot overwrite or clear the launcher-owned stream");
 });

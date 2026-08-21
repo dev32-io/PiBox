@@ -112,7 +112,10 @@ function processIntervalIsOpen(attempt: ProcessAttempt, agent?: SessionAgentReco
 function schedulingInterval(attempt: ProcessAttempt, now: number): Interval | undefined {
 	const start = time(attempt.timing?.attemptStartedAt ?? attempt.startedAt);
 	if (start === undefined) return undefined;
-	const ready = time(attempt.timing?.childReadyAt ?? attempt.timing?.firstActivityAt ?? attempt.progress?.processStartedAt);
+	// While an active attempt's detailed readiness boundary is still volatile,
+	// processSpawnedAt closes the live scheduling estimate. Settlement replaces it
+	// with the exact childReadyAt/firstActivityAt boundary.
+	const ready = time(attempt.timing?.childReadyAt ?? attempt.timing?.firstActivityAt ?? attempt.progress?.processStartedAt ?? attempt.timing?.processSpawnedAt);
 	if (ready !== undefined) return [start, ready];
 	if (!attempt.timing) return undefined;
 	const terminal = time(attempt.timing.processExitedAt ?? attempt.exitedAt ?? (TERMINAL_ATTEMPT_STATES.has(attempt.state) ? attempt.updatedAt : undefined));
@@ -120,7 +123,7 @@ function schedulingInterval(attempt: ProcessAttempt, now: number): Interval | un
 }
 
 function schedulingIntervalIsOpen(attempt: ProcessAttempt): boolean {
-	return Boolean(attempt.timing && !TERMINAL_ATTEMPT_STATES.has(attempt.state) && !attempt.timing.childReadyAt && !attempt.timing.firstActivityAt);
+	return Boolean(attempt.timing && !TERMINAL_ATTEMPT_STATES.has(attempt.state) && !attempt.timing.childReadyAt && !attempt.timing.firstActivityAt && !attempt.timing.processSpawnedAt);
 }
 
 type AgentMetricRole = "implementer" | "reviewer" | "fixer" | "e2e";

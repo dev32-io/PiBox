@@ -9,6 +9,7 @@ import {
 import { SessionAgentRegistry, type AgentScope, type ProcessAttemptTiming, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { clearAgentLiveProgress, publishAgentLiveProgress } from "./agent-live-projection.js";
 import { fastModeChildEnvironment, isSubagentFastActive } from "../fast-mode/runtime.js";
 import type { FastCapabilityTier } from "../fast-mode/policy.js";
 
@@ -108,7 +109,12 @@ export class LaunchCoordinator {
 				let running: Promise<unknown> | undefined;
 				let progress = initialAgentProgress(attempt.startedAt);
 				let timing: ProcessAttemptTiming = structuredClone(attempt.timing ?? { attemptStartedAt: attempt.startedAt });
-				input.onProgress?.(structuredClone(progress));
+				const publishProgress = () => {
+					const snapshot = structuredClone(progress);
+					publishAgentLiveProgress(this.registry.root, reserved.id, attempt.id, snapshot);
+					input.onProgress?.(snapshot);
+				};
+				publishProgress();
 				const successfulText: string[] = [];
 				const result = await runDirectAgent({
 					agent: input.role,
@@ -155,7 +161,7 @@ export class LaunchCoordinator {
 						const next = projectAgentProgress(progress, event, observedAt);
 						if (next === progress) return;
 						progress = next;
-						input.onProgress?.(structuredClone(progress));
+						publishProgress();
 					},
 					onExit: (_exitCode, observedAt) => {
 						timing.processExitedAt ??= observedAt;
@@ -167,7 +173,7 @@ export class LaunchCoordinator {
 							timing.processSpawnedAt = observedAt;
 							running = this.registry.markRunning(reserved.id, attempt.id, pid, observedAt);
 							progress = markAgentProcessStarted(progress, observedAt);
-							input.onProgress?.(structuredClone(progress));
+							publishProgress();
 						}
 						input.onSpawn?.(pid);
 					},
@@ -180,7 +186,7 @@ export class LaunchCoordinator {
 				if (!progress.settledAt) progress = projectAgentProgress(progress, { type: "agent_settled" }, outputDrainedAt);
 				timing.settledAt = progress.settledAt ?? outputDrainedAt;
 				timing.childReadyAt ??= timing.firstActivityAt ?? timing.processExitedAt;
-				input.onProgress?.(structuredClone(progress));
+				publishProgress();
 				const failure = classifyProviderFailure(result, input.signal);
 				const providerFailure = isFallbackEligible(failure);
 				await this.registry.recordExit(
@@ -189,6 +195,7 @@ export class LaunchCoordinator {
 					providerFailure && result.exitCode === 0 ? 1 : result.exitCode,
 					{ progress, timing },
 				);
+				clearAgentLiveProgress(this.registry.root, reserved.id, attempt.id);
 				lastResult = result;
 				const afterExit = await this.registry.get(reserved.id);
 				if (["waiting_decision", "blocked", "paused", "interrupted", "recovery_required", "cancelled"].includes(afterExit.state)) {
@@ -243,6 +250,7 @@ export class LaunchCoordinator {
 					settledAt: progress.settledAt ?? now,
 				};
 				await this.registry.recordExit(reserved.id, attempt.id, 1, { progress, timing }).catch(() => undefined);
+				clearAgentLiveProgress(this.registry.root, reserved.id, attempt.id);
 				current = await this.registry.get(reserved.id);
 			}
 			if (current.state !== "failed" && current.state !== "cancelled") {

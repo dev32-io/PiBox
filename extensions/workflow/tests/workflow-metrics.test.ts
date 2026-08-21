@@ -175,6 +175,16 @@ test("keeps launch startup out of process time and closes legacy attempts with t
 	assert.equal(launching.live?.activeImplementers, 0);
 	assert.equal(launching.live?.activeScheduling, 1);
 
+	const spawned = projectWorkflowMetrics({
+		workItemId: "example", workflowEvents: [event(1, "workflow.started", 0)],
+		agents: [{ id: "reviewer", role: "code-reviewer", state: "running", workItemId: "example", evaluationId: "review", attempts: [{ id: "a", sequence: 1, state: "running", startedAt: at(10), updatedAt: at(12), timing: { attemptStartedAt: at(10), processSpawnedAt: at(12) } }] }] as any[],
+		verificationAttempts: [], now: Date.parse(at(20)),
+	});
+	assert.equal(spawned.reviewerMs, 8_000);
+	assert.equal(spawned.harnessSchedulingMs, 2_000, "a spawned reviewer does not keep accumulating harness scheduling while volatile readiness is pending");
+	assert.equal(spawned.live?.activeReviewers, 1);
+	assert.equal(spawned.live?.activeScheduling, 0);
+
 	const terminal = projectWorkflowMetrics({
 		workItemId: "example", workflowEvents: [event(1, "workflow.started", 0), event(2, "workflow.completed", 30)],
 		agents: [{ id: "legacy", role: "implementer", state: "failed", completedAt: at(20), updatedAt: at(20), workItemId: "example", taskId: "task", attempts: [{ id: "a", sequence: 1, state: "running", startedAt: at(5), updatedAt: at(20) }] }] as any[],
