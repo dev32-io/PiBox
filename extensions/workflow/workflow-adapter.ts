@@ -100,7 +100,7 @@ function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: stri
 	if (failed) return { running: false, attention: agentAttention(failed.agent) ?? "failed" };
 	if (current.some(({ agent }) => agent.state === "launching" || agent.state === "running")) return { running: false, attention: "stale process state" };
 	if (current.some(({ agent, attempt }) => agent.state !== "reserved" && attempt?.state === "failed")) return { running: false, attention: "failed" };
-	if (current.some(({ attempt }) => attempt?.state === "exited")) return { running: false, attention: "stale process state" };
+	if (current.some(({ agent, attempt }) => agent.state !== "reserved" && attempt?.state === "exited")) return { running: false, attention: "stale process state" };
 	return { running: false };
 }
 

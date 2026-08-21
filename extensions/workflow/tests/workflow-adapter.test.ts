@@ -365,6 +365,10 @@ test("a failed fixer remains actionable during fixing", async () => {
 	fixer.state = "reserved";
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps[0]!.status, "ready", "an explicitly prepared persistent fixer becomes runnable without a duplicate logical agent");
+	fixer.attempts[0]!.state = "exited";
+	snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps[0]!.status, "ready", "a reserved fixer remains runnable while its prior successful process attempt is exited");
+	assert.doesNotMatch(snapshot.steps[0]!.detail ?? "", /stale process state/);
 });
 
 test("request_changes records a fixing step without synchronously launching repair or re-review", async () => {
