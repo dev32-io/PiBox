@@ -471,6 +471,18 @@ test("forward task references can be ordered after the pieces are written", asyn
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("idempotent review-loop settlement does not attempt an empty Git commit", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "loop-settlement", title: "Loop settlement", kind: "change", intent: "Settle repair metadata idempotently." });
+	await store.defineEvaluation("loop-settlement", { schemaVersion: 1, id: "review", type: "combined-review", scope: { workItem: "loop-settlement" }, status: "failed", required: true, attempt: 1, methods: ["review"] });
+	await store.updateEvaluationLoop("loop-settlement", "review", { state: "fixing", iteration: 1, maxIterations: 3, managerPrompt: "Fix F1", fixerAgentId: "fixer" }, "failed");
+	const settledHead = await git(root, "rev-parse", "HEAD");
+	const replay = await store.updateEvaluationLoop("loop-settlement", "review", { state: "fixing", iteration: 1, maxIterations: 3, managerPrompt: "Fix F1", fixerAgentId: "fixer" }, "failed");
+	assert.equal(replay.loop?.state, "fixing");
+	assert.equal(await git(root, "rev-parse", "HEAD"), settledHead);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
 test("revising a singleton task preserves stage order", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "singleton-order", title: "Singleton order", kind: "change", intent: "Preserve execution order." });

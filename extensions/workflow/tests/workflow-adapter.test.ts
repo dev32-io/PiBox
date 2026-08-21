@@ -146,6 +146,62 @@ test("resume preserves and reopens the same failed fixer on its unchanged dirty 
 	assert.equal(await readFile(join(root, "source.txt"), "utf8"), "partial repair\n");
 });
 
+test("explicit resume reconstructs missing recovery for a clean successful reported fixer", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-reported-repair-resume-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await exec("git", ["init", "-q"], { cwd: root });
+	await exec("git", ["config", "user.email", "test@example.com"], { cwd: root });
+	await exec("git", ["config", "user.name", "Test"], { cwd: root });
+	await writeFile(join(root, ".gitignore"), ".pibox/\n");
+	await writeFile(join(root, "source.txt"), "completed repair\n");
+	await exec("git", ["add", "."], { cwd: root });
+	await exec("git", ["commit", "-qm", "completed repair"], { cwd: root });
+	const identity = await discoverRepository(root);
+	const item: any = { id: "example", tasks: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", loop: { state: "fixing", iteration: 1, fixerAgentId: "fixer" } };
+	const fixer: any = { id: "fixer", operationId: "repair:example:review:1", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited", exitCode: 0, activity: { kind: "repair", generation: 2 } }] };
+	let prepared = "";
+	const runtime: any = {
+		identity,
+		workItems: { async read() { return item; }, async readEvaluation() { return evaluation; }, async readTask() { throw new Error("none"); } },
+		agents: { async get() { return fixer; }, async prepareRetry(id: string) { prepared = id; } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), validateWorkingBranch: async () => {} });
+	await adapter.controlWorkflow("work-item:example", "resume", {} as any);
+	const recovery = await new RepairRecoveryStore(identity).read("example", "review");
+	assert.equal(recovery?.agentId, "fixer");
+	assert.equal(recovery?.head, (await exec("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" })).stdout.trim());
+	assert.equal(recovery?.dirty, false);
+	assert.equal(prepared, "fixer");
+});
+
+test("resume refuses to reconstruct missing reported-fixer recovery from a dirty workspace", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-dirty-reported-repair-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await exec("git", ["init", "-q"], { cwd: root });
+	await exec("git", ["config", "user.email", "test@example.com"], { cwd: root });
+	await exec("git", ["config", "user.name", "Test"], { cwd: root });
+	await writeFile(join(root, ".gitignore"), ".pibox/\n");
+	await writeFile(join(root, "source.txt"), "base\n");
+	await exec("git", ["add", "."], { cwd: root });
+	await exec("git", ["commit", "-qm", "base"], { cwd: root });
+	await writeFile(join(root, "source.txt"), "unfenced work\n");
+	const identity = await discoverRepository(root);
+	const item: any = { id: "example", tasks: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", loop: { state: "fixing", iteration: 1, fixerAgentId: "fixer" } };
+	const fixer: any = { id: "fixer", operationId: "repair:example:review:1", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited", exitCode: 0 }] };
+	const runtime: any = {
+		identity,
+		workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } },
+		agents: { async get() { return fixer; }, async prepareRetry() { throw new Error("must not prepare"); } },
+		mutex: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	await assert.rejects(adapter.controlWorkflow("work-item:example", "resume", {} as any), /working branch has uncommitted changes/i);
+	assert.equal(await new RepairRecoveryStore(identity).read("example", "review"), undefined);
+});
+
 test("renders the final E2E fix loop with journey-specific queued and active phases", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "final-e2e" }] };
 	const evaluation: any = { id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: "example" }, status: "planned", required: true, attempt: 1, methods: [], loop: { state: "rereviewing", iteration: 2, maxIterations: 3 } };

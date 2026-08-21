@@ -6,7 +6,7 @@ import { AgentLiveProjectionManager } from "../workflow-runtime/agent-live-proje
 import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { AGENT_HEARTBEAT_FRESH_MS, isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
-import { readTextIfExists } from "./repository.js";
+import { assertCleanRepository, readTextIfExists } from "./repository.js";
 import type { WorkItemStore } from "./work-items.js";
 import { orderedExecutionStages, preflightTaskChecks, resolveStageMode, taskExecutionTopology } from "./execution-topology.js";
 import { WorktreeManager } from "./worktrees.js";
@@ -569,7 +569,18 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 						if (evaluation.loop?.state !== "fixing" || !evaluation.loop.fixerAgentId) continue;
 						const agent = await runtime.agents.get(evaluation.loop.fixerAgentId).catch(() => undefined);
 						if (!agent || !["failed", "protocol_failed", "reported", "recovery_required", "reserved"].includes(agent.state)) continue;
-						const record = await recoveryStore.read(workItemId, evaluation.id);
+						let record = await recoveryStore.read(workItemId, evaluation.id);
+						if (!record && agent.state === "reported") {
+							const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
+							if (attempt?.state === "exited" && attempt.exitCode === 0) {
+								// An older settlement path could mask its original error with an
+								// idempotent metadata commit and fail before writing recovery.
+								// Explicit resume may safely fence the clean workspace and retry the
+								// same successful logical fixer; it never adopts source work directly.
+								await assertCleanRepository(runtime.identity.root);
+								record = await recoveryStore.record({ workItemId, evaluationId: evaluation.id, agentId: agent.id, operationId: agent.operationId, iteration: evaluation.loop.iteration + 1 });
+							}
+						}
 						if (!record || record.agentId !== agent.id) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Failed fixer ${agent.id} has no matching durable repair recovery record; preserved work requires user-directed recovery`);
 						recoverable.push({ evaluationId: evaluation.id, agentId: agent.id, record });
 					}

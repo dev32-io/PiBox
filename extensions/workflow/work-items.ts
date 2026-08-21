@@ -1245,9 +1245,12 @@ export class WorkItemStore {
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown evaluation: ${evaluationId}`);
 		const path = join(root, catalog.path);
 		const evaluation = await this.readEvaluation(workItemId, evaluationId);
+		const before = stringify(evaluation);
 		evaluation.loop = { state: "planned", iteration: 0, maxIterations: DEFAULT_REVIEW_FIX_ITERATIONS, ...evaluation.loop, ...update };
 		if (status) evaluation.status = status;
-		await atomicWriteFile(path, stringify(evaluation));
+		const after = stringify(evaluation);
+		if (after === before) return evaluation;
+		await atomicWriteFile(path, after);
 		await this.commit([path], `harness(${workItemId}): update review loop ${evaluationId}`);
 		return evaluation;
 	}

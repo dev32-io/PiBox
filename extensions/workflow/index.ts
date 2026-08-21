@@ -815,8 +815,26 @@ export default function workflow(pi: ExtensionAPI): void {
 				return textResult(`Repair iteration ${repairIteration} completed for ${evaluationId}; the same reviewer will re-review.`, { agentId: settledFixerId, iteration: repairIteration });
 			} catch (error) {
 				const fixerAgentId = launched?.agent.id ?? existing?.id;
-				await runtime.mutex.run(`repair-failed:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "fixing", iteration: loop.iteration, managerPrompt: loop.managerPrompt!, ...(fixerAgentId ? { fixerAgentId } : {}) }, evaluation.status));
-				if (fixerAgentId) await new RepairRecoveryStore(runtime.identity).record({ workItemId, evaluationId, agentId: fixerAgentId, operationId, iteration: repairIteration });
+				let stateRecoveryError: unknown;
+				try {
+					await runtime.mutex.run(`repair-failed:${workItemId}:${evaluationId}`, () => runtime.workItems.updateEvaluationLoop(workItemId, evaluationId, { state: "fixing", iteration: loop.iteration, managerPrompt: loop.managerPrompt!, ...(fixerAgentId ? { fixerAgentId } : {}) }, evaluation.status));
+				} catch (recoveryError) {
+					stateRecoveryError = recoveryError;
+				}
+				let recordRecoveryError: unknown;
+				if (fixerAgentId) {
+					try {
+						// Persist the exact post-failure workspace even when restoring loop
+						// metadata failed, so explicit recovery never depends on that commit.
+						await new RepairRecoveryStore(runtime.identity).record({ workItemId, evaluationId, agentId: fixerAgentId, operationId, iteration: repairIteration });
+					} catch (recoveryError) {
+						recordRecoveryError = recoveryError;
+					}
+				}
+				if (stateRecoveryError || recordRecoveryError) {
+					const message = (value: unknown) => value instanceof Error ? value.message : String(value);
+					throw new HarnessError("INVALID_HANDOFF", `Repair failed: ${message(error)}; recovery persistence failed: ${[stateRecoveryError, recordRecoveryError].filter((value) => value !== undefined).map(message).join("; ")}`, { workItemId, evaluationId, fixerAgentId, originalError: message(error) });
+				}
 				throw error;
 			}
 		});
