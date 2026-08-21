@@ -35,8 +35,8 @@ The policy file is protected from direct `write`, `edit`, and statically visible
 
 ## Modes
 
-- **ENFORCED** evaluates the repository tool permission policy. Interactive `ask` decisions open a confirmation; headless asks are denied.
-- **BYPASS** permits every tool call without evaluating the repository tool permission policy.
+- **Enforced** evaluates the repository tool permission policy. Interactive `ask` decisions open a confirmation; headless asks are denied.
+- **Bypass** permits every tool call without evaluating the repository tool permission policy.
 
 Use `Shift+Tab` or `/permissions enforce|bypass`. The mode is session-scoped, survives reload/resume through session history, and is inherited by every spawned PiBox child. New interactive sessions begin enforced. The footer renders the current mode before reasoning effort.
 

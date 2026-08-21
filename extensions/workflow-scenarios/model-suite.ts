@@ -41,7 +41,15 @@ export async function createRoutineModelFixture(root: string): Promise<RoutineMo
 	await writeFile(join(root, ".gitignore"), ".pibox/\n.worktree/\n.bench-sessions/\nnode_modules/\n");
 	await writeFile(join(root, ".pi", "harness.yaml"), stringify({
 		schemaVersion: 2,
-		modelTiers: { low: [`${PROVIDER}/${MODEL}#${EFFORT}`], medium: [`${PROVIDER}/${MODEL}#${EFFORT}`], high: [`${PROVIDER}/${MODEL}#${EFFORT}`], max: [`${PROVIDER}/${MODEL}#${EFFORT}`] },
+		modelTierListProfiles: {
+			defaultProfile: "benchmark",
+			profiles: {
+				benchmark: {
+					low: [`${PROVIDER}/${MODEL}#${EFFORT}`], medium: [`${PROVIDER}/${MODEL}#${EFFORT}`], high: [`${PROVIDER}/${MODEL}#${EFFORT}`], max: [`${PROVIDER}/${MODEL}#${EFFORT}`],
+					local: ["local-llm/meta/muse-glimmer#high"],
+				},
+			},
+		},
 		agents: {
 			implementer: { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash", "edit", "write"], completionSchema: "implementer-v1", tier: "medium" },
 			"e2e-tester": { workspace: "repository", canDelegate: false, tools: ["read", "grep", "find", "bash"], tier: "medium" },

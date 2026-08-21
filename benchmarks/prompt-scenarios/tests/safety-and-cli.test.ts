@@ -9,6 +9,7 @@ import { parseArgs, positiveInteger, validateBenchmarkPath } from "../cli.js";
 import { createDirectPromptSubjectRunner } from "../direct-runner.js";
 import { providerExtensionSelection, resolveBenchmarkRoute, runBoundedProcess } from "../route.js";
 import { DEFAULT_HARNESS_CONFIG } from "../../../extensions/workflow/config.js";
+import { activeModelTierLists } from "../../../extensions/model-tier-list-profiles/profiles.js";
 import type { ResolvedSubjectRoute } from "../types.js";
 
 const exec = promisify(execFile);
@@ -48,7 +49,7 @@ test("provider selection is explicit and fails closed for arbitrary custom provi
 });
 
 test("route resolution distinguishes unsupported effort from missing model", async () => {
-	const config = structuredClone(DEFAULT_HARNESS_CONFIG); config.modelTiers.local = ["local-llm/model#minimal"];
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG); activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.local = ["local-llm/model#minimal"];
 	const loaded = { config, digest: "x", sources: [], diagnostics: [] };
 	await assert.rejects(() => resolveBenchmarkRoute(loaded, "local", process.cwd(), async () => ({ models: [{ provider: "local-llm", model: "model", thinking: true }], command: "isolated list" })), /effort_unsupported/);
 });

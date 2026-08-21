@@ -664,18 +664,24 @@ assignment:
 
 `medium` is the default for normal bounded engineering. Low is pure mechanical and low-risk; high is complex or broadly integrated; max is reserved for architecture, security, privacy, irreversible or high-blast-radius work, and exceptional ambiguity. A stronger tier never compensates for an oversized task.
 
-Each tier is an ordered list of concrete `provider/model#effort` pairs:
+Each profile maps every tier to an ordered list of concrete `provider/model#effort` pairs. The planner still selects only a semantic capability tier; `/tier-profile` changes the session-scoped route profile without editing planned tasks:
 
 ```yaml
-modelTiers:
-  max:
-    - openai-codex/gpt-5.6-sol#high
-  high:
-    - openai-codex/gpt-5.6-sol#medium
-  medium:
-    - openai-codex/gpt-5.6-luna#high
-  low:
-    - openai-codex/gpt-5.6-luna#medium
+modelTierListProfiles:
+  defaultProfile: performance
+  profiles:
+    performance:
+      max: [openai-codex/gpt-5.6-sol#max]
+      high: [openai-codex/gpt-5.6-sol#high]
+      medium: [openai-codex/gpt-5.6-sol#medium]
+      low: [openai-codex/gpt-5.6-luna#high]
+      local: [local-llm/meta/muse-glimmer#high]
+    token-conservative:
+      max: [openai-codex/gpt-5.6-sol#max]
+      high: [openai-codex/gpt-5.6-sol#high]
+      medium: [openai-codex/gpt-5.6-luna#max]
+      low: [openai-codex/gpt-5.6-luna#high]
+      local: [local-llm/meta/muse-glimmer#high]
 ```
 
 Supported concrete Pi effort levels remain:

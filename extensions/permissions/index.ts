@@ -5,7 +5,7 @@ import { installPermissionRuntime } from "./runtime.js";
 import type { LoadedPermissionPolicy, PermissionMode } from "./types.js";
 
 const WORKFLOW_BYPASS_CANCEL = "No — keep permissions enforced";
-const WORKFLOW_BYPASS_CONFIRM = "Yes — switch to BYPASS and start workflow";
+const WORKFLOW_BYPASS_CONFIRM = "Yes — switch to Bypass and start workflow";
 const CRITICAL_RISK_CANCEL = "No — keep review unresolved";
 const CRITICAL_RISK_CONFIRM = "Yes — accept Critical risk";
 

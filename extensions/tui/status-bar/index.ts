@@ -6,6 +6,7 @@ import { renderStatusBar } from "./layout.js";
 import { collectSessionMetrics } from "./metrics.js";
 import { readUsageStatus, USAGE_STATUS_PREFIX } from "../../providers/shared/usage.js";
 import { FAST_MODE_STATUS_KEY, parseFastModeStatus } from "../../fast-mode/policy.js";
+import { MODEL_TIER_PROFILE_STATUS_KEY, parseModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
 
 export default function statusBar(pi: ExtensionAPI): void {
 	const config = normalizeStatusBarConfig(DEFAULT_STATUS_BAR_CONFIG);
@@ -40,6 +41,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						.sort(([left], [right]) => left.localeCompare(right))
 						.map(([, value]) => value);
 					const permissionMode = extensionStatuses.get("permission-mode") === "bypass" ? "bypass" : "enforce";
+					const tierProfile = parseModelTierProfileStatus(extensionStatuses.get(MODEL_TIER_PROFILE_STATUS_KEY));
 					const fastMode = parseFastModeStatus(extensionStatuses.get(FAST_MODE_STATUS_KEY));
 					const provider = ctx.model?.provider;
 					const usage = provider ? readUsageStatus(extensionStatuses.get(`${USAGE_STATUS_PREFIX}${provider}`)) : undefined;
@@ -50,6 +52,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						theme,
 						thinkingLevel: pi.getThinkingLevel(),
 						permissionMode,
+						...(tierProfile ? { tierProfile } : {}),
 						...(fastMode ? { fastMode } : {}),
 						metrics: collectSessionMetrics(ctx),
 						git: poller?.getSnapshot() ?? {

@@ -11,7 +11,8 @@ function repositoryPolicy(profile: HarnessScaffoldProfile) {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	if (profile === "economy") config.limits = { ...config.limits, maxConcurrency: 2 };
 	for (const agent of Object.values(config.agents)) delete agent.tools;
-	return config;
+	const { modelTierProfile: _effectiveSessionProfile, ...policy } = config;
+	return policy;
 }
 
 export interface HarnessScaffoldResult {

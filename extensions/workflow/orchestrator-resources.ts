@@ -3,6 +3,7 @@ import { join, relative } from "node:path";
 import { stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
+import { activeModelTierLists } from "../model-tier-list-profiles/profiles.js";
 import { isTierTaskAssignment, taskAgentName, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { resolveStageMode } from "./execution-topology.js";
 import { immutableWorkItemMutationError, WorkItemStore } from "./work-items.js";
@@ -88,7 +89,7 @@ export class OrchestratorResourceService {
 		const agent = this.config.agents[agentName];
 		if (!agent) throw new HarnessError("CONFIG_INVALID", `Unknown task agent: ${agentName}. Configured agents: ${Object.keys(this.config.agents).join(", ")}`);
 		if (isTierTaskAssignment(assignment)) {
-			const routes = this.config.modelTiers[assignment.tier];
+			const routes = activeModelTierLists(this.config.modelTierListProfiles, this.config.modelTierProfile).tiers[assignment.tier];
 			if (!routes?.length) throw new HarnessError("CONFIG_INVALID", `Task tier has no configured routes: ${assignment.tier}`);
 		}
 	}

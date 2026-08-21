@@ -40,6 +40,7 @@ import { RepairRecoveryStore } from "./repair-recovery.js";
 import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
 import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/policy.js";
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
+import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
@@ -368,9 +369,9 @@ export function structuredCapabilityError(error: unknown, ref?: string): Error {
 	return new Error(JSON.stringify({ ok: false, code, message, ...(ref ? { resourceRef: ref } : {}), ...(harness && Object.keys(harness.details).length ? { details: harness.details } : {}), allowedActions, conflicts: [], retryable: false }));
 }
 
-async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime> {
+async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">, modelTierProfile?: string): Promise<HarnessRuntime> {
 	const identity = await discoverRepository(ctx.cwd);
-	const loaded = loadHarnessConfig(identity.root);
+	const loaded = loadHarnessConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}) });
 	const events = new RepositoryEventStore(identity);
 	await events.initialize();
 	const sessionId = ctx.sessionManager.getSessionId();
@@ -548,14 +549,25 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 
 export default function workflow(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
+	let modelTierProfile: string | undefined;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let sessionShuttingDown = false;
 	const worktreeOperations = new Set<AbortController>();
 	const supervisor = new SubagentSupervisor();
+	const syncRuntimeModelTierProfile = (runtime: HarnessRuntime): HarnessRuntime => {
+		if (modelTierProfile && runtime.config.modelTierProfile !== modelTierProfile) runtime.config = loadHarnessConfig(runtime.identity.root, { modelTierProfile }).config;
+		return runtime;
+	};
 	resetActiveFastModePolicy();
 	pi.events.on(FAST_MODE_POLICY_EVENT, (value: unknown) => {
 		const policy = normalizeFastModePolicy(value);
 		if (policy) setActiveFastModePolicy(policy);
+	});
+	pi.events.on(MODEL_TIER_PROFILE_EVENT, (value: unknown) => {
+		const policy = normalizeModelTierProfilePolicy(value);
+		if (!policy) return;
+		modelTierProfile = policy.profile;
+		if (sessionRuntime) syncRuntimeModelTierProfile(sessionRuntime);
 	});
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
@@ -571,7 +583,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
 			return sessionRuntime;
 		}
-		return createRuntime(ctx);
+		return syncRuntimeModelTierProfile(await createRuntime(ctx, modelTierProfile));
 	};
 
 	const runWorktreeOperation = async <T>(
@@ -614,7 +626,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const scaffold = sessionRuntime
 			? await sessionRuntime.mutex.run(`init:${profile}`, initialize)
 			: await initialize();
-		sessionRuntime = await createRuntime(ctx);
+		sessionRuntime = syncRuntimeModelTierProfile(await createRuntime(ctx, modelTierProfile));
 		await sessionRuntime.events.append("repository.scaffolded", scaffold);
 		return { runtime: sessionRuntime, scaffold };
 	};
@@ -1697,7 +1709,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		}
 		if (isWorkerProcess() || isEvaluatorProcess()) return;
 		try {
-			sessionRuntime = await createRuntime(ctx);
+			sessionRuntime = syncRuntimeModelTierProfile(await createRuntime(ctx, modelTierProfile));
 			const staleLockRecovered = await sessionRuntime.mutex.recoverStale();
 			await sessionRuntime.events.append("session.started", {
 				reason: event.reason,

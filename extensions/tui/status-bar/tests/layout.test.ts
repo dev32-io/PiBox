@@ -68,7 +68,7 @@ test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
 	assert.match(text, /42\.0%/);
 	assert.match(text, /\/ 100k/);
-	assert.match(text, /◆ Permissions: ENFORCED │ Effort: MEDIUM/);
+	assert.match(text, /◆ Permissions: Enforced │ Effort: Medium/);
 	assert.match(text, /↑ 12k/);
 	assert.match(text, /↓ 810/);
 	assert.match(text, /\$0\.04/);
@@ -76,19 +76,28 @@ test("wide layout distinguishes context and session metrics", () => {
 
 test("bypass permission mode is rendered before effort", () => {
 	const row = renderStatusBar(160, { ...data, permissionMode: "bypass" })[3] ?? "";
-	assert.match(row, /⚠ Permissions: BYPASS │ Effort: MEDIUM/);
+	assert.match(row, /⚠ Permissions: Bypass │ Effort: Medium/);
+});
+
+test("renders the tier profile after effort and before compact Fast scopes", () => {
+	const row = renderStatusBar(200, {
+		...data,
+		tierProfile: { profile: "token-conservative" },
+		fastMode: { mainAvailable: true, mainEnabled: true, subagents: "medium" },
+	})[3] ?? "";
+	assert.match(row, /Effort: Medium │ Tier: Token-conservative │ Fast: Main\+Sub≤Med/);
 });
 
 test("renders compact requested Fast-mode scopes after effort", () => {
 	const off = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.match(off, /Effort: MEDIUM │ Fast req: OFF/);
+	assert.match(off, /Effort: Medium │ Fast: Off/);
 	const main = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "off" } })[3] ?? "";
-	assert.match(main, /Effort: MEDIUM │ Fast req: MAIN/);
-	for (const [limit, label] of [["low", "LOW"], ["medium", "MED"], ["high", "HIGH"], ["max", "MAX"]] as const) {
+	assert.match(main, /Effort: Medium │ Fast: Main/);
+	for (const [limit, label] of [["low", "Low"], ["medium", "Med"], ["high", "High"], ["max", "Max"]] as const) {
 		const combined = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: limit } })[3] ?? "";
-		assert.match(combined, new RegExp(`Effort: MEDIUM │ Fast req: MAIN\\+SUB≤${label}`));
+		assert.match(combined, new RegExp(`Effort: Medium │ Fast: Main\\+Sub≤${label}`));
 		const subagentsOnly = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: limit } })[3] ?? "";
-		assert.match(subagentsOnly, new RegExp(`Effort: MEDIUM │ Fast req: SUB≤${label}`));
+		assert.match(subagentsOnly, new RegExp(`Effort: Medium │ Fast: Sub≤${label}`));
 	}
 });
 
@@ -98,24 +107,24 @@ test("colors enabled Fast request scopes as premium usage and drops the whole se
 		bold: (value: string) => value,
 	} as unknown as Theme;
 	const enabled = renderStatusBar(400, { ...data, theme: tokenTheme, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "off" } })[3] ?? "";
-	assert.match(enabled, /<dim>Fast req:<\/dim> <warning>MAIN<\/warning>/);
+	assert.match(enabled, /<dim>Fast:<\/dim> <warning>Main<\/warning>/);
 	const off = renderStatusBar(400, { ...data, theme: tokenTheme, fastMode: { mainAvailable: true, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.match(off, /<dim>Fast req:<\/dim> <dim>OFF<\/dim>/);
+	assert.match(off, /<dim>Fast:<\/dim> <dim>Off<\/dim>/);
 
 	const status = { mainAvailable: true, mainEnabled: true, subagents: "max" as const };
-	const firstVisible = Array.from({ length: 129 }, (_, index) => 72 + index).find((width) => (renderStatusBar(width, { ...data, fastMode: status })[3] ?? "").includes("Fast req:"));
+	const firstVisible = Array.from({ length: 129 }, (_, index) => 72 + index).find((width) => (renderStatusBar(width, { ...data, fastMode: status })[3] ?? "").includes("Fast:"));
 	assert.ok(firstVisible && firstVisible > 72);
-	assert.doesNotMatch(renderStatusBar(firstVisible! - 1, { ...data, fastMode: status })[3] ?? "", /Fast req:/);
-	assert.match(renderStatusBar(firstVisible!, { ...data, fastMode: status })[3] ?? "", /Fast req: MAIN\+SUB≤MAX/);
+	assert.doesNotMatch(renderStatusBar(firstVisible! - 1, { ...data, fastMode: status })[3] ?? "", /Fast:/);
+	assert.match(renderStatusBar(firstVisible!, { ...data, fastMode: status })[3] ?? "", /Fast: Main\+Sub≤Max/);
 });
 
 test("hides unavailable or width-constrained Fast-mode status without harming core segments", () => {
 	const unavailable = renderStatusBar(160, { ...data, fastMode: { mainAvailable: false, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.doesNotMatch(unavailable, /Fast req:/);
+	assert.doesNotMatch(unavailable, /Fast:/);
 	const subagents = renderStatusBar(160, { ...data, fastMode: { mainAvailable: false, mainEnabled: false, subagents: "medium" } })[3] ?? "";
-	assert.match(subagents, /Fast req: SUB≤MED/);
+	assert.match(subagents, /Fast: Sub≤Med/);
 	const narrow = renderStatusBar(60, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "max" } })[3] ?? "";
-	assert.doesNotMatch(narrow, /Fast req:/);
+	assert.doesNotMatch(narrow, /Fast:/);
 	assert.equal(narrow, renderStatusBar(60, data)[3]);
 	assert.ok(visibleWidth(narrow) <= 60);
 });
@@ -123,7 +132,7 @@ test("hides unavailable or width-constrained Fast-mode status without harming co
 test("services share one optional row below effort", () => {
 	const lines = renderStatusBar(120, { ...data, serviceStatuses: ["● Mem0", "● SearXNG", "○ Visual companion"] });
 	assert.equal(lines.length, 5);
-	assert.match(lines[3] ?? "", /Effort: MEDIUM/);
+	assert.match(lines[3] ?? "", /Effort: Medium/);
 	assert.match(lines[4] ?? "", /● Mem0 │ ● SearXNG │ ○ Visual companion/);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
 });

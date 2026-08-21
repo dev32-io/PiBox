@@ -7,6 +7,7 @@ import { renderPermissionMode } from "../../permissions/display.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
+import type { ModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
 
@@ -16,6 +17,7 @@ export interface StatusRenderData {
 	theme: Theme;
 	thinkingLevel: string;
 	permissionMode: "enforce" | "bypass";
+	tierProfile?: ModelTierProfileStatus;
 	fastMode?: FastModeStatus;
 	metrics: SessionMetrics;
 	git: GitSnapshot;
@@ -149,27 +151,36 @@ function permissionSegment(data: StatusRenderData): string {
 	return renderPermissionMode(data.permissionMode, data.theme);
 }
 
+function capitalize(value: string): string {
+	return value ? `${value[0]!.toUpperCase()}${value.slice(1).toLowerCase()}` : value;
+}
+
 function effortSegment(data: StatusRenderData): string {
 	const level = data.thinkingLevel || "off";
-	const labels: Record<string, string> = { off: "OFF", minimal: "MINIMAL", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "EXTRA HIGH", max: "MAX" };
+	const labels: Record<string, string> = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 	const colors: Record<string, "dim" | "muted" | "warning" | "success" | "thinkingHigh" | "thinkingXhigh" | "thinkingMax"> = {
 		off: "dim", minimal: "muted", low: "warning", medium: "success", high: "thinkingHigh", xhigh: "thinkingXhigh", max: "thinkingMax",
 	};
-	return `${data.theme.fg("dim", "Effort:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? level.toUpperCase())}`;
+	return `${data.theme.fg("dim", "Effort:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? capitalize(level))}`;
+}
+
+function tierProfileSegment(data: StatusRenderData): string {
+	if (!data.tierProfile) return "";
+	return `${data.theme.fg("dim", "Tier:")} ${data.theme.fg("muted", capitalize(data.tierProfile.profile))}`;
 }
 
 function fastModeSegment(data: StatusRenderData): string {
 	const status = data.fastMode;
 	if (!status) return "";
 	const scopes: string[] = [];
-	if (status.mainEnabled) scopes.push("MAIN");
+	if (status.mainEnabled) scopes.push("Main");
 	if (status.subagents !== "off") {
-		const labels = { low: "LOW", medium: "MED", high: "HIGH", max: "MAX" } as const;
-		scopes.push(`SUB≤${labels[status.subagents]}`);
+		const labels = { low: "Low", medium: "Med", high: "High", max: "Max" } as const;
+		scopes.push(`Sub≤${labels[status.subagents]}`);
 	}
 	if (scopes.length === 0 && !status.mainAvailable) return "";
-	const value = scopes.length > 0 ? scopes.join("+") : "OFF";
-	return `${data.theme.fg("dim", "Fast req:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
+	const value = scopes.length > 0 ? scopes.join("+") : "Off";
+	return `${data.theme.fg("dim", "Fast:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
 }
 
 function rowFits(leftParts: string[], rightParts: string[], width: number): boolean {
@@ -209,9 +220,13 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
 	const row2BaseLeft = [permissionSegment(data), divider, effortSegment(data)];
+	const tierProfile = tierProfileSegment(data);
+	const row2WithProfile = [...row2BaseLeft, ...(tierProfile ? [divider, tierProfile] : [])];
 	const fastMode = fastModeSegment(data);
-	const row2WithFast = [...row2BaseLeft, ...(fastMode ? [divider, fastMode] : [])];
-	const row2Left = mode !== "narrow" && rowFits(row2WithFast, row2Right, width) ? row2WithFast : row2BaseLeft;
+	const row2WithFast = [...row2WithProfile, ...(fastMode ? [divider, fastMode] : [])];
+	const row2Left = mode !== "narrow" && rowFits(row2WithFast, row2Right, width)
+		? row2WithFast
+		: mode !== "narrow" && rowFits(row2WithProfile, row2Right, width) ? row2WithProfile : row2BaseLeft;
 	const row2 = buildRow(row2Left, row2Right, width);
 	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
 	if (data.serviceStatuses?.length) rows.push(buildRow([data.serviceStatuses.join(` ${divider} `)], [], width));

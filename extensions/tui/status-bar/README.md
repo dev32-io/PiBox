@@ -4,7 +4,8 @@ A Pikit-spaced footer adapted to `rattle`, with an upper model/project/Git/conte
 
 Formatting intentionally includes:
 
-- `Effort: MEDIUM` capitalization
+- sentence-case state values such as `Permissions: Enforced`, `Effort: Medium`, `Tier: Performance`, and `Fast: Main+Sub≤Med`
+- session model-tier profile after effort and before compact `Fast:` request scope
 - `T: total (cached cached) ↑ input ↓ output`
 - Spaces after direction arrows
 - One-decimal context percentage and `/ window` label

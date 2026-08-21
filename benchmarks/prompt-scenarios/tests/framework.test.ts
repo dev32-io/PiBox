@@ -9,6 +9,7 @@ import { plannedRunKeys, rescorePromptBenchmark, runPromptBenchmark } from "../f
 import { parseAvailableModels, resolveBenchmarkRoute } from "../route.js";
 import type { AutomaticScore, PromptBenchmarkManifest, PromptBenchmarkSuite, PromptSubjectRunner, ResolvedSubjectRoute } from "../types.js";
 import { DEFAULT_HARNESS_CONFIG } from "../../../extensions/workflow/config.js";
+import { activeModelTierLists } from "../../../extensions/model-tier-list-profiles/profiles.js";
 
 const score = (passed: boolean): AutomaticScore => ({
 	passed,
@@ -182,7 +183,7 @@ test("route resolution uses configured tier order and exact available identities
 	const output = "provider      model      context  max-out  thinking  images\nlocal-llm     local-a    128K     16K      yes       no\n";
 	assert.deepEqual(parseAvailableModels(output), [{ provider: "local-llm", model: "local-a", thinking: true }]);
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.local = ["local-llm/missing#high", "local-llm/local-a#medium"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.local = ["local-llm/missing#high", "local-llm/local-a#medium"];
 	const loaded = { config, digest: "sha256:fake", sources: ["test"], diagnostics: [] };
 	const resolved = await resolveBenchmarkRoute(loaded, "local", "/repo", async () => ({ models: [{ provider: "local-llm", model: "local-a", thinking: true }], command: "fake list" }));
 	assert.equal(resolved.configuredRoute, "local-llm/local-a#medium");

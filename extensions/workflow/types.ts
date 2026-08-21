@@ -1,4 +1,10 @@
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type {
+	CapabilityTier,
+	HarnessEffort,
+	ModelTierListProfilesConfig,
+} from "../model-tier-list-profiles/profiles.js";
+
+export type { CapabilityTier, HarnessEffort, ModelTier, TierModelRouteConfig } from "../model-tier-list-profiles/profiles.js";
 
 export type WorkItemKind = "change" | "story";
 export type WorkingBranchKind = "feature" | "fix";
@@ -21,13 +27,6 @@ export interface MutationAuthority {
 	sources?: string[];
 }
 export type Complexity = "low" | "medium" | "high" | "critical";
-export type HarnessEffort = ModelThinkingLevel;
-export type CapabilityTier = "low" | "medium" | "high" | "max";
-/** Dynamic launches may explicitly select the provider-isolated local route group. */
-export type ModelTier = CapabilityTier | "local";
-
-/** One concrete `provider/model#effort` route inside an ordered model tier. */
-export type TierModelRouteConfig = string;
 
 export interface AgentConfig {
 	extends?: string;
@@ -44,7 +43,9 @@ export interface AgentConfig {
 
 export interface HarnessConfig {
 	schemaVersion: 2;
-	modelTiers: Record<ModelTier, TierModelRouteConfig[]>;
+	modelTierListProfiles: ModelTierListProfilesConfig;
+	/** Effective session selection; profile definitions remain repository policy. */
+	modelTierProfile: string;
 	agents: Record<string, AgentConfig>;
 	orchestrator: {
 		modelSwitching: "off" | "suggest" | "auto-visible";

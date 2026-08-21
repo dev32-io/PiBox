@@ -1,4 +1,5 @@
 import { getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { activeModelTierLists } from "../model-tier-list-profiles/profiles.js";
 import type { HarnessConfig, HarnessEffort, ModelTier, TierModelRouteConfig } from "./types.js";
 
 export interface ExplicitModelOverride {
@@ -85,7 +86,8 @@ function routeMatchesOverride(route: ParsedRoute, model: string): boolean {
 }
 
 function candidates(config: HarnessConfig, request: ModelResolutionRequest): Array<{ route: ParsedRoute; effort: HarnessEffort; override: boolean }> {
-	const routes = (config.modelTiers[request.tier] ?? []).map(parseRoute);
+	const modelTiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
+	const routes = (modelTiers[request.tier] ?? []).map(parseRoute);
 	if (!request.override) return routes.map((route) => ({ route, effort: route.effort, override: false }));
 	const matched = new Set<string>();
 	// `local` is a provider-isolated route group, not another capability tier.
@@ -93,7 +95,7 @@ function candidates(config: HarnessConfig, request: ModelResolutionRequest): Arr
 	// or a local route into an ordinary managed/dynamic launch.
 	const crossTierRoutes = request.tier === "local"
 		? []
-		: Object.entries(config.modelTiers)
+		: Object.entries(modelTiers)
 			.filter(([tier]) => tier !== request.tier && tier !== "local")
 			.flatMap(([, tierRoutes]) => tierRoutes.map(parseRoute));
 	const orderedRoutes = [...routes, ...crossTierRoutes];
@@ -120,9 +122,10 @@ export function resolveHarnessModel(
 	const resolvedCandidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }> = [];
 	const requested = { tier: request.tier, ...(request.override ? { override: request.override } : {}) };
 	const configured = candidates(config, request);
+	const modelTiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
 	const overrideSearchRoutes = request.tier === "local"
-		? config.modelTiers.local
-		: Object.entries(config.modelTiers).filter(([tier]) => tier !== "local").flatMap(([, routes]) => routes);
+		? modelTiers.local
+		: Object.entries(modelTiers).filter(([tier]) => tier !== "local").flatMap(([, routes]) => routes);
 	const overrideConfigured = request.override
 		? overrideSearchRoutes.map(parseRoute).some((route) => routeMatchesOverride(route, request.override!.model))
 		: true;

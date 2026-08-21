@@ -61,7 +61,7 @@ Planning submission validates the execution topology and marks the review handof
 
 ### Exploration and execution
 
-The repository tool permission policy is loaded from `.pi/permissions.yaml`. `Shift+Tab` or `/permissions` switches between visible ENFORCED and BYPASS modes; direct and managed children inherit the parent session mode. Enforced `ask` decisions prompt only in the interactive TUI and fail closed in headless children. Bypass skips that policy but leaves workflow authority, Git isolation, review, verification, and recovery controls intact. See [`extensions/permissions/README.md`](../extensions/permissions/README.md).
+The repository tool permission policy is loaded from `.pi/permissions.yaml`. `Shift+Tab` or `/permissions` switches between visible Enforced and Bypass modes; direct and managed children inherit the parent session mode. Enforced `ask` decisions prompt only in the interactive TUI and fail closed in headless children. Bypass skips that policy but leaves workflow authority, Git isolation, review, verification, and recovery controls intact. See [`extensions/permissions/README.md`](../extensions/permissions/README.md).
 
 The independent workflow extension owns the generic background execution surface. Each work item separates planning kind (`story | change`) from delivery intent (`feature | fix`, `create | continue`, base `develop`). For new delivery, `workflow_start` requires a clean checkout, switches to `develop`, pulls with `--ff-only`, and creates `feature/<work-item-id>` or `fix/<work-item-id>`. For continued delivery, it requires a clean checkout already on the recorded ongoing feature/fix branch and does not sync `develop`. It then asks the registered managed-work adapter to derive current task, task-merge, and evaluation steps directly from the reviewed work item. A dirty checkout fails visibly so the orchestrator can inspect legitimate recovery work, offer commit/stash/task-state choices, and resume without discarding state. It refreshes canonical state after each step and on a polling fallback, advances routine ready work, and pauses once when attention is required. Its widget above the editor shows current step progress. Esc aborts only the current interactive turn; detached workflow children continue until explicit workflow/subagent control stops them.
 
@@ -137,21 +137,21 @@ Example:
 ```yaml
 schemaVersion: 2
 
-modelTiers:
-  max:
-    - openai-codex/gpt-5.6-sol#high
-    - ollama-cloud/deepseek-v4-pro#max
-  high:
-    - openai-codex/gpt-5.6-sol#medium
-    - ollama-cloud/deepseek-v4-pro#high
-  medium:
-    - openai-codex/gpt-5.6-luna#high
-    - ollama-cloud/deepseek-v4-flash#max
-  low:
-    - openai-codex/gpt-5.6-luna#low
-    - ollama-cloud/deepseek-v4-flash#low
-  local:
-    - local-llm/meta/muse-glimmer#high
+modelTierListProfiles:
+  defaultProfile: performance
+  profiles:
+    performance:
+      max: [openai-codex/gpt-5.6-sol#max]
+      high: [openai-codex/gpt-5.6-sol#high]
+      medium: [openai-codex/gpt-5.6-sol#medium]
+      low: [openai-codex/gpt-5.6-luna#high]
+      local: [local-llm/meta/muse-glimmer#high]
+    token-conservative:
+      max: [openai-codex/gpt-5.6-sol#max]
+      high: [openai-codex/gpt-5.6-sol#high]
+      medium: [openai-codex/gpt-5.6-luna#max]
+      low: [openai-codex/gpt-5.6-luna#high]
+      local: [local-llm/meta/muse-glimmer#high]
 
 agents:
   implementer:

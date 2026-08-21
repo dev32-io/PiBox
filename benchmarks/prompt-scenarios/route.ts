@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { LoadedHarnessConfig, ModelTier } from "../../extensions/workflow/types.js";
+import { activeModelTierLists } from "../../extensions/model-tier-list-profiles/profiles.js";
 import { LOCAL_LLM_THINKING_LEVEL_MAP } from "../../extensions/providers/local-llm/index.js";
 import { OLLAMA_CLOUD_MODEL_METADATA } from "../../extensions/providers/ollama-cloud/model-metadata.js";
 import type { ProviderExtensionSelection, ResolvedSubjectRoute } from "./types.js";
@@ -100,7 +101,7 @@ export class BenchmarkRouteResolutionError extends Error {
 	constructor(message: string, readonly attempts: ResolvedSubjectRoute["resolutionAttempts"]) { super(message); this.name = "BenchmarkRouteResolutionError"; }
 }
 export async function resolveBenchmarkRoute(loaded: LoadedHarnessConfig, tier: ModelTier, repositoryRoot: string, list: ModelLister = listAvailableModels): Promise<ResolvedSubjectRoute> {
-	const configured = loaded.config.modelTiers[tier]; if (!configured?.length) throw new Error(`Harness tier '${tier}' has no configured routes.`);
+	const configured = activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers[tier]; if (!configured?.length) throw new Error(`Harness tier '${tier}' has no configured routes.`);
 	const attempts: ResolvedSubjectRoute["resolutionAttempts"] = [];
 	for (let index = 0; index < configured.length; index++) {
 		const configuredRoute = configured[index]!; const route = parseConfiguredRoute(configuredRoute);

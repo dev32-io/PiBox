@@ -84,9 +84,9 @@ test("workflow confirmation is extension-owned and does not change mode by itsel
 	assert.equal(currentPermissionMode(), "enforce");
 	assert.deepEqual(h.selections[0]?.options, [
 		"No — keep permissions enforced",
-		"Yes — switch to BYPASS and start workflow",
+		"Yes — switch to Bypass and start workflow",
 	]);
-	assert.match(h.selections[0]?.title ?? "", /\n\n⚠ Permissions: BYPASS\n\n/);
+	assert.match(h.selections[0]?.title ?? "", /\n\n⚠ Permissions: Bypass\n\n/);
 	assert.match(h.selections[0]?.title ?? "", /execute tools without allow, ask, or deny policy checks/i);
 	h.setConfirm(false);
 	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:checkout"), false);
