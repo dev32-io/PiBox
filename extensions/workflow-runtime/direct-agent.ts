@@ -18,6 +18,8 @@ export interface DirectAgentOptions {
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
 	onSpawn?: (pid: number | undefined) => void;
+	/** Observed when the OS child closes, before its output transport is drained. */
+	onExit?: (exitCode: number, observedAt: string) => void;
 	onEvent?: (event: unknown) => void;
 	promptPath?: string;
 	agentPrompt?: string;
@@ -32,6 +34,31 @@ export interface DirectAgentOptions {
 	/** Stable Pi session reused across attempts of one logical reviewer/fixer. */
 	sessionFile?: string;
 	invocationResolver?: (args: string[]) => { command: string; args: string[] };
+}
+
+const MAX_RESULT_EVENTS = 256;
+const MAX_STDERR_BYTES = 64 * 1024;
+
+function retainBoundedEvent(events: unknown[], event: unknown): void {
+	events.push(event);
+	if (events.length > MAX_RESULT_EVENTS) events.splice(0, events.length - MAX_RESULT_EVENTS);
+}
+
+function retainTextTail(current: string, addition: string, maximum = MAX_STDERR_BYTES): string {
+	const combined = current + addition;
+	return combined.length <= maximum ? combined : combined.slice(-maximum);
+}
+
+async function readFileTail(path: string, maximum = MAX_STDERR_BYTES): Promise<string> {
+	const size = (await stat(path).catch(() => undefined))?.size ?? 0;
+	if (size === 0) return "";
+	const length = Math.min(size, maximum);
+	const file = await open(path, "r");
+	try {
+		const buffer = Buffer.alloc(length);
+		const { bytesRead } = await file.read(buffer, 0, length, size - length);
+		return buffer.subarray(0, bytesRead).toString("utf8");
+	} finally { await file.close(); }
 }
 
 export interface DirectAgentResult {
@@ -77,7 +104,7 @@ function directResult(options: DirectAgentOptions, exitCode: number, text: strin
 		model: options.model,
 		effort: options.effort,
 		text,
-		stderr: assistantError ? `${stderr}${stderr && !stderr.endsWith("\n") ? "\n" : ""}${assistantError}` : stderr,
+		stderr: assistantError ? retainTextTail(stderr, `${stderr && !stderr.endsWith("\n") ? "\n" : ""}${assistantError}`) : stderr,
 		events,
 	};
 }
@@ -176,12 +203,12 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 			const stdoutFile = await open(stdoutPath, "a", 0o600);
 			const stderrFile = await open(stderrPath, "a", 0o600);
 			const processEvent = (event: unknown) => {
-				events.push(event);
+				retainBoundedEvent(events, event);
 				options.onEvent?.(event);
 				const text = extractText(event);
 				if (text) options.onText?.(text);
 			};
-			const observer = await observeJsonl(stdoutPath, processEvent, (line) => { stderr += `Unparsed child output: ${line}\n`; });
+			const observer = await observeJsonl(stdoutPath, processEvent, (line) => { stderr = retainTextTail(stderr, `Unparsed child output: ${line}\n`); });
 			let exitCode = 1;
 			try {
 				exitCode = await new Promise<number>((resolveExit) => {
@@ -194,7 +221,11 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 					});
 					options.onSpawn?.(child.pid);
 					child.on("error", () => resolveExit(1));
-					child.on("close", (code) => resolveExit(code ?? 1));
+					child.on("close", (code) => {
+						const exitCode = code ?? 1;
+						options.onExit?.(exitCode, new Date().toISOString());
+						resolveExit(exitCode);
+					});
 					if (options.signal) {
 						const abort = () => child.kill("SIGTERM");
 						if (options.signal.aborted) abort();
@@ -205,7 +236,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				await Promise.all([stdoutFile.close(), stderrFile.close()]);
 				await observer.close();
 			}
-			stderr += await readFile(stderrPath, "utf8").catch(() => "");
+			stderr = retainTextTail(stderr, await readFileTail(stderrPath));
 			let text = "";
 			for (let index = events.length - 1; index >= 0; index--) {
 				text = extractText(events[index]);
@@ -225,12 +256,12 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				if (!line.trim()) return;
 				try {
 					const event = JSON.parse(line) as unknown;
-					events.push(event);
+					retainBoundedEvent(events, event);
 					options.onEvent?.(event);
 					const text = extractText(event);
 					if (text) options.onText?.(text);
 				} catch {
-					stderr += `Unparsed child output: ${line}\n`;
+					stderr = retainTextTail(stderr, `Unparsed child output: ${line}\n`);
 				}
 			};
 			child.stdout.on("data", (data) => {
@@ -239,14 +270,16 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				buffer = lines.pop() ?? "";
 				for (const line of lines) processLine(line);
 			});
-			child.stderr.on("data", (data) => (stderr += data.toString()));
+			child.stderr.on("data", (data) => (stderr = retainTextTail(stderr, data.toString())));
 			child.on("error", (error) => {
-				stderr += error.message;
+				stderr = retainTextTail(stderr, error.message);
 				resolveExit(1);
 			});
 			child.on("close", (code) => {
 				if (buffer.trim()) processLine(buffer);
-				resolveExit(code ?? 1);
+				const exitCode = code ?? 1;
+				options.onExit?.(exitCode, new Date().toISOString());
+				resolveExit(exitCode);
 			});
 			if (options.signal) {
 				const abort = () => child.kill("SIGTERM");

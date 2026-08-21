@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 import { SessionAgentRegistry } from "../agent-registry.js";
 import { LaunchCoordinator } from "../launch-coordinator.js";
 import { FAST_MODE_CHILD_ENV } from "../../fast-mode/policy.js";
@@ -64,10 +65,86 @@ test("launches a direct child through the registry with file-backed process outp
 	assert.ok(record.attempts[0]?.progress?.processStartedAt);
 	assert.ok(record.attempts[0]?.progress?.processExitedAt);
 	assert.ok(record.attempts[0]?.progress?.settledAt);
+	assert.ok(record.attempts[0]?.timing?.processSpawnedAt);
+	assert.ok(record.attempts[0]?.timing?.childReadyAt);
+	assert.ok(record.attempts[0]?.timing?.firstActivityAt);
+	assert.ok(record.attempts[0]?.timing?.firstToolAt);
+	assert.ok(record.attempts[0]?.timing?.reportReadyAt);
+	assert.ok(record.attempts[0]?.timing?.processExitedAt);
+	assert.ok(record.attempts[0]?.timing?.outputDrainedAt);
+	assert.ok(record.attempts[0]?.timing?.settledAt);
 	assert.ok(progressUpdates.includes(1234));
 	const attemptRoot = join(registry.root, "agents", record.id, "attempts", record.attempts[0]!.id);
-	await access(join(attemptRoot, "stdout.jsonl"));
-	assert.match(await readFile(join(attemptRoot, "stdout.jsonl"), "utf8"), /mapped repository/);
+	await assert.rejects(access(join(attemptRoot, "stdout.jsonl")), /ENOENT/, "successful raw transport is removed after durable completion");
+	await assert.rejects(access(join(attemptRoot, "stderr.log")), /ENOENT/);
+	const lifecycle = parse(await readFile(registry.snapshotPath, "utf8")) as { eventSequence: number; revision: number };
+	assert.equal(lifecycle.eventSequence, lifecycle.revision, "no unjournaled progress rewrites occur during coordinated launch");
+	assert.ok(lifecycle.eventSequence <= 6, `expected bounded semantic lifecycle writes, observed ${lifecycle.eventSequence}`);
+	await assert.rejects(access(registry.eventsPath), /ENOENT/, "the registry snapshot replaces the redundant agent journal");
+});
+
+test("high-turn tool activity is summarized with constant durable registry writes", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-low-write-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-low-write");
+	await registry.initialize("main:session-low-write");
+	const fake = join(root, "busy-child.mjs");
+	const lines = [
+		...Array.from({ length: 129 }, (_, index) => [
+			`console.log(JSON.stringify({type:"tool_execution_start",toolName:"tool-${index}"}));`,
+			`console.log(JSON.stringify({type:"tool_execution_end",toolName:"tool-${index}",isError:false}));`,
+		]).flat(),
+		...Array.from({ length: 62 }, () => `console.log(JSON.stringify({type:"turn_end",message:{usage:{input:10,output:20,reasoning:5,totalTokens:100}}}));`),
+		`console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"done"}]}}));`,
+		`console.log(JSON.stringify({type:"agent_settled"}));`,
+	];
+	await writeFile(fake, lines.join("\n"));
+	const launched = await new LaunchCoordinator(registry, "main:session-low-write", () => ({ command: process.execPath, args: [fake] })).launch({
+		operationId: "busy", role: "implementer", task: "work", assignment: {}, cwd: root,
+		provider: "test", model: "fake", effort: "low", tools: [],
+	});
+	const attempt = (await registry.get(launched.agent.id)).attempts[0]!;
+	assert.equal(attempt.progress?.turns, 62);
+	assert.equal(attempt.progress?.toolCalls, 129);
+	assert.equal(attempt.progress?.inputTokens, 620);
+	assert.equal(attempt.progress?.outputTokens, 1240);
+	const lifecycle = parse(await readFile(registry.snapshotPath, "utf8")) as { eventSequence: number; revision: number };
+	assert.equal(lifecycle.eventSequence, lifecycle.revision);
+	assert.ok(lifecycle.eventSequence <= 6, `activity volume must not affect durable write count; observed ${lifecycle.eventSequence}`);
+	await assert.rejects(access(registry.eventsPath), /ENOENT/);
+});
+
+test("exceptional launch paths settle the current attempt before failing the logical agent", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-exception-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-launch-exception");
+	await registry.initialize("main:session-launch-exception");
+	const coordinator = new LaunchCoordinator(registry, "main:session-launch-exception", () => { throw new Error("resolver exploded"); });
+	await assert.rejects(coordinator.launch({ operationId: "explode", role: "implementer", task: "fail", assignment: {}, cwd: root, provider: "test", model: "fake", effort: "low", tools: [] }), /resolver exploded/);
+	const [agent] = await registry.list();
+	assert.equal(agent?.state, "failed");
+	assert.equal(agent?.attempts[0]?.state, "failed");
+	assert.equal(agent?.attempts[0]?.exitCode, 1);
+	assert.ok(agent?.attempts[0]?.timing?.processExitedAt);
+	assert.ok(agent?.attempts[0]?.timing?.settledAt);
+});
+
+test("failed attempt transport is retained as bounded diagnostics", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-bounded-failure-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-bounded-failure");
+	await registry.initialize("main:session-bounded-failure");
+	const fake = join(root, "noisy-failure.mjs");
+	await writeFile(fake, `console.error("x".repeat(100000)); process.exit(1);\n`);
+	const launched = await new LaunchCoordinator(registry, "main:session-bounded-failure", () => ({ command: process.execPath, args: [fake] })).launch({
+		operationId: "noisy", role: "implementer", task: "fail", assignment: {}, cwd: root,
+		provider: "test", model: "fake", effort: "low", tools: [],
+	});
+	assert.equal(launched.agent.state, "failed");
+	const attempt = launched.agent.attempts[0]!;
+	const attemptRoot = join(registry.root, "agents", launched.agent.id, "attempts", attempt.id);
+	assert.ok((await stat(join(attemptRoot, "stderr.log"))).size <= 64 * 1024);
+	assert.ok(launched.result.stderr.length <= 64 * 1024);
 });
 
 test("wildcard tool unions enable all child tools except recursive subagent controls", async (t) => {
@@ -206,4 +283,26 @@ test("passes only the tier-filtered Fast decision to each child process", async 
 	assert.equal(low.agent.attempts[0]?.fast, true);
 	assert.equal(high.result.text, "0");
 	assert.equal(high.agent.attempts[0]?.fast, false);
+});
+
+test("post-repair CI feedback reuses the reported integration worker and Pi session", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-integration-worker-loop-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-integration-loop");
+	await registry.initialize("main:session-integration-loop");
+	const fake = join(root, "repair.mjs");
+	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"repair submitted"}]}}));\n`);
+	const sessions: string[] = [];
+	const coordinator = new LaunchCoordinator(registry, "main:session-integration-loop", (args) => {
+		sessions.push(args[args.indexOf("--session") + 1]!);
+		return { command: process.execPath, args: [fake] };
+	});
+	const first = await coordinator.launch({ operationId: "integration-repair:story:stage", role: "repair-implementer", task: "Resolve conflict", assignment: { generation: 1 }, cwd: root, provider: "test", model: "fake", effort: "low", tools: [], deferCompletion: true, workItemId: "story", workspace: root });
+	assert.equal(first.agent.state, "reported");
+	const second = await coordinator.launch({ operationId: "integration-repair:story:stage", existingAgentId: first.agent.id, role: "repair-implementer", task: "Post-repair CI failed; continue", assignment: { generation: 2 }, cwd: root, provider: "test", model: "fake", effort: "low", tools: [], deferCompletion: true, workItemId: "story", workspace: root });
+	assert.equal(second.agent.id, first.agent.id);
+	assert.equal(second.agent.state, "reported");
+	assert.equal(second.agent.attempts.length, 2);
+	assert.equal(new Set(sessions).size, 1);
+	assert.equal(sessions[0], join(registry.root, "agents", first.agent.id, "pi-session.jsonl"));
 });

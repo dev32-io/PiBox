@@ -32,7 +32,7 @@ export type WorkflowFeedbackEvent = WorkflowLifecycleEvent;
 
 export type WorkflowStepStatus = "pending" | "ready" | "running" | "done" | "attention" | "cancelled";
 
-export type WorkflowStepPhase = "implementing" | "contribution-ready" | "ready-to-integrate" | "assembling-candidate" | "verifying-candidate" | "verification-failed" | "integrated";
+export type WorkflowStepPhase = "implementing" | "contribution-ready" | "ready-to-integrate" | "assembling-candidate" | "integration-conflict" | "repairing-candidate" | "verifying-candidate" | "candidate-ci-failed" | "verification-failed" | "integrated";
 
 export interface WorkflowStep {
 	ref: string;
@@ -59,21 +59,51 @@ export interface WorkflowStageSnapshot {
 	group?: "planner" | "runtime";
 }
 
+export type WorkflowMetricCategory = "implementation" | "integration" | "verification" | "review" | "e2e" | "orchestration";
+
 export interface WorkflowMetricLiveProjection {
 	/** Wall-clock instant represented by the durable metric totals. */
 	sampledAtMs: number;
 	/** Open intervals that can be advanced locally without another repository read. */
 	elapsed: boolean;
 	running: boolean;
+	/** The one exclusive workflow phase currently consuming active wall time. */
+	activeCategory?: WorkflowMetricCategory;
 	activeAgents: number;
 	activeVerifications: number;
+	/** Open process intervals by displayed role; these are independent rates. */
+	activeImplementers?: number;
+	activeReviewers?: number;
+	activeFixers?: number;
+	activeE2e?: number;
+	/** Attempts still between launch and first observable child readiness/activity. */
+	activeScheduling?: number;
+	/** True while active workflow wall time is not covered by a child or deterministic step. */
+	orchestrator?: boolean;
 }
 
 export interface WorkflowMetrics {
+	/** First-start span retained for detailed diagnostics; the widget uses runningMs. */
 	elapsedMs: number;
+	/** Active workflow wall time, excluding pause, detach/quit, stop, and completion. */
 	runningMs: number;
+	/** Summed agent-process work; may exceed wall time under concurrency. */
 	agentActiveMs: number;
+	/** Non-exclusive process-runtime sums used by the workflow widget. */
+	implementerMs?: number;
+	reviewerMs?: number;
+	fixerMs?: number;
+	e2eAgentMs?: number;
+	/** Summed verification/check attempt runtime, not a wall-clock union. */
+	deterministicMs?: number;
+	/** Summed launch-to-ready/first-activity intervals across process attempts. */
+	harnessSchedulingMs?: number;
+	implementationMs?: number;
+	integrationMs?: number;
 	verificationMs: number;
+	reviewMs?: number;
+	e2eMs?: number;
+	orchestrationMs?: number;
 	fixes: number;
 	retries: number;
 	agentCount: number;

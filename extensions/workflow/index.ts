@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { reconcileReportedAgents } from "./agent-reconciliation.js";
-import { isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import { AGENT_HEARTBEAT_FRESH_MS, AGENT_HEARTBEAT_INTERVAL_MS, isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { finalizeReviewerAfterSettlement, reusableReviewerAgentId, settleManagedEvaluation } from "./evaluation-settlement.js";
@@ -149,7 +150,7 @@ const PLAN_STAGE_CHECK = Type.Union([
 	Type.String(),
 	Type.Object({ id: Type.Optional(Type.String()), command: Type.String(), profile: Type.Optional(Type.String()) }, { additionalProperties: false }),
 ]);
-const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { minItems: 1 }), mode: Type.Optional(Type.Union([Type.Literal("sequential"), Type.Literal("concurrent")])), checks: Type.Optional(Type.Array(PLAN_STAGE_CHECK)), review: Type.Optional(Type.Object({ tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
+const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { description: "Draft planning may temporarily leave a stage empty; submission rejects empty stages" }), mode: Type.Optional(Type.Union([Type.Literal("sequential"), Type.Literal("concurrent")])), checks: Type.Optional(Type.Array(PLAN_STAGE_CHECK)), review: Type.Optional(Type.Object({ tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
 const CANONICAL_PLAN_BUNDLE = Type.Object({
 	workItem: WORK_ITEM_RESOURCE_BODY,
 	artifacts: Type.Array(ARTIFACT_RESOURCE_BODY),
@@ -344,6 +345,11 @@ async function mutationReceipt(runtime: HarnessRuntime, commit: string | undefin
 	return { ok: true, ...(commit ? { commit } : {}), changes, affected, ...extra };
 }
 
+async function draftTopologyReceipt(runtime: HarnessRuntime, ref: string): Promise<{ valid: boolean; issues: Awaited<ReturnType<WorkItemStore["planningTopologyIssues"]>> }> {
+	const issues = await runtime.workItems.planningTopologyIssues(parseResourceRef(ref).workItemId);
+	return { valid: issues.length === 0, issues };
+}
+
 function schemaFor(operation: "create" | "patch" | "apply-change" | "plan-write", resource?: CanonicalResourceType): unknown {
 	if (operation === "plan-write") return PLAN_WRITE_PARAMETERS;
 	if (operation === "apply-change") return APPLY_CHANGE_PARAMETERS;
@@ -354,12 +360,12 @@ function schemaFor(operation: "create" | "patch" | "apply-change" | "plan-write"
 	return selected;
 }
 
-function structuredCapabilityError(error: unknown, ref?: string): Error {
+export function structuredCapabilityError(error: unknown, ref?: string): Error {
 	const harness = error instanceof HarnessError ? error : undefined;
 	const code = harness?.code ?? "INTERNAL_ERROR";
 	const allowedActions = code === "WORK_ITEM_EXISTS" ? ["get", "patch", "transition"] : code === "CAPABILITY_DENIED" ? ["get", "reopen", "supersede"] : ["get", "patch"];
 	const message = error instanceof Error ? error.message : String(error);
-	return new Error(JSON.stringify({ ok: false, code, message, ...(ref ? { resourceRef: ref } : {}), allowedActions, conflicts: [], retryable: false }));
+	return new Error(JSON.stringify({ ok: false, code, message, ...(ref ? { resourceRef: ref } : {}), ...(harness && Object.keys(harness.details).length ? { details: harness.details } : {}), allowedActions, conflicts: [], retryable: false }));
 }
 
 async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime> {
@@ -439,7 +445,7 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 			counts[manifest.status] = (counts[manifest.status] ?? 0) + 1;
 		}
 		taskCounts[item.id] = counts;
-		for (const run of await new HarnessRunStore(runtime.identity.privateRoot, item.id).list()) {
+		for (const run of await new HarnessRunStore(runtime.identity, item.id).list()) {
 			runs.push({
 				id: run.id,
 				workItemId: item.id,
@@ -460,7 +466,13 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 		...(agent.taskId ? { taskId: agent.taskId } : {}),
 		...(agent.evaluationId ? { evaluationId: agent.evaluationId } : {}),
 	}));
-	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, workItems, taskCounts, runs, agents };
+	const executionControls = (await new WorkflowControlStore(runtime.identity.privateRoot).list()).map((control) => ({
+		workflowRef: control.workflowRef,
+		mode: control.mode,
+		generation: control.generation,
+		updatedAt: control.updatedAt,
+	}));
+	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, workItems, taskCounts, runs, executionControls, agents };
 }
 
 async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ reported: number; interrupted: number; ambiguous: number }> {
@@ -470,7 +482,7 @@ async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ report
 		const agentRoot = join(runtime.agents.root, "agents", agent.id);
 		let hasHandoff = Boolean(await readTextIfExists(join(agentRoot, "handoff.json")));
 		if (!hasHandoff && agent.workItemId && agent.runId) {
-			const runs = new HarnessRunStore(runtime.identity.privateRoot, agent.workItemId);
+			const runs = new HarnessRunStore(runtime.identity, agent.workItemId);
 			hasHandoff = agent.evaluationId ? Boolean(await runs.readEvaluationHandoff(agent.runId).catch(() => undefined)) : Boolean(await runs.readHandoff(agent.runId).catch(() => undefined));
 		}
 		if (hasHandoff) {
@@ -492,7 +504,7 @@ async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ report
 		}
 		const heartbeatText = await readTextIfExists(join(attemptRoot, "heartbeat.json"));
 		const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
-		const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at !== undefined && Date.now() - Date.parse(heartbeat.at) < 15_000;
+		const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at !== undefined && Date.now() - Date.parse(heartbeat.at) < AGENT_HEARTBEAT_FRESH_MS;
 		let alive = false;
 		if (heartbeat?.pid) {
 			try { process.kill(heartbeat.pid, 0); alive = true; } catch { alive = false; }
@@ -514,7 +526,8 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 	const lines = status.workItems.map((item) => {
 		const counts = status.taskCounts[item.id] ?? {};
 		const tasks = Object.entries(counts).map(([state, count]) => `${count} ${state}`).join(" · ");
-		return `${item.id} · ${item.kind} · ${item.phase}/${item.state} · plan r${item.planning.revision}${tasks ? ` · ${tasks}` : ""}`;
+		const execution = status.executionControls.find((control) => control.workflowRef === `work-item:${item.id}`);
+		return `${item.id} · ${item.kind} · ${item.phase}/${item.state} · plan r${item.planning.revision}${item.amendment ? ` · amendment ${item.amendment.generation} of ${item.amendment.rootWorkItemId}` : ""}${execution ? ` · runner ${execution.mode}` : ""}${tasks ? ` · ${tasks}` : ""}`;
 	});
 	const activeAgents = status.agents.filter((agent) => agent.processActive);
 	const attentionAgents = status.agents.filter((agent) => !agent.processActive && !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state));
@@ -693,36 +706,53 @@ export default function workflow(pi: ExtensionAPI): void {
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 		const resolution = resolveHarnessModel(runtime.config, available, { tier: "medium" });
 		if (resolution.status === "waiting_model") throw new HarnessError("MODEL_UNAVAILABLE", "No medium repair model is available");
-		const prompt = `Resolve the rolled-back Git integration conflict for stage ${stageId} (${taskIds.join(", ")}). The working branch is clean and contributor branches remain intact. Reproduce the stage merge from those branches, resolve only the resulting conflicts, commit the integrated result, run the declared checks, and report exact commands and results. Private conflict evidence is retained at ${evidencePath}; inspect only the bounded portions needed for the resolution and do not copy it into reports. Do not alter task topology or spawn another agent.`;
-		const operationId = `integration-repair:${workItemId}:${stageId}`;
-		const prior = (await runtime.agents.list()).find((agent) => agent.operationId === operationId);
-		// A completed logical repair is terminal and must never be relaunched. Resume
-		// only replays the deterministic postconditions below; failed repairs get a
-		// fresh identity so the registry's terminal transition rules remain strict.
-		const launched = prior?.state === "completed" ? undefined : await runtime.coordinator.launch({
-			operationId: prior && ["failed", "protocol_failed", "cancelled"].includes(prior.state) ? `${operationId}:retry:${Date.now()}` : operationId, role: "repair-implementer", task: prompt,
-			assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt }, cwd: runtime.identity.root,
-			provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: "medium", providerCandidates: resolution.candidates,
-			tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
-			workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"),
-			persistentContext: `${await buildTaskPersistentContext(runtime.workItems, workItemId, task)}\n\n${prompt}`,
-			env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
-			promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
-		});
-		if (launched && launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Integration repair agent failed");
-		await assertCleanRepository(runtime.identity.root);
-		const integratedCommit = await runGit(runtime.identity.root, ["rev-parse", "HEAD"]);
-		for (const taskId of taskIds) {
-			const contribution = await runtime.workItems.readTask(workItemId, taskId);
-			if (!contribution.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Integration repair lost completed commit for ${taskId}`);
-			await runGit(runtime.identity.root, ["merge-base", "--is-ancestor", contribution.runtime.completedCommit, integratedCommit]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Integration repair commit does not contain ${taskId} contribution ${contribution.runtime!.completedCommit}`); });
-		}
 		const manager = new WorktreeManager(runtime.identity);
-		const checks = await manager.runStageChecks(workItemId, stageId, taskIds);
-		for (const taskId of taskIds) await runtime.workItems.updateTask(workItemId, taskId, { status: "merged", runtime: { mergedCommit: integratedCommit } });
-		await manager.clearConflict(workItemId, evidencePath);
-		await runtime.workItems.refreshReadyTasks(workItemId);
-		return textResult(`Managed integration repair for ${item.id}/${stageId} completed at ${integratedCommit.slice(0, 12)} with ${checks.length} harness check(s).`, { ...(launched ? { agentId: launched.agent.id } : prior ? { agentId: prior.id } : {}), stageId, taskIds, integratedCommit, checks });
+		const operationBase = `integration-repair:${workItemId}:${stageId}`;
+		const historical = (await runtime.agents.list()).filter((agent) => agent.operationId === operationBase || agent.operationId.startsWith(`${operationBase}:legacy:`));
+		// New integration workers stay reported (submitted) until candidate CI is
+		// green. A terminal legacy worker remains immutable and receives a one-time
+		// successor identity for migration to the submission/CI lifecycle.
+		let owner = historical.find((agent) => !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state));
+		const operationId = owner ? owner.operationId : historical.length > 0 ? `${operationBase}:legacy:r${item.planning.revision}` : operationBase;
+		let activeEvidencePath = evidencePath;
+		for (let generation = 1; generation <= 3; generation++) {
+			const failure = await manager.activeConflict(workItemId);
+			if (!failure) throw new HarnessError("INVALID_ARTIFACT", `Integration repair ${stageId} has no deterministic failure evidence`);
+			if ((failure.repairGeneration ?? 0) >= 3) throw new HarnessError("INVALID_HANDOFF", `Integration repair exhausted after ${failure.repairGeneration} deterministic CI generations for ${workItemId}/${stageId}`, { stageId, evidencePath: failure.evidencePath, failureSignature: failure.failureSignature });
+			activeEvidencePath = failure.evidencePath;
+			const prompt = [
+				`Integration candidate ${failure.candidateCommit} for stage ${stageId} is red (${failure.kind}).`,
+				`Continue as the stage integration owner in ${failure.candidatePath}.`,
+				failure.ownerTaskId ? `The failure surfaced while applying ${failure.ownerTaskId} at train position ${failure.position ?? "unknown"}.` : "The complete combined candidate owns this failure.",
+				failure.checkId ? `Failed check: ${failure.checkId}${failure.command ? ` — ${failure.command}` : ""}.` : "Resolve the recorded merge conflict.",
+				failure.attemptPath ? `Durable CI evidence: ${join(runtime.identity.root, failure.attemptPath)}.` : `Private integration evidence: ${failure.evidencePath}.`,
+				"Resolve only the surfaced deterministic issue, preserve all contribution commits and reviewed contracts, commit the candidate repair, keep the candidate worktree clean, and resubmit. Do not alter task topology, the canonical working branch, or spawn another agent.",
+			].join("\n");
+			const launched = await runtime.coordinator.launch({
+				operationId,
+				...(owner ? { existingAgentId: owner.id } : {}),
+				role: "repair-implementer", task: prompt,
+				assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt, generation }, cwd: failure.candidatePath,
+				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: "medium", providerCandidates: resolution.candidates,
+				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
+				workspace: failure.candidatePath, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), deferCompletion: true,
+				persistentContext: `${await buildTaskPersistentContext(runtime.workItems, workItemId, task)}\n\n${prompt}`,
+				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
+				promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
+			});
+			owner = launched.agent;
+			if (launched.result.exitCode !== 0) throw new HarnessError("INVALID_HANDOFF", launched.result.stderr || "Integration repair agent failed");
+			try {
+				const integrated = await manager.settleIntegrationRepair(workItemId, stageId, taskIds, activeEvidencePath);
+				await runtime.agents.transition(owner.id, "completed", { summary: `Integration candidate ${integrated.commit.slice(0, 12)} passed CI` });
+				return textResult(`Managed integration repair for ${item.id}/${stageId} completed at ${integrated.commit.slice(0, 12)} with ${integrated.checks.length} harness check(s).`, { agentId: owner.id, stageId, taskIds, integratedCommit: integrated.commit, checks: integrated.checks });
+			} catch (error) {
+				if (!(error instanceof HarnessError) || error.details.workerRoutable !== true || generation === 3) throw error;
+				// The reported logical worker remains resumable. The next process attempt
+				// receives the new post-repair CI evidence in the same Pi session.
+			}
+		}
+		throw new HarnessError("INVALID_HANDOFF", `Integration repair exhausted for ${workItemId}/${stageId}`);
 	};
 
 	const launchManagedRepair = async (ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal) => {
@@ -795,7 +825,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
 		await runtime.mutex.run(`evaluation-preflight:${item.id}:${evaluation.id}`, () => assertCleanRepository(runtime.identity.root));
-		const runs = new HarnessRunStore(runtime.identity.privateRoot, item.id);
+		const runs = new HarnessRunStore(runtime.identity, item.id);
 		const created = await runs.create({
 			repositoryId: runtime.identity.id, workItemId: item.id, evaluationId: evaluation.id, role: agentName,
 			attempt: evaluation.attempt + 1, state: "running", workspace: runtime.identity.root,
@@ -837,11 +867,9 @@ export default function workflow(pi: ExtensionAPI): void {
 					resolvedEffort: coordinated.result.effort,
 				}, "run.provider_fallback");
 			}
-			for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
 			return coordinated.result;
 		};
 		let direct = await runEvaluator(prompt);
-		await runs.flushTranscript(created.record.id);
 		if (logicalAgentId && (await runtime.agents.get(logicalAgentId)).state === "waiting_capacity") {
 			await runs.update(created.record.id, { state: "waiting_capacity", exitCode: direct.exitCode, error: direct.stderr || "Every configured provider route is temporarily unavailable" }, "run.waiting_capacity");
 			return textResult(`WAITING_CAPACITY: Evaluator ${evaluation.id} exhausted its currently available provider routes.`, { runId: created.record.id, agentId: logicalAgentId, direct });
@@ -850,7 +878,6 @@ export default function workflow(pi: ExtensionAPI): void {
 		if (!handoff && direct.exitCode === 0) {
 			await runs.appendEvent(created.record.id, "run.protocol_nudge", { evaluationId: evaluation.id });
 			direct = await runEvaluator(`${readBuiltInPrompt("evaluation-protocol-nudge")}\n\n${prompt}`);
-			await runs.flushTranscript(created.record.id);
 			if (logicalAgentId && (await runtime.agents.get(logicalAgentId)).state === "waiting_capacity") {
 				await runs.update(created.record.id, { state: "waiting_capacity", exitCode: direct.exitCode, error: direct.stderr || "Every configured provider route is temporarily unavailable" }, "run.waiting_capacity");
 				return textResult(`WAITING_CAPACITY: Evaluator ${evaluation.id} exhausted its currently available provider routes.`, { runId: created.record.id, agentId: logicalAgentId, direct });
@@ -972,7 +999,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			spawnSubagent: spawnDynamicSubagent,
 			listSpawnableAgents,
 			async reconcileReported(runtime) {
-				await reconcileReportedAgents({ identity: runtime.identity, registry: runtime.agents, workItems: runtime.workItems, mutex: runtime.mutex });
+				await reconcileReportedAgents({ identity: runtime.identity, registry: runtime.agents, workItems: runtime.workItems, mutex: runtime.mutex, excludedRunIds: new Set(supervisor.activeRunIds()) });
 			},
 		}));
 	});
@@ -1021,7 +1048,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "resource_write",
 		label: "Write Resource",
-		description: "Create or update one planner-owned resource: story artifacts, self-contained tasks, ordered stages, stage checks, and optional medium/high stage review policy. Evaluation resources are harness-owned and cannot be created here.",
+		description: "Create or update one planner-owned resource. Planning drafts may be temporarily incomplete; topology diagnostics are advisory here and become blocking when workflow_transition submits the plan. Evaluation resources are harness-owned.",
 		promptSnippet: "Create or update one structured story, task, or stage resource; never create evaluations",
 		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(AUTHORABLE_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
@@ -1052,9 +1079,11 @@ export default function workflow(pi: ExtensionAPI): void {
 						result = await service.transaction(`harness: write ${ref}`, () => service.create(type, params.parent, body, authority));
 					}
 					const after = await service.get(ref);
-					await runtime.events.append("resource.written", { ref, commit: result.commit });
-					const receipt = await mutationReceipt(runtime, result.commit, [{ action: params.ref ? "patch" : "create", ref }]);
-					return textResult(`Wrote ${ref}.\n${JSON.stringify(receipt, null, 2)}`, {
+					const planningTopology = await draftTopologyReceipt(runtime, ref);
+					await runtime.events.append("resource.written", { ref, commit: result.commit, planningTopology });
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: params.ref ? "patch" : "create", ref }], { planningTopology });
+					const draftNotice = planningTopology.valid ? "Draft topology: valid." : `Draft topology: ${planningTopology.issues.length} advisory issue${planningTopology.issues.length === 1 ? "" : "s"}; submission will compile the complete plan.`;
+					return textResult(`Wrote ${ref}.\n${draftNotice}\n${JSON.stringify(receipt, null, 2)}`, {
 						...receipt,
 						piboxResourceDiff: resourceDisplayDiff(params.ref ? "update" : "create", ref, before, after),
 					});
@@ -1076,8 +1105,9 @@ export default function workflow(pi: ExtensionAPI): void {
 					const service = new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config);
 					const before = await service.get(params.ref);
 					const result = await service.transaction(`harness: delete ${params.ref}`, () => service.delete(params.ref, { authority: { rationale: "Delete the selected undelivered resource" } }));
-					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "delete", ref: params.ref }]);
-					return textResult(`Deleted ${params.ref}.\n${JSON.stringify(receipt, null, 2)}`, {
+					const planningTopology = await draftTopologyReceipt(runtime, params.ref);
+					const receipt = await mutationReceipt(runtime, result.commit, [{ action: "delete", ref: params.ref }], { planningTopology });
+					return textResult(`Deleted ${params.ref}.\n${planningTopology.valid ? "Draft topology: valid." : `Draft topology: ${planningTopology.issues.length} advisory issue${planningTopology.issues.length === 1 ? "" : "s"}.`}\n${JSON.stringify(receipt, null, 2)}`, {
 						...receipt,
 						piboxResourceDiff: resourceDisplayDiff("delete", params.ref, before, undefined),
 					});
@@ -1117,7 +1147,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					resources = (await runtime.agents.listMessages()).filter((message) => !params.workItemId || agents.get(message.agentId)?.workItemId === params.workItemId).map((message) => ({ ref: `message:${message.id}`, id: message.id, agentId: message.agentId, type: message.type, status: message.status, blocking: message.blocking, summary: message.summary.slice(0, 240), updatedAt: message.updatedAt }));
 				} else if (params.resource === "run") {
 					const items = params.workItemId ? [await runtime.workItems.read(params.workItemId)] : await runtime.workItems.list();
-					const runs = (await Promise.all(items.map((item) => new HarnessRunStore(runtime.identity.privateRoot, item.id).list()))).flat();
+					const runs = (await Promise.all(items.map((item) => new HarnessRunStore(runtime.identity, item.id).list()))).flat();
 					resources = runs.map((run) => ({ ref: `run:${run.id}`, id: run.id, workItemId: run.workItemId, taskId: run.taskId, evaluationId: run.evaluationId, role: run.role, state: run.state, model: run.resolvedModel ? `${run.resolvedProvider}/${run.resolvedModel}:${run.resolvedEffort}` : undefined }));
 				} else resources = await new OrchestratorResourceService(runtime.identity.root, runtime.workItems, runtime.config).listSummaries(params.resource as CanonicalResourceType, params.workItemId);
 				const page = paginateCatalog(resources, { ...(params.query ? { query: params.query } : {}), ...(params.cursor ? { cursor: params.cursor } : {}), ...(params.limit ? { limit: params.limit } : {}), searchableText: (resource) => JSON.stringify(resource) });
@@ -1331,7 +1361,8 @@ export default function workflow(pi: ExtensionAPI): void {
 					await runtime.events.append("orchestrator.change_applied", { authority: exact.authority, executionDisposition: exact.executionDisposition, operations: operations.length, commit: result.commit, messageId: exact.response?.messageId });
 					if (exact.executionDisposition === "resume-requesting-agent" && respondingAgent?.workItemId) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${respondingAgent.workItemId}`, action: "resume" });
 					if (exact.executionDisposition === "pause-affected") for (const workItemId of baselines.keys()) pi.events.emit(WORKFLOW_CONTROL_EVENT, { ref: `work-item:${workItemId}`, action: "pause" });
-					const receipt = await mutationReceipt(runtime, result.commit, changes, message ? { message: { id: message.id, status: message.status, agentId: message.agentId } } : {});
+					const planningTopologies = await Promise.all([...baselines.keys()].map(async (workItemId) => ({ ref: `work-item:${workItemId}`, ...await draftTopologyReceipt(runtime, `work-item:${workItemId}`) })));
+					const receipt = await mutationReceipt(runtime, result.commit, changes, { ...(message ? { message: { id: message.id, status: message.status, agentId: message.agentId } } : {}), planningTopologies });
 					return textResult(`Applied ${operations.length} canonical operation(s)${result.commit ? ` as ${result.commit.slice(0, 12)}` : ""}.\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error); }
@@ -1341,7 +1372,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_transition",
 		label: "Transition Workflow Resource",
-		description: "Apply an explicit resource lifecycle action. Postponed work remains resumable; archive creates the explicit finalization lock.",
+		description: "Apply an explicit lifecycle action. Submit compiles the complete plan. Reopen resumes an archived planning item, but forks a linked editable amendment when the target is completed so delivered history remains immutable; use the returned amendment ref for subsequent mutations.",
 		parameters: Type.Object({ ref: Type.String(), action: Type.Union([Type.Literal("submit"), Type.Literal("postpone"), Type.Literal("resume"), Type.Literal("archive"), Type.Literal("reopen"), Type.Literal("request-user"), Type.Literal("blocked"), Type.Literal("ready"), Type.Literal("reviewing"), Type.Literal("changes_requested"), Type.Literal("paused"), Type.Literal("cancelled")]), reason: Type.String() }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -1349,15 +1380,20 @@ export default function workflow(pi: ExtensionAPI): void {
 				const runtime = await runtimeFor(ctx);
 				return idempotentMutation(runtime, toolCallId, params, async () => {
 					const ref = parseResourceRef(params.ref);
-					if (ref.type === "work-item" && params.action === "submit") await runtime.workItems.submitPlanning(ref.id);
-					else if (ref.type === "work-item" && ["postpone", "resume", "archive", "reopen", "request-user"].includes(params.action)) await runtime.workItems.transitionWorkItem(ref.id, params.action as "postpone" | "resume" | "archive" | "reopen" | "request-user", params.reason);
+					let transitionedWorkItem;
+					if (ref.type === "work-item" && params.action === "submit") transitionedWorkItem = await runtime.workItems.submitPlanning(ref.id);
+					else if (ref.type === "work-item" && ["postpone", "resume", "archive", "reopen", "request-user"].includes(params.action)) transitionedWorkItem = await runtime.workItems.transitionWorkItem(ref.id, params.action as "postpone" | "resume" | "archive" | "reopen" | "request-user", params.reason);
 					else if (ref.type === "task") await runtime.workItems.updateTask(ref.workItemId, ref.id, { status: params.action as TaskManifest["status"] });
 					else throw new HarnessError("CAPABILITY_DENIED", `Unsupported transition ${params.action} for ${ref.type}`);
-					const receipt = await mutationReceipt(runtime, await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), [{ action: "transition", ref: params.ref }], { transition: params.action });
+					const amendmentRef = ref.type === "work-item" && params.action === "reopen" && transitionedWorkItem?.id !== ref.id ? `work-item:${transitionedWorkItem!.id}` : undefined;
+					const changes: Array<{ action: "create" | "transition"; ref: string }> = [{ action: "transition", ref: params.ref }, ...(amendmentRef ? [{ action: "create" as const, ref: amendmentRef }] : [])];
+					const receipt = await mutationReceipt(runtime, await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), changes, { transition: params.action, ...(amendmentRef ? { amendmentRef, baselineRef: params.ref } : {}) });
 					const handoff = ref.type === "work-item" && params.action === "submit"
 						? `\nPlan review is complete. Ask the user to review or request changes; if they want execution, they can simply say “start the workflow.” No separate approval command is required.`
-						: "";
-					return textResult(`${params.ref} transitioned to ${params.action}.${handoff}\n${JSON.stringify(receipt, null, 2)}`, receipt);
+						: amendmentRef
+							? `\nThe completed baseline remains immutable. Continue shaping and planning against ${amendmentRef}; use ${params.ref} only as read-only baseline context.`
+							: "";
+					return textResult(`${params.ref} transitioned to ${params.action}${amendmentRef ? ` as ${amendmentRef}` : ""}.${handoff}\n${JSON.stringify(receipt, null, 2)}`, receipt);
 				});
 			} catch (error) { throw structuredCapabilityError(error, params.ref); }
 		},
@@ -1476,6 +1512,7 @@ export default function workflow(pi: ExtensionAPI): void {
 						? await runtime.workItems.completeWorkItem(params.workItemId, params.outcome)
 						: await runtime.workItems.completeWorkItem(params.workItemId, undefined, params.outcomeSections);
 					await runtime.events.append("work_item.completed", { workItemId: item.id });
+					await runtime.agents.cleanupWorkItemTransport?.(item.id).catch(() => undefined);
 					return textResult(`Completed ${item.id}.`, item);
 				});
 			} catch (error) {
@@ -1504,7 +1541,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					const staleLockRecovered = await runtime.mutex.recoverStale();
 					const recovered = [];
 					for (const item of await runtime.workItems.list()) {
-						recovered.push(...(await new HarnessRunStore(runtime.identity.privateRoot, item.id).recoverInterrupted()));
+						recovered.push(...(await new HarnessRunStore(runtime.identity, item.id).recoverInterrupted()));
 					}
 					await runtime.events.append("recovery.inspected", { interruptedRuns: recovered.map((run) => run.id), staleLockRecovered });
 					ctx.ui.notify(recovered.length || staleLockRecovered ? `Recovered ${recovered.length} interrupted run(s)${staleLockRecovered ? " and one stale canonical lock" : ""}.${recovered.length ? `\n${recovered.map((run) => `${run.taskId ?? run.id}`).join("\n")}` : ""}` : "No newly interrupted runs or stale locks found.", recovered.length || staleLockRecovered ? "warning" : "info");
@@ -1653,7 +1690,7 @@ export default function workflow(pi: ExtensionAPI): void {
 			if (agentRoot && attemptId) {
 				const writeHeartbeat = () => atomicWriteFile(join(agentRoot, "attempts", attemptId, "heartbeat.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId, pid: process.pid, at: new Date().toISOString() })}\n`, 0o600).catch(() => undefined);
 				await writeHeartbeat();
-				heartbeatTimer = setInterval(writeHeartbeat, 5_000);
+				heartbeatTimer = setInterval(writeHeartbeat, AGENT_HEARTBEAT_INTERVAL_MS);
 				heartbeatTimer.unref();
 			}
 			return;
@@ -1673,7 +1710,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				if (agents.reported || agents.interrupted || agents.ambiguous || finalized.completed.length || finalized.errors.length) ctx.ui.notify(`Workflow reconciled subagents: ${finalized.completed.length} completed, ${agents.reported} reported, ${agents.interrupted} interrupted, ${agents.ambiguous + finalized.errors.length} require recovery.`, agents.ambiguous || finalized.errors.length ? "warning" : "info");
 				const recovered = [];
 				for (const item of await sessionRuntime.workItems.list()) {
-					recovered.push(...(await new HarnessRunStore(sessionRuntime.identity.privateRoot, item.id).recoverInterrupted()));
+					recovered.push(...(await new HarnessRunStore(sessionRuntime.identity, item.id).recoverInterrupted()));
 				}
 				if (recovered.length > 0) ctx.ui.notify(`Workflow recovered ${recovered.length} interrupted run(s). Use /workflow recover or /workflow resume <task>.`, "warning");
 			}
@@ -1693,10 +1730,6 @@ export default function workflow(pi: ExtensionAPI): void {
 		await atomicWriteFile(join(agentRoot, "attempts", attemptId, "result.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId, text, at: new Date().toISOString() }, null, 2)}\n`, 0o600);
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
-		if (!sessionRuntime) return;
-		await sessionRuntime.events.append("orchestrator.settled", { idle: ctx.isIdle() });
-	});
 
 	pi.on("session_shutdown", async (event) => {
 		sessionShuttingDown = true;

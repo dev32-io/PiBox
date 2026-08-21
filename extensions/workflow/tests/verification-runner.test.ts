@@ -97,3 +97,14 @@ test("reconciles an abandoned attempt before allocating the next retry", async (
 	assert.equal(result.id, "002");
 	assert.equal(parse(await readFile(join(attempts, "001", "result.yaml"), "utf8")).state, "interrupted");
 });
+
+test("stage verification selects attempt numbers numerically beyond 999", async (t) => {
+	const { root, identity } = await fixture(t);
+	const attempts = join(identity.privateRoot, "work-items", "story", "verification", "delivery", "check-1", "attempts");
+	for (const [id, startedAt] of [["999", "2026-08-21T00:00:00.000Z"], ["1000", "2026-08-21T00:00:01.000Z"]] as const) {
+		await mkdir(join(attempts, id), { recursive: true });
+		await writeFile(join(attempts, id, "attempt.yaml"), `state: failed\nid: "${id}"\nstageId: delivery\ncheckId: check-1\ncandidateCommit: "${id.padStart(40, "0")}"\nstartedAt: ${startedAt}\n`);
+	}
+	const activity = await readStageVerificationActivity(identity, "story", "delivery");
+	assert.equal(activity?.attemptId, "1000");
+});

@@ -5,6 +5,7 @@ import type { RepositoryIdentity } from "./repository.js";
 import { runGit } from "./repository.js";
 import { HarnessRunStore } from "./run-store.js";
 import { WorkItemStore } from "./work-items.js";
+import { finalizeTaskAgentAfterSettlement, settleManagedTaskHandoff } from "./task-settlement.js";
 
 export interface ReconciliationResult {
 	completed: string[];
@@ -18,15 +19,16 @@ export async function reconcileReportedAgents(input: {
 	registry: SessionAgentRegistry;
 	workItems: WorkItemStore;
 	mutex: RepositoryMutex;
+	excludedRunIds?: ReadonlySet<string>;
 }): Promise<ReconciliationResult> {
 	const result: ReconciliationResult = { completed: [], pending: [], errors: [] };
-	for (const agent of (await input.registry.list()).filter((candidate) => candidate.state === "reported")) {
+	for (const agent of (await input.registry.list()).filter((candidate) => candidate.state === "reported" && (!candidate.runId || !input.excludedRunIds?.has(candidate.runId)))) {
 		try {
 			if (agent.workItemId && agent.runId && agent.taskId) {
-				const runs = new HarnessRunStore(input.identity.privateRoot, agent.workItemId);
+				const runs = new HarnessRunStore(input.identity, agent.workItemId);
 				const run = await runs.read(agent.runId);
 				const handoff = await runs.readHandoff(agent.runId);
-				if (!handoff) { result.pending.push(agent.id); continue; }
+				if (!handoff || ["submitted", "awaiting_ci", "changes_requested"].includes(run.state)) { result.pending.push(agent.id); continue; }
 				const item = await input.workItems.read(agent.workItemId);
 				if (run.planningRevision !== undefined && item.planning.revision !== run.planningRevision) throw new Error(`Planning advanced from revision ${run.planningRevision} to ${item.planning.revision}`);
 				const workspace = agent.workspace ?? run.workspace;
@@ -35,21 +37,24 @@ export async function reconcileReportedAgents(input: {
 				const commits = (await runGit(workspace, ["rev-list", "--reverse", `${run.baseCommit}..HEAD`])).split("\n").filter(Boolean);
 				const artifactChanges = await runGit(workspace, ["diff", "--name-only", `${run.baseCommit}..HEAD`, "--", "agent-artifacts"]);
 				if (status || artifactChanges || !handoff.commits.includes(head) || handoff.commits.some((commit) => !commits.includes(commit))) throw new Error("Recovered task handoff failed Git or scope validation");
-				await input.workItems.coordinator.run(`reconcile-task:${agent.id}`, async () => {
-					const currentRun = await runs.read(agent.runId!);
-					const currentTask = await input.workItems.readTask(agent.workItemId!, agent.taskId!);
-					if (currentTask.runtime?.completedCommit !== head || !["contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated"].includes(currentTask.status)) {
-						await input.workItems.updateTask(agent.workItemId!, agent.taskId!, { status: "contribution_complete", runtime: { completedCommit: head } });
-					}
-					if (currentRun.state !== "completed") await runs.update(agent.runId!, { state: "completed", exitCode: 0 }, "run.reconciled_completed");
+				await settleManagedTaskHandoff({
+					workItems: input.workItems,
+					runs,
+					workItemId: agent.workItemId,
+					taskId: agent.taskId,
+					runId: agent.runId,
+					handoff,
+					completedCommit: head,
+					exitCode: 0,
+					completionEvent: "run.reconciled_completed",
 				});
-				await input.registry.transition(agent.id, "completed", { summary: handoff.summary });
+				await finalizeTaskAgentAfterSettlement(input.registry, agent.id, handoff.summary);
 				result.completed.push(agent.id);
 				continue;
 			}
 
 			if (agent.workItemId && agent.runId && agent.evaluationId) {
-				const runs = new HarnessRunStore(input.identity.privateRoot, agent.workItemId);
+				const runs = new HarnessRunStore(input.identity, agent.workItemId);
 				const handoff = await runs.readEvaluationHandoff(agent.runId);
 				if (!handoff) { result.pending.push(agent.id); continue; }
 				const run = await runs.read(agent.runId);

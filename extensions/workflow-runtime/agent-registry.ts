@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { watch } from "node:fs";
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { atomicWriteFile, readTextIfExists, WorkflowMutex, WorkflowRuntimeError } from "./storage.js";
@@ -25,6 +25,10 @@ export type AgentState =
 
 export const TERMINAL_AGENT_STATES = new Set<AgentState>(["completed", "failed", "protocol_failed", "cancelled"]);
 const RETRYABLE_AGENT_STATES = new Set<AgentState>(["failed", "protocol_failed", "reported", "recovery_required"]);
+
+/** Detached-worker liveness is recovery fencing, not live telemetry. */
+export const AGENT_HEARTBEAT_INTERVAL_MS = 30_000;
+export const AGENT_HEARTBEAT_FRESH_MS = 90_000;
 
 export function isAgentProcessActive(agent: SessionAgentRecord): boolean {
 	if (agent.state === "reserved") return true;
@@ -64,6 +68,21 @@ export type WorkflowActivityDescriptor = {
 	generation: number;
 };
 
+export interface ProcessAttemptTiming {
+	/** Logical reservation/eligibility boundary for this process attempt. */
+	reservedAt?: string;
+	attemptStartedAt: string;
+	processSpawnedAt?: string;
+	childReadyAt?: string;
+	firstActivityAt?: string;
+	firstToolAt?: string;
+	lastActivityAt?: string;
+	reportReadyAt?: string;
+	processExitedAt?: string;
+	outputDrainedAt?: string;
+	settledAt?: string;
+}
+
 export interface ProcessAttempt {
 	id: string;
 	provider?: string;
@@ -79,7 +98,10 @@ export interface ProcessAttempt {
 	updatedAt: string;
 	exitedAt?: string;
 	exitCode?: number;
+	/** One bounded terminal summary; live tool/turn activity is not durably sampled. */
 	progress?: AgentProgress;
+	/** Detailed lifecycle boundaries persisted with attempt settlement. */
+	timing?: ProcessAttemptTiming;
 }
 
 export interface SessionAgentRecord extends AgentScope {
@@ -161,6 +183,7 @@ export interface ReserveAgentInput extends AgentScope {
 export class SessionAgentRegistry {
 	readonly root: string;
 	readonly snapshotPath: string;
+	/** Legacy journal location retained only for migration/tests; new sessions do not create it. */
 	readonly eventsPath: string;
 	readonly mutex: WorkflowMutex;
 	private readonly listeners = new Set<AgentRegistryListener>();
@@ -183,14 +206,12 @@ export class SessionAgentRegistry {
 		return () => this.listeners.delete(listener);
 	}
 
-	/** Cross-instance lifecycle subscription. The append-only event log is
-	 * authoritative; filesystem notifications only request cursor replay. */
+	/** Cross-instance lifecycle subscription. The durable registry snapshot is
+	 * authoritative; atomic snapshot replacement is the wake-up signal. No
+	 * second agent journal is needed for recovery or replay. */
 	async watch(listener: AgentRegistryListener, signal?: AbortSignal): Promise<() => void> {
-		const initialHistory = await readFile(this.eventsPath, "utf8").catch(() => "");
-		let cursor = initialHistory.split("\n").reduce((maximum, line) => {
-			try { return Math.max(maximum, (JSON.parse(line) as { sequence?: number }).sequence ?? 0); }
-			catch { return maximum; }
-		}, 0);
+		let previous = await this.read();
+		let cursor = previous.eventSequence;
 		let closed = false;
 		let replaying = false;
 		let replayAgain = false;
@@ -199,8 +220,6 @@ export class SessionAgentRegistry {
 			cursor = event.sequence;
 			listener(event);
 		};
-		// Same-process publication is deterministic and occurs only after the event
-		// is durable. The file watcher remains the cross-process wake-up hint.
 		const unsubscribeLocal = this.subscribe(accept);
 		const replay = async () => {
 			if (replaying) { replayAgain = true; return; }
@@ -208,18 +227,25 @@ export class SessionAgentRegistry {
 			try {
 				do {
 					replayAgain = false;
-					const content = await readFile(this.eventsPath, "utf8").catch(() => "");
-					for (const line of content.split("\n")) {
-						if (!line.trim()) continue;
-						try {
-							accept(JSON.parse(line) as AgentRegistryEvent);
-						} catch { /* malformed private history is handled by registry reads */ }
+					const current = await this.read();
+					if (current.eventSequence > cursor) {
+						const prior = new Map(previous.agents.map((agent) => [agent.id, `${agent.updatedAt}:${agent.state}:${agent.currentAttemptId ?? ""}`]));
+						const changed = current.agents.filter((agent) => prior.get(agent.id) !== `${agent.updatedAt}:${agent.state}:${agent.currentAttemptId ?? ""}`);
+						if (changed.length === 0) accept({ type: "agent.snapshot_changed", at: new Date().toISOString(), sequence: current.eventSequence, data: {} });
+						else for (const agent of changed) {
+							if (current.eventSequence <= cursor) cursor = current.eventSequence - 1;
+							accept({ type: "agent.snapshot_changed", at: agent.updatedAt, sequence: current.eventSequence, data: { agentId: agent.id, state: agent.state } });
+						}
 					}
+					previous = current;
 				} while (replayAgain && !closed);
 			} finally { replaying = false; }
 		};
-		const watcher = watch(this.eventsPath, { persistent: false }, () => { if (!closed) void replay(); });
-		watcher.on("error", () => { /* durable replay remains available on the next attachment */ });
+		const watcher = watch(this.root, { persistent: false }, (_event, filename) => {
+			if (!closed && filename?.toString() === "agents.yaml") void replay().catch(() => undefined);
+		});
+		watcher.on("error", () => { /* replacement sessions load the authoritative snapshot */ });
+		// Close the read→subscribe attachment gap after both wake-up paths exist.
 		await replay();
 		const dispose = () => { if (closed) return; closed = true; unsubscribeLocal(); watcher.close(); };
 		if (signal) {
@@ -232,7 +258,7 @@ export class SessionAgentRegistry {
 	async initialize(mainAgentId = `main:${this.sessionId}`): Promise<void> {
 		await this.mutex.run("agent-registry:init", async () => {
 			if (await readTextIfExists(this.snapshotPath)) {
-				await appendFile(this.eventsPath, "", { mode: 0o600 });
+				await rm(this.eventsPath, { force: true }).catch(() => undefined);
 				return;
 			}
 			const snapshot: RegistrySnapshot = {
@@ -246,7 +272,7 @@ export class SessionAgentRegistry {
 				agents: [],
 			};
 			await this.write(snapshot);
-			await appendFile(this.eventsPath, "", { mode: 0o600 });
+			await rm(this.eventsPath, { force: true }).catch(() => undefined);
 		});
 	}
 
@@ -314,7 +340,11 @@ export class SessionAgentRegistry {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");
 			const now = new Date().toISOString();
-			const attempt: ProcessAttempt = { id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now, ...(route ?? {}), ...(activity ? { activity } : {}), ...(fast !== undefined ? { fast } : {}) };
+			const attempt: ProcessAttempt = {
+				id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now,
+				timing: { reservedAt: agent.updatedAt, attemptStartedAt: now },
+				...(route ?? {}), ...(activity ? { activity } : {}), ...(fast !== undefined ? { fast } : {}),
+			};
 			if (route) { agent.provider = route.provider; agent.model = route.model; agent.effort = route.effort; }
 			agent.state = "launching";
 			agent.currentAttemptId = attempt.id;
@@ -323,13 +353,14 @@ export class SessionAgentRegistry {
 		}).then(({ agent, value }) => ({ agent, attempt: value }));
 	}
 
-	async markRunning(agentId: string, attemptId: string, pid: number): Promise<SessionAgentRecord> {
+	async markRunning(agentId: string, attemptId: string, pid: number, observedAt = new Date().toISOString()): Promise<SessionAgentRecord> {
 		return (await this.mutate(agentId, "agent.running", (agent) => {
 			if (agent.state !== "launching") throw this.invalidTransition(agent.state, "running");
 			const attempt = this.attempt(agent, attemptId);
 			attempt.state = "running";
 			attempt.pid = pid;
-			attempt.updatedAt = new Date().toISOString();
+			attempt.updatedAt = observedAt;
+			attempt.timing = { ...(attempt.timing ?? { attemptStartedAt: attempt.startedAt }), processSpawnedAt: observedAt };
 			agent.state = "running";
 		})).agent;
 	}
@@ -344,31 +375,45 @@ export class SessionAgentRegistry {
 	}
 
 	async transition(agentId: string, state: AgentState, update: Pick<SessionAgentRecord, "summary" | "error"> = {}): Promise<SessionAgentRecord> {
-		return (await this.mutate(agentId, `agent.${state}`, (agent) => {
+		const result = (await this.mutate(agentId, `agent.${state}`, (agent) => {
 			if (!TRANSITIONS[agent.state].has(state)) throw this.invalidTransition(agent.state, state);
 			agent.state = state;
 			if (update.summary !== undefined) agent.summary = update.summary;
 			if (update.error !== undefined) agent.error = update.error;
 			if (TERMINAL_AGENT_STATES.has(state)) agent.completedAt = new Date().toISOString();
 		})).agent;
+		if (state === "completed") await this.cleanupSuccessfulAttemptTransport(result);
+		return result;
 	}
 
+	/** Compatibility checkpoint for explicit callers. LaunchCoordinator persists one
+	 * terminal summary instead; progress checkpoints never append journal events. */
 	async updateProgress(agentId: string, attemptId: string, progress: AgentProgress): Promise<SessionAgentRecord> {
 		return (await this.mutate(agentId, "agent.progress", (agent) => {
 			const attempt = this.attempt(agent, attemptId);
 			attempt.progress = structuredClone(progress);
 			attempt.updatedAt = progress.lastEventAt;
-		})).agent;
+		}, false)).agent;
 	}
 
-	async recordExit(agentId: string, attemptId: string, exitCode: number): Promise<SessionAgentRecord> {
-		return (await this.mutate(agentId, "agent.process_exited", (agent) => {
+	async recordExit(
+		agentId: string,
+		attemptId: string,
+		exitCode: number,
+		summary?: { progress?: AgentProgress; timing?: ProcessAttemptTiming },
+	): Promise<SessionAgentRecord> {
+		const result = (await this.mutate(agentId, "agent.process_exited", (agent) => {
 			const attempt = this.attempt(agent, attemptId);
+			const now = new Date().toISOString();
 			attempt.state = exitCode === 0 ? "exited" : "failed";
 			attempt.exitCode = exitCode;
-			attempt.exitedAt = new Date().toISOString();
-			attempt.updatedAt = attempt.exitedAt;
+			attempt.exitedAt = summary?.timing?.processExitedAt ?? now;
+			attempt.updatedAt = summary?.timing?.settledAt ?? now;
+			if (summary?.progress) attempt.progress = structuredClone(summary.progress);
+			if (summary?.timing) attempt.timing = structuredClone(summary.timing);
 		})).agent;
+		if (exitCode !== 0) await this.boundFailedAttemptTransport(result, attemptId);
+		return result;
 	}
 
 	async recordMessage(agentId: string, input: Omit<AgentMessageRecord, "schemaVersion" | "id" | "payloadDigest" | "agentId" | "status" | "createdAt" | "updatedAt">): Promise<AgentMessageRecord> {
@@ -391,12 +436,12 @@ export class SessionAgentRegistry {
 			}
 			const now = new Date().toISOString();
 			const message: AgentMessageRecord = { schemaVersion: 1, id: randomUUID(), payloadDigest, agentId, status: "open", createdAt: now, updatedAt: now, ...input };
+			agent.updatedAt = now;
 			if (input.blocking) {
 				const target: AgentState = input.type === "change_request" ? "waiting_decision" : "blocked";
 				if (!TRANSITIONS[agent.state].has(target)) throw this.invalidTransition(agent.state, target);
 				agent.state = target;
 				agent.summary = input.summary;
-				agent.updatedAt = now;
 			}
 			await atomicWriteFile(join(this.root, "agents", agentId, "messages", `${message.id}.json`), `${JSON.stringify(message, null, 2)}\n`, 0o600);
 			await this.commit(snapshot, `agent.message_${input.type}`, { agentId, messageId: message.id, blocking: input.blocking });
@@ -418,6 +463,7 @@ export class SessionAgentRegistry {
 			message.status = "answered";
 			message.response = response;
 			message.updatedAt = new Date().toISOString();
+			agent.updatedAt = message.updatedAt;
 			await atomicWriteFile(path, `${JSON.stringify(message, null, 2)}\n`, 0o600);
 			await this.commit(snapshot, "agent.message_answered", { agentId, messageId });
 			return message;
@@ -452,14 +498,26 @@ export class SessionAgentRegistry {
 		return (await this.read()).agents.filter((agent) => !TERMINAL_AGENT_STATES.has(agent.state)).length;
 	}
 
-	private async mutate<T>(agentId: string, event: string, mutation: (agent: SessionAgentRecord) => T): Promise<{ agent: SessionAgentRecord; value: T }> {
+	/** Remove raw process transport after the workflow has a durable final outcome.
+	 * Pi sessions, handoffs, attempt summaries, and deterministic evidence remain. */
+	async cleanupWorkItemTransport(workItemId: string): Promise<void> {
+		const agents = (await this.read()).agents.filter((agent) => agent.workItemId === workItemId && TERMINAL_AGENT_STATES.has(agent.state));
+		for (const agent of agents) for (const attempt of agent.attempts) {
+			if (attempt.state !== "exited" && attempt.state !== "failed") continue;
+			const root = this.attemptRoot(agent.id, attempt.id);
+			await Promise.all(["stdout.jsonl", "stderr.log"].map((name) => rm(join(root, name), { force: true }).catch(() => undefined)));
+		}
+	}
+
+	private async mutate<T>(agentId: string, event: string, mutation: (agent: SessionAgentRecord) => T, journal = true): Promise<{ agent: SessionAgentRecord; value: T }> {
 		return this.mutex.run(`${event}:${agentId}`, async () => {
 			const snapshot = await this.read();
 			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
 			if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
 			const value = mutation(agent);
 			agent.updatedAt = new Date().toISOString();
-			await this.commit(snapshot, event, { agentId, state: agent.state });
+			if (journal) await this.commit(snapshot, event, { agentId, state: agent.state });
+			else { snapshot.revision += 1; await this.write(snapshot); }
 			return { agent: structuredClone(agent), value };
 		});
 	}
@@ -472,6 +530,33 @@ export class SessionAgentRegistry {
 
 	private invalidTransition(from: AgentState, to: AgentState): WorkflowRuntimeError {
 		return new WorkflowRuntimeError("CAPABILITY_DENIED", `Invalid agent transition: ${from} -> ${to}`);
+	}
+
+	private attemptRoot(agentId: string, attemptId: string): string {
+		return join(this.root, "agents", agentId, "attempts", attemptId);
+	}
+
+	private async cleanupSuccessfulAttemptTransport(agent: SessionAgentRecord): Promise<void> {
+		for (const attempt of agent.attempts) {
+			if (attempt.exitCode !== 0) continue;
+			const root = this.attemptRoot(agent.id, attempt.id);
+			await Promise.all(["stdout.jsonl", "stderr.log"].map((name) => rm(join(root, name), { force: true }).catch(() => undefined)));
+		}
+	}
+
+	private async boundFailedAttemptTransport(agent: SessionAgentRecord, attemptId: string): Promise<void> {
+		const maximum = 64 * 1024;
+		for (const name of ["stdout.jsonl", "stderr.log"]) {
+			const path = join(this.attemptRoot(agent.id, attemptId), name);
+			const size = (await stat(path).catch(() => undefined))?.size ?? 0;
+			if (size <= maximum) continue;
+			const file = await open(path, "r");
+			try {
+				const buffer = Buffer.alloc(maximum);
+				await file.read(buffer, 0, maximum, size - maximum);
+				await writeFile(path, buffer, { mode: 0o600 });
+			} finally { await file.close(); }
+		}
 	}
 
 	private async read(): Promise<RegistrySnapshot> {
@@ -490,9 +575,7 @@ export class SessionAgentRegistry {
 		snapshot.revision += 1;
 		snapshot.eventSequence += 1;
 		await this.write(snapshot);
-		await mkdir(this.root, { recursive: true, mode: 0o700 });
 		const at = new Date().toISOString();
-		await appendFile(this.eventsPath, `${JSON.stringify({ sequence: snapshot.eventSequence, at, type, data })}\n`, { mode: 0o600 });
 		const event: AgentRegistryEvent = { sequence: snapshot.eventSequence, at, type, data: data as AgentRegistryEvent["data"] };
 		for (const listener of this.listeners) {
 			try { listener(event); } catch { /* observers must not affect durable lifecycle transitions */ }

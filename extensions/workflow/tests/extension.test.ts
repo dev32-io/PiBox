@@ -3,9 +3,21 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Check } from "typebox/value";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import workflow, { WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
+import workflow, { structuredCapabilityError, WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
+import { HarnessError } from "../errors.js";
 import { FAST_MODE_POLICY_EVENT } from "../../fast-mode/policy.js";
 import { getActiveFastModePolicy } from "../../fast-mode/runtime.js";
+
+test("mutation errors preserve state-aware remediation for tool callers", () => {
+	const formatted = structuredCapabilityError(new HarnessError("CAPABILITY_DENIED", "Completed baseline is immutable.", { workflowState: { phase: "complete", state: "complete" }, guidance: { tool: "workflow_transition", arguments: { ref: "work-item:done", action: "reopen" }, outcome: "Use the returned amendment ref." } }), "work-item:done");
+	const payload = JSON.parse(formatted.message);
+	assert.equal(payload.code, "CAPABILITY_DENIED");
+	assert.equal(payload.resourceRef, "work-item:done");
+	assert.equal(payload.details.workflowState.phase, "complete");
+	assert.equal(payload.details.guidance.tool, "workflow_transition");
+	assert.equal(payload.details.guidance.arguments.action, "reopen");
+	assert.match(payload.details.guidance.outcome, /amendment ref/);
+});
 
 test("loads workflow, context, and Fast-mode hooks explicitly in spawned agents", () => {
 	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 4);
@@ -112,7 +124,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.match(descriptions.get("task_clarify") ?? "", /Do not call at startup[\s\S]+read only the relevant resource/);
 	assert.match(descriptions.get("task_request_change") ?? "", /consult the one relevant canonical source[\s\S]+smallest safe amendment/i);
 	assert.match(descriptions.get("task_blocked") ?? "", /external blocker[\s\S]+cannot be resolved through a task-contract amendment/i);
-	assert.deepEqual(events, ["tool_call", "before_agent_start", "session_start", "message_end", "agent_settled", "session_shutdown"]);
+	assert.deepEqual(events, ["tool_call", "before_agent_start", "session_start", "message_end", "session_shutdown"], "workflow logging does not write one repository event per main-agent turn");
 	activeTools = [...tools, "read"];
 	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });
 	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(tools.includes(legacy), false, legacy);

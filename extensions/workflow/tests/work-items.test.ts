@@ -409,10 +409,69 @@ test("rejects same-stage blockers and conflicting parallel resource claims on su
 	await store.defineTask({ workItemId: "bad-topology", manifest: manifest("second", ["first"], "other"), brief: "Second", acceptance: "Second accepted" });
 	await assert.rejects(store.submitPlanning("bad-topology"), /blockers must be placed in an earlier execution stage/);
 	const second = await store.readTaskContract("bad-topology", "second"); second.manifest.dependsOn = []; second.manifest.execution.resourceClaims = ["shared"];
-	await assert.rejects(store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { rationale: "repair fixture" } }), /conflicting resource claim shared/);
+	await store.reviseTask({ workItemId: "bad-topology", manifest: second.manifest, brief: second.brief, acceptance: second.acceptance, authority: { rationale: "write incomplete repair fixture" } });
+	await assert.rejects(store.submitPlanning("bad-topology"), /conflicting resource claim shared/);
 });
 
-test("revising a singleton task preserves stage order and rolls back invalid topology", async (t) => {
+test("planning remains editable source and submission compiles the complete topology", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "draft-compiler", title: "Draft compiler", kind: "change", intent: "Compile topology only at submission." });
+	const manifest = (id: string, dependsOn: string[] = []): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn, references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "medium", rationale: "fixture" } }, assembly: { stageId: id, intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
+	await store.defineTask({ workItemId: "draft-compiler", manifest: manifest("foundation"), brief: "Foundation", acceptance: "Foundation accepted" });
+	await store.defineTask({ workItemId: "draft-compiler", manifest: manifest("feature", ["foundation"]), brief: "Feature", acceptance: "Feature accepted" });
+
+	// Regroup in reverse authoring order. Each write is accepted, and a new stage
+	// occupies the earliest position donated by its tasks rather than moving them
+	// behind their dependants.
+	await store.putExecutionStage("draft-compiler", { id: "feature-stage", mode: "sequential", tasks: ["feature"] }, { rationale: "draft regroup" });
+	await store.putExecutionStage("draft-compiler", { id: "foundation-stage", mode: "sequential", tasks: ["foundation"] }, { rationale: "draft regroup" });
+	assert.deepEqual((await store.read("draft-compiler")).executionStages?.map((stage) => stage.id), ["foundation-stage", "feature-stage"]);
+	await store.submitPlanning("draft-compiler");
+
+	// Temporary empty membership and a forward dependency are persisted as
+	// advisory draft diagnostics instead of blocking the next edit.
+	await store.putExecutionStage("draft-compiler", { id: "foundation-stage", mode: "sequential", tasks: [] }, { rationale: "temporarily detach foundation" });
+	const feature = await store.readTaskContract("draft-compiler", "feature");
+	feature.manifest.dependsOn = ["future-task"];
+	await store.reviseTask({ workItemId: "draft-compiler", manifest: feature.manifest, brief: feature.brief, acceptance: feature.acceptance, authority: { rationale: "write forward dependency" } });
+	const issues = await store.planningTopologyIssues("draft-compiler");
+	assert.deepEqual(new Set(issues.map((issue) => issue.code)), new Set(["empty-stage", "unassigned-task", "unknown-dependency"]));
+	await assert.rejects(store.submitPlanning("draft-compiler"), (error: unknown) => {
+		assert.ok(error instanceof HarnessError);
+		assert.match(error.message, /Plan compilation failed with 3 execution-topology issues/);
+		assert.equal((error.details.issues as unknown[]).length, 3);
+		return true;
+	});
+	await assert.rejects(store.beginExecution("draft-compiler"), /Plan compilation failed with 3 execution-topology issues/);
+	assert.equal((await store.read("draft-compiler")).phase, "planning");
+
+	await store.putExecutionStage("draft-compiler", { id: "foundation-stage", mode: "sequential", tasks: ["foundation"] }, { rationale: "restore foundation" });
+	const repaired = await store.readTaskContract("draft-compiler", "feature");
+	repaired.manifest.dependsOn = ["foundation"];
+	await store.reviseTask({ workItemId: "draft-compiler", manifest: repaired.manifest, brief: repaired.brief, acceptance: repaired.acceptance, authority: { rationale: "repair dependency" } });
+	assert.deepEqual(await store.planningTopologyIssues("draft-compiler"), []);
+	await store.submitPlanning("draft-compiler");
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("forward task references can be ordered after the pieces are written", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "forward-plan", title: "Forward plan", kind: "change", intent: "Write pieces before arranging them." });
+	const manifest = (id: string, dependsOn: string[] = []): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn, references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "medium", rationale: "fixture" } }, assembly: { stageId: id, intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });
+	await store.defineTask({ workItemId: "forward-plan", manifest: manifest("feature", ["foundation"]), brief: "Feature", acceptance: "Feature accepted" });
+	await store.defineTask({ workItemId: "forward-plan", manifest: manifest("foundation"), brief: "Foundation", acceptance: "Foundation accepted" });
+	assert.deepEqual((await store.planningTopologyIssues("forward-plan")).map((issue) => issue.code), ["dependency-order"]);
+
+	await store.removeExecutionStage("forward-plan", "feature", { rationale: "reorder draft" });
+	await store.removeExecutionStage("forward-plan", "foundation", { rationale: "reorder draft" });
+	await store.putExecutionStage("forward-plan", { id: "foundation-stage", mode: "sequential", tasks: ["foundation"] }, { rationale: "arrange draft" });
+	await store.putExecutionStage("forward-plan", { id: "feature-stage", mode: "sequential", tasks: ["feature"] }, { rationale: "arrange draft" });
+	assert.deepEqual(await store.planningTopologyIssues("forward-plan"), []);
+	await store.submitPlanning("forward-plan");
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("revising a singleton task preserves stage order", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "singleton-order", title: "Singleton order", kind: "change", intent: "Preserve execution order." });
 	const manifest = (id: string, stageId: string): TaskManifest => ({ schemaVersion: 1, id, title: id, status: "draft", dependsOn: [], references: { specs: [], designs: [], decisions: [] }, execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "fixture" } }, assembly: { stageId, intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } });

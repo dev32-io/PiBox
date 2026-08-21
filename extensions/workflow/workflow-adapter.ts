@@ -1,10 +1,10 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import type { DynamicSubagentRequest, DynamicSubagentStarted, SpawnableAgentDefinition, WorkflowAdapter, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
+import type { DynamicSubagentRequest, DynamicSubagentStarted, SpawnableAgentDefinition, WorkflowAdapter, WorkflowMetricCategory, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { AgentLiveProjectionManager } from "../workflow-runtime/agent-live-projection.js";
 import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
-import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import { AGENT_HEARTBEAT_FRESH_MS, isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { readTextIfExists } from "./repository.js";
 import type { WorkItemStore } from "./work-items.js";
@@ -130,15 +130,15 @@ function finalValidationDisplay(evaluation: { checkpoint?: string; status: strin
 
 function taskStatus(status: string, dependenciesDone: boolean): { status: WorkflowStepStatus; detail?: string } {
 	if (taskDone.has(status)) return { status: "done" };
-	if (["running", "reviewing"].includes(status)) return { status: "running" };
+	if (["running", "submitted", "awaiting_ci", "reviewing"].includes(status)) return { status: "running" };
 	if (["accepted", "merge_queued", "merging", "contribution_complete", "staged", "integrating"].includes(status)) {
 		if (!dependenciesDone) return { status: "pending" };
 		return { status: "ready", detail: status.replaceAll("_", " ") };
 	}
-	if (status === "ready") return dependenciesDone ? { status: "ready" } : { status: "pending" };
+	if (status === "ready" || status === "changes_requested") return dependenciesDone ? { status: "ready", ...(status === "changes_requested" ? { detail: "CI changes requested" } : {}) } : { status: "pending" };
 	if (status === "cancelled") return { status: "cancelled" };
 	if (status === "failed" || status === "protocol_failed") return { status: "attention", detail: "failed" };
-	if ((status === "blocked" || status === "paused" || status === "changes_requested") && dependenciesDone) return { status: "attention", detail: status.replaceAll("_", " ") };
+	if ((status === "blocked" || status === "paused") && dependenciesDone) return { status: "attention", detail: status.replaceAll("_", " ") };
 	return { status: "pending" };
 }
 
@@ -208,6 +208,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				progress("Validating working branch");
 				if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, match[1]!);
 				else await new WorktreeManager(runtime.identity).validateWorkingBranch(match[1]!);
+				await new WorktreeManager(runtime.identity).migrateLegacyIntegrationFailure(match[1]!);
 				await runtime.workItems.beginExecution(match[1]!);
 				progress("Creating runtime verification gates"); await runtime.workItems.ensureFinalEvaluations(match[1]!, runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS);
 				progress("Activating tasks"); await runtime.workItems.activateDraftTasks(match[1]!);
@@ -299,6 +300,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const stageVerification = runtime.identity?.privateRoot
 				? new Map((await Promise.all(stages.map(async (stage) => [stage.id, await readStageVerificationActivity(runtime.identity, item.id, stage.id)] as const))).filter((entry) => entry[1]))
 				: new Map();
+			const integrationFailure = runtime.identity ? await new WorktreeManager(runtime.identity).activeConflict(item.id).catch(() => undefined) : undefined;
 			const stageReviews = new Map(evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review" && evaluation.stageId).map((evaluation) => [evaluation.stageId!, evaluation]));
 			const contributionStates = new Set(["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating", "merged", "integrated"]);
 			const steps: WorkflowStep[] = tasks.map((task) => {
@@ -318,6 +320,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const verification = stageVerification.get(topology.stageId);
 				const phase = ["merged", "integrated"].includes(task.status) ? "integrated"
 					: isMergeState && !mergeBarrierOwner ? "contribution-ready"
+					: isMergeState && integrationFailure?.stageId === topology.stageId && activity.running ? "repairing-candidate"
+					: isMergeState && integrationFailure?.stageId === topology.stageId && integrationFailure.kind === "merge_conflict" ? "integration-conflict"
+					: isMergeState && integrationFailure?.stageId === topology.stageId ? "candidate-ci-failed"
 					: isMergeState && (verification?.state === "failed" || verification?.state === "interrupted") ? "verification-failed"
 					: isMergeState && (verification?.state === "running" || verification?.state === "starting") ? "verifying-candidate"
 					: isMergeState ? "ready-to-integrate"
@@ -426,35 +431,68 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 		async runStep(ref, ctx, _signal): Promise<WorkflowRunResult> {
 			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid workflow step: ${ref}`);
 			const [, workItemId, kind, id] = match;
+			const runtime = await options.runtimeFor(ctx);
+			let metricCategory: Exclude<WorkflowMetricCategory, "orchestration">;
+			let execute: () => Promise<WorkflowRunResult>;
 			if (kind === "task") {
-				const runtime = await options.runtimeFor(ctx);
 				// Conflict evidence is private runtime state because the canonical branch is
 				// intentionally left dirty and cannot safely accept a task-manifest write.
 				const conflict = await new WorktreeManager(runtime.identity).activeConflict(workItemId!);
-				if (conflict) {
-					if (!options.launchIntegrationRepair) throw new Error(`Stage ${conflict.stageId} has a preserved integration conflict at ${conflict.evidencePath}; harness repair assignment is required (no generic agent may be spawned).`);
-					const repaired = await options.launchIntegrationRepair(ctx, workItemId!, conflict.stageId, conflict.taskIds, conflict.evidencePath, _signal);
-					return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${conflict.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
-				}
+				const task = conflict ? undefined : await runtime.workItems.readTask(workItemId!, id!);
+				const integrating = Boolean(conflict || (task && ["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)));
+				metricCategory = integrating ? "integration" : "implementation";
+				execute = async () => {
+					if (conflict) {
+						if (!options.launchIntegrationRepair) throw new Error(`Stage ${conflict.stageId} has a preserved integration conflict at ${conflict.evidencePath}; harness repair assignment is required (no generic agent may be spawned).`);
+						const repaired = await options.launchIntegrationRepair(ctx, workItemId!, conflict.stageId, conflict.taskIds, conflict.evidencePath, _signal);
+						return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${conflict.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+					}
+					if (integrating) {
+						try {
+							const merged = await runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
+							return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the working branch as ${merged.commit.slice(0, 12)}.` };
+						} catch (error) {
+							const failure = await new WorktreeManager(runtime.identity).activeConflict(workItemId!);
+							if (!failure || !options.launchIntegrationRepair) throw error;
+							const repaired = await options.launchIntegrationRepair(ctx, workItemId!, failure.stageId, failure.taskIds, failure.evidencePath, _signal);
+							return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${failure.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+						}
+					}
+					const launched = await options.launchTask(ctx, workItemId!, id!);
+					const run = launched.details?.run;
+					// A deterministic CI rejection settles this scheduler attempt without
+					// escalating: the task projection is changes_requested and immediately
+					// routes the next process attempt to the same logical implementer.
+					const state = run?.state === "completed" || run?.state === "changes_requested" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
+					return { ref, state, summary: launched.content[0]?.text ?? `Task ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: state === "blocked" || state === "failed" };
+				};
+			} else {
+				const evaluation = await runtime.workItems.readEvaluation(workItemId!, id!);
+				metricCategory = evaluation.loop?.state === "fixing" ? "integration" : evaluation.checkpoint === "final-e2e" || evaluation.type === "e2e" ? "e2e" : "review";
+				execute = async () => {
+					if (evaluation.loop?.state === "fixing") {
+						if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${id}`);
+						const repaired = await options.launchRepair(ctx, workItemId!, id!, _signal);
+						return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Repair for ${id} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+					}
+					const launched = await options.launchEvaluation(ctx, workItemId!, id!);
+					const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
+					return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
+				};
+			}
 
-				const task = await runtime.workItems.readTask(workItemId!, id!);
-				if (["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) {
-					const merged = await runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
-					return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the working branch as ${merged.commit.slice(0, 12)}.` };
-				}
-				const launched = await options.launchTask(ctx, workItemId!, id!);
-				const run = launched.details?.run; const state = run?.state === "completed" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
-				return { ref, state, summary: launched.content[0]?.text ?? `Task ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: state === "blocked" || state === "failed" };
+			const control = runtime.events ? await new WorkflowControlStore(runtime.identity.privateRoot).get(`work-item:${workItemId}`) : undefined;
+			const journal = runtime.events && control ? new WorkflowEventJournal(runtime.events) : undefined;
+			const correlationId = `step:${ref}:${control?.generation ?? 0}:${Date.now()}`;
+			await journal?.append({ type: "step.started", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory }).catch(() => undefined);
+			try {
+				const result = await execute();
+				await journal?.append({ type: result.state === "failed" || result.state === "blocked" ? "step.failed" : "step.settled", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory, transition: { to: result.state, summary: result.summary, ...(result.attention !== undefined ? { attention: result.attention } : {}) } }).catch(() => undefined);
+				return result;
+			} catch (error) {
+				await journal?.append({ type: "step.failed", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory, transition: { to: "failed", summary: error instanceof Error ? error.message : String(error), attention: true } }).catch(() => undefined);
+				throw error;
 			}
-			const evaluation = await (await options.runtimeFor(ctx)).workItems.readEvaluation(workItemId!, id!);
-			if (evaluation.loop?.state === "fixing") {
-				if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${id}`);
-				const repaired = await options.launchRepair(ctx, workItemId!, id!, _signal);
-				return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Repair for ${id} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
-			}
-			const launched = await options.launchEvaluation(ctx, workItemId!, id!);
-			const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
-			return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
 		},
 		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void) { return options.spawnSubagent!(request, ctx, signal, onText, onStarted, onProgress); } } : {}),
 		...(options.listSpawnableAgents ? { async listSpawnableAgents(ctx: ExtensionContext) { return options.listSpawnableAgents!(ctx); } } : {}),
@@ -548,6 +586,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					await runtime.workItems.submitPlanning(workItemId);
 					if (options.validateWorkingBranch) await options.validateWorkingBranch(runtime, workItemId);
 					else await new WorktreeManager(runtime.identity).validateWorkingBranch(workItemId);
+					await new WorktreeManager(runtime.identity).migrateLegacyIntegrationFailure(workItemId);
 					const begun = await runtime.workItems.beginExecution(workItemId);
 					await runtime.workItems.ensureFinalEvaluations(workItemId, runtime.config?.limits.repairRounds ?? DEFAULT_REVIEW_FIX_ITERATIONS);
 					await runtime.workItems.activateDraftTasks(workItemId);
@@ -576,7 +615,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			if (!attempt) throw new Error(`Agent ${agent.id} has no current process attempt.`);
 			const heartbeatText = await readTextIfExists(join(runtime.agents.root, "agents", agent.id, "attempts", attempt.id, "heartbeat.json"));
 			const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
-			const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at && Date.now() - Date.parse(heartbeat.at) < 15_000;
+			const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at && Date.now() - Date.parse(heartbeat.at) < AGENT_HEARTBEAT_FRESH_MS;
 			if (!fresh || !heartbeat?.pid) throw new Error("Refusing to signal a process without a fresh matching heartbeat.");
 			try { process.kill(-heartbeat.pid, "SIGTERM"); } catch { process.kill(heartbeat.pid, "SIGTERM"); }
 			return runtime.agents.transition(agent.id, action === "pause" ? "paused" : "cancelled", { summary: `${action} requested by orchestrator` });

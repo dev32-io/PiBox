@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
-import { validateExecutionTopology } from "./execution-topology.js";
+import { executionTopologyIssues, validateExecutionTopology, type ExecutionTopologyIssue } from "./execution-topology.js";
 import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit } from "./repository.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import { isTierTaskAssignment, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
@@ -24,8 +24,18 @@ function collectQualifiedCriteria(value: unknown, found = new Set<string>()): st
 	return [...found];
 }
 
+export function immutableWorkItemMutationError(index: WorkItemIndex): HarnessError {
+	const completed = index.phase === "complete";
+	const guidance = completed
+		? { tool: "workflow_transition", arguments: { ref: `work-item:${index.id}`, action: "reopen", reason: "Describe the requested amendment" }, outcome: "Creates a linked editable amendment work item and keeps this completed baseline immutable; retry mutations against the returned amendment ref." }
+		: { tool: "workflow_transition", arguments: { ref: `work-item:${index.id}`, action: "reopen", reason: "Describe why editing should resume" }, outcome: "Reopens this archived planning work item; retry the mutation after the transition succeeds." };
+	return new HarnessError("CAPABILITY_DENIED", completed
+		? `Work item ${index.id} is complete and immutable. Call workflow_transition with action reopen to create a linked amendment, then retry against the returned amendment work-item ref.`
+		: `Work item ${index.id} is finalized and immutable. Call workflow_transition with action reopen, then retry the mutation.`, { workflowState: { phase: index.phase, state: index.state, finalized: Boolean(index.finalization?.locked) }, guidance });
+}
+
 function assertContractMutable(index: WorkItemIndex): void {
-	if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${index.id} is finalized; reopen it before mutation`);
+	if (index.finalization?.locked || index.phase === "complete") throw immutableWorkItemMutationError(index);
 }
 
 function advanceContractRevision(index: WorkItemIndex, _authority?: MutationAuthority): void {
@@ -110,6 +120,10 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 		try { validateDelivery(index.delivery); }
 		catch (error) { throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid working-branch delivery contract: ${error instanceof Error ? error.message : String(error)}`); }
 	}
+	if (index.amendment !== undefined) {
+		const amendment = index.amendment;
+		if (!ID_PATTERN.test(amendment.baselineWorkItemId) || !ID_PATTERN.test(amendment.rootWorkItemId) || !Number.isInteger(amendment.generation) || amendment.generation < 1 || !Number.isInteger(amendment.baselineRevision) || amendment.baselineRevision < 1 || !/^[0-9a-f]{40,64}$/.test(amendment.baselineCommit) || typeof amendment.createdAt !== "string" || !amendment.createdAt || typeof amendment.reason !== "string" || !amendment.reason.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid amendment metadata`);
+	}
 	if (index.integrationUnits === undefined) index.integrationUnits = [];
 	if (!Array.isArray(index.integrationUnits)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid integration units`);
 	// Do not materialize the compatibility projection in memory: a read of a
@@ -118,7 +132,8 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 	const scheduled = new Set<string>();
 	const stageIds = new Set<string>();
 	for (const stage of index.executionStages ?? []) {
-		if (!stage || typeof stage.id !== "string" || !ID_PATTERN.test(stage.id) || stageIds.has(stage.id) || !Array.isArray(stage.tasks) || !stage.tasks.length || stage.tasks.some((id) => typeof id !== "string" || scheduled.has(id))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid or duplicate execution stages/tasks`);
+		const emptyOutsidePlanning = Array.isArray(stage?.tasks) && stage.tasks.length === 0 && index.phase !== "planning";
+		if (!stage || typeof stage.id !== "string" || !ID_PATTERN.test(stage.id) || stageIds.has(stage.id) || !Array.isArray(stage.tasks) || emptyOutsidePlanning || stage.tasks.some((id) => typeof id !== "string" || scheduled.has(id))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid or duplicate execution stages/tasks`);
 		stageIds.add(stage.id);
 		stage.tasks.forEach((id) => scheduled.add(id));
 		if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid execution stage mode`);
@@ -145,8 +160,10 @@ const TASK_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
 	draft: ["blocked", "ready", "cancelled"],
 	blocked: ["ready", "cancelled"],
 	ready: ["blocked", "running", "cancelled"],
-	running: ["blocked", "paused", "ready", "contribution_complete", "failed", "protocol_failed", "cancelled"],
+	running: ["blocked", "paused", "ready", "submitted", "awaiting_ci", "changes_requested", "contribution_complete", "failed", "protocol_failed", "cancelled"],
 	paused: ["blocked", "ready", "running", "cancelled"],
+	submitted: ["awaiting_ci", "changes_requested", "cancelled"],
+	awaiting_ci: ["contribution_complete", "changes_requested", "failed", "cancelled"],
 	contribution_complete: ["reviewing", "accepted", "merge_queued", "merged", "staged", "integrating", "integrated", "changes_requested"],
 	reviewing: ["changes_requested", "accepted", "merge_queued", "merged", "staged", "integrating", "integrated"],
 	changes_requested: ["running", "cancelled"],
@@ -174,7 +191,7 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid identity`);
 	}
 	const statuses: TaskStatus[] = [
-		"draft", "blocked", "ready", "running", "paused", "contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
+		"draft", "blocked", "ready", "running", "paused", "submitted", "awaiting_ci", "contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
 	];
 	if (!task.status || !statuses.includes(task.status) || !Array.isArray(task.dependsOn)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid lifecycle fields`);
 	if (task.references && (!Array.isArray(task.references.specs) || !Array.isArray(task.references.designs) || !Array.isArray(task.references.decisions))) {
@@ -293,11 +310,11 @@ export class WorkItemStore {
 		return { delivery: { workingBranch, createdFromCommit }, created: true };
 	}
 
-	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
+	async create(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; amendment?: WorkItemIndex["amendment"] }): Promise<WorkItemIndex> {
 		return this.coordinator.run(`work-item-create:${input.id}`, () => this.createUnlocked(input));
 	}
 
-	private async createUnlocked(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2 }): Promise<WorkItemIndex> {
+	private async createUnlocked(input: { id: string; title: string; kind: WorkItemKind; delivery?: WorkItemDelivery; workingBranch?: string; branchKind?: WorkingBranchKind; intent?: string; intentSections?: SemanticSections; narrativeSchemaVersion?: 1 | 2; amendment?: WorkItemIndex["amendment"] }): Promise<WorkItemIndex> {
 		validateId(input.id, "Work-item id");
 		const narrativeSchemaVersion = input.narrativeSchemaVersion ?? 1;
 		const intent = narrativeSchemaVersion === 2
@@ -310,6 +327,7 @@ export class WorkItemStore {
 		if (!input.title.trim() || !intent?.trim()) throw new HarnessError("INVALID_ARTIFACT", "Title and intent must not be empty");
 		if (input.delivery && (input.workingBranch || input.branchKind)) throw new HarnessError("INVALID_ARTIFACT", "Creation accepts either a canonical delivery contract or working-branch authoring hints, not both");
 		if (input.delivery) validateDelivery(input.delivery);
+		if (input.amendment && (!ID_PATTERN.test(input.amendment.baselineWorkItemId) || !ID_PATTERN.test(input.amendment.rootWorkItemId) || input.amendment.generation < 1)) throw new HarnessError("INVALID_ARTIFACT", "Amendment creation requires valid immutable baseline metadata");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(input.id);
 		if (await pathExists(root)) throw new HarnessError("WORK_ITEM_EXISTS", `Work item already exists: ${input.id}`);
@@ -341,6 +359,7 @@ export class WorkItemStore {
 				tasks: [],
 				integrationUnits: [],
 				delivery,
+				...(input.amendment ? { amendment: input.amendment } : {}),
 				evaluations: [],
 			};
 			await writeFile(join(temporary, "index.yaml"), stringify(index), "utf8");
@@ -608,7 +627,7 @@ export class WorkItemStore {
 		if (index.tasks.some((task) => task.id === input.manifest.id)) throw new HarnessError("INVALID_ARTIFACT", `Task already exists: ${input.manifest.id}`);
 		if (input.manifest.id !== input.manifest.id.toLowerCase()) throw new HarnessError("INVALID_ARTIFACT", "Task id must be lowercase");
 		for (const dependency of input.manifest.dependsOn) {
-			if (!index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
+			if (index.phase !== "planning" && !index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
 		}
 		for (const [kind, ids] of Object.entries(input.manifest.references ?? {})) {
 			const expectedType = kind === "specs" ? "spec" : kind === "designs" ? "design" : "decision";
@@ -628,8 +647,8 @@ export class WorkItemStore {
 		index.executionStages ??= index.integrationUnits.map((unit) => ({ id: unit.id, tasks: [...unit.tasks] }));
 		const stageId = input.manifest.assembly.stageId ?? input.manifest.assembly.integrationUnit!;
 		const stage = index.executionStages!.find((item) => item.id === stageId);
-		if (stage) stage.tasks.push(input.manifest.id);
-		else index.executionStages!.push({ id: stageId, tasks: [input.manifest.id] });
+		if (stage && !stage.tasks.includes(input.manifest.id)) stage.tasks.push(input.manifest.id);
+		else if (!stage) index.executionStages!.push({ id: stageId, tasks: [input.manifest.id] });
 		advanceContractRevision(index, input.authority);
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
@@ -664,7 +683,7 @@ export class WorkItemStore {
 		assertContractMutable(index);
 		const catalog = index.tasks.find((task) => task.id === input.manifest.id);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Task does not exist: ${input.manifest.id}`);
-		for (const dependency of input.manifest.dependsOn) if (!index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
+		for (const dependency of input.manifest.dependsOn) if (index.phase !== "planning" && !index.tasks.some((task) => task.id === dependency)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task dependency: ${dependency}`);
 		for (const [kind, ids] of Object.entries(input.manifest.references ?? {})) {
 			const expectedType = kind === "specs" ? "spec" : kind === "designs" ? "design" : "decision";
 			for (const id of ids) if (!index.artifacts.some((artifact) => artifact.id === id && artifact.type === expectedType)) throw new HarnessError("INVALID_ARTIFACT", `Unknown ${expectedType} reference: ${id}`);
@@ -685,17 +704,20 @@ export class WorkItemStore {
 		// used to move its stage (and therefore execution order) on every revision.
 		const nextStages = index.executionStages!.map((stage) => ({ ...stage, tasks: [...stage.tasks] }));
 		const currentStage = nextStages.find((stage) => stage.tasks.includes(revised.id));
+		const movedFromStageId = currentStage?.id !== stageId ? currentStage?.id : undefined;
 		if (currentStage?.id !== stageId) {
 			for (const stage of nextStages) stage.tasks = stage.tasks.filter((id) => id !== revised.id);
 			const target = nextStages.find((stage) => stage.id === stageId);
 			if (target) target.tasks.push(revised.id);
 			else nextStages.push({ id: stageId, tasks: [revised.id] });
 		}
-		const candidateStages = nextStages.filter((stage) => stage.tasks.length > 0);
+		const candidateStages = nextStages.filter((stage) => stage.tasks.length > 0 || (index.phase === "planning" && stage.id !== movedFromStageId));
 		const candidate = { ...index, executionStages: candidateStages };
 		const candidateTasks = await Promise.all(index.tasks.map((entry) => entry.id === revised.id ? revised : this.readTask(input.workItemId, entry.id)));
-		const candidateEvaluations = await Promise.all(index.evaluations.map((entry) => this.readEvaluation(input.workItemId, entry.id)));
-		validateExecutionTopology(candidate, candidateTasks, candidateEvaluations);
+		if (index.phase !== "planning") {
+			const candidateEvaluations = await Promise.all(index.evaluations.map((entry) => this.readEvaluation(input.workItemId, entry.id)));
+			validateExecutionTopology(candidate, candidateTasks, candidateEvaluations);
+		}
 		index.executionStages = candidateStages;
 		advanceContractRevision(index, input.authority);
 		try {
@@ -725,7 +747,7 @@ export class WorkItemStore {
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		const manifest = await this.readTask(workItemId, taskId);
 		if (manifest.runtime || ["running", "contribution_complete", "reviewing", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Task ${taskId} has delivery history and must be superseded rather than deleted`);
-		for (const task of index.tasks.filter((candidate) => candidate.id !== taskId)) {
+		if (index.phase !== "planning") for (const task of index.tasks.filter((candidate) => candidate.id !== taskId)) {
 			if ((await this.readTask(workItemId, task.id)).dependsOn.includes(taskId)) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} still depends on ${taskId}`);
 		}
 		const taskRoot = dirname(join(root, catalog.path));
@@ -792,6 +814,13 @@ export class WorkItemStore {
 		await this.assertWorkingBranch(index);
 		return Promise.all(index.tasks.map(async (catalog) =>
 			parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path)));
+	}
+
+	/** Return advisory compiler diagnostics while the plan remains editable source. */
+	async planningTopologyIssues(workItemId: string): Promise<ExecutionTopologyIssue[]> {
+		const index = await this.read(workItemId);
+		if (index.phase !== "planning") return [];
+		return executionTopologyIssues(index, await this.readTasks(workItemId));
 	}
 
 	async updateTask(
@@ -1007,6 +1036,31 @@ export class WorkItemStore {
 		}
 	}
 
+	async removeExecutionStage(workItemId: string, stageId: string, authority: MutationAuthority): Promise<WorkItemIndex> {
+		return await this.coordinator.run(`stage-remove:${workItemId}:${stageId}`, async () => {
+			validateId(stageId, "Execution-stage id");
+			await assertCleanRepository(this.repositoryRoot);
+			const root = this.workItemRoot(workItemId);
+			const index = await this.read(workItemId);
+			await this.assertWorkingBranch(index);
+			assertContractMutable(index);
+			if (index.phase !== "planning") throw new HarnessError("CAPABILITY_DENIED", `Execution stage ${stageId} can only be deleted while planning`);
+			if (!index.executionStages?.some((stage) => stage.id === stageId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown execution stage: ${stageId}`);
+			index.executionStages = index.executionStages.filter((stage) => stage.id !== stageId);
+			advanceContractRevision(index, authority);
+			const indexPath = join(root, "index.yaml");
+			const previous = await readFile(indexPath, "utf8");
+			try {
+				await atomicWriteFile(indexPath, stringify(index));
+				await this.commit([indexPath], `harness(${workItemId}): remove execution stage ${stageId}`);
+				return index;
+			} catch (error) {
+				await this.restore([{ path: indexPath, content: previous }]);
+				throw error;
+			}
+		});
+	}
+
 	async putExecutionStage(workItemId: string, stage: NonNullable<WorkItemIndex["executionStages"]>[number], authority: MutationAuthority): Promise<WorkItemIndex> {
 		return await this.coordinator.run(`stage-put:${workItemId}:${stage.id}`, () => this.putExecutionStageUnlocked(workItemId, stage, authority));
 	}
@@ -1019,23 +1073,28 @@ export class WorkItemStore {
 		await this.assertWorkingBranch(index);
 		assertContractMutable(index);
 		if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} has an invalid execution mode`);
-		if (!stage.tasks.length || new Set(stage.tasks).size !== stage.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} requires unique tasks`);
-		for (const taskId of stage.tasks) if (!index.tasks.some((task) => task.id === taskId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task in execution stage ${stage.id}: ${taskId}`);
+		if (new Set(stage.tasks).size !== stage.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} requires unique tasks`);
+		if (index.phase !== "planning" && !stage.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} requires at least one task`);
+		for (const taskId of stage.tasks) if (index.phase !== "planning" && !index.tasks.some((task) => task.id === taskId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task in execution stage ${stage.id}: ${taskId}`);
 		if (stage.review?.tier === "high" && ((stage.review.rationale?.trim().length ?? 0) < 20 || (stage.review.focus?.join(" ").trim().length ?? 0) < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${stage.id} requires substantive rationale and focus`);
 		index.executionStages ??= [];
-		const previousPosition = index.executionStages.findIndex((existing) => existing.id === stage.id);
+		const originalStages = index.executionStages.map((existing) => ({ ...existing, tasks: [...existing.tasks] }));
+		const previousPosition = originalStages.findIndex((existing) => existing.id === stage.id);
+		const donorPositions = originalStages.flatMap((existing, position) => existing.tasks.some((taskId) => stage.tasks.includes(taskId)) ? [position] : []);
+		const anchorPosition = previousPosition >= 0 ? previousPosition : donorPositions.length ? Math.min(...donorPositions) : originalStages.length;
 		for (const existing of index.executionStages) if (existing.id !== stage.id) existing.tasks = existing.tasks.filter((id) => !stage.tasks.includes(id));
 		index.executionStages = index.executionStages.filter((existing) => existing.tasks.length > 0 && existing.id !== stage.id);
-		const insertion = previousPosition < 0 ? index.executionStages.length : Math.min(previousPosition, index.executionStages.length);
+		const retainedBeforeAnchor = originalStages.slice(0, anchorPosition).filter((existing) => existing.id !== stage.id && existing.tasks.some((taskId) => !stage.tasks.includes(taskId))).length;
+		const insertion = Math.min(retainedBeforeAnchor, index.executionStages.length);
 		index.executionStages.splice(insertion, 0, { ...stage, tasks: [...stage.tasks] });
 		const tasks = await Promise.all(index.tasks.map((entry) => this.readTask(workItemId, entry.id)));
 		const stageForTask = new Map(index.executionStages.flatMap((entry) => entry.tasks.map((taskId) => [taskId, entry.id] as const)));
 		for (const task of tasks) {
 			const taskStage = stageForTask.get(task.id);
-			if (!taskStage) throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} is not assigned to an execution stage`);
-			task.assembly.stageId = taskStage;
+			if (taskStage) task.assembly.stageId = taskStage;
+			else if (index.phase !== "planning") throw new HarnessError("INVALID_ARTIFACT", `Task ${task.id} is not assigned to an execution stage`);
 		}
-		validateExecutionTopology(index, tasks);
+		if (index.phase !== "planning") validateExecutionTopology(index, tasks);
 		advanceContractRevision(index, authority);
 		const indexPath = join(root, "index.yaml");
 		const taskPaths = new Map(index.tasks.map((entry) => [entry.id, join(root, entry.path)]));
@@ -1118,10 +1177,13 @@ export class WorkItemStore {
 		return { metadata, content: await readFile(join(root, metadata.path), "utf8"), workItemRevision: index.planning.revision };
 	}
 
-	async readE2EMatrix(workItemId: string): Promise<{ metadata: WorkItemIndex["artifacts"][number]; content: string; workItemRevision: number } | undefined> {
+	async readE2EMatrix(workItemId: string, seen = new Set<string>()): Promise<{ metadata: WorkItemIndex["artifacts"][number]; content: string; workItemRevision: number } | undefined> {
+		if (seen.has(workItemId)) throw new HarnessError("INVALID_ARTIFACT", `Amendment baseline cycle detected at ${workItemId}`);
+		seen.add(workItemId);
 		const item = await this.read(workItemId);
 		const matrix = item.artifacts.find((artifact) => artifact.type === "e2e-matrix" && artifact.status === "approved");
-		return matrix ? this.readArtifact(workItemId, matrix.id) : undefined;
+		if (matrix) return this.readArtifact(workItemId, matrix.id);
+		return item.amendment ? this.readE2EMatrix(item.amendment.baselineWorkItemId, seen) : undefined;
 	}
 
 	async ensureFinalEvaluations(workItemId: string, maxIterations = DEFAULT_REVIEW_FIX_ITERATIONS): Promise<EvaluationManifest[]> {
@@ -1130,7 +1192,7 @@ export class WorkItemStore {
 
 	private async ensureFinalEvaluationsUnlocked(workItemId: string, maxIterations = DEFAULT_REVIEW_FIX_ITERATIONS): Promise<EvaluationManifest[]> {
 		const item = await this.read(workItemId);
-		if (!item.artifacts.some((artifact) => artifact.type === "e2e-matrix" && artifact.status === "approved")) throw new HarnessError("INVALID_HANDOFF", `Work item ${workItemId} cannot launch final E2E without an e2e-matrix artifact`);
+		if (!await this.readE2EMatrix(workItemId)) throw new HarnessError("INVALID_HANDOFF", `Work item ${workItemId} cannot launch final E2E without an e2e-matrix artifact in the amendment or its completed baseline chain`);
 		let existing = await Promise.all(item.evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
 		for (const stage of item.executionStages ?? []) {
 			const id = `stage-${stage.id}-review`;
@@ -1457,6 +1519,26 @@ export class WorkItemStore {
 		}
 	}
 
+	private async createAmendmentUnlocked(baseline: WorkItemIndex, reason: string): Promise<WorkItemIndex> {
+		if (baseline.phase !== "complete") throw new HarnessError("INVALID_ARTIFACT", `Work item ${baseline.id} is not a completed amendment baseline`);
+		const rootWorkItemId = baseline.amendment?.rootWorkItemId ?? baseline.id;
+		const items = await this.list();
+		const root = items.find((item) => item.id === rootWorkItemId) ?? baseline;
+		const generation = Math.max(0, ...items.filter((item) => item.amendment?.rootWorkItemId === rootWorkItemId).map((item) => item.amendment!.generation)) + 1;
+		const amendmentId = `${rootWorkItemId}-amendment-${generation}`;
+		const baselineCommit = await runGit(this.repositoryRoot, ["rev-parse", "HEAD"]);
+		const baselineIntent = await readFile(join(this.workItemRoot(baseline.id), "intent.md"), "utf8");
+		const intent = `# Amendment ${generation} to ${root.title}\n\n## Baseline\n\n- Completed work item: \`work-item:${baseline.id}\`\n- Baseline planning revision: ${baseline.planning.revision}\n- Baseline commit: \`${baselineCommit}\`\n- Amendment reason: ${reason.trim()}\n\nThe completed baseline is immutable. Shape and plan only the incremental amendment in this work item; final verification must cover the resulting whole branch.\n\n## Baseline intent\n\n${baselineIntent.trim()}`;
+		return this.createUnlocked({
+			id: amendmentId,
+			title: `${root.title} — Amendment ${generation}`,
+			kind: "change",
+			workingBranch: baseline.delivery!.workingBranch,
+			intent,
+			amendment: { baselineWorkItemId: baseline.id, rootWorkItemId, generation, baselineRevision: baseline.planning.revision, baselineCommit, createdAt: new Date().toISOString(), reason: reason.trim() },
+		});
+	}
+
 	async transitionWorkItem(id: string, action: "postpone" | "pause" | "resume" | "archive" | "reopen" | "request-user", reason: string): Promise<WorkItemIndex> {
 		return this.coordinator.run(`work-item-transition:${id}`, () => this.transitionWorkItemUnlocked(id, action, reason));
 	}
@@ -1469,7 +1551,8 @@ export class WorkItemStore {
 		const previous = await readFile(indexPath, "utf8");
 		const index = parseWorkItemIndex(previous, indexPath);
 		await this.assertWorkingBranch(index);
-		if (index.finalization?.locked && action !== "reopen") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before transition`);
+		if ((index.finalization?.locked || index.phase === "complete") && action !== "reopen") throw immutableWorkItemMutationError(index);
+		if (action === "reopen" && index.phase === "complete") return this.createAmendmentUnlocked(index, reason);
 		if (action === "postpone") index.state = "postponed";
 		if (action === "pause") index.state = "paused";
 		if (action === "resume") index.state = "active";
@@ -1481,7 +1564,6 @@ export class WorkItemStore {
 		if (action === "reopen") {
 			delete index.finalization;
 			index.state = "active";
-			if (index.phase === "complete") index.phase = "planning";
 		}
 		try {
 			await atomicWriteFile(indexPath, stringify(index));
@@ -1501,7 +1583,7 @@ export class WorkItemStore {
 		await assertCleanRepository(this.repositoryRoot);
 		const index = await this.read(id);
 		await this.assertWorkingBranch(index);
-		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before planning or execution`);
+		if (index.finalization?.locked || index.phase === "complete") throw immutableWorkItemMutationError(index);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
 		const evaluations = await Promise.all(index.evaluations.map((evaluation) => this.readEvaluation(id, evaluation.id)));
 		validateExecutionTopology(index, tasks, evaluations);
@@ -1523,7 +1605,7 @@ export class WorkItemStore {
 		const hadLegacyApprovalMetadata = ["status", "approvedRevision", "approvedAt", "contractDigest", "approvalAmendments"].some((key) => rawIndex.planning?.[key] !== undefined);
 		const index = parseWorkItemIndex(previous, indexPath);
 		await this.assertWorkingBranch(index);
-		if (index.finalization?.locked || index.phase === "complete") throw new HarnessError("CAPABILITY_DENIED", `Work item ${id} is finalized; reopen it before execution`);
+		if (index.finalization?.locked || index.phase === "complete") throw immutableWorkItemMutationError(index);
 		const tasks = await Promise.all(index.tasks.map((task) => this.readTask(id, task.id)));
 		const evaluations = await Promise.all(index.evaluations.map((evaluation) => this.readEvaluation(id, evaluation.id)));
 		validateExecutionTopology(index, tasks, evaluations);

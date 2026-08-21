@@ -24,7 +24,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> { return (aw
 	await store.create({ id: "review", title: "Review", kind: "change", branchKind: "feature", intent: "reconcile" });
 	await store.defineEvaluation("review", { schemaVersion: 1, id: "evaluation", type: "deterministic", scope: { workItem: "review" }, status: "planned", required: true, attempt: 0, methods: ["test"] });
 	assert.equal(await git(root, "status", "--porcelain"), "", "fixture must be clean before reconciliation");
-	const runs = new HarnessRunStore(identity.privateRoot, "review");
+	const runs = new HarnessRunStore(identity, "review");
 	const created = await runs.create({ repositoryId: identity.id, workItemId: "review", evaluationId: "evaluation", role: "reviewer", attempt: 1, state: "running", workspace: root, baseCommit: await git(root, "rev-parse", "HEAD"), planningRevision: (await store.read("review")).planning.revision });
 	await runs.writeEvaluationHandoff(created.record.id, { schemaVersion: 1, type: "evaluation_complete", runId: created.record.id, evaluationId: "evaluation", verdict: "fail", report: "finding", evidence: [], findings: [{ id: "F1", severity: "high", status: "open", summary: "finding", blocking: true }], completedAt: new Date().toISOString() });
 	const agent: any = { id: "reviewer-agent", sessionId: "session", parentAgentId: "main", depth: 1, role: "code-reviewer", state: "reported", provider: "test", model: "test", effort: "low", operationId: "review-op", assignmentDigest: "digest", assignmentPath: "assignment", attempts: [], workItemId: "review", evaluationId: "evaluation", runId: created.record.id, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -38,8 +38,8 @@ async function git(cwd: string, ...args: string[]): Promise<string> { return (aw
 	assert.equal(evaluation.loop?.reviewerAgentId, agent.id);
 	assert.equal(agent.state, "reported", "a failed reviewer must remain reusable for re-review");
 	assert.equal((await runs.read(created.record.id)).state, "completed");
-	const events = (await readFile(join(runs.runRoot(created.record.id), "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-	assert.equal(events.filter((event) => event.type === "run.reconciled_completed").length, 1);
+	const events = (await readFile(join(identity.privateRoot, "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; data?: { runId?: string } });
+	assert.equal(events.filter((event) => event.data?.runId === created.record.id && event.type === "run.reconciled_completed").length, 1);
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
@@ -102,7 +102,7 @@ test("live settlement and reconciliation remain idempotent across every review/f
 			methods: ["test"],
 			loop: { state: "planned", iteration: 0, maxIterations: 3 },
 		});
-		const runs = new HarnessRunStore(identity.privateRoot, scenario.id);
+		const runs = new HarnessRunStore(identity, scenario.id);
 		const baseCommit = await git(root, "rev-parse", "HEAD");
 		const created = await runs.create({ repositoryId: identity.id, workItemId: scenario.id, evaluationId: "evaluation", role: scenario.type === "e2e" ? "e2e-tester" : "code-reviewer", attempt: 1, state: "running", workspace: root, baseCommit, planningRevision: (await store.read(scenario.id)).planning.revision });
 		const handoff = { schemaVersion: 1 as const, type: "evaluation_complete" as const, runId: created.record.id, evaluationId: "evaluation", verdict: "fail" as const, report: "bounded finding", evidence: [], findings: [{ id: "F1", severity: "high" as const, status: "open" as const, summary: "repair this", blocking: true }], completedAt: new Date().toISOString() };
@@ -128,8 +128,8 @@ test("live settlement and reconciliation remain idempotent across every review/f
 		assert.equal((await registry.get(reserved.id)).state, "reported");
 		const evaluationLog = await git(root, "log", "--format=%s", "--", `agent-artifacts/${scenario.id}/evaluations/evaluation/evaluation.yaml`);
 		assert.equal(evaluationLog.split("\n").filter((line) => line.includes("record evaluation")).length, 1);
-		const runEvents = (await readFile(join(runs.runRoot(created.record.id), "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-		assert.equal(runEvents.filter((event) => event.type === "run.completed" || event.type === "run.reconciled_completed").length, 1);
+		const runEvents = (await readFile(join(identity.privateRoot, "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; data?: { runId?: string } });
+		assert.equal(runEvents.filter((event) => event.data?.runId === created.record.id && (event.type === "run.completed" || event.type === "run.reconciled_completed")).length, 1);
 		await assert.rejects(readFile(join(root, "agent-artifacts", scenario.id, "evaluations", "evaluation", "attempts", "002-report.md")), /ENOENT/);
 
 		await store.updateEvaluationLoop(scenario.id, "evaluation", { state: "rereviewing", iteration: 1 });

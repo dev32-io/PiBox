@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { SessionAgentRegistry } from "../../workflow-runtime/agent-registry.js";
+import { WorkflowControlStore } from "../../workflow-runtime/control-store.js";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
 import { RepositoryEventStore } from "../event-store.js";
 import { discoverRepository } from "../repository.js";
@@ -409,6 +410,32 @@ test("the default loop permits iteration eight and rejects a ninth repair", asyn
 	assert.equal(evaluation.loop.state, "awaiting_manager");
 });
 
+test("records E2E step intervals as their own durable metric category", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-step-metrics-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const identity: any = { id: "repo", root, privateRoot: join(root, ".pibox") };
+	const events = new RepositoryEventStore(identity);
+	await events.initialize();
+	await new WorkflowControlStore(identity.privateRoot).apply({ workflowRef: "work-item:example", command: "start", sessionId: "session", operationId: "start" });
+	const evaluation = { id: "final-e2e", type: "e2e", checkpoint: "final-e2e", status: "planned" };
+	const runtime: any = {
+		identity,
+		events,
+		workItems: { async readEvaluation() { return evaluation; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({
+		runtimeFor: async () => runtime,
+		launchTask: async () => ({ content: [] }),
+		launchEvaluation: async () => ({ content: [{ type: "text", text: "E2E passed" }], details: { handoff: { verdict: "pass" } } }),
+	});
+	const result = await adapter.runStep("work-item:example/evaluation:final-e2e", {} as any);
+	assert.equal(result.state, "completed");
+	const recorded = await new WorkflowEventJournal(events).readSince(0, "example");
+	const stepEvents = recorded.filter((event) => event.type === "step.started" || event.type === "step.settled");
+	assert.deepEqual(stepEvents.map((event) => [event.type, event.metricCategory]), [["step.started", "e2e"], ["step.settled", "e2e"]]);
+	assert.equal(stepEvents[0]?.correlationId, stepEvents[1]?.correlationId);
+});
+
 test("snapshot reloads detailed metrics from durable records without mutating them", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-metrics-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
@@ -441,7 +468,18 @@ test("snapshot reloads detailed metrics from durable records without mutating th
 		elapsedMs: first.metrics?.elapsedMs,
 		runningMs: first.metrics?.runningMs,
 		agentActiveMs: 20_000,
-		verificationMs: 12_000,
+		implementerMs: 0,
+		reviewerMs: 0,
+		fixerMs: 20_000,
+		e2eAgentMs: 0,
+		deterministicMs: 12_000,
+		harnessSchedulingMs: 0,
+		implementationMs: 0,
+		integrationMs: 0,
+		verificationMs: 0,
+		reviewMs: 0,
+		e2eMs: 0,
+		orchestrationMs: first.metrics?.runningMs,
 		fixes: 1,
 		retries: 2,
 		agentCount: 1,
@@ -449,7 +487,7 @@ test("snapshot reloads detailed metrics from durable records without mutating th
 		inputTokens: 300,
 		outputTokens: 125,
 		toolErrors: 1,
-		live: { sampledAtMs: first.metrics?.live?.sampledAtMs, elapsed: false, running: false, activeAgents: 0, activeVerifications: 0 },
+		live: { sampledAtMs: first.metrics?.live?.sampledAtMs, elapsed: false, running: false, activeAgents: 0, activeVerifications: 0, activeImplementers: 0, activeReviewers: 0, activeFixers: 0, activeE2e: 0, activeScheduling: 0, orchestrator: false },
 	});
 	assert.equal(await readFile(events.eventsPath, "utf8"), before, "snapshot projection does not append workflow events");
 });
@@ -748,4 +786,26 @@ test("does not render exited or reported evaluation agents as running", async ()
 	agent = { ...agent, role: "repair-implementer", state: "running", attempts: [{ id: "attempt", state: "running", activity: { kind: "repair", generation: 2 } }] };
 	snapshot = await adapter.snapshot("work-item:example", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.kind === "evaluation")?.status, "running", "active fixer wins over the ready loop label");
+});
+
+test("deterministic task CI rejection settles silently and immediately requeues the same task", async () => {
+	const planned = task("worker-owned", "changes_requested");
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: planned.id }], executionStages: [{ id: "delivery", tasks: [planned.id], mode: "sequential" }], integrationUnits: [], evaluations: [] };
+	const runtime: any = {
+		identity: { id: "repo", root: "/missing", privateRoot: "/missing/.pibox" },
+		workItems: { async read() { return item; }, async readTask() { return planned; }, async readEvaluation() { throw new Error("unused"); } },
+		agents: { async list() { return [{ id: "owner", taskId: planned.id, state: "reported", operationId: "run-1" }]; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({
+		runtimeFor: async () => runtime,
+		launchTask: async () => ({ content: [{ type: "text", text: "CI changes requested" }], details: { run: { state: "changes_requested" }, agentId: "owner" } }),
+		launchEvaluation: async () => ({ content: [] }),
+	});
+	const snapshot = await adapter.snapshot("work-item:example", {} as any);
+	assert.equal(snapshot.steps[0]?.status, "ready");
+	assert.equal(snapshot.steps[0]?.detail, "CI changes requested");
+	const result = await adapter.runStep("work-item:example/task:worker-owned", {} as any);
+	assert.equal(result.state, "completed", "scheduler attempt settles without main-session attention");
+	assert.equal(result.attention, false);
+	assert.equal(result.agentId, "owner");
 });

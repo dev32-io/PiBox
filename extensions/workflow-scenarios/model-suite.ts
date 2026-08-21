@@ -87,7 +87,7 @@ export async function runRoutineModelScenario(fixture: RoutineModelFixture): Pro
 	await piTurn(fixture, `Start the reviewed workflow work-item:${fixture.workItemId}. Let the runtime advance routine work; do not manually implement or sequence tasks.`);
 	const identity = await discoverRepository(fixture.root);
 	const store = new WorkItemStore(fixture.root);
-	const runs = new HarnessRunStore(identity.privateRoot, fixture.workItemId);
+	const runs = new HarnessRunStore(identity, fixture.workItemId);
 	const deadline = Date.now() + 8 * 60_000;
 	let supervisionTurns = 0;
 	while (Date.now() < deadline) {
@@ -111,7 +111,7 @@ export async function runRoutineModelScenario(fixture: RoutineModelFixture): Pro
 export async function observeRoutineModelScenario(fixture: RoutineModelFixture): Promise<ModelRunObservation> {
 	const identity = await discoverRepository(fixture.root);
 	const store = new WorkItemStore(fixture.root);
-	const runs = new HarnessRunStore(identity.privateRoot, fixture.workItemId);
+	const runs = new HarnessRunStore(identity, fixture.workItemId);
 	const item = await store.read(fixture.workItemId);
 	const task = await store.readTask(fixture.workItemId, fixture.taskId);
 	const evaluation = await store.readEvaluation(fixture.workItemId, fixture.evaluationId);

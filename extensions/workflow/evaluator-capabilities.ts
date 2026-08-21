@@ -21,7 +21,7 @@ function evaluatorEnvironment() {
 async function authorized(ctx: ExtensionContext) {
 	const scope = evaluatorEnvironment();
 	const identity = await discoverRepository(ctx.cwd);
-	const runs = new HarnessRunStore(identity.privateRoot, scope.workItemId);
+	const runs = new HarnessRunStore(identity, scope.workItemId);
 	const run = await runs.authorize(scope.runId, scope.credential);
 	if (run.evaluationId !== scope.evaluationId || run.workspace !== ctx.cwd) throw new HarnessError("CAPABILITY_DENIED", "Evaluator run scope mismatch");
 	return { scope, identity, runs, run, workItems: new WorkItemStore(identity.root) };

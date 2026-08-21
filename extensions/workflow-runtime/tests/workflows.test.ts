@@ -272,6 +272,100 @@ test("background step failure pauses instead of retrying unchanged state", async
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("a tick crossing a concurrent pause cannot launch a stale ready step", async () => {
+	const f = fixture();
+	let runs = 0;
+	let done = false;
+	let rejectFirst!: (error: Error) => void;
+	let lifecycle!: () => void;
+	let blockSnapshot = false;
+	let releaseSnapshot!: () => void;
+	let snapshotBlocked!: () => void;
+	const blocked = new Promise<void>((resolve) => { snapshotBlocked = resolve; });
+	const projection = (): WorkflowSnapshot => ({ ref: "test:workflow", title: "Test", status: done ? "done" : "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] });
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async subscribeLifecycle(_ref, _ctx, listener) { lifecycle = () => listener(); },
+		async snapshot() {
+			if (!blockSnapshot) return projection();
+			blockSnapshot = false;
+			snapshotBlocked();
+			return new Promise((resolve) => { releaseSnapshot = () => resolve(projection()); });
+		},
+		async runStep() {
+			runs++;
+			if (runs === 1) return new Promise((_resolve, reject) => { rejectFirst = reject; });
+			done = true;
+			return { ref: "test:step", state: "completed", summary: "stale retry" };
+		},
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("start", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(runs, 1);
+	blockSnapshot = true;
+	lifecycle();
+	await blocked;
+	rejectFirst(new Error("post-repair check failed"));
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal((f.entries.at(-1)?.data as any).state, "paused");
+	releaseSnapshot();
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(runs, 1, "a tick that began before pause cannot launch after the pause fence advances");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("answering a non-blocking decision report does not resume a failed workflow", async () => {
+	const f = fixture();
+	let runs = 0;
+	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
+		async runStep() { runs++; throw new Error("post-repair check failed"); }, async controlWorkflow() {},
+		async listSubagents() { return [{ id: "worker" }]; }, async listMessages() { return []; }, async controlSubagent() {},
+		async respondSubagent() { return { workflowRef: "test:workflow", message: { blocking: false } }; },
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("start", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(runs, 1);
+	await f.tools.get("subagent_respond").execute("respond", { agentId: "worker", messageId: "decision", response: "Continue." }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(runs, 1, "non-blocking evidence cannot reactivate unchanged failed work");
+	assert.equal((f.entries.at(-1)?.data as any).state, "paused");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("answering a blocking subagent request resumes through the durable control fence", async () => {
+	const f = fixture();
+	let runs = 0;
+	let done = false;
+	let generation = 0;
+	const controls: string[] = [];
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot() {
+			return { ref: "test:workflow", title: "Test", status: done ? "done" : "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+		},
+		async runStep() { runs++; if (runs === 1) throw new Error("blocked"); done = true; return { ref: "test:step", state: "completed", summary: "recovered" }; },
+		async controlExecution(ref, command) { controls.push(command); generation++; return { workflowRef: ref, mode: command === "complete" ? "completed" : command === "pause" ? "paused" : "running", generation }; },
+		async controlWorkflow() {}, async listSubagents() { return [{ id: "worker" }]; }, async listMessages() { return []; }, async controlSubagent() {},
+		async respondSubagent() { return { workflowRef: "test:workflow", message: { blocking: true } }; },
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("start", { ref: "test:workflow" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	await f.tools.get("subagent_respond").execute("respond", { agentId: "worker", messageId: "blocker", response: "Proceed." }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(runs, 2);
+	assert.deepEqual(controls.slice(0, 3), ["start", "pause", "resume"]);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("does not emit completion feedback when a task contribution completes before merge", async () => {
 	const f = fixture();
 	let done = false;
@@ -692,14 +786,14 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("wide metrics render as a compact aligned four-row table with a narrow one-pane fallback", async () => {
+test("wide metrics render role, deterministic, scheduling, and total clocks with a narrow fallback", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:metrics", state: "paused" } });
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:metrics", title: "Metrics", status: "paused",
 		steps: [{ ref: "test:metrics/task:one", title: "Durable projection", kind: "task", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
 		stages: [{ id: "delivery", index: 0, nodes: ["task:one"], parallel: false, group: "planner" }],
-		metrics: { elapsedMs: 8_040_000, runningMs: 4_000_000, agentActiveMs: 3_240_000, verificationMs: 1_740_000, fixes: 4, retries: 6, agentCount: 9, verificationAttempts: 12, inputTokens: 123_456, outputTokens: 78_900, toolErrors: 3 },
+		metrics: { elapsedMs: 8_040_000, runningMs: 4_000_000, agentActiveMs: 4_640_000, implementerMs: 3_240_000, reviewerMs: 500_000, fixerMs: 600_000, e2eAgentMs: 300_000, deterministicMs: 740_000, harnessSchedulingMs: 90_000, implementationMs: 1_800_000, integrationMs: 600_000, verificationMs: 740_000, reviewMs: 500_000, e2eMs: 300_000, orchestrationMs: 60_000, fixes: 4, retries: 6, agentCount: 9, verificationAttempts: 12, inputTokens: 123_456, outputTokens: 78_900, toolErrors: 3 },
 		repairLoop: { label: "Stage 4 fix loop", iteration: 1, maxIterations: 3, evaluationRef: "test:metrics/evaluation:stage-4-review" },
 	};
 	const adapter: WorkflowAdapter = {
@@ -712,8 +806,8 @@ test("wide metrics render as a compact aligned four-row table with a narrow one-
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const component = (f.widget() as any)?.({}, f.ctx.ui.theme);
 	const wide = component.render(100) as string[];
-	const rows = [["Elapsed", "2h 14m 0s"], ["Agent time", "54m 0s"], ["Verification", "29m 0s"], ["Stage 4 fix loop", "1 / 3"]] as const;
-	assert.equal(wide.length, 4);
+	const rows = [["Total time", "1h 6m 40s"], ["Implementer", "54m 0s"], ["Reviewer", "8m 20s"], ["Fixer", "10m 0s"], ["E2E", "5m 0s"], ["Deterministic steps", "12m 20s"], ["Orchestrator", "1m 0s"], ["Harness scheduling", "1m 30s"], ["Stage 4 fix loop", "1 / 3"]] as const;
+	assert.equal(wide.length, 9);
 	const dividers = wide.map((line) => line.indexOf("│"));
 	assert.ok(dividers[0]! > 0);
 	assert.equal(new Set(dividers).size, 1, "every metrics row uses the stable structural divider");
@@ -737,9 +831,9 @@ test("open metric intervals advance locally without refreshing the durable snaps
 		ref: "test:live-metrics", title: "Live metrics", status: "paused",
 		steps: [{ ref: "test:live-metrics/task:one", title: "Waiting", kind: "task", status: "pending", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
 		metrics: {
-			elapsedMs: 0, runningMs: 0, agentActiveMs: 0, verificationMs: 0, fixes: 0, retries: 0,
+			elapsedMs: 0, runningMs: 0, agentActiveMs: 0, implementerMs: 0, reviewerMs: 0, fixerMs: 0, e2eAgentMs: 0, deterministicMs: 0, harnessSchedulingMs: 0, implementationMs: 0, integrationMs: 0, verificationMs: 0, reviewMs: 0, e2eMs: 0, orchestrationMs: 0, fixes: 0, retries: 0,
 			agentCount: 1, verificationAttempts: 0, inputTokens: 0, outputTokens: 0, toolErrors: 0,
-			live: { sampledAtMs, elapsed: true, running: false, activeAgents: 1, activeVerifications: 0 },
+			live: { sampledAtMs, elapsed: true, running: true, activeCategory: "implementation", activeAgents: 1, activeVerifications: 0, activeImplementers: 1, activeReviewers: 0, activeFixers: 0, activeE2e: 0, activeScheduling: 0, orchestrator: false },
 		},
 		repairLoop: { label: "Stage 1 fix loop", iteration: 0, maxIterations: 3, evaluationRef: "test:live-metrics/evaluation:stage-1-review" },
 	};
@@ -754,16 +848,17 @@ test("open metric intervals advance locally without refreshing the durable snaps
 	let redraws = 0;
 	const component = (f.widget() as any)?.({ requestRender: () => { redraws++; } }, f.ctx.ui.theme);
 	const initial = component.render(100) as string[];
-	const initialElapsed = Number(/Elapsed\s+(\d+)s/.exec(initial[0]!)?.[1]);
-	const initialAgent = Number(/Agent time\s+(\d+)s/.exec(initial[1]!)?.[1]);
-	assert.ok(Number.isFinite(initialElapsed) && Number.isFinite(initialAgent));
+	const initialWorkflow = Number(/Total time\s+(\d+)s/.exec(initial[0]!)?.[1]);
+	const initialImplementation = Number(/Implementer\s+(\d+)s/.exec(initial[1]!)?.[1]);
+	assert.ok(Number.isFinite(initialWorkflow) && Number.isFinite(initialImplementation));
 	const readsBeforeWait = snapshotReads;
 	await new Promise((resolve) => setTimeout(resolve, 1_100));
 	const advanced = component.render(100) as string[];
-	const advancedElapsed = Number(/Elapsed\s+(\d+)s/.exec(advanced[0]!)?.[1]);
-	const advancedAgent = Number(/Agent time\s+(\d+)s/.exec(advanced[1]!)?.[1]);
-	assert.ok(advancedElapsed > initialElapsed, "elapsed wall time advances between renders");
-	assert.ok(advancedAgent > initialAgent, "every open agent interval advances between renders");
+	const advancedWorkflow = Number(/Total time\s+(\d+)s/.exec(advanced[0]!)?.[1]);
+	const advancedImplementation = Number(/Implementer\s+(\d+)s/.exec(advanced[1]!)?.[1]);
+	assert.ok(advancedWorkflow > initialWorkflow, "active workflow time advances between renders");
+	assert.ok(advancedImplementation > initialImplementation, "open implementer process time advances locally");
+	assert.equal(advancedWorkflow - initialWorkflow, advancedImplementation - initialImplementation, "one active implementer advances at wall-clock speed");
 	assert.ok(redraws >= 1 && redraws <= 2, `clock-only display redraws at second cadence, observed ${redraws} redraws`);
 	assert.equal(snapshotReads, readsBeforeWait, "visual time interpolation performs no repository snapshot reads");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);

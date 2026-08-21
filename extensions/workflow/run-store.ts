@@ -1,13 +1,17 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
-import { atomicWriteFile, readTextIfExists } from "./repository.js";
+import { RepositoryEventStore } from "./event-store.js";
+import { atomicWriteFile, readTextIfExists, type RepositoryIdentity } from "./repository.js";
 
 export type RunState =
 	| "launching"
 	| "running"
+	| "submitted"
+	| "awaiting_ci"
+	| "changes_requested"
 	| "completed"
 	| "waiting_model"
 	| "waiting_capacity"
@@ -79,17 +83,14 @@ function hashCredential(credential: string): string {
 	return createHash("sha256").update(credential).digest("hex");
 }
 
-export function shouldPersistTranscriptEvent(event: unknown): boolean {
-	const type = typeof event === "object" && event !== null && "type" in event ? String(event.type) : "";
-	return type === "session" || type === "message_end" || type === "tool_execution_end" || type === "tool_result_end" || type === "agent_end";
-}
-
 export class HarnessRunStore {
 	readonly workItemPrivateRoot: string;
-	#transcriptQueues = new Map<string, Promise<void>>();
+	readonly #events?: RepositoryEventStore;
 
-	constructor(repositoryPrivateRoot: string, workItemId: string) {
-		this.workItemPrivateRoot = join(repositoryPrivateRoot, "work-items", workItemId);
+	constructor(repository: string | RepositoryIdentity, readonly workItemId: string) {
+		const privateRoot = typeof repository === "string" ? repository : repository.privateRoot;
+		this.workItemPrivateRoot = join(privateRoot, "work-items", workItemId);
+		if (typeof repository !== "string") this.#events = new RepositoryEventStore(repository);
 	}
 
 	runRoot(runId: string): string {
@@ -112,7 +113,7 @@ export class HarnessRunStore {
 		const root = this.runRoot(id);
 		await mkdir(join(root, "commands"), { recursive: true, mode: 0o700 });
 		await atomicWriteFile(join(root, "run.yaml"), stringify(record), 0o600);
-		await appendFile(join(root, "events.jsonl"), `${JSON.stringify({ sequence: 1, at: now, type: "run.created", data: { state: record.state } })}\n`, { mode: 0o600 });
+		await this.appendEvent(id, "run.created", { state: record.state });
 		return { record, credential };
 	}
 
@@ -158,6 +159,9 @@ export class HarnessRunStore {
 		if (!content) throw new HarnessError("CAPABILITY_DENIED", "Run record does not exist");
 		const record = parse(content) as RunRecord;
 		if (record.schemaVersion !== 1 || record.id !== runId) throw new HarnessError("CAPABILITY_DENIED", "Run record is invalid");
+		if (["completed", "failed", "protocol_failed", "cancelled"].includes(record.state)) {
+			await Promise.all(["events.jsonl", "transcript.jsonl"].map((name) => rm(join(this.runRoot(runId), name), { force: true }).catch(() => undefined)));
+		}
 		return record;
 	}
 
@@ -180,23 +184,10 @@ export class HarnessRunStore {
 	}
 
 	async appendEvent(runId: string, type: string, data: unknown): Promise<void> {
-		const path = join(this.runRoot(runId), "events.jsonl");
-		const content = await readFile(path, "utf8").catch(() => "");
-		const sequence = content.split("\n").filter(Boolean).length + 1;
-		await appendFile(path, `${JSON.stringify({ sequence, at: new Date().toISOString(), type, data })}\n`, { mode: 0o600 });
+		if (!this.#events) return;
+		await this.#events.append(type, { schemaVersion: 1, workItemId: this.workItemId, runId, data });
 	}
 
-	appendTranscript(runId: string, event: unknown): Promise<void> {
-		if (!shouldPersistTranscriptEvent(event)) return Promise.resolve();
-		const previous = this.#transcriptQueues.get(runId) ?? Promise.resolve();
-		const next = previous.then(() => appendFile(join(this.runRoot(runId), "transcript.jsonl"), `${JSON.stringify(event)}\n`, { mode: 0o600 }));
-		this.#transcriptQueues.set(runId, next.catch(() => undefined));
-		return next;
-	}
-
-	async flushTranscript(runId: string): Promise<void> {
-		await this.#transcriptQueues.get(runId);
-	}
 
 	async writeCheckpoint(runId: string, checkpoint: unknown): Promise<void> {
 		await atomicWriteFile(join(this.runRoot(runId), "checkpoint.json"), `${JSON.stringify(checkpoint, null, 2)}\n`, 0o600);

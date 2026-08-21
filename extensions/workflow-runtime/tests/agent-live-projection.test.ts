@@ -49,7 +49,7 @@ test("current-attempt projection switches reused logical agents back through sta
 	assert.equal(projection.fast, true);
 });
 
-test("manager publishes durable current-attempt progress without workflow reconciliation", async (t) => {
+test("manager publishes semantic lifecycle changes while progress checkpoints stay snapshot-only", async (t) => {
 	const value = await registry(t);
 	const manager = new AgentLiveProjectionManager(value);
 	const seen: string[] = [];
@@ -68,5 +68,6 @@ test("manager publishes durable current-attempt progress without workflow reconc
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.ok(seen.some((entry) => entry === "1:starting:0"));
 	assert.ok(seen.some((entry) => entry.startsWith("1:active:")));
-	assert.ok(seen.includes("1:active:4"));
+	assert.equal(seen.includes("1:active:4"), false, "tool/turn progress does not create a cross-process journal wake-up");
+	assert.equal(projectAgentLive(await value.get(agentId)).progress?.turns, 4);
 });

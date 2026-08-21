@@ -1,3 +1,4 @@
+import type { WorkflowMetricCategory } from "../workflow-runtime/api.js";
 import { RepositoryEventStore, type HarnessEvent } from "./event-store.js";
 
 export type WorkflowDomainEventType =
@@ -41,6 +42,7 @@ export interface WorkflowDomainEventInput {
 	runId?: string;
 	agentId?: string;
 	activity?: { kind: "review" | "repair"; generation: number };
+	metricCategory?: Exclude<WorkflowMetricCategory, "orchestration">;
 	transition?: WorkflowTransitionData;
 }
 
@@ -71,8 +73,14 @@ function project(repositoryId: string, event: HarnessEvent<PersistedWorkflowDoma
 		...(event.data.runId ? { runId: event.data.runId } : {}),
 		...(event.data.agentId ? { agentId: event.data.agentId } : {}),
 		...(event.data.activity ? { activity: event.data.activity } : {}),
+		...(event.data.metricCategory ? { metricCategory: event.data.metricCategory } : {}),
 		...(event.data.transition ? { transition: event.data.transition } : {}),
 	};
+}
+
+function boundedEventText(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	return value.length <= 4_096 ? value : `${value.slice(0, 4_080)}…`;
 }
 
 function isPersistedWorkflowEvent(event: HarnessEvent): event is HarnessEvent<PersistedWorkflowDomainEvent> {
@@ -89,7 +97,14 @@ export class WorkflowEventJournal {
 	async append(input: WorkflowDomainEventInput): Promise<WorkflowDomainEvent> {
 		if (!input.workItemId || !input.correlationId || !Number.isInteger(input.ownerGeneration) || input.ownerGeneration < 1) throw new Error("Workflow events require work item, correlation, and positive owner generation");
 		const { type, ...payload } = input;
-		const event = await this.store.append(type, { schemaVersion: 1 as const, repositoryId: this.store.identity.id, ...payload });
+		const summary = boundedEventText(payload.transition?.summary);
+		const nextAction = boundedEventText(payload.transition?.nextAction);
+		const transition: WorkflowTransitionData | undefined = payload.transition ? {
+			...payload.transition,
+			...(summary !== undefined ? { summary } : {}),
+			...(nextAction !== undefined ? { nextAction } : {}),
+		} : undefined;
+		const event = await this.store.append(type, { schemaVersion: 1 as const, repositoryId: this.store.identity.id, ...payload, ...(transition ? { transition } : {}) });
 		return project(this.store.identity.id, event);
 	}
 

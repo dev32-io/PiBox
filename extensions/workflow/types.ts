@@ -89,6 +89,8 @@ export type TaskStatus =
 	| "ready"
 	| "running"
 	| "paused"
+	| "submitted"
+	| "awaiting_ci"
 	| "contribution_complete"
 	| "reviewing"
 	| "changes_requested"
@@ -102,6 +104,23 @@ export type TaskStatus =
 	| "failed"
 	| "protocol_failed"
 	| "cancelled";
+
+export interface DeterministicFailureEvidence {
+	schemaVersion: 1;
+	kind: "task_check" | "merge_conflict" | "candidate_check" | "post_repair_check" | "infrastructure";
+	generation: number;
+	ownerAgentId?: string;
+	stageId?: string;
+	baseCommit?: string;
+	candidateCommit: string;
+	contributionCommits?: string[];
+	checkId?: string;
+	command?: string;
+	attemptPath?: string;
+	summary: string;
+	signature: string;
+	recordedAt: string;
+}
 
 export interface TaskManifest {
 	schemaVersion: 1;
@@ -168,6 +187,10 @@ export interface TaskManifest {
 		baseCommit?: string;
 		completedCommit?: string;
 		mergedCommit?: string;
+		/** Latest deterministic CI failure routed back to this task's logical owner. */
+		deterministicFailure?: DeterministicFailureEvidence | undefined;
+		/** Bounded repair generation for the current deterministic failure signature. */
+		ciRepairGeneration?: number | undefined;
 		/** Set by harness when a stage merge is left conflicted for managed repair. */
 		integrationConflict?: { stageId: string; taskIds: string[]; evidencePath: string; recordedAt: string };
 		lastRunId?: string;
@@ -254,6 +277,18 @@ export interface EvaluationManifest {
 	};
 }
 
+export interface WorkItemAmendment {
+	/** Immutable completed work item this generation amends. */
+	baselineWorkItemId: string;
+	/** First completed work item in the amendment chain. */
+	rootWorkItemId: string;
+	generation: number;
+	baselineRevision: number;
+	baselineCommit: string;
+	createdAt: string;
+	reason: string;
+}
+
 export interface WorkItemIndex {
 	schemaVersion: 1;
 	id: string;
@@ -271,6 +306,8 @@ export interface WorkItemIndex {
 	/** Legacy schema-v1 grouping, migrated to executionStages when the latter is absent. */
 	integrationUnits: Array<{ id: string; tasks: string[]; intermediatePolicy: "coherent" | "partial-allowed" }>;
 	delivery?: WorkItemDelivery;
+	/** Present only on linked amendment generations; the completed baseline remains immutable. */
+	amendment?: WorkItemAmendment;
 	evaluations: Array<{ id: string; path: string }>;
 	finalization?: { locked: boolean; reason: string; lockedAt: string };
 }
@@ -281,5 +318,6 @@ export interface HarnessStatusSnapshot {
 	workItems: WorkItemIndex[];
 	taskCounts: Record<string, Record<string, number>>;
 	runs: Array<{ id: string; workItemId: string; taskId?: string; role: string; state: string; model?: string }>;
+	executionControls: Array<{ workflowRef: string; mode: "running" | "paused" | "stopped" | "completed"; generation: number; updatedAt: string }>;
 	agents: Array<{ id: string; role: string; state: string; model: string; processActive: boolean; runId?: string; taskId?: string; evaluationId?: string }>;
 }

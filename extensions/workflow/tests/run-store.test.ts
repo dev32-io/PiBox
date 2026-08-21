@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,7 +9,7 @@ import { HarnessRunStore } from "../run-store.js";
 test("authorizes immutable run scope with an unguessable credential", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-runs-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
-	const store = new HarnessRunStore(root, "work-item");
+	const store = new HarnessRunStore({ id: "repository", root: "/workspace", privateRoot: root }, "work-item");
 	const created = await store.create({
 		repositoryId: "repository",
 		workItemId: "work-item",
@@ -28,12 +28,8 @@ test("authorizes immutable run scope with an unguessable credential", async (t) 
 	const updated = await store.update(created.record.id, { state: "running", pid: 42 }, "run.started");
 	assert.equal(updated.state, "running");
 	assert.equal((await store.read(created.record.id)).pid, 42);
-	await Promise.all([
-		store.appendTranscript(created.record.id, { type: "message_update", delta: "redundant" }),
-		store.appendTranscript(created.record.id, { type: "message_end", message: { role: "assistant", content: [] } }),
-	]);
-	await store.flushTranscript(created.record.id);
-	const transcript = await import("node:fs/promises").then(({ readFile }) => readFile(join(store.runRoot(created.record.id), "transcript.jsonl"), "utf8"));
-	assert.equal(transcript.trim().split("\n").length, 1);
-	assert.match(transcript, /message_end/);
+	await assert.rejects(access(join(store.runRoot(created.record.id), "transcript.jsonl")), /ENOENT/, "Pi session and structured handoff replace the duplicate run transcript");
+	await assert.rejects(access(join(store.runRoot(created.record.id), "events.jsonl")), /ENOENT/, "run events are consolidated into the repository stream");
+	const events = (await readFile(join(root, "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { type: string; data?: { runId?: string } });
+	assert.deepEqual(events.filter((event) => event.data?.runId === created.record.id).map((event) => event.type), ["run.created", "run.started"]);
 });

@@ -10,7 +10,7 @@ import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import type { TaskManifest, VerificationCheckSpec } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { normalizeChecks } from "./verification-checks.js";
-import { VerificationRunner, verificationFailureSummary } from "./verification-runner.js";
+import { readStageVerificationActivity, VerificationRunner, verificationFailureSummary } from "./verification-runner.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +42,40 @@ export interface IntegrationResult {
 	taskIds: string[];
 	stageId: string;
 	checks: Array<{ id: string; profile: string; command: string; code: number; stdout: string; stderr: string; attemptPath: string }>;
+}
+
+export interface StageTrainState {
+	schemaVersion: 1;
+	workItemId: string;
+	stageId: string;
+	baseCommit: string;
+	taskIds: string[];
+	contributionCommits: string[];
+	prefixCommits: string[];
+	candidateBranch: string;
+	candidatePath: string;
+	state: "assembling" | "repairing" | "awaiting_ci" | "green" | "promoted";
+	repairGeneration?: number;
+	lastFailureSignature?: string;
+	updatedAt: string;
+}
+
+export interface IntegrationFailureEvidence {
+	kind: "merge_conflict" | "candidate_check" | "post_repair_check";
+	stageId: string;
+	taskIds: string[];
+	evidencePath: string;
+	baseCommit: string;
+	candidateCommit: string;
+	candidateBranch: string;
+	candidatePath: string;
+	position?: number;
+	ownerTaskId?: string;
+	checkId?: string;
+	command?: string;
+	attemptPath?: string;
+	repairGeneration?: number;
+	failureSignature?: string;
 }
 
 export interface ValidatedWorkingBranch {
@@ -191,6 +225,106 @@ export class WorktreeManager {
 
 	private stageBaseRef(workItemId: string, stageId: string): string {
 		return `refs/pibox/stages/${safeSegment(workItemId)}/${safeSegment(stageId)}`;
+	}
+
+	private trainRoot(workItemId: string, stageId: string): string {
+		return join(this.identity.privateRoot, "work-items", safeSegment(workItemId), "integration", safeSegment(stageId));
+	}
+
+	private trainPath(workItemId: string, stageId: string): string {
+		return join(this.trainRoot(workItemId, stageId), "train.json");
+	}
+
+	private candidateBranch(workItemId: string, stageId: string): string {
+		return `pibox/integration/${safeSegment(workItemId)}/${safeSegment(stageId)}`;
+	}
+
+	private candidatePath(workItemId: string, stageId: string): string {
+		return join(this.identity.root, ".worktree", "pibox-integration", safeSegment(workItemId), safeSegment(stageId));
+	}
+
+	private async readTrain(workItemId: string, stageId: string): Promise<StageTrainState | undefined> {
+		const content = await readFile(this.trainPath(workItemId, stageId), "utf8").catch((error: unknown) => {
+			if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return undefined;
+			throw error;
+		});
+		if (!content) return undefined;
+		const state = JSON.parse(content) as StageTrainState;
+		if (state.schemaVersion !== 1 || state.workItemId !== workItemId || state.stageId !== stageId) throw new HarnessError("INVALID_ARTIFACT", `Invalid integration train state for ${workItemId}/${stageId}`);
+		return state;
+	}
+
+	private async writeTrain(state: StageTrainState): Promise<void> {
+		await mkdir(dirname(this.trainPath(state.workItemId, state.stageId)), { recursive: true, mode: 0o700 });
+		state.updatedAt = new Date().toISOString();
+		await writeFile(this.trainPath(state.workItemId, state.stageId), `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+	}
+
+	private async prepareTrain(workItemId: string, stageId: string, taskIds: string[], contributionCommits: string[], baseCommit: string): Promise<StageTrainState> {
+		const candidateBranch = this.candidateBranch(workItemId, stageId);
+		const candidatePath = this.candidatePath(workItemId, stageId);
+		let state = await this.readTrain(workItemId, stageId);
+		if (state) {
+			const status = await runGit(state.candidatePath, ["status", "--porcelain=v1", "--untracked-files=all"]).catch(() => "");
+			if (status) return state;
+			const firstChanged = taskIds.findIndex((id, index) => state!.taskIds[index] !== id || state!.contributionCommits[index] !== contributionCommits[index]);
+			const shapeChanged = state.taskIds.length !== taskIds.length;
+			if (firstChanged >= 0 || shapeChanged || state.baseCommit !== baseCommit) {
+				const resetIndex = state.baseCommit === baseCommit && !shapeChanged && firstChanged > 0 ? firstChanged : 0;
+				const resetCommit = resetIndex > 0 ? state.prefixCommits[resetIndex - 1] : baseCommit;
+				if (!resetCommit) throw new HarnessError("INVALID_ARTIFACT", `Integration train ${stageId} lost its sealed prefix`);
+				await runGit(state.candidatePath, ["reset", "--hard", resetCommit]);
+				state = { ...state, baseCommit, taskIds, contributionCommits, prefixCommits: state.prefixCommits.slice(0, resetIndex), state: "assembling" };
+				await this.writeTrain(state);
+			}
+			return state;
+		}
+		await mkdir(dirname(candidatePath), { recursive: true, mode: 0o700 });
+		const branchExists = await execFileAsync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${candidateBranch}`], { cwd: this.identity.root }).then(() => true, () => false);
+		if (await exists(candidatePath)) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Unrecorded integration candidate worktree exists: ${candidatePath}`);
+		if (branchExists) await runGit(this.identity.root, ["branch", "-D", candidateBranch]);
+		await runGit(this.identity.root, ["worktree", "add", "-b", candidateBranch, candidatePath, baseCommit]);
+		state = { schemaVersion: 1, workItemId, stageId, baseCommit, taskIds, contributionCommits, prefixCommits: [], candidateBranch, candidatePath, state: "assembling", updatedAt: new Date().toISOString() };
+		await this.writeTrain(state);
+		return state;
+	}
+
+	private async recordIntegrationFailure(state: StageTrainState, failure: Omit<IntegrationFailureEvidence, "stageId" | "taskIds" | "evidencePath" | "baseCommit" | "candidateCommit" | "candidateBranch" | "candidatePath"> & { detail: string }): Promise<IntegrationFailureEvidence> {
+		const root = join(this.identity.root, ".git", "pibox-conflicts", safeSegment(state.workItemId));
+		await mkdir(root, { recursive: true });
+		const evidencePath = join(root, `${safeSegment(state.stageId)}-${Date.now()}.txt`);
+		const candidateCommit = await runGit(state.candidatePath, ["rev-parse", "HEAD"]);
+		const failureSignature = createHash("sha256").update(JSON.stringify({ kind: failure.kind, checkId: failure.checkId, command: failure.command, ownerTaskId: failure.ownerTaskId })).digest("hex");
+		const repairGeneration = failure.kind === "post_repair_check" ? (state.repairGeneration ?? 0) + 1 : (state.repairGeneration ?? 0);
+		state.repairGeneration = repairGeneration;
+		state.lastFailureSignature = failureSignature;
+		const evidence: IntegrationFailureEvidence = {
+			kind: failure.kind,
+			stageId: state.stageId,
+			taskIds: state.taskIds,
+			evidencePath,
+			baseCommit: state.baseCommit,
+			candidateCommit,
+			candidateBranch: state.candidateBranch,
+			candidatePath: state.candidatePath,
+			...(failure.position !== undefined ? { position: failure.position } : {}),
+			...(failure.ownerTaskId ? { ownerTaskId: failure.ownerTaskId } : {}),
+			...(failure.checkId ? { checkId: failure.checkId } : {}),
+			...(failure.command ? { command: failure.command } : {}),
+			...(failure.attemptPath ? { attemptPath: failure.attemptPath } : {}),
+			repairGeneration,
+			failureSignature,
+		};
+		await writeFile(evidencePath, [
+			`kind: ${evidence.kind}`, `stage: ${state.stageId}`, `tasks: ${state.taskIds.join(", ")}`, `base: ${state.baseCommit}`,
+			`candidate: ${candidateCommit}`, `candidateBranch: ${state.candidateBranch}`, `candidatePath: ${state.candidatePath}`,
+			...(evidence.position !== undefined ? [`position: ${evidence.position}`] : []), ...(evidence.ownerTaskId ? [`ownerTask: ${evidence.ownerTaskId}`] : []),
+			...(evidence.checkId ? [`check: ${evidence.checkId}`] : []), ...(evidence.command ? [`command: ${evidence.command}`] : []),
+			...(evidence.attemptPath ? [`attemptPath: ${evidence.attemptPath}`] : []), `repairGeneration: ${repairGeneration}`, `failureSignature: ${failureSignature}`, "detail:", failure.detail,
+		].join("\n"), "utf8");
+		state.state = "repairing";
+		await this.writeTrain(state);
+		return evidence;
 	}
 
 	private async parallelStageBase(workItemId: string, stageId: string): Promise<string> {
@@ -350,8 +484,8 @@ export class WorktreeManager {
 		return removed;
 	}
 
-	/** Return private conflict evidence captured after the canonical checkout was rolled back clean. */
-	async activeConflict(workItemId: string): Promise<{ stageId: string; taskIds: string[]; evidencePath: string } | undefined> {
+	/** Return private deterministic integration evidence and its isolated candidate ownership. */
+	async activeConflict(workItemId: string): Promise<IntegrationFailureEvidence | undefined> {
 		const root = join(this.identity.root, ".git", "pibox-conflicts", safeSegment(workItemId));
 		const entries = (await readdir(root).catch(() => [])).filter((entry) => entry.endsWith(".txt")).sort();
 		const evidencePath = entries.length ? join(root, entries[entries.length - 1]!) : undefined;
@@ -359,29 +493,112 @@ export class WorktreeManager {
 		const content = await readFile(evidencePath, "utf8");
 		const headers = new Map<string, string>();
 		for (const line of content.split(/\r?\n/)) {
+			if (line.trim() === "detail:") break;
 			const separator = line.indexOf(":");
 			if (separator < 0) continue;
 			headers.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
 		}
 		const stageId = headers.get("stage");
 		const taskIds = (headers.get("tasks") ?? "").split(",").map((taskId) => taskId.trim()).filter(Boolean);
+		const kind = headers.get("kind") as IntegrationFailureEvidence["kind"] | undefined;
+		const baseCommit = headers.get("base");
+		const candidateCommit = headers.get("candidate");
+		const candidateBranch = headers.get("candidateBranch");
+		const candidatePath = headers.get("candidatePath");
 		const validId = (value: string): boolean => /^[a-z0-9][a-z0-9-]*$/.test(value);
-		if (!stageId || !validId(stageId) || taskIds.length === 0 || taskIds.some((taskId) => !validId(taskId))) {
+		if (!stageId || !validId(stageId) || !kind || !["merge_conflict", "candidate_check", "post_repair_check"].includes(kind) || !baseCommit || !candidateCommit || !candidateBranch || !candidatePath || taskIds.length === 0 || taskIds.some((taskId) => !validId(taskId))) {
 			throw new HarnessError("INVALID_ARTIFACT", `Malformed integration conflict evidence: ${evidencePath}`);
 		}
-		return { stageId, taskIds, evidencePath };
+		const position = headers.get("position");
+		const ownerTaskId = headers.get("ownerTask");
+		const checkId = headers.get("check");
+		const command = headers.get("command");
+		const attemptPath = headers.get("attemptPath");
+		const repairGeneration = headers.get("repairGeneration");
+		const failureSignature = headers.get("failureSignature");
+		return {
+			kind, stageId, taskIds, evidencePath, baseCommit, candidateCommit, candidateBranch, candidatePath,
+			...(position !== undefined ? { position: Number(position) } : {}),
+			...(ownerTaskId ? { ownerTaskId } : {}),
+			...(checkId ? { checkId } : {}),
+			...(command ? { command } : {}),
+			...(attemptPath ? { attemptPath } : {}),
+			...(repairGeneration !== undefined ? { repairGeneration: Number(repairGeneration) } : {}),
+			...(failureSignature ? { failureSignature } : {}),
+		};
 	}
 
-	async runStageChecks(workItemId: string, stageId: string, taskIds: string[]): Promise<IntegrationResult["checks"]> {
+	/** Adopt a pre-merge-train failure without mutating terminal legacy agents or replaying CI on the canonical branch. */
+	async migrateLegacyIntegrationFailure(workItemId: string): Promise<IntegrationFailureEvidence | undefined> {
+		const root = join(this.identity.root, ".git", "pibox-conflicts", safeSegment(workItemId));
+		const entries = (await readdir(root).catch(() => [])).filter((entry) => entry.endsWith(".txt")).sort();
+		const legacyPath = entries.length ? join(root, entries[entries.length - 1]!) : undefined;
+		if (!legacyPath) return undefined;
+		const content = await readFile(legacyPath, "utf8");
+		if (/^kind:\s/m.test(content)) return this.activeConflict(workItemId);
+		const headers = new Map<string, string>();
+		for (const line of content.split(/\r?\n/)) {
+			const separator = line.indexOf(":");
+			if (separator > 0) headers.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
+		}
+		const stageId = headers.get("stage");
+		const taskIds = (headers.get("tasks") ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+		if (!stageId || taskIds.length === 0) throw new HarnessError("INVALID_ARTIFACT", `Cannot migrate malformed legacy integration evidence: ${legacyPath}`);
+		await assertCleanRepository(this.identity.root);
+		const candidateBase = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		const tasks = await Promise.all(taskIds.map((id) => this.workItems.readTask(workItemId, id)));
+		const contributions = tasks.map((task) => {
+			if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Legacy integration migration lost ${task.id} contribution`);
+			return task.runtime.completedCommit;
+		});
+		for (const commit of contributions) await runGit(this.identity.root, ["merge-base", "--is-ancestor", commit, candidateBase]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Legacy integrated branch does not contain contribution ${commit}`); });
+		const state = await this.prepareTrain(workItemId, stageId, taskIds, contributions, candidateBase);
+		state.prefixCommits = taskIds.map(() => candidateBase);
+		state.state = "repairing";
+		await this.writeTrain(state);
+		const activity = await readStageVerificationActivity(this.identity, workItemId, stageId);
+		const item = await this.workItems.read(workItemId);
+		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
+		const normalized = normalizeChecks(stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))], `Stage ${stageId} checks`);
+		const failedCheck = activity ? normalized.find((check) => check.id === activity.checkId) : undefined;
+		const attemptPath = activity ? join(".pibox", "work-items", workItemId, "verification", stageId, activity.checkId, "attempts", activity.attemptId) : undefined;
+		const migrated = await this.recordIntegrationFailure(state, {
+			kind: "post_repair_check",
+			...(failedCheck ? { checkId: failedCheck.id, command: failedCheck.command } : {}),
+			...(attemptPath ? { attemptPath } : {}),
+			detail: `Migrated legacy integration repair evidence. The integrated candidate is preserved at ${candidateBase}; resolve the latest deterministic stage failure rather than replaying unchanged CI.\n${content.slice(0, 8_000)}`,
+		});
+		await this.clearConflict(workItemId, legacyPath);
+		return migrated;
+	}
+
+	async refreshIntegrationFailureAttempt(workItemId: string): Promise<IntegrationFailureEvidence | undefined> {
+		const failure = await this.activeConflict(workItemId);
+		if (!failure) return undefined;
+		const activity = await readStageVerificationActivity(this.identity, workItemId, failure.stageId);
+		if (!activity) return failure;
+		const item = await this.workItems.read(workItemId);
+		const tasks = await Promise.all(failure.taskIds.map((id) => this.workItems.readTask(workItemId, id)));
+		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === failure.stageId);
+		const check = normalizeChecks(stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))], `Stage ${failure.stageId} checks`).find((candidate) => candidate.id === activity.checkId);
+		const attemptPath = join(".pibox", "work-items", workItemId, "verification", failure.stageId, activity.checkId, "attempts", activity.attemptId);
+		let content = await readFile(failure.evidencePath, "utf8");
+		content = content.replace(/^check:.*$/m, `check: ${activity.checkId}`).replace(/^attemptPath:.*$/m, `attemptPath: ${attemptPath}`);
+		if (check) content = content.replace(/^command:.*$/m, `command: ${check.command}`);
+		await writeFile(failure.evidencePath, content, "utf8");
+		return this.activeConflict(workItemId);
+	}
+
+	async runStageChecks(workItemId: string, stageId: string, taskIds: string[], cwd = this.identity.root): Promise<IntegrationResult["checks"]> {
 		const item = await this.workItems.read(workItemId);
 		const tasks = await Promise.all(taskIds.map((taskId) => this.workItems.readTask(workItemId, taskId)));
 		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
 		const checks = normalizeChecks(stage?.checks ?? [...new Set(tasks.flatMap((task) => task.verification.taskChecks))], `Stage ${stageId} checks`);
 		const results: IntegrationResult["checks"] = [];
-		const candidateCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		const candidateCommit = await runGit(cwd, ["rev-parse", "HEAD"]);
 		const runner = new VerificationRunner(this.identity);
 		for (const check of checks) {
-			const result = await runner.run(workItemId, stageId, check, this.identity.root, candidateCommit);
+			const result = await runner.run(workItemId, stageId, check, cwd, candidateCommit);
 			results.push({ id: check.id, profile: result.profile, command: check.command, code: result.code, stdout: result.stdout, stderr: result.stderr, attemptPath: result.attemptPath });
 			if (result.code !== 0) throw new HarnessError("GIT_OPERATION_FAILED", `Post-repair check failed: ${check.command}\n${verificationFailureSummary(result)}`, { stageId, checkId: check.id, attemptPath: result.attemptPath, code: result.code });
 		}
@@ -395,6 +612,94 @@ export class WorktreeManager {
 		await rm(evidencePath, { force: true });
 		const remaining = await readdir(conflictRoot).catch(() => []);
 		if (remaining.length === 0) await rm(conflictRoot, { recursive: true, force: true });
+	}
+
+	private async promoteTrain(state: StageTrainState, taskId: string, checks: IntegrationResult["checks"]): Promise<IntegrationResult> {
+		await assertCleanRepository(this.identity.root);
+		const canonicalHead = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
+		const containsBase = await execFileAsync("git", ["merge-base", "--is-ancestor", state.baseCommit, canonicalHead], { cwd: this.identity.root }).then(() => true, () => false);
+		if (!containsBase) throw new HarnessError("GIT_OPERATION_FAILED", `Integration train ${state.stageId} cannot promote because the working branch no longer contains its pinned base ${state.baseCommit}`, { stageId: state.stageId, baseCommit: state.baseCommit, canonicalHead });
+		const sourceDrift = await runGit(this.identity.root, ["diff", "--name-only", `${state.baseCommit}..${canonicalHead}`, "--", ".", ":(exclude)agent-artifacts/**"]);
+		if (sourceDrift) throw new HarnessError("GIT_OPERATION_FAILED", `Integration train ${state.stageId} cannot promote across unvalidated source changes on the working branch`, { stageId: state.stageId, baseCommit: state.baseCommit, canonicalHead, sourceDrift });
+		const candidateCommit = await runGit(state.candidatePath, ["rev-parse", "HEAD"]);
+		await runGit(this.identity.root, ["merge", "--no-ff", "--no-edit", candidateCommit]);
+		state.state = "promoted";
+		await this.writeTrain(state);
+		try {
+			for (const id of state.taskIds) await this.workItems.updateTask(state.workItemId, id, { status: "merged", runtime: { mergedCommit: candidateCommit, deterministicFailure: undefined, ciRepairGeneration: undefined } });
+			await this.workItems.refreshReadyTasks(state.workItemId);
+			await runGit(this.identity.root, ["update-ref", "-d", this.stageBaseRef(state.workItemId, state.stageId)]);
+			await runGit(this.identity.root, ["worktree", "remove", "--force", "--", state.candidatePath]);
+			await runGit(this.identity.root, ["branch", "-D", state.candidateBranch]);
+			await rm(this.trainRoot(state.workItemId, state.stageId), { recursive: true, force: true });
+		} catch (error) {
+			throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${state.stageId} candidate was promoted, but post-merge settlement requires managed recovery: ${error instanceof Error ? error.message : String(error)}. Candidate state and the stage barrier were retained.`, { stageId: state.stageId, taskIds: state.taskIds, candidateCommit });
+		}
+		return { commit: await runGit(this.identity.root, ["rev-parse", "HEAD"]), taskId, taskIds: state.taskIds, stageId: state.stageId, checks };
+	}
+
+	private async runCandidateChecksAndPromote(state: StageTrainState, taskId: string, taskChecks: VerificationCheckSpec[], stageChecks: VerificationCheckSpec[], priorEvidencePath?: string, failureKind: IntegrationFailureEvidence["kind"] = "candidate_check"): Promise<IntegrationResult> {
+		const normalized = [
+			...normalizeChecks(taskChecks, `Combined task checks`).map((check) => ({ ...check, id: `task-${check.id}` })),
+			...normalizeChecks(stageChecks, `Stage ${state.stageId} checks`).map((check) => ({ ...check, id: `stage-${check.id}` })),
+		];
+		const unique = normalized.filter((check, index) => normalized.findIndex((candidate) => candidate.command === check.command && candidate.profile === check.profile) === index);
+		const results: IntegrationResult["checks"] = [];
+		const candidateCommit = await runGit(state.candidatePath, ["rev-parse", "HEAD"]);
+		state.state = "awaiting_ci";
+		await this.writeTrain(state);
+		const runner = new VerificationRunner(this.identity);
+		for (const check of unique) {
+			const result = await runner.run(state.workItemId, state.stageId, check, state.candidatePath, candidateCommit);
+			results.push({ id: check.id, profile: result.profile, command: check.command, code: result.code, stdout: result.stdout, stderr: result.stderr, attemptPath: result.attemptPath });
+			if (result.code === 0) continue;
+			const evidence = await this.recordIntegrationFailure(state, { kind: failureKind, checkId: check.id, command: check.command, attemptPath: result.attemptPath, detail: verificationFailureSummary(result) });
+			if (priorEvidencePath && priorEvidencePath !== evidence.evidencePath) await this.clearConflict(state.workItemId, priorEvidencePath);
+			throw new HarnessError("INVALID_HANDOFF", `Integration candidate CI failed: ${check.command}\n${verificationFailureSummary(result)}`, { workerRoutable: true, ...evidence, code: result.code });
+		}
+		state.state = "green";
+		await this.writeTrain(state);
+		if (priorEvidencePath) await this.clearConflict(state.workItemId, priorEvidencePath);
+		return this.promoteTrain(state, taskId, results);
+	}
+
+	private async mergeConcurrentStage(workItemId: string, taskId: string, stageId: string, taskIds: string[], tasks: TaskManifest[], checks?: VerificationCheckSpec[]): Promise<IntegrationResult> {
+		const baseCommit = await this.parallelStageBase(workItemId, stageId);
+		const contributions = tasks.map((task) => task.runtime!.completedCommit!);
+		const state = await this.prepareTrain(workItemId, stageId, taskIds, contributions, baseCommit);
+		for (let index = state.prefixCommits.length; index < tasks.length; index++) {
+			const task = tasks[index]!;
+			try {
+				await runGit(state.candidatePath, ["merge", "--no-ff", "--no-edit", task.runtime!.completedCommit!]);
+				state.prefixCommits[index] = await runGit(state.candidatePath, ["rev-parse", "HEAD"]);
+				await this.writeTrain(state);
+			} catch (error) {
+				const status = await runGit(state.candidatePath, ["status", "--porcelain=v1", "--untracked-files=all"]).catch(() => "");
+				const diff = await runGit(state.candidatePath, ["diff", "--cc"]).catch(() => "");
+				const detail = `${error instanceof Error ? error.message : String(error)}\nstatus:\n${status}\ncombined diff:\n${diff}`;
+				const evidence = await this.recordIntegrationFailure(state, { kind: "merge_conflict", position: index, ownerTaskId: task.id, detail });
+				throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${stageId} candidate conflicts while applying ${task.id}; deterministic repair owns ${evidence.evidencePath}`, { workerRoutable: true, ...evidence });
+			}
+		}
+		const item = await this.workItems.read(workItemId);
+		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
+		const allTaskChecks = [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
+		return this.runCandidateChecksAndPromote(state, taskId, allTaskChecks, checks ?? stage?.checks ?? []);
+	}
+
+	async settleIntegrationRepair(workItemId: string, stageId: string, taskIds: string[], evidencePath: string): Promise<IntegrationResult> {
+		const state = await this.readTrain(workItemId, stageId);
+		if (!state || state.taskIds.join("\0") !== taskIds.join("\0")) throw new HarnessError("INVALID_ARTIFACT", `Integration repair lost train state for ${workItemId}/${stageId}`);
+		const status = await runGit(state.candidatePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+		if (status) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Integration repair left the candidate dirty: ${state.candidatePath}`, { status, evidencePath });
+		const tasks = await Promise.all(taskIds.map((id) => this.workItems.readTask(workItemId, id)));
+		for (const task of tasks) {
+			if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Integration repair lost completed commit for ${task.id}`);
+			await runGit(state.candidatePath, ["merge-base", "--is-ancestor", task.runtime.completedCommit, "HEAD"]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Integration candidate does not contain ${task.id} contribution ${task.runtime!.completedCommit}`); });
+		}
+		const item = await this.workItems.read(workItemId);
+		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
+		return this.runCandidateChecksAndPromote(state, taskIds[0]!, [...new Set(tasks.flatMap((task) => task.verification.taskChecks))], stage?.checks ?? [], evidencePath, "post_repair_check");
 	}
 
 	async mergeTask(workItemId: string, taskId: string, checks?: VerificationCheckSpec[]): Promise<IntegrationResult> {
@@ -425,6 +730,7 @@ export class WorktreeManager {
 			if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} has no completed contribution commit`);
 			if (!["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)) throw new HarnessError("INVALID_HANDOFF", `Task ${task.id} is not ready to merge from ${task.status}`);
 		}
+		if (concurrentStage) return this.mergeConcurrentStage(workItemId, taskId, topology.stageId, taskIds, tasks, checks);
 
 		const baseCommit = await runGit(this.identity.root, ["rev-parse", "HEAD"]);
 		const checkResults: IntegrationResult["checks"] = [];

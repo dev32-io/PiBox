@@ -6,7 +6,7 @@ import {
 	type ProviderCooldowns,
 	type ProviderRoute,
 } from "../provider-fallback/index.js";
-import { SessionAgentRegistry, type AgentScope, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
+import { SessionAgentRegistry, type AgentScope, type ProcessAttemptTiming, type SessionAgentRecord, type WorkflowActivityDescriptor } from "./agent-registry.js";
 import { runDirectAgent, type DirectAgentResult } from "./direct-agent.js";
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
 import { fastModeChildEnvironment, isSubagentFastActive } from "../fast-mode/runtime.js";
@@ -107,8 +107,8 @@ export class LaunchCoordinator {
 				const attemptRoot = join(agentRoot, "attempts", attempt.id);
 				let running: Promise<unknown> | undefined;
 				let progress = initialAgentProgress(attempt.startedAt);
+				let timing: ProcessAttemptTiming = structuredClone(attempt.timing ?? { attemptStartedAt: attempt.startedAt });
 				input.onProgress?.(structuredClone(progress));
-				let progressWrites = this.registry.updateProgress(reserved.id, attempt.id, progress).then(() => undefined);
 				const successfulText: string[] = [];
 				const result = await runDirectAgent({
 					agent: input.role,
@@ -141,37 +141,54 @@ export class LaunchCoordinator {
 					...(input.persistentContext ? { persistentContext: input.persistentContext } : {}),
 					...(input.skillPaths ? { skillPaths: input.skillPaths } : {}),
 					...(input.signal ? { signal: input.signal } : {}),
-					onText: (text) => successfulText.push(text),
+					onText: (text) => {
+						timing.reportReadyAt ??= new Date().toISOString();
+						successfulText.push(text);
+					},
 					onEvent: (event) => {
-						const next = projectAgentProgress(progress, event);
+						const observedAt = new Date().toISOString();
+						timing.childReadyAt ??= observedAt;
+						timing.firstActivityAt ??= observedAt;
+						timing.lastActivityAt = observedAt;
+						const eventType = typeof event === "object" && event !== null && "type" in event ? String(event.type) : "";
+						if (eventType === "tool_execution_start" || eventType === "tool_execution_end") timing.firstToolAt ??= observedAt;
+						const next = projectAgentProgress(progress, event, observedAt);
 						if (next === progress) return;
 						progress = next;
-						const durableProgress = structuredClone(progress);
-						input.onProgress?.(durableProgress);
-						progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
+						input.onProgress?.(structuredClone(progress));
+					},
+					onExit: (_exitCode, observedAt) => {
+						timing.processExitedAt ??= observedAt;
 					},
 					...(invocationResolver ? { invocationResolver } : {}),
 					onSpawn: (pid) => {
 						if (pid) {
-							running = this.registry.markRunning(reserved.id, attempt.id, pid);
-							progress = markAgentProcessStarted(progress);
-							const durableProgress = structuredClone(progress);
-							input.onProgress?.(durableProgress);
-							progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
+							const observedAt = new Date().toISOString();
+							timing.processSpawnedAt = observedAt;
+							running = this.registry.markRunning(reserved.id, attempt.id, pid, observedAt);
+							progress = markAgentProcessStarted(progress, observedAt);
+							input.onProgress?.(structuredClone(progress));
 						}
 						input.onSpawn?.(pid);
 					},
 				});
 				await running;
-				progress = markAgentProcessExited(progress);
-				if (!progress.settledAt) progress = projectAgentProgress(progress, { type: "agent_settled" });
-				const durableProgress = structuredClone(progress);
-				input.onProgress?.(durableProgress);
-				progressWrites = progressWrites.then(() => this.registry.updateProgress(reserved.id, attempt.id, durableProgress).then(() => undefined));
-				await progressWrites;
+				const outputDrainedAt = new Date().toISOString();
+				timing.outputDrainedAt = outputDrainedAt;
+				timing.processExitedAt ??= outputDrainedAt;
+				progress = markAgentProcessExited(progress, timing.processExitedAt);
+				if (!progress.settledAt) progress = projectAgentProgress(progress, { type: "agent_settled" }, outputDrainedAt);
+				timing.settledAt = progress.settledAt ?? outputDrainedAt;
+				timing.childReadyAt ??= timing.firstActivityAt ?? timing.processExitedAt;
+				input.onProgress?.(structuredClone(progress));
 				const failure = classifyProviderFailure(result, input.signal);
 				const providerFailure = isFallbackEligible(failure);
-				await this.registry.recordExit(reserved.id, attempt.id, providerFailure && result.exitCode === 0 ? 1 : result.exitCode);
+				await this.registry.recordExit(
+					reserved.id,
+					attempt.id,
+					providerFailure && result.exitCode === 0 ? 1 : result.exitCode,
+					{ progress, timing },
+				);
 				lastResult = result;
 				const afterExit = await this.registry.get(reserved.id);
 				if (["waiting_decision", "blocked", "paused", "interrupted", "recovery_required", "cancelled"].includes(afterExit.state)) {
@@ -211,7 +228,23 @@ export class LaunchCoordinator {
 				: await this.registry.transition(reserved.id, "waiting_capacity", { error: result.stderr });
 			return { agent: waiting, result };
 		} catch (error) {
-			const current = await this.registry.get(reserved.id);
+			let current = await this.registry.get(reserved.id);
+			const attempt = current.attempts.find((candidate) => candidate.id === current.currentAttemptId);
+			if (attempt && (attempt.state === "launching" || attempt.state === "running")) {
+				const now = new Date().toISOString();
+				let progress = attempt.progress ?? initialAgentProgress(attempt.startedAt);
+				if (attempt.pid && !progress.processStartedAt) progress = markAgentProcessStarted(progress, attempt.timing?.processSpawnedAt ?? now);
+				progress = markAgentProcessExited(progress, now);
+				if (!progress.settledAt) progress = projectAgentProgress(progress, { type: "agent_settled" }, now);
+				const timing: ProcessAttemptTiming = {
+					...(attempt.timing ?? { attemptStartedAt: attempt.startedAt }),
+					processExitedAt: now,
+					outputDrainedAt: now,
+					settledAt: progress.settledAt ?? now,
+				};
+				await this.registry.recordExit(reserved.id, attempt.id, 1, { progress, timing }).catch(() => undefined);
+				current = await this.registry.get(reserved.id);
+			}
 			if (current.state !== "failed" && current.state !== "cancelled") {
 				await this.registry.transition(reserved.id, "failed", { error: error instanceof Error ? error.message : String(error) }).catch(() => undefined);
 			}

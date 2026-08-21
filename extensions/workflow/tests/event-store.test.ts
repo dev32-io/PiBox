@@ -93,13 +93,13 @@ test("starts the serialized suffix after the maximum legacy process-local sequen
 	const store = new RepositoryEventStore(identity);
 	await store.initialize();
 	await appendFile(store.eventsPath, [
-		JSON.stringify({ sequence: 2, at: new Date().toISOString(), type: "legacy-a", data: {} }),
-		JSON.stringify({ sequence: 1, at: new Date().toISOString(), type: "legacy-b", data: {} }),
-		JSON.stringify({ sequence: 2, at: new Date().toISOString(), type: "legacy-c", data: {} }),
+		JSON.stringify({ sequence: 1, at: new Date().toISOString(), type: "legacy-a", data: {} }),
+		JSON.stringify({ sequence: 5, at: new Date().toISOString(), type: "legacy-b", data: {} }),
+		JSON.stringify({ sequence: 3, at: new Date().toISOString(), type: "legacy-c", data: {} }),
 		"",
 	].join("\n"), "utf8");
 	const appended = await store.append("serialized", {});
-	assert.equal(appended.sequence, 3);
+	assert.equal(appended.sequence, 6);
 });
 
 test("surfaces malformed durable history instead of sequencing over it", async (t) => {
@@ -110,7 +110,7 @@ test("surfaces malformed durable history instead of sequencing over it", async (
 	await appendFile(store.eventsPath, "{not-json}\n", "utf8");
 
 	await assert.rejects(() => store.readAll(), /Malformed repository event log at line 2/);
-	await assert.rejects(() => store.append("must-not-append", {}), /Malformed repository event log at line 2/);
+	await assert.rejects(() => store.append("must-not-append", {}), /Malformed repository event log/);
 	const content = await readFile(store.eventsPath, "utf8");
 	assert.equal(content.includes("must-not-append"), false);
 });

@@ -1,3 +1,3 @@
 # Managed Repair Protocol
 
-The persistent review context and manager direction define the accepted repair boundary. Preserve unrelated behavior, commit focused changes, run affected checks, and leave the feature branch clean. Report contradictions rather than broadening scope silently.
+The persistent review or integration context and manager direction define the accepted repair boundary. Preserve unrelated behavior, commit focused changes, run affected checks, and leave the assigned branch or isolated candidate clean. A repair submission is not terminal until deterministic CI is green. If post-repair CI fails, continue as the same logical worker in the same Pi session using the new bounded evidence; resolve only the surfaced failure and resubmit. Report contract contradictions or unsafe recovery rather than broadening scope silently or modifying the canonical working branch from an isolated candidate.

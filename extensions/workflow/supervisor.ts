@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +17,9 @@ import { DEFAULT_SUBAGENT_TOOLS, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } f
 import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
 import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
 import { fastModeChildEnvironment } from "../fast-mode/runtime.js";
+import { finalizeTaskAgentAfterSettlement, settleManagedTaskHandoff } from "./task-settlement.js";
+import { normalizeChecks } from "./verification-checks.js";
+import { VerificationRunner, verificationFailureSummary } from "./verification-runner.js";
 
 export interface LaunchModel {
 	provider: string;
@@ -80,6 +84,7 @@ function taskPrompt(options: LaunchTaskOptions, protocolNudge: boolean): string 
 
 export class SubagentSupervisor {
 	#active = new Map<string, ChildProcess>();
+	#settling = new Set<string>();
 	#termination = new Map<string, "paused" | "cancelled">();
 	readonly invocationResolver: (args: string[]) => { command: string; args: string[] };
 
@@ -88,7 +93,7 @@ export class SubagentSupervisor {
 	}
 
 	async launchTask(options: LaunchTaskOptions): Promise<LaunchTaskResult> {
-		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
+		const runs = new HarnessRunStore(options.identity, options.workItemId);
 		const workItems = new WorkItemStore(options.identity.root);
 		const updateTask = <T>(owner: string, operation: () => Promise<T>) =>
 			options.canonicalMutation ? options.canonicalMutation(owner, operation) : operation();
@@ -107,6 +112,8 @@ export class SubagentSupervisor {
 			resolvedModel: options.model.model,
 			resolvedEffort: options.model.effort,
 		});
+		this.#settling.add(created.record.id);
+		try {
 		await updateTask(`run-start:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, {
 			status: "running",
 			runtime: { executionMode: options.executionMode, branch: options.branch, worktree: options.workspace, baseCommit: options.baseCommit, lastRunId: created.record.id },
@@ -171,8 +178,6 @@ export class SubagentSupervisor {
 						resolvedEffort: coordinated.result.effort,
 					}, "run.provider_fallback");
 				}
-				for (const event of coordinated.result.events) await runs.appendTranscript(created.record.id, event);
-				await runs.flushTranscript(created.record.id);
 				execution = { exitCode: coordinated.result.exitCode, stderr: coordinated.result.stderr, finalText: coordinated.result.text };
 			} else execution = await this.spawnTask(options, created.record.id, created.credential, protocolAttempt === 1);
 			stderr += execution.stderr;
@@ -197,10 +202,67 @@ export class SubagentSupervisor {
 					if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "protocol_failed", { error: "Terminal handoff failed validation" }).catch(() => undefined);
 					return { run: await runs.read(created.record.id), stderr, finalText };
 				}
-				const run = await runs.update(created.record.id, { state: "completed", exitCode: execution.exitCode }, "run.completed");
-				await updateTask(`run-complete:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "contribution_complete", runtime: { completedCommit: head } }));
-				if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "completed", { summary: handoff.summary });
-				return { run, handoff, stderr, finalText };
+				await runs.update(created.record.id, { state: "submitted", exitCode: execution.exitCode }, "run.submitted");
+				await updateTask(`run-submitted:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, {
+					status: "submitted",
+					runtime: { completedCommit: head },
+				}));
+				await runs.update(created.record.id, { state: "awaiting_ci" }, "run.awaiting_ci");
+				await updateTask(`run-awaiting-ci:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "awaiting_ci" }));
+
+				const checks = normalizeChecks(options.task.verification.taskChecks, `Task ${options.task.id} checks`);
+				const verifier = new VerificationRunner(options.identity);
+				for (const check of checks) {
+					const result = await verifier.run(options.workItemId, `task-${options.task.id}`, check, options.workspace, head);
+					if (result.code === 0) continue;
+					const priorTask = await workItems.readTask(options.workItemId, options.task.id);
+					const summary = verificationFailureSummary(result);
+					const signature = createHash("sha256").update(JSON.stringify({ checkId: check.id, command: check.command, code: result.code, stdout: result.stdout.slice(-4_000), stderr: result.stderr.slice(-4_000) })).digest("hex");
+					const previousFailure = priorTask.runtime?.deterministicFailure;
+					const generation = previousFailure?.signature === signature ? (priorTask.runtime?.ciRepairGeneration ?? previousFailure.generation) + 1 : 1;
+					const exhausted = generation >= 3;
+					await updateTask(`run-ci-red:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, {
+						status: exhausted ? "failed" : "changes_requested",
+						runtime: {
+							completedCommit: head,
+							ciRepairGeneration: generation,
+							deterministicFailure: {
+								schemaVersion: 1,
+								kind: "task_check",
+								generation,
+								...(logicalAgentId ? { ownerAgentId: logicalAgentId } : {}),
+								...((options.task.assembly.stageId ?? options.task.assembly.integrationUnit) ? { stageId: options.task.assembly.stageId ?? options.task.assembly.integrationUnit } : {}),
+								baseCommit: contributionBase,
+								candidateCommit: head,
+								contributionCommits: handoff.commits,
+								checkId: check.id,
+								command: check.command,
+								attemptPath: result.attemptPath,
+								summary,
+								signature,
+								recordedAt: new Date().toISOString(),
+							},
+						},
+					}));
+					const run = await runs.update(created.record.id, { state: exhausted ? "failed" : "changes_requested", exitCode: result.code, error: summary }, exhausted ? "run.ci_exhausted" : "run.changes_requested");
+					if (exhausted && logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "failed", { error: `Task CI exhausted after ${generation} attempts: ${summary}` }).catch(() => undefined);
+					return { run, handoff, stderr, finalText };
+				}
+
+				const settlement = await updateTask(`run-complete:${created.record.id}`, () => settleManagedTaskHandoff({
+					workItems,
+					runs,
+					workItemId: options.workItemId,
+					taskId: options.task.id,
+					runId: created.record.id,
+					handoff,
+					completedCommit: head,
+					exitCode: execution.exitCode,
+					completionEvent: "run.completed",
+				}));
+				await updateTask(`run-ci-green:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { runtime: { deterministicFailure: undefined, ciRepairGeneration: undefined } }));
+				if (logicalAgentId && options.coordinator) await finalizeTaskAgentAfterSettlement(options.coordinator.registry, logicalAgentId, handoff.summary);
+				return { run: settlement.run, handoff, stderr, finalText };
 			}
 			if (logicalAgentId) {
 				const logical = await options.coordinator?.registry.get(logicalAgentId);
@@ -242,6 +304,9 @@ export class SubagentSupervisor {
 		await updateTask(`protocol-failed:${created.record.id}`, () => workItems.updateTask(options.workItemId, options.task.id, { status: "protocol_failed" }));
 		if (logicalAgentId) await options.coordinator?.registry.transition(logicalAgentId, "protocol_failed", { error: "Missing task_complete handoff after one protocol nudge" }).catch(() => undefined);
 		return { run, stderr, finalText };
+		} finally {
+			this.#settling.delete(created.record.id);
+		}
 	}
 
 	pause(runId: string): boolean {
@@ -264,7 +329,7 @@ export class SubagentSupervisor {
 	}
 
 	activeRunIds(): string[] {
-		return [...this.#active.keys()];
+		return [...new Set([...this.#active.keys(), ...this.#settling])];
 	}
 
 	private async spawnTask(
@@ -292,7 +357,7 @@ export class SubagentSupervisor {
 		for (const skillPath of options.skillPaths ?? []) args.push("--skill", skillPath);
 		args.push(taskPrompt(options, protocolNudge));
 		const invocation = this.invocationResolver(args);
-		const runs = new HarnessRunStore(options.identity.privateRoot, options.workItemId);
+		const runs = new HarnessRunStore(options.identity, options.workItemId);
 		const events: unknown[] = [];
 		let stderr = "";
 		let buffer = "";
@@ -321,7 +386,6 @@ export class SubagentSupervisor {
 					try {
 						const event = JSON.parse(line) as unknown;
 						events.push(event);
-						void runs.appendTranscript(runId, event);
 						const text = finalAssistantText([event]);
 						if (text && options.onUpdate) options.onUpdate({ content: [{ type: "text", text }], details: { runId, state: "running" } });
 					} catch {
@@ -350,7 +414,6 @@ export class SubagentSupervisor {
 					else options.signal.addEventListener("abort", abort, { once: true });
 				}
 			});
-			await runs.flushTranscript(runId);
 			return { exitCode, stderr, finalText: finalAssistantText(events) };
 		} finally {
 			await rm(promptDirectory, { recursive: true, force: true });

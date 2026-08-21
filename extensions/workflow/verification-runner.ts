@@ -131,7 +131,7 @@ export async function readVerificationAttempts(identity: RepositoryIdentity, wor
 		for (const check of checks) {
 			if (!check.isDirectory()) continue;
 			const attemptsRoot = join(stageRoot, check.name, "attempts");
-			const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort();
+			const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort((left, right) => Number(left) - Number(right));
 			for (const id of attempts) {
 				const attempt = await readYaml(join(attemptsRoot, id, "attempt.yaml"));
 				if (!attempt || typeof attempt.startedAt !== "string") continue;
@@ -157,7 +157,7 @@ export async function readStageVerificationActivity(identity: RepositoryIdentity
 	for (const check of checks) {
 		if (!check.isDirectory()) continue;
 		const attemptsRoot = join(stageRoot, check.name, "attempts");
-		const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort();
+		const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort((left, right) => Number(left) - Number(right));
 		const attemptId = attempts.at(-1);
 		if (!attemptId) continue;
 		const attempt = await readYaml(join(attemptsRoot, attemptId, "attempt.yaml"));

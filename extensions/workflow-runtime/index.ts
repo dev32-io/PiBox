@@ -268,12 +268,19 @@ export default function workflows(pi: ExtensionAPI): void {
 		return status === "attention" ? "⚠" : status === "ready" ? "◆" : status === "pending" ? "·" : status === "done" ? "✓" : "–";
 	};
 	const visualStatus = (step: WorkflowStep, status = displayStatus(step)): WorkflowStep["status"] =>
-		status === "running" ? status : step.phase === "verification-failed" ? "attention" : step.phase === "contribution-ready" ? "ready" : status;
+		status === "running" ? status : ["verification-failed", "candidate-ci-failed", "integration-conflict"].includes(step.phase ?? "") ? "attention" : step.phase === "contribution-ready" ? "ready" : status;
 	const stepLabel = (step: WorkflowStep, status: WorkflowStep["status"]): string => {
 		if (step.kind === "task") return status === "done" ? "Implemented" : "Implementing";
 		if (step.kind !== "merge") return step.kind;
 		if (status === "done" || step.phase === "integrated") return "Integrated";
-		if (status === "running") return step.phase === "verifying-candidate" ? "Verifying candidate" : "Assembling candidate";
+		if (status === "running") {
+			if (step.phase === "verifying-candidate") return "Verifying candidate";
+			if (step.phase === "repairing-candidate" || step.phase === "candidate-ci-failed") return "Repairing candidate CI";
+			if (step.phase === "integration-conflict") return "Resolving candidate conflict";
+			return "Assembling candidate";
+		}
+		if (step.phase === "integration-conflict") return "Candidate conflict";
+		if (step.phase === "candidate-ci-failed") return "Candidate CI failed";
 		if (step.phase === "verification-failed") return "Verification failed";
 		if (step.detail === "waiting for stage merge barrier") return "Waiting for shared merge barrier";
 		if (step.phase === "contribution-ready") return "Contribution ready";
@@ -309,14 +316,16 @@ export default function workflows(pi: ExtensionAPI): void {
 			const implementationActive = !reviewActive && stageSteps.some((step) => step.kind === "task" && (step.status === "running" || step.status === "ready" || step.status === "attention" || isCurrentInFlight(step.ref)));
 			const integrationActive = !reviewActive && !implementationActive && mergeSteps.some((step) => !["done", "cancelled"].includes(step.status) || isCurrentInFlight(step.ref));
 			const runningMerge = mergeSteps.find((step) => displayStatus(step) === "running");
-			const verificationFailed = !runningMerge && mergeSteps.some((step) => step.phase === "verification-failed");
+			const failedMerge = !runningMerge ? mergeSteps.find((step) => ["verification-failed", "candidate-ci-failed", "integration-conflict"].includes(step.phase ?? "")) : undefined;
+			const verificationFailed = Boolean(failedMerge);
+			const failureLabel = failedMerge?.phase === "integration-conflict" ? "Candidate conflict" : failedMerge?.phase === "candidate-ci-failed" ? "Candidate CI failed" : "Verification failed";
 			const verifying = runningMerge?.phase === "verifying-candidate";
 			const stageVisualStatus = verificationFailed ? "attention" : stageStatus;
 			const runtimeStage = stage.group === "runtime";
 			const runtimeLoop = primary?.checkpoint === "final-e2e" ? "E2E journey/fix loop" : primary?.checkpoint === "final-review" ? "Whole-branch review/fix loop" : "Final validation queued";
 			const lifecycle = runtimeStage
 				? stageStatus === "done" ? "Validated" : `${runtimeLoop}${stageStatus === "attention" ? " needs attention" : ""}`
-				: stageStatus === "attention" ? "Needs attention" : stageStatus === "done" ? "Integrated" : reviewActive ? "Reviewing" : implementationActive ? "Implementing" : verificationFailed ? "Verification failed" : verifying ? "Verifying candidate" : runningMerge ? "Assembling candidate" : integrationActive ? "Ready to integrate" : "Queued";
+				: stageStatus === "attention" ? "Needs attention" : stageStatus === "done" ? "Integrated" : reviewActive ? "Reviewing" : implementationActive ? "Implementing" : verificationFailed ? failureLabel : verifying ? "Verifying candidate" : runningMerge ? "Assembling / repairing candidate" : integrationActive ? "Ready to integrate" : "Queued";
 			const topology = stage.parallel ? "⇉" : "→";
 			const stageColor: "error" | "accent" | "muted" | "success" = stageVisualStatus === "attention" ? "error" : implementationActive || integrationActive || reviewActive ? "accent" : stageStatus === "done" ? "success" : "muted";
 			const title = runtimeStage ? "Final validation" : `Stage ${stage.index + 1} · ${stage.id}`;
@@ -377,6 +386,13 @@ export default function workflows(pi: ExtensionAPI): void {
 		return base + Math.max(0, now - metrics.live.sampledAtMs) * activeIntervals;
 	};
 
+	const phaseMetric = (metrics: WorkflowMetrics, category: NonNullable<WorkflowMetrics["live"]>["activeCategory"], base: number | undefined, now = Date.now()): number => {
+		const hasPhaseProjection = [metrics.implementationMs, metrics.integrationMs, metrics.reviewMs, metrics.e2eMs, metrics.orchestrationMs].some((value) => value !== undefined);
+		const compatibleBase = hasPhaseProjection ? (base ?? 0) : category === "orchestration" ? metrics.runningMs : 0;
+		const activeCategory = metrics.live?.activeCategory ?? (!hasPhaseProjection && metrics.live?.running ? "orchestration" : undefined);
+		return projectedMetric(metrics, compatibleBase, metrics.live?.running && activeCategory === category ? 1 : 0, now);
+	};
+
 	const freezeMetricProjection = (metrics: WorkflowMetrics, now = Date.now()): WorkflowMetrics => {
 		if (!metrics.live) return metrics;
 		return {
@@ -384,17 +400,33 @@ export default function workflows(pi: ExtensionAPI): void {
 			elapsedMs: projectedMetric(metrics, metrics.elapsedMs, metrics.live.elapsed ? 1 : 0, now),
 			runningMs: projectedMetric(metrics, metrics.runningMs, metrics.live.running ? 1 : 0, now),
 			agentActiveMs: projectedMetric(metrics, metrics.agentActiveMs, metrics.live.activeAgents, now),
-			verificationMs: projectedMetric(metrics, metrics.verificationMs, metrics.live.activeVerifications, now),
-			live: { sampledAtMs: now, elapsed: false, running: false, activeAgents: 0, activeVerifications: 0 },
+			implementerMs: projectedMetric(metrics, metrics.implementerMs ?? 0, metrics.live.activeImplementers ?? 0, now),
+			reviewerMs: projectedMetric(metrics, metrics.reviewerMs ?? 0, metrics.live.activeReviewers ?? 0, now),
+			fixerMs: projectedMetric(metrics, metrics.fixerMs ?? 0, metrics.live.activeFixers ?? 0, now),
+			e2eAgentMs: projectedMetric(metrics, metrics.e2eAgentMs ?? 0, metrics.live.activeE2e ?? 0, now),
+			deterministicMs: projectedMetric(metrics, metrics.deterministicMs ?? metrics.verificationMs, metrics.live.activeVerifications, now),
+			harnessSchedulingMs: projectedMetric(metrics, metrics.harnessSchedulingMs ?? 0, metrics.live.activeScheduling ?? 0, now),
+			implementationMs: phaseMetric(metrics, "implementation", metrics.implementationMs, now),
+			integrationMs: phaseMetric(metrics, "integration", metrics.integrationMs, now),
+			verificationMs: phaseMetric(metrics, "verification", metrics.verificationMs, now),
+			reviewMs: phaseMetric(metrics, "review", metrics.reviewMs, now),
+			e2eMs: phaseMetric(metrics, "e2e", metrics.e2eMs, now),
+			orchestrationMs: projectedMetric(metrics, metrics.orchestrationMs ?? 0, metrics.live.orchestrator ? 1 : 0, now),
+			live: { sampledAtMs: now, elapsed: false, running: false, activeAgents: 0, activeVerifications: 0, activeImplementers: 0, activeReviewers: 0, activeFixers: 0, activeE2e: 0, activeScheduling: 0, orchestrator: false },
 		};
 	};
 
 	const metricRows = (snapshot: WorkflowSnapshot): Array<readonly [string, string]> => {
 		const metrics = snapshot.metrics!;
 		return [
-			["Elapsed", metricDuration(projectedMetric(metrics, metrics.elapsedMs, metrics.live?.elapsed ? 1 : 0))],
-			["Agent time", metricDuration(projectedMetric(metrics, metrics.agentActiveMs, metrics.live?.activeAgents ?? 0))],
-			["Verification", metricDuration(projectedMetric(metrics, metrics.verificationMs, metrics.live?.activeVerifications ?? 0))],
+			["Total time", metricDuration(projectedMetric(metrics, metrics.runningMs, metrics.live?.running ? 1 : 0))],
+			["Implementer", metricDuration(projectedMetric(metrics, metrics.implementerMs ?? 0, metrics.live?.activeImplementers ?? 0))],
+			["Reviewer", metricDuration(projectedMetric(metrics, metrics.reviewerMs ?? 0, metrics.live?.activeReviewers ?? 0))],
+			["Fixer", metricDuration(projectedMetric(metrics, metrics.fixerMs ?? 0, metrics.live?.activeFixers ?? 0))],
+			["E2E", metricDuration(projectedMetric(metrics, metrics.e2eAgentMs ?? 0, metrics.live?.activeE2e ?? 0))],
+			["Deterministic steps", metricDuration(projectedMetric(metrics, metrics.deterministicMs ?? metrics.verificationMs, metrics.live?.activeVerifications ?? 0))],
+			["Orchestrator", metricDuration(projectedMetric(metrics, metrics.orchestrationMs ?? 0, metrics.live?.orchestrator ? 1 : 0))],
+			["Harness scheduling", metricDuration(projectedMetric(metrics, metrics.harnessSchedulingMs ?? 0, metrics.live?.activeScheduling ?? 0))],
 			[snapshot.repairLoop?.label ?? "Current fix loop", snapshot.repairLoop ? `${snapshot.repairLoop.iteration} / ${snapshot.repairLoop.maxIterations}` : "—"],
 		];
 	};
@@ -443,7 +475,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			if (!currentSnapshot) return;
 			const animated = currentSnapshot.steps.some((step) => step.status === "running" || isCurrentInFlight(step.ref));
 			const live = currentSnapshot.metrics?.live;
-			const timing = Boolean(live && (live.elapsed || live.running || live.activeAgents > 0 || live.activeVerifications > 0));
+			const timing = Boolean(live && (live.running || live.activeAgents > 0 || live.activeVerifications > 0));
 			if (!animated && !timing) return;
 			const delay = animated ? 90 : Math.max(50, 1_000 - (Date.now() % 1_000));
 			visualTimer = setTimeout(() => {
@@ -470,7 +502,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const settlementIsLive = (workflowRef: string | undefined, epoch: number) => Boolean(
-		!shuttingDown && epoch === runtimeEpoch && sessionCtx && workflowRef && active.has(workflowRef),
+		!shuttingDown && epoch === runtimeEpoch && sessionCtx && workflowRef && active.get(workflowRef) === "running",
 	);
 	const settlementIsCurrent = async (adapter: WorkflowAdapter, workflowRef: string | undefined, epoch: number, generation: number | undefined, ctx: ExtensionContext): Promise<boolean> => {
 		if (!settlementIsLive(workflowRef, epoch)) return false;
@@ -546,7 +578,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		ticking = true;
 		try {
 			frame++;
-			for (const [ref, state] of active) {
+			for (const [ref] of active) {
 				if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
 				const adapter = adapterFor(ref);
 				let snapshot: WorkflowSnapshot;
@@ -555,7 +587,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					snapshot = await adapter.snapshot(ref, ctx);
 				}
 				catch (error) {
-					if (state === "running") {
+					if (active.get(ref) === "running") {
 						const detail = error instanceof Error ? error.message : String(error);
 						await pauseDurably(adapter, ref, `snapshot:${ref}:${ownership.get(ref) ?? epoch}:failed`, ctx);
 						sendLifecycle({ type: "error", workflowRef: ref, title: ref, detail, cause: "snapshot-failed", nextAction: "Inspect the workflow and resume when ready." });
@@ -569,7 +601,9 @@ export default function workflows(pi: ExtensionAPI): void {
 					currentSnapshot = { ...snapshot, steps: snapshot.steps.map((step) => isCurrentInFlight(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) };
 					renderDashboard(ctx);
 				}
-				if (state !== "running") continue;
+				// Reconciliation and snapshot reads cross asynchronous boundaries. Never
+				// launch from the stale map value captured before a concurrent pause.
+				if (active.get(ref) !== "running") continue;
 				// An adapter snapshot can briefly observe canonical settlement between child exit
 				// and runStep completion. The in-flight promise remains authoritative until it
 				// settles; only attention with no active step should pause the workflow.
@@ -606,8 +640,18 @@ export default function workflows(pi: ExtensionAPI): void {
 					continue;
 				}
 				for (const step of runnable(snapshot)) {
+					if (active.get(ref) !== "running") break;
+					const generation = ownership.get(ref);
+					if (generation !== undefined && adapter.assertExecutionCurrent) {
+						try { await adapter.assertExecutionCurrent(ref, generation, ctx); }
+						catch {
+							await pauseDurably(adapter, ref, `launch:${step.ref}:${generation}:stale`, ctx);
+							break;
+						}
+					}
+					if (active.get(ref) !== "running") break;
 					const promise = startStep(adapter, step, ctx, epoch);
-					void settleStep(adapter, step, promise, ctx, ref, epoch, ownership.get(ref));
+					void settleStep(adapter, step, promise, ctx, ref, epoch, generation);
 				}
 			}
 		} catch (error) {
@@ -862,12 +906,24 @@ export default function workflows(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "subagent_respond", label: "Respond to Subagent", description: "Persist an orchestrator response to an open subagent request.",
 		parameters: Type.Object({ agentId: Type.String(), messageId: Type.String(), response: Type.String() }, { additionalProperties: false }),
-		async execute(_id, params, _signal, _update, ctx) {
+		async execute(toolCallId, params, _signal, _update, ctx) {
 			for (const adapter of adapters) {
 				const agents = await adapter.listSubagents(ctx) as Array<{ id?: string }>;
 				if (agents.some((agent) => agent.id === params.agentId)) {
-					const recorded = await adapter.respondSubagent(params.agentId, params.messageId, params.response, ctx) as { workflowRef?: string };
-					if (recorded.workflowRef && active.has(recorded.workflowRef)) { active.set(recorded.workflowRef, "running"); persist(recorded.workflowRef, "running"); requestTick(ctx); }
+					const recorded = await adapter.respondSubagent(params.agentId, params.messageId, params.response, ctx) as { workflowRef?: string; message?: { blocking?: boolean } };
+					// Decision reports are non-blocking evidence and must never resurrect a
+					// workflow paused for an unrelated failed settlement. Blocking responses
+					// may continue work, but only after advancing the durable ownership fence.
+					if (recorded.workflowRef && recorded.message?.blocking === true && active.has(recorded.workflowRef)) {
+						if (active.get(recorded.workflowRef) === "paused") {
+							const control = await adapter.controlExecution?.(recorded.workflowRef, "resume", `subagent-response:${toolCallId}`, ctx);
+							if (control) ownership.set(recorded.workflowRef, control.generation);
+						}
+						active.set(recorded.workflowRef, "running");
+						currentRef = recorded.workflowRef;
+						persist(recorded.workflowRef, "running");
+						requestTick(ctx);
+					}
 					return result(`Response recorded for ${params.messageId}.`, recorded);
 				}
 			}

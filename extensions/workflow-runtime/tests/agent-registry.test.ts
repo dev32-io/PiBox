@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 import { SessionAgentRegistry } from "../agent-registry.js";
 
 async function fixture(t: test.TestContext, limit = 16) {
@@ -79,18 +80,21 @@ test("same-instance watch publishes a durable transition immediately and exactly
 	assert.deepEqual(events, ["agent.reserved"]);
 });
 
-test("persists progress and wakes another registry instance from the durable event log", async (t) => {
+test("explicit progress checkpoints update the snapshot without journal wake-up churn", async (t) => {
 	const { root, registry } = await fixture(t);
 	const observer = new SessionAgentRegistry(root, "session-1", 16, 1);
 	const agent = await registry.reserve(input(1));
 	const { attempt } = await registry.startAttempt(agent.id);
 	await registry.markRunning(agent.id, attempt.id, 1234);
-	let wake: (() => void) | undefined;
-	const seen = new Promise<void>((resolve) => { wake = resolve; });
-	const dispose = await observer.watch((event) => { if (event.type === "agent.progress") wake?.(); });
+	let progressEvents = 0;
+	const dispose = await observer.watch((event) => { if (event.type === "agent.progress") progressEvents += 1; });
+	const before = (parse(await readFile(registry.snapshotPath, "utf8")) as { eventSequence: number }).eventSequence;
 	await registry.updateProgress(agent.id, attempt.id, { startedAt: attempt.startedAt, lastEventAt: "2026-01-01T00:00:01.000Z", turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 345, reasoningTokens: 12 });
-	await Promise.race([seen, new Promise((_, reject) => setTimeout(() => reject(new Error("durable progress wake-up timed out")), 1_000))]);
+	await new Promise((resolve) => setTimeout(resolve, 30));
 	dispose();
+	const after = (parse(await readFile(registry.snapshotPath, "utf8")) as { eventSequence: number }).eventSequence;
+	assert.equal(after, before);
+	assert.equal(progressEvents, 0);
 	const persisted = (await observer.get(agent.id)).attempts[0]!.progress;
 	assert.equal(persisted?.turns, 1);
 	assert.equal(persisted?.outputTokens, 345);
@@ -108,12 +112,43 @@ test("releases a slot only after a terminal logical transition", async (t) => {
 	assert.equal((await registry.reserve(input(2))).state, "reserved");
 });
 
+test("workflow transport cleanup preserves the resumable Pi session", async (t) => {
+	const { registry } = await fixture(t);
+	const agent = await registry.reserve(input(1, { workItemId: "story" }));
+	const { attempt } = await registry.startAttempt(agent.id);
+	await registry.markRunning(agent.id, attempt.id, 1234);
+	const agentRoot = join(registry.root, "agents", agent.id);
+	const attemptRoot = join(agentRoot, "attempts", attempt.id);
+	await mkdir(attemptRoot, { recursive: true });
+	await writeFile(join(attemptRoot, "stdout.jsonl"), "transport\n");
+	await writeFile(join(attemptRoot, "stderr.log"), "diagnostic\n");
+	await writeFile(join(agentRoot, "pi-session.jsonl"), "session\n");
+	await registry.recordExit(agent.id, attempt.id, 1);
+	await registry.transition(agent.id, "failed");
+	await registry.cleanupWorkItemTransport("story");
+	await assert.rejects(access(join(attemptRoot, "stdout.jsonl")), /ENOENT/);
+	await assert.rejects(access(join(attemptRoot, "stderr.log")), /ENOENT/);
+	assert.equal(await readFile(join(agentRoot, "pi-session.jsonl"), "utf8"), "session\n");
+});
+
+test("workflow cleanup never unlinks transport for an unsettled process attempt", async (t) => {
+	const { registry } = await fixture(t);
+	const agent = await registry.reserve(input(1, { workItemId: "story" }));
+	const { attempt } = await registry.startAttempt(agent.id);
+	await registry.markRunning(agent.id, attempt.id, 1234);
+	const stdout = join(registry.root, "agents", agent.id, "attempts", attempt.id, "stdout.jsonl");
+	await mkdir(join(registry.root, "agents", agent.id, "attempts", attempt.id), { recursive: true });
+	await writeFile(stdout, "still-running\n");
+	await registry.transition(agent.id, "cancelled");
+	await registry.cleanupWorkItemTransport("story");
+	assert.equal(await readFile(stdout, "utf8"), "still-running\n");
+});
+
 test("rejects recursive launches before creating an assignment", async (t) => {
 	const { root, registry } = await fixture(t);
 	await assert.rejects(registry.reserve(input(1, { parentAgentId: "child", parentDepth: 1 })), /SUBAGENT_DEPTH_EXCEEDED/);
 	assert.equal((await registry.list()).length, 0);
-	const events = await readFile(join(root, "sessions", "session-1", "agent-events.jsonl"), "utf8").catch(() => "");
-	assert.equal(events, "");
+	await assert.rejects(access(join(root, "sessions", "session-1", "agent-events.jsonl")), /ENOENT/);
 });
 
 test("serializes concurrent reservations across registry instances", async (t) => {
@@ -145,6 +180,20 @@ test("persists blocking requests and responses without releasing the logical slo
 	await assert.rejects(registry.respondMessage(agent.id, message.id, "Again"), /already answered/);
 });
 
+test("non-blocking messages wake cross-instance lifecycle consumers with the owning agent", async (t) => {
+	const { root, registry } = await fixture(t);
+	const observer = new SessionAgentRegistry(root, "session-1");
+	const agent = await registry.reserve(input(1));
+	const { attempt } = await registry.startAttempt(agent.id);
+	await registry.markRunning(agent.id, attempt.id, 1234);
+	let resolve!: (agentId: string) => void;
+	const seen = new Promise<string>((done) => { resolve = done; });
+	const dispose = await observer.watch((event) => { if (event.data.agentId) resolve(event.data.agentId); });
+	await registry.recordMessage(agent.id, { operationId: "decision", type: "decision_report", blocking: false, summary: "FYI", rationale: "evidence", evidence: [] });
+	assert.equal(await Promise.race([seen, new Promise<string>((_, reject) => setTimeout(() => reject(new Error("message wake timed out")), 1_000))]), agent.id);
+	dispose();
+});
+
 test("explicitly prepares one failed logical agent for a fresh process attempt", async (t) => {
 	const { registry } = await fixture(t);
 	const agent = await registry.reserve(input(1));
@@ -161,13 +210,15 @@ test("explicitly prepares one failed logical agent for a fresh process attempt",
 	assert.equal(second.attempt.sequence, 2);
 });
 
-test("rejects invalid transitions and preserves ordered lifecycle events", async (t) => {
+test("rejects invalid transitions and advances the compact lifecycle sequence", async (t) => {
 	const { root, registry } = await fixture(t);
 	const agent = await registry.reserve(input(1));
 	await assert.rejects(registry.transition(agent.id, "completed"), /Invalid agent transition/);
 	const { attempt } = await registry.startAttempt(agent.id);
 	await registry.markRunning(agent.id, attempt.id, 1234);
 	await registry.transition(agent.id, "cancelled");
-	const events = (await readFile(join(root, "sessions", "session-1", "agent-events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { sequence: number });
-	assert.deepEqual(events.map((event) => event.sequence), [1, 2, 3, 4]);
+	const snapshot = parse(await readFile(registry.snapshotPath, "utf8")) as { eventSequence: number; revision: number };
+	assert.equal(snapshot.eventSequence, 4);
+	assert.equal(snapshot.revision, 4);
+	await assert.rejects(access(join(root, "sessions", "session-1", "agent-events.jsonl")), /ENOENT/);
 });

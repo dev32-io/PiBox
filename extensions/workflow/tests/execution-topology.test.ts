@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HarnessError } from "../errors.js";
-import { resolveStageMode, taskExecutionTopology, validateExecutionTopology } from "../execution-topology.js";
+import { executionTopologyIssues, resolveStageMode, taskExecutionTopology, validateExecutionTopology } from "../execution-topology.js";
 
 function task(id: string, dependsOn: string[] = [], resourceClaims: string[] = [], runtime?: any): any {
 	return { id, dependsOn, execution: { resourceClaims }, runtime };
@@ -45,4 +45,18 @@ test("checks claims only for concurrent stages and validates dependency placemen
 test("requires dependencies to be scheduled in an earlier stage", () => {
 	invalid(() => validateExecutionTopology(item([{ id: "first", tasks: ["b"] }, { id: "second", tasks: ["a"] }], [task("a"), task("b", ["a"])]), [task("a"), task("b", ["a"])]), "earlier execution stage");
 	invalid(() => validateExecutionTopology(item([{ id: "stage", tasks: ["a"] }], [task("a", ["missing"])]), [task("a", ["missing"])]), "unknown or unscheduled");
+});
+
+test("reports every compilation issue from one complete draft", () => {
+	const tasks = [task("a", ["missing"]), task("b")];
+	const draft = item([{ id: "empty", tasks: [] }, { id: "known", tasks: ["a", "ghost"] }], tasks);
+	const issues = executionTopologyIssues(draft, tasks);
+	assert.deepEqual(issues.map(({ code }) => code), ["empty-stage", "unknown-stage-task", "unknown-dependency", "unassigned-task"]);
+	assert.throws(() => validateExecutionTopology(draft, tasks), (error: unknown) => {
+		assert.ok(error instanceof HarnessError);
+		assert.match(error.message, /Plan compilation failed with 4 execution-topology issues/);
+		assert.match(error.message, /empty must contain|ghost|not assigned|unknown or unscheduled/);
+		assert.equal((error.details.issues as unknown[]).length, 4);
+		return true;
+	});
 });

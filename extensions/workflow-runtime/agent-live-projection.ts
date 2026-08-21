@@ -65,8 +65,8 @@ export function projectAgentLive(agent: SessionAgentRecord): AgentLiveProjection
 
 /**
  * One manager-owned, reload-safe feed for current-attempt process state.
- * Registry events are durable before publication; the initial list closes the
- * attachment gap and makes a replacement UI converge without workflow reads.
+ * Registry snapshots are durable before publication; the initial list closes
+ * the attachment gap and makes a replacement UI converge without workflow reads.
  */
 export class AgentLiveProjectionManager {
 	constructor(readonly registry: SessionAgentRegistry) {}

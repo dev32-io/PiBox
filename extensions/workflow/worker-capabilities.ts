@@ -28,7 +28,7 @@ function scopeFromEnvironment(): WorkerScope {
 async function authorized(ctx: ExtensionContext) {
 	const scope = scopeFromEnvironment();
 	const identity = await discoverRepository(ctx.cwd);
-	const runs = new HarnessRunStore(identity.privateRoot, scope.workItemId);
+	const runs = new HarnessRunStore(identity, scope.workItemId);
 	const run = await runs.authorize(scope.runId, scope.credential);
 	if (run.taskId !== scope.taskId || run.workItemId !== scope.workItemId || run.workspace !== ctx.cwd) {
 		throw new HarnessError("CAPABILITY_DENIED", "Run scope does not match this task workspace");
@@ -156,8 +156,8 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "task_complete",
-		label: "Complete Task Contribution",
-		description: "Submit the required terminal implementation handoff. Git state and artifact restrictions are validated deterministically.",
+		label: "Submit Task Contribution",
+		description: "Submit the contribution for harness CI. Submission is nonterminal until required checks pass; Git state and artifact restrictions are validated deterministically.",
 		parameters: Type.Object({
 			summary: Type.String(),
 			commits: Type.Array(Type.String({ description: "Full 40-character commit SHA(s) from the task branch; abbreviated hashes are rejected." })),
@@ -177,6 +177,10 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 				}
 				const item = await auth.workItems.read(auth.scope.workItemId);
 				if (auth.run.planningRevision !== undefined && item.planning.revision !== auth.run.planningRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Task planning advanced from revision ${auth.run.planningRevision} to ${item.planning.revision}`);
+				const task = await auth.workItems.readTask(auth.scope.workItemId, auth.scope.taskId);
+				const required = new Set(task.verification.taskChecks);
+				const red = params.checks.filter((check) => check.result === "failed" || (check.result === "skipped" && required.has(check.command)));
+				if (red.length > 0) throw new HarnessError("INVALID_HANDOFF", `Contribution cannot be submitted while reported CI is red: ${red.map((check) => `${check.command} (${check.result})`).join(", ")}. Resolve the failures and resubmit.`);
 				const status = await runGit(ctx.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
 				if (status) throw new HarnessError("INVALID_HANDOFF", "Task worktree must be clean before completion", { status });
 				const head = await runGit(ctx.cwd, ["rev-parse", "HEAD"]);
@@ -200,7 +204,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					completedAt: new Date().toISOString(),
 				};
 				await auth.runs.writeHandoff(auth.scope.runId, handoff);
-				return result("Terminal task handoff accepted.", handoff);
+				return result("Task submission accepted for harness CI.", handoff);
 			} catch (error) {
 				throw new Error(describeHarnessError(error));
 			}

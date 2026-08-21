@@ -24,6 +24,47 @@ function task(id = "build-app"): TaskManifest {
 }
 const mutation = { rationale: "Resolve an implementation detail within delegated intent", sources: ["agent-message:change-1"] };
 
+test("completed reopen forks an editable linked amendment and keeps baseline immutable", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "delivered-baseline", title: "Delivered baseline", kind: "story", intent: "Ship the original behavior." });
+	await store.putArtifact({ workItemId: "delivered-baseline", id: "baseline-journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Baseline journeys", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Original behavior remains operational", setup: ["Prepare baseline"], actions: ["Exercise baseline"], expectedOutcomes: ["Baseline passes"], evidence: ["Record baseline result"] }] }, operation: "create" });
+	await store.completeWorkItem("delivered-baseline", "# Outcome\n\nDelivered.");
+	const baseline = await store.read("delivered-baseline");
+	await assert.rejects(service.patch("work-item:delivered-baseline", { title: "Unsafe rewrite" }, { authority: mutation }), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /complete and immutable.*workflow_transition.*reopen.*returned amendment work-item ref/i);
+		const details = (error as any).details;
+		assert.equal(details.guidance.tool, "workflow_transition");
+		assert.equal(details.guidance.arguments.action, "reopen");
+		return true;
+	});
+
+	const amendment = await store.transitionWorkItem("delivered-baseline", "reopen", "Add the follow-up behavior");
+	assert.equal(amendment.id, "delivered-baseline-amendment-1");
+	assert.equal(amendment.phase, "planning");
+	assert.equal(amendment.amendment?.baselineWorkItemId, "delivered-baseline");
+	assert.equal(amendment.amendment?.rootWorkItemId, "delivered-baseline");
+	assert.equal(amendment.amendment?.generation, 1);
+	assert.equal(amendment.amendment?.baselineRevision, baseline.planning.revision);
+	assert.equal((await store.read("delivered-baseline")).phase, "complete");
+	await service.transaction("harness: edit amendment", () => service.patch("work-item:delivered-baseline-amendment-1", { title: "Editable amendment" }, { authority: mutation }));
+	assert.equal((await store.read("delivered-baseline-amendment-1")).title, "Editable amendment");
+	assert.deepEqual((await service.summary("work-item:delivered-baseline") as any).amendments, ["work-item:delivered-baseline-amendment-1"]);
+	assert.match((await store.readE2EMatrix("delivered-baseline-amendment-1"))?.content ?? "", /Original behavior remains operational/);
+	const e2e: EvaluationManifest = { schemaVersion: 1, id: "amendment-e2e", type: "e2e", scope: { workItem: amendment.id }, status: "planned", required: true, attempt: 0, methods: [] };
+	const context = await buildReviewPersistentContext(store, amendment.id, e2e);
+	assert.match(context, /immutable amendment baseline: delivered-baseline\/e2e-matrix:baseline-journeys/);
+	assert.match(context, /Original behavior remains operational/);
+	assert.match(context, /current amendment: delivered-baseline-amendment-1\/intent:intent/);
+	await store.completeWorkItem(amendment.id, "# Outcome\n\nAmendment delivered.");
+	const second = await store.transitionWorkItem(amendment.id, "reopen", "Add another follow-up");
+	assert.equal(second.id, "delivered-baseline-amendment-2");
+	assert.equal(second.amendment?.baselineWorkItemId, amendment.id);
+	assert.equal(second.amendment?.rootWorkItemId, "delivered-baseline");
+	assert.equal(second.amendment?.generation, 2);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
 test("resource creation continues the checked-out fix branch when branch hints are omitted", async (t) => {
 	const root = await repository(t);
 	await git(root, "switch", "-c", "fix/ongoing");
@@ -213,6 +254,20 @@ test("deletes an undelivered task and repairs integration membership", async (t)
 	const item = await store.read("remove-task");
 	assert.deepEqual(item.tasks, []); assert.deepEqual(item.integrationUnits, []);
 	assert.equal((await store.reconcile("remove-task")).planning.revision, item.planning.revision);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("deletes a draft stage and defers its unassigned tasks to submission", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root); const service = new OrchestratorResourceService(root, store);
+	await store.create({ id: "remove-stage", title: "Remove stage", kind: "change", intent: "Edit stage topology freely." });
+	await store.defineTask({ workItemId: "remove-stage", manifest: task(), brief: "Build it.", acceptance: "It works." });
+	await service.transaction("harness: delete stage", () => service.delete("work-item:remove-stage/stage:app", { authority: mutation }));
+	assert.deepEqual((await store.read("remove-stage")).executionStages, []);
+	assert.deepEqual((await service.listSummaries("task", "remove-stage"))[0]?.stageId, undefined);
+	assert.deepEqual((await store.planningTopologyIssues("remove-stage")).map((issue) => issue.code), ["unassigned-task"]);
+	await assert.rejects(store.submitPlanning("remove-stage"), /not assigned to an execution stage/);
+	await store.putExecutionStage("remove-stage", { id: "delivery", tasks: ["build-app"], mode: "sequential" }, mutation);
+	await store.submitPlanning("remove-stage");
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 

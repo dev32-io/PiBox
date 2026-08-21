@@ -5,7 +5,7 @@ import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, runGit } from "./repository.js";
 import { isTierTaskAssignment, taskAgentName, type HarnessConfig, type MutationAuthority, type TaskManifest, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { resolveStageMode } from "./execution-topology.js";
-import { WorkItemStore } from "./work-items.js";
+import { immutableWorkItemMutationError, WorkItemStore } from "./work-items.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 
 export type CanonicalResourceType = "work-item" | "artifact" | "task" | "stage" | "evaluation";
@@ -65,7 +65,6 @@ function merge<T>(base: T, patch: unknown): T {
 function allowed(type: CanonicalResourceType, finalized = false): string[] {
 	if (finalized) return ["get", "list", "reopen"];
 	if (type === "work-item") return ["get", "patch", "transition", "archive"];
-	if (type === "stage") return ["get", "patch"];
 	return ["get", "patch", "delete"];
 }
 
@@ -149,10 +148,12 @@ export class OrchestratorResourceService {
 
 	async listSummaries(type: CanonicalResourceType, workItemId?: string): Promise<Array<Record<string, unknown>>> {
 		const items = workItemId ? [await this.store.read(workItemId)] : await this.store.list();
+		const relatedItems = type === "work-item" && workItemId ? await this.store.list() : items;
 		const results: Array<Record<string, unknown>> = [];
 		for (const item of items) {
 			const finalized = Boolean(item.finalization?.locked || item.phase === "complete");
 			if (type === "work-item") {
+				const amendments = relatedItems.filter((candidate) => candidate.amendment?.baselineWorkItemId === item.id).map((candidate) => `work-item:${candidate.id}`);
 				results.push({
 					ref: `work-item:${item.id}`,
 					revision: item.planning.revision,
@@ -161,6 +162,8 @@ export class OrchestratorResourceService {
 					kind: item.kind,
 					phase: item.phase,
 					state: item.state,
+					...(item.amendment ? { amendment: item.amendment } : {}),
+					...(amendments.length ? { amendments } : {}),
 					counts: { artifacts: item.artifacts.length, tasks: item.tasks.length, stages: item.executionStages?.length ?? 0, evaluations: item.evaluations.length },
 					allowedActions: allowed(type, finalized),
 				});
@@ -169,13 +172,14 @@ export class OrchestratorResourceService {
 			if (type === "task") for (const catalog of item.tasks) {
 				const task = await this.store.readTask(item.id, catalog.id);
 				const assignment = task.execution.assignment;
+				const assignedStageId = item.executionStages?.find((stage) => stage.tasks.includes(task.id))?.id;
 				results.push({
 					ref: `work-item:${item.id}/task:${task.id}`,
 					revision: item.planning.revision,
 					id: task.id,
 					title: task.title,
 					status: task.status,
-					stageId: task.assembly.stageId ?? task.assembly.integrationUnit,
+					...(assignedStageId ? { stageId: assignedStageId } : {}),
 					blockedBy: task.dependsOn,
 					assignment: isTierTaskAssignment(assignment) ? { agent: taskAgentName(task), tier: assignment.tier } : { agent: taskAgentName(task), legacyModel: assignment.model },
 					allowedActions: allowed(type, finalized),
@@ -227,7 +231,7 @@ export class OrchestratorResourceService {
 			return envelope({
 				workItem: {
 					id: item.id, title: item.title, kind: item.kind, phase: item.phase, state: item.state, planning: item.planning,
-					...(item.delivery ? { delivery: item.delivery } : {}), ...(item.finalization ? { finalization: item.finalization } : {}),
+					...(item.delivery ? { delivery: item.delivery } : {}), ...(item.amendment ? { amendment: item.amendment } : {}), ...(item.finalization ? { finalization: item.finalization } : {}),
 				},
 				artifacts: artifactContracts.map(({ metadata, content }) => ({
 					id: metadata.id, type: metadata.type, status: metadata.status, ...(metadata.narrativeSchemaVersion ? { narrativeSchemaVersion: metadata.narrativeSchemaVersion } : {}),
@@ -250,7 +254,8 @@ export class OrchestratorResourceService {
 	private async assertPlanEditable(workItemId: string, expectedRevision: number): Promise<WorkItemIndex> {
 		const current = await this.store.read(workItemId);
 		if (current.planning.revision !== expectedRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `work-item:${workItemId} advanced from requested revision ${expectedRevision} to ${current.planning.revision}`);
-		if (current.phase !== "planning" || current.finalization?.locked) throw new HarnessError("CAPABILITY_DENIED", `Plan ${workItemId} cannot be edited after delivery or finalization`);
+		if (current.finalization?.locked || current.phase === "complete") throw immutableWorkItemMutationError(current);
+		if (current.phase !== "planning") throw new HarnessError("CAPABILITY_DENIED", `Plan ${workItemId} is in ${current.phase} and its reviewed contract cannot be rewritten in place`, { workflowState: { phase: current.phase, state: current.state }, guidance: { outcome: "Use the managed review/request-changes path for active delivery. After completion, workflow_transition reopen creates a linked amendment without rewriting delivered history." } });
 		for (const task of current.tasks) {
 			const manifest = await this.store.readTask(workItemId, task.id);
 			if (manifest.runtime || !["draft", "blocked", "ready"].includes(manifest.status)) throw new HarnessError("CAPABILITY_DENIED", `Plan ${workItemId} has task delivery history and cannot be edited`);
@@ -273,8 +278,7 @@ export class OrchestratorResourceService {
 			if (parsed.workItemId !== parsedTarget.id) throw new HarnessError("INVALID_ARTIFACT", `Plan edit ${edit.ref} is outside ${target}`);
 			if (edit.action === "delete") {
 				if (parsed.type === "work-item") throw new HarnessError("CAPABILITY_DENIED", "Surgical plan edits cannot delete the work item");
-				if (parsed.type === "stage") throw new HarnessError("CAPABILITY_DENIED", "Delete stage tasks or replace the complete plan instead");
-				else await this.delete(edit.ref, { authority });
+				await this.delete(edit.ref, { authority });
 				continue;
 			}
 			if (!edit.value) throw new HarnessError("INVALID_ARTIFACT", `Plan ${edit.action} requires value for ${edit.ref}`);
@@ -356,7 +360,7 @@ export class OrchestratorResourceService {
 		const parsedRef = parseResourceRef(ref);
 		const patch = object(patchValue, "Patch");
 		const item = await this.store.read(parsedRef.workItemId);
-		if (Boolean(item.finalization?.locked || item.phase === "complete")) throw new HarnessError("CAPABILITY_DENIED", `Work item ${item.id} is finalized; reopen it before mutation`);
+		if (Boolean(item.finalization?.locked || item.phase === "complete")) throw immutableWorkItemMutationError(item);
 		if (parsedRef.type === "work-item") return this.store.reviseWorkItem({ workItemId: item.id, authority: context.authority, ...(patch.title !== undefined ? { title: patch.title as string } : {}), ...(patch.kind !== undefined ? { kind: patch.kind as WorkItemKind } : {}), ...(patch.intent !== undefined ? { intent: patch.intent as string } : {}), ...(patch.intentSections !== undefined ? { intentSections: object(patch.intentSections, "intentSections") } : {}), ...(patch.narrativeSchemaVersion !== undefined ? { narrativeSchemaVersion: patch.narrativeSchemaVersion as 1 | 2 } : {}) });
 		if (parsedRef.type === "artifact") {
 			const current = await this.store.readArtifact(item.id, parsedRef.id);
@@ -397,6 +401,6 @@ export class OrchestratorResourceService {
 		if (parsedRef.type === "artifact") return this.store.removeArtifact(parsedRef.workItemId, parsedRef.id, context.authority);
 		if (parsedRef.type === "task") return this.store.removeTask(parsedRef.workItemId, parsedRef.id, context.authority);
 		if (parsedRef.type === "evaluation") return this.store.removeEvaluation(parsedRef.workItemId, parsedRef.id, context.authority);
-		throw new HarnessError("CAPABILITY_DENIED", "Execution stages are updated by patching their task membership");
+		return this.store.removeExecutionStage(parsedRef.workItemId, parsedRef.id, context.authority);
 	}
 }

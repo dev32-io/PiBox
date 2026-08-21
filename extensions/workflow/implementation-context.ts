@@ -35,6 +35,23 @@ export async function buildTaskPersistentContext(store: WorkItemStore, workItemI
 	// New task contracts are complete assignment packets and deliberately omit
 	// references. Preserve the old extraction behavior only for stored legacy
 	// tasks; task_clarify remains the explicit escape hatch for extra story context.
+	if (task.runtime?.deterministicFailure) {
+		const failure = task.runtime.deterministicFailure;
+		planSections.push(
+			"## Changes Requested by Deterministic CI",
+			"",
+			`Repair generation: ${failure.generation}`,
+			`Candidate: ${failure.candidateCommit}`,
+			...(failure.checkId ? [`Check: ${failure.checkId}`] : []),
+			...(failure.command ? [`Command: ${failure.command}`] : []),
+			...(failure.attemptPath ? [`Evidence: ${failure.attemptPath}`] : []),
+			"",
+			failure.summary,
+			"",
+			"Resolve only the surfaced deterministic failure, preserve the reviewed contract and unrelated green work, commit the repair, rerun the focused check, and resubmit.",
+		);
+	}
+
 	if (legacyReferences) {
 		if (referenced.length === 0) {
 			const intent = await store.readArtifact(workItemId, "intent");
@@ -94,9 +111,22 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 		].join("\n"));
 	}
 	const artifacts: string[] = [];
-	for (const entry of item.artifacts.filter((artifact) => ["intent", "spec", "design", "decision"].includes(artifact.type) || (evaluation.type === "e2e" && artifact.type === "e2e-matrix"))) {
-		const artifact = await store.readArtifact(workItemId, entry.id);
-		artifacts.push(`### ${entry.type}: ${entry.id}\n\n${body(artifact.content)}`);
+	const artifactItems = [item];
+	const seenBaselines = new Set([item.id]);
+	let baselineCursor = item;
+	while (baselineCursor.amendment) {
+		const baselineId = baselineCursor.amendment.baselineWorkItemId;
+		if (seenBaselines.has(baselineId)) throw new Error(`Amendment baseline cycle detected at ${baselineId}`);
+		seenBaselines.add(baselineId);
+		baselineCursor = await store.read(baselineId);
+		artifactItems.unshift(baselineCursor);
+	}
+	for (const artifactItem of artifactItems) {
+		const relationship = artifactItem.id === item.id ? (item.amendment ? "current amendment" : "current work item") : "immutable amendment baseline";
+		for (const entry of artifactItem.artifacts.filter((artifact) => ["intent", "spec", "design", "decision"].includes(artifact.type) || (evaluation.type === "e2e" && artifact.type === "e2e-matrix"))) {
+			const artifact = await store.readArtifact(artifactItem.id, entry.id);
+			artifacts.push(`### ${relationship}: ${artifactItem.id}/${entry.type}:${entry.id}\n\n${body(artifact.content)}`);
+		}
 	}
 	if (stage) {
 		return `${renderBuiltInPrompt("review-context", {

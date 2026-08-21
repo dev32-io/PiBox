@@ -31,6 +31,20 @@ test("uses one stable semantic event identity for live fan-out and replay", asyn
 	assert.equal(appended.id, "repo-id:1");
 });
 
+test("bounds large transition text while retaining the terminal metric boundary", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-workflow-events-bounded-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const store = new RepositoryEventStore({ id: "repo-id", root: "/repo", privateRoot: root });
+	await store.initialize();
+	const journal = new WorkflowEventJournal(store);
+	await journal.append({ type: "step.started", workItemId: "calendar", ownerGeneration: 1, correlationId: "large-step" });
+	await journal.append({ type: "step.settled", workItemId: "calendar", ownerGeneration: 1, correlationId: "large-step", transition: { summary: "x".repeat(300_000), nextAction: "y".repeat(300_000) } });
+	const events = await journal.readSince(0, "calendar");
+	assert.deepEqual(events.map((event) => event.type), ["step.started", "step.settled"]);
+	assert.ok((events[1]?.transition?.summary?.length ?? 0) <= 4_096);
+	assert.ok((events[1]?.transition?.nextAction?.length ?? 0) <= 4_096);
+});
+
 test("replay ignores generic harness events and filters by work item", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-workflow-events-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
