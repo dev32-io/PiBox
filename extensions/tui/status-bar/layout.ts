@@ -149,13 +149,13 @@ function permissionSegment(data: StatusRenderData): string {
 	return renderPermissionMode(data.permissionMode, data.theme);
 }
 
-function thinkingSegment(data: StatusRenderData): string {
+function effortSegment(data: StatusRenderData): string {
 	const level = data.thinkingLevel || "off";
 	const labels: Record<string, string> = { off: "OFF", minimal: "MINIMAL", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "EXTRA HIGH", max: "MAX" };
 	const colors: Record<string, "dim" | "muted" | "warning" | "success" | "thinkingHigh" | "thinkingXhigh" | "thinkingMax"> = {
 		off: "dim", minimal: "muted", low: "warning", medium: "success", high: "thinkingHigh", xhigh: "thinkingXhigh", max: "thinkingMax",
 	};
-	return `${data.theme.fg("dim", "Thinking:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? level.toUpperCase())}`;
+	return `${data.theme.fg("dim", "Effort:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? level.toUpperCase())}`;
 }
 
 function fastModeSegment(data: StatusRenderData): string {
@@ -208,7 +208,7 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const quota = quotaSegment(data, mode, width, context);
 	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
-	const row2BaseLeft = [permissionSegment(data), divider, thinkingSegment(data)];
+	const row2BaseLeft = [permissionSegment(data), divider, effortSegment(data)];
 	const fastMode = fastModeSegment(data);
 	const row2WithFast = [...row2BaseLeft, ...(fastMode ? [divider, fastMode] : [])];
 	const row2Left = mode !== "narrow" && rowFits(row2WithFast, row2Right, width) ? row2WithFast : row2BaseLeft;

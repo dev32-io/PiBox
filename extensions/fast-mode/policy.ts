@@ -16,6 +16,11 @@ export interface FastModePolicy {
 	subagents: SubagentFastLimit;
 }
 
+export interface FastModeSettings {
+	main?: boolean;
+	subagents?: SubagentFastLimit;
+}
+
 export interface FastModeStatus {
 	mainAvailable: boolean;
 	mainEnabled: boolean;
@@ -49,6 +54,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function normalizeFastModePolicy(value: unknown): FastModePolicy | undefined {
 	if (!isRecord(value) || typeof value.main !== "boolean" || !SUBAGENT_FAST_LIMITS.includes(value.subagents as SubagentFastLimit)) return undefined;
 	return { main: value.main, subagents: value.subagents as SubagentFastLimit };
+}
+
+export function resolveFastModeDefaults(value: unknown): FastModePolicy {
+	if (!isRecord(value)) return { ...DEFAULT_FAST_MODE_POLICY };
+	return {
+		main: typeof value.main === "boolean" ? value.main : DEFAULT_FAST_MODE_POLICY.main,
+		subagents: SUBAGENT_FAST_LIMITS.includes(value.subagents as SubagentFastLimit)
+			? value.subagents as SubagentFastLimit
+			: DEFAULT_FAST_MODE_POLICY.subagents,
+	};
 }
 
 export function isFastCapabilityTier(value: unknown): value is FastCapabilityTier {

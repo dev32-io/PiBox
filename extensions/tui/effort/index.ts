@@ -16,7 +16,7 @@ function safeLevel(model: Model<any>, requested: ModelThinkingLevel): ModelThink
 	return clampThinkingLevel(model, requested);
 }
 
-export function configuredLevel(config: EffortConfig, model: Model<any>): ModelThinkingLevel {
+export function configuredLevel(config: EffortConfig, model: Model<any>): ModelThinkingLevel | undefined {
 	const explicit = config.models[`${model.provider}/${model.id}`] ?? config.models[model.id];
 	return explicit ?? config.default;
 }
@@ -58,20 +58,25 @@ function selectTheme(theme: Theme) {
 	};
 }
 
-export default function effort(pi: ExtensionAPI): void {
+export default function effort(
+	pi: ExtensionAPI,
+	loadConfig: (cwd: string) => EffortConfig = loadEffortConfig,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
 	let config: EffortConfig;
 
-	const applyDefault = (model: Model<any>) => {
-		pi.setThinkingLevel(safeLevel(model, configuredLevel(config, model)));
+	const applyConfiguredEffort = (model: Model<any>) => {
+		const requested = configuredLevel(config, model);
+		if (requested) pi.setThinkingLevel(safeLevel(model, requested));
 	};
 
 	pi.on("session_start", (event, ctx) => {
-		config = loadEffortConfig(ctx.cwd);
-		if (shouldApplyEffortDefault(process.env, event.reason) && ctx.model) applyDefault(ctx.model);
+		config = loadConfig(ctx.cwd);
+		if (shouldApplyEffortDefault(env, event.reason) && ctx.model) applyConfiguredEffort(ctx.model);
 	});
 
 	pi.on("model_select", (event) => {
-		if (shouldApplyEffortDefault(process.env, event.source)) applyDefault(event.model);
+		if (shouldApplyEffortDefault(env, event.source)) applyConfiguredEffort(event.model);
 	});
 
 	pi.registerCommand("effort", {

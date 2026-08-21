@@ -40,7 +40,7 @@ pi --no-extensions \
 
 ## Effort defaults
 
-The default is `medium` for both local and remote models. Unsupported levels are safely clamped for each model. User configuration loads first and repository configuration overrides it:
+PiBox preserves Pi's resolved effort from global settings, CLI flags, or session restoration unless an explicit PiBox override is configured. Unsupported explicit overrides are safely clamped for each model. User configuration loads first and repository configuration overrides it:
 
 - `~/.pi/agent/pibox/effort.yaml`
 - `.pi/pibox-effort.yaml`
@@ -51,7 +51,7 @@ models:
   openai-codex/gpt-5.6-luna: high
 ```
 
-Use `/effort` to select a compatible level interactively, or `/effort high` directly. A per-model entry overrides the shared default. PiBox uses `Shift+Tab` for permission mode instead of effort cycling; set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding.
+Use `/effort` to select a compatible level interactively, or `/effort high` directly. A per-model entry overrides the optional shared PiBox default. PiBox uses `Shift+Tab` for permission mode instead of effort cycling; set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding.
 
 ## Provider capacity and usage
 

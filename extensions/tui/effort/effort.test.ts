@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Model } from "@earendil-works/pi-ai";
-import { configuredLevel, shouldApplyEffortDefault, supportedLevels } from "./index.js";
+import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import effort, { configuredLevel, shouldApplyEffortDefault, supportedLevels } from "./index.js";
 import type { EffortConfig } from "./config.js";
 
 function model(provider: string, id: string, thinkingLevelMap: Model<any>["thinkingLevelMap"]): Model<any> {
@@ -20,7 +21,23 @@ test("uses Pi's tristate effort semantics for omitted, null, and mapped levels",
 	assert.deepEqual(supportedLevels(maxWithoutXhigh), ["off", "minimal", "low", "medium", "high", "max"]);
 });
 
-test("local and remote models retain configured defaults", () => {
+test("Pi's resolved effort survives when PiBox has no explicit override", async () => {
+	assert.equal(configuredLevel({ models: {} }, local), undefined);
+	assert.equal(configuredLevel({ models: {} }, other), undefined);
+
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => unknown>();
+	const applied: ModelThinkingLevel[] = [];
+	const pi = {
+		on(name: string, handler: (event: any, ctx: ExtensionContext) => unknown) { handlers.set(name, handler); },
+		registerCommand() {},
+		setThinkingLevel(level: ModelThinkingLevel) { applied.push(level); },
+	} as unknown as ExtensionAPI;
+	effort(pi, () => ({ models: {} }), {});
+	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: process.cwd(), model: other } as ExtensionContext);
+	assert.deepEqual(applied, [], "the extension must not overwrite Pi's globally resolved effort");
+});
+
+test("local and remote models retain explicit PiBox defaults", () => {
 	assert.equal(configuredLevel(config, local), "high");
 	assert.equal(configuredLevel(config, other), "high");
 });

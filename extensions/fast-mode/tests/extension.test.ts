@@ -3,7 +3,15 @@ import test from "node:test";
 import type { Model } from "@earendil-works/pi-ai";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import fastMode, { applyFastModeSetting, restoreFastModePolicy } from "../index.js";
-import { FAST_MODE_CHILD_ENV, FAST_MODE_ENTRY_TYPE, FAST_MODE_POLICY_EVENT, FAST_MODE_STATUS_KEY, parseFastModeStatus } from "../policy.js";
+import {
+	DEFAULT_FAST_MODE_POLICY,
+	FAST_MODE_CHILD_ENV,
+	FAST_MODE_ENTRY_TYPE,
+	FAST_MODE_POLICY_EVENT,
+	FAST_MODE_STATUS_KEY,
+	parseFastModeStatus,
+	resolveFastModeDefaults,
+} from "../policy.js";
 
 initTheme("dark", false);
 
@@ -11,6 +19,7 @@ const eligibleModel = { provider: "openai-codex", api: "openai-codex-responses",
 
 function context(entries: unknown[] = [], model: Model<any> = eligibleModel): ExtensionContext {
 	return {
+		cwd: process.cwd(),
 		mode: "tui",
 		hasUI: true,
 		model,
@@ -30,6 +39,19 @@ test("restores the last valid branch entry and isolates explicit child launch st
 	assert.deepEqual(restoreFastModePolicy(context(entries), { PIBOX_SUBAGENT_ID: "agent-1", [FAST_MODE_CHILD_ENV]: "0" }), { main: false, subagents: "off" });
 	assert.deepEqual(restoreFastModePolicy(context(entries), { [FAST_MODE_CHILD_ENV]: "1" }), { main: true, subagents: "off" });
 	assert.deepEqual(restoreFastModePolicy(context([]), {}), { main: false, subagents: "off" });
+	assert.deepEqual(restoreFastModePolicy(context([]), {}, { main: false, subagents: "medium" }), { main: false, subagents: "medium" });
+	assert.deepEqual(
+		restoreFastModePolicy(context(entries), {}, { main: true, subagents: "max" }),
+		{ main: false, subagents: "high" },
+		"session entries override global defaults",
+	);
+});
+
+test("resolves independent opt-in global setting fields", () => {
+	assert.deepEqual(resolveFastModeDefaults(undefined), DEFAULT_FAST_MODE_POLICY);
+	assert.deepEqual(resolveFastModeDefaults({ subagents: "medium" }), { main: false, subagents: "medium" });
+	assert.deepEqual(resolveFastModeDefaults({ main: true }), { main: true, subagents: "off" });
+	assert.deepEqual(resolveFastModeDefaults({ main: "yes", subagents: "invalid" }), DEFAULT_FAST_MODE_POLICY);
 });
 
 test("maps the two menu settings without manufacturing combinations", () => {
@@ -53,7 +75,7 @@ test("registers session restoration, request rewriting, status, and cleanup", as
 		registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, command); },
 		appendEntry(type: string, data: unknown) { appended.push({ type, data }); },
 	} as unknown as ExtensionAPI;
-	fastMode(pi, {});
+	fastMode(pi, {}, () => ({ main: false, subagents: "medium" }));
 	assert.ok(commands.has("fast"));
 
 	const statuses = new Map<string, string | undefined>();
@@ -83,7 +105,7 @@ test("registers session restoration, request rewriting, status, and cleanup", as
 	assert.deepEqual(emitted.at(-1), { name: FAST_MODE_POLICY_EVENT, value: { main: false, subagents: "off" } });
 	const replacementCtx = { ...context([]), ui: ctx.ui } as unknown as ExtensionContext;
 	await handlers.get("session_start")?.[0]?.({ reason: "resume" }, replacementCtx);
-	assert.deepEqual(parseFastModeStatus(statuses.get(FAST_MODE_STATUS_KEY)), { mainAvailable: true, mainEnabled: false, subagents: "off" }, "replacement session does not inherit prior in-memory policy");
+	assert.deepEqual(parseFastModeStatus(statuses.get(FAST_MODE_STATUS_KEY)), { mainAvailable: true, mainEnabled: false, subagents: "medium" }, "replacement session loads global defaults instead of prior in-memory policy");
 	await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, replacementCtx);
 	assert.deepEqual(appended, []);
 });
@@ -97,7 +119,7 @@ test("renders the in-place /fast settings menu and persists each complete change
 		registerCommand(_name: string, value: typeof command) { command = value; },
 		appendEntry(_type: string, data: unknown) { appended.push(data); },
 	} as unknown as ExtensionAPI;
-	fastMode(pi, {});
+	fastMode(pi, {}, () => ({ main: false, subagents: "off" }));
 	let rendered: string[] = [];
 	let component: { render(width: number): string[]; handleInput?(data: string): void } | undefined;
 	const theme = { fg: (_token: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;

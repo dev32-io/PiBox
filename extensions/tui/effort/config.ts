@@ -7,11 +7,11 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 export const EFFORT_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ModelThinkingLevel[];
 
 export interface EffortConfig {
-	default: ModelThinkingLevel;
-	models: Record<string, ModelThinkingLevel>; 
+	default?: ModelThinkingLevel;
+	models: Record<string, ModelThinkingLevel>;
 }
 
-export const DEFAULT_EFFORT_CONFIG: Readonly<EffortConfig> = { default: "medium", models: {} };
+export const DEFAULT_EFFORT_CONFIG: Readonly<EffortConfig> = { models: {} };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,8 +44,9 @@ function readConfig(path: string): Partial<EffortConfig> {
 export function loadEffortConfig(cwd: string): EffortConfig {
 	const user = readConfig(join(homedir(), ".pi", "agent", "pibox", "effort.yaml"));
 	const repository = readConfig(join(cwd, ".pi", "pibox-effort.yaml"));
+	const defaultLevel = repository.default ?? user.default;
 	return {
-		default: repository.default ?? user.default ?? DEFAULT_EFFORT_CONFIG.default,
+		...(defaultLevel ? { default: defaultLevel } : {}),
 		models: { ...user.models, ...repository.models },
 	};
 }

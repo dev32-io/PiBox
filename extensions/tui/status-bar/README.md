@@ -4,7 +4,7 @@ A Pikit-spaced footer adapted to `rattle`, with an upper model/project/Git/conte
 
 Formatting intentionally includes:
 
-- `Thinking: MEDIUM` capitalization
+- `Effort: MEDIUM` capitalization
 - `T: total (cached cached) ↑ input ↓ output`
 - Spaces after direction arrows
 - One-decimal context percentage and `/ window` label

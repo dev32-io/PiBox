@@ -68,27 +68,27 @@ test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
 	assert.match(text, /42\.0%/);
 	assert.match(text, /\/ 100k/);
-	assert.match(text, /◆ Permissions: ENFORCED │ Thinking: MEDIUM/);
+	assert.match(text, /◆ Permissions: ENFORCED │ Effort: MEDIUM/);
 	assert.match(text, /↑ 12k/);
 	assert.match(text, /↓ 810/);
 	assert.match(text, /\$0\.04/);
 });
 
-test("bypass permission mode is rendered before thinking", () => {
+test("bypass permission mode is rendered before effort", () => {
 	const row = renderStatusBar(160, { ...data, permissionMode: "bypass" })[3] ?? "";
-	assert.match(row, /⚠ Permissions: BYPASS │ Thinking: MEDIUM/);
+	assert.match(row, /⚠ Permissions: BYPASS │ Effort: MEDIUM/);
 });
 
-test("renders compact requested Fast-mode scopes after thinking", () => {
+test("renders compact requested Fast-mode scopes after effort", () => {
 	const off = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.match(off, /Thinking: MEDIUM │ Fast req: OFF/);
+	assert.match(off, /Effort: MEDIUM │ Fast req: OFF/);
 	const main = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "off" } })[3] ?? "";
-	assert.match(main, /Thinking: MEDIUM │ Fast req: MAIN/);
+	assert.match(main, /Effort: MEDIUM │ Fast req: MAIN/);
 	for (const [limit, label] of [["low", "LOW"], ["medium", "MED"], ["high", "HIGH"], ["max", "MAX"]] as const) {
 		const combined = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: limit } })[3] ?? "";
-		assert.match(combined, new RegExp(`Thinking: MEDIUM │ Fast req: MAIN\\+SUB≤${label}`));
+		assert.match(combined, new RegExp(`Effort: MEDIUM │ Fast req: MAIN\\+SUB≤${label}`));
 		const subagentsOnly = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: limit } })[3] ?? "";
-		assert.match(subagentsOnly, new RegExp(`Thinking: MEDIUM │ Fast req: SUB≤${label}`));
+		assert.match(subagentsOnly, new RegExp(`Effort: MEDIUM │ Fast req: SUB≤${label}`));
 	}
 });
 
@@ -120,10 +120,10 @@ test("hides unavailable or width-constrained Fast-mode status without harming co
 	assert.ok(visibleWidth(narrow) <= 60);
 });
 
-test("services share one optional row below thinking", () => {
+test("services share one optional row below effort", () => {
 	const lines = renderStatusBar(120, { ...data, serviceStatuses: ["● Mem0", "● SearXNG", "○ Visual companion"] });
 	assert.equal(lines.length, 5);
-	assert.match(lines[3] ?? "", /Thinking: MEDIUM/);
+	assert.match(lines[3] ?? "", /Effort: MEDIUM/);
 	assert.match(lines[4] ?? "", /● Mem0 │ ● SearXNG │ ○ Visual companion/);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
 });

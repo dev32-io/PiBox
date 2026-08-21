@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getSettingsListTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import {
 	DEFAULT_FAST_MODE_POLICY,
@@ -10,9 +10,11 @@ import {
 	FAST_MODE_STATUS_KEY,
 	normalizeFastModePolicy,
 	projectFastModeStatus,
+	resolveFastModeDefaults,
 	serializeFastModeStatus,
 	withFastServiceTier,
 	type FastModePolicy,
+	type FastModeSettings,
 	type SubagentFastLimit,
 } from "./policy.js";
 
@@ -35,7 +37,20 @@ function isChildProcess(env: NodeJS.ProcessEnv = process.env): boolean {
 	return Boolean(env.PIBOX_SUBAGENT_ID) || env[FAST_MODE_CHILD_ENV] === "1" || env[FAST_MODE_CHILD_ENV] === "0";
 }
 
-export function restoreFastModePolicy(ctx: ExtensionContext, env: NodeJS.ProcessEnv = process.env): FastModePolicy {
+export function loadGlobalFastModePolicy(cwd: string): FastModePolicy {
+	try {
+		const settings = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: false }).getGlobalSettings() as { fastMode?: FastModeSettings };
+		return resolveFastModeDefaults(settings.fastMode);
+	} catch {
+		return { ...DEFAULT_FAST_MODE_POLICY };
+	}
+}
+
+export function restoreFastModePolicy(
+	ctx: ExtensionContext,
+	env: NodeJS.ProcessEnv = process.env,
+	defaults: FastModePolicy = DEFAULT_FAST_MODE_POLICY,
+): FastModePolicy {
 	if (isChildProcess(env)) return { main: env[FAST_MODE_CHILD_ENV] === "1", subagents: "off" };
 	const entries = ctx.sessionManager.getBranch();
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -44,7 +59,7 @@ export function restoreFastModePolicy(ctx: ExtensionContext, env: NodeJS.Process
 		const restored = normalizeFastModePolicy(entry.data);
 		if (restored) return restored;
 	}
-	return { ...DEFAULT_FAST_MODE_POLICY };
+	return { ...defaults };
 }
 
 function subagentLimitForLabel(label: string): SubagentFastLimit | undefined {
@@ -60,7 +75,11 @@ export function applyFastModeSetting(policy: FastModePolicy, id: string, value: 
 	return undefined;
 }
 
-export default function fastMode(pi: ExtensionAPI, env: NodeJS.ProcessEnv = process.env): void {
+export default function fastMode(
+	pi: ExtensionAPI,
+	env: NodeJS.ProcessEnv = process.env,
+	loadDefaults: (cwd: string) => FastModePolicy = loadGlobalFastModePolicy,
+): void {
 	let policy: FastModePolicy = { ...DEFAULT_FAST_MODE_POLICY };
 	let sessionCtx: ExtensionContext | undefined;
 	let childProcess = false;
@@ -82,7 +101,8 @@ export default function fastMode(pi: ExtensionAPI, env: NodeJS.ProcessEnv = proc
 	const restore = (ctx: ExtensionContext) => {
 		sessionCtx = ctx;
 		childProcess = isChildProcess(env);
-		applyPolicy(restoreFastModePolicy(ctx, env), false);
+		const defaults = childProcess ? DEFAULT_FAST_MODE_POLICY : loadDefaults(ctx.cwd);
+		applyPolicy(restoreFastModePolicy(ctx, env, defaults), false);
 	};
 
 	pi.registerCommand("fast", {
