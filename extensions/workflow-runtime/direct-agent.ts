@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { ALL_TOOLS_SELECTOR, ALL_TOOLS_SUBAGENT_ENV, SUBAGENT_CONTROL_TOOLS } from "../workflow/tool-groups.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 
 export interface DirectAgentOptions {
@@ -148,12 +149,17 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 	}
 	const systemPrompt = [agentPrompt.trim(), options.additionalPrompt?.trim(), options.persistentContext?.trim()].filter(Boolean).join("\n\n");
 	await writeFile(promptFile, `${systemPrompt}\n`, { encoding: "utf8", mode: 0o600 });
+	const allTools = options.tools.includes(ALL_TOOLS_SELECTOR);
+	const toolArgs = allTools
+		? ["--exclude-tools", SUBAGENT_CONTROL_TOOLS.join(",")]
+		: ["--tools", options.tools.join(",")];
+	const childEnv = { ...process.env, ...options.env, ...(allTools ? { [ALL_TOOLS_SUBAGENT_ENV]: "1" } : {}) };
 	const args = [
 		...(options.extensionPaths ?? []).flatMap((path) => ["-e", path]),
 		"--mode", "json", "-p", ...(options.sessionFile ? ["--session", options.sessionFile] : ["--no-session"]),
 		"--model", `${options.provider}/${options.model}`,
 		"--thinking", options.effort,
-		"--tools", options.tools.join(","),
+		...toolArgs,
 		"--append-system-prompt", promptFile,
 		...(options.skillPaths ?? []).flatMap((path) => ["--skill", path]),
 		options.task,
@@ -184,7 +190,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 						shell: false,
 						stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
 						detached: true,
-						env: { ...process.env, ...options.env },
+						env: childEnv,
 					});
 					options.onSpawn?.(child.pid);
 					child.on("error", () => resolveExit(1));
@@ -212,7 +218,7 @@ export async function runDirectAgent(options: DirectAgentOptions): Promise<Direc
 				cwd: options.cwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...process.env, ...options.env },
+				env: childEnv,
 			});
 			options.onSpawn?.(child.pid);
 			const processLine = (line: string) => {

@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment, mcpServerAllowlist, PIBOX_ALLOWED_MCP_SERVERS_ENV } from "../mcp-capabilities.js";
+import { ALL_TOOLS_SELECTOR, authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment, mcpServerAllowlist, PIBOX_ALLOWED_MCP_SERVERS_ENV } from "../mcp-capabilities.js";
 
 test("derives a deduplicated MCP server allowlist from ordinary tool selectors", () => {
 	const selectors = ["read", "mcp:playwright", "mcp:context7", "mcp:playwright"];
 	assert.deepEqual(mcpServerAllowlist(selectors), ["playwright", "context7"]);
 	assert.deepEqual(mcpLaunchEnvironment(selectors), { [PIBOX_ALLOWED_MCP_SERVERS_ENV]: "playwright,context7" });
+	assert.deepEqual(mcpLaunchEnvironment([ALL_TOOLS_SELECTOR, "mcp:playwright"]), {}, "wildcard unions retain every configured MCP server");
 	assert.deepEqual(configuredMcpServerAllowlist({ [PIBOX_ALLOWED_MCP_SERVERS_ENV]: "playwright, context7" } as NodeJS.ProcessEnv), ["playwright", "context7"]);
 	assert.equal(configuredMcpServerAllowlist({} as NodeJS.ProcessEnv), undefined);
 });

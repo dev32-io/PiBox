@@ -173,7 +173,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 test("general-purpose supports arbitrary main-session assignments without recursive spawning", async () => {
 	const content = await readFile(join(root, "agent-definitions/general-purpose.md"), "utf8");
 	const { frontmatter, body } = parseFrontmatter<{ description?: unknown; tools?: unknown }>(content);
-	assert.deepEqual(frontmatter.tools, ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp:playwright", "mcp:context7"]);
+	assert.deepEqual(frontmatter.tools, ["*"]);
 	assert.match(String(frontmatter.description), /assignments delegated by the main session/i);
 	assert.match(body, /Use judgment about the methods needed/i);
 	assert.match(body, /Do not delegate or spawn another agent/i);

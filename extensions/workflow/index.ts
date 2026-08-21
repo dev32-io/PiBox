@@ -32,7 +32,7 @@ import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CO
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
-import { DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors } from "./tool-groups.js";
+import { ALL_TOOLS_SUBAGENT_ENV, DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors, SUBAGENT_CONTROL_TOOLS } from "./tool-groups.js";
 import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment } from "./mcp-capabilities.js";
 import { resourceDisplayDiff } from "./resource-diff.js";
 import { RepairRecoveryStore } from "./repair-recovery.js";
@@ -1641,9 +1641,12 @@ export default function workflow(pi: ExtensionAPI): void {
 		const disallowed = new Set<string>();
 		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...SUBAGENT_CONTROL_TOOLS].forEach((name) => disallowed.add(name));
 		else [...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		pi.setActiveTools(pi.getActiveTools().filter((name) => !disallowed.has(name)));
+		const activeTools = isSubagentProcess() && process.env[ALL_TOOLS_SUBAGENT_ENV] === "1"
+			? pi.getAllTools().map((tool) => tool.name)
+			: pi.getActiveTools();
+		pi.setActiveTools(activeTools.filter((name) => !disallowed.has(name)));
 		if (isSubagentProcess()) {
 			const agentRoot = process.env.PIBOX_SUBAGENT_ROOT;
 			const attemptId = process.env.PIBOX_SUBAGENT_ATTEMPT_ID;

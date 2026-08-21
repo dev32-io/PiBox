@@ -1,4 +1,6 @@
-import { parseMcpToolSelector } from "./mcp-capabilities.js";
+import { ALL_TOOLS_SELECTOR, parseMcpToolSelector } from "./mcp-capabilities.js";
+
+export { ALL_TOOLS_SELECTOR } from "./mcp-capabilities.js";
 
 /**
  * Namespaced tool selectors keep harness capabilities out of launch-site lists.
@@ -6,6 +8,8 @@ import { parseMcpToolSelector } from "./mcp-capabilities.js";
  * a selector at runtime before the concrete Pi tool list is resolved.
  */
 export const DEFAULT_SUBAGENT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+export const ALL_TOOLS_SUBAGENT_ENV = "PIBOX_SUBAGENT_ALL_TOOLS";
+export const SUBAGENT_CONTROL_TOOLS = ["subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"] as const;
 
 export const PIBOX_TOOL_GROUPS = {
 	"pibox:task": ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"],

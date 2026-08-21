@@ -8,6 +8,7 @@ import { SessionAgentRegistry } from "../agent-registry.js";
 import { LaunchCoordinator } from "../launch-coordinator.js";
 import { FAST_MODE_CHILD_ENV } from "../../fast-mode/policy.js";
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../../fast-mode/runtime.js";
+import { ALL_TOOLS_SUBAGENT_ENV, SUBAGENT_CONTROL_TOOLS } from "../../workflow/tool-groups.js";
 
 test("launches a direct child through the registry with file-backed process output", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-coordinator-"));
@@ -67,6 +68,27 @@ test("launches a direct child through the registry with file-backed process outp
 	const attemptRoot = join(registry.root, "agents", record.id, "attempts", record.attempts[0]!.id);
 	await access(join(attemptRoot, "stdout.jsonl"));
 	assert.match(await readFile(join(attemptRoot, "stdout.jsonl"), "utf8"), /mapped repository/);
+});
+
+test("wildcard tool unions enable all child tools except recursive subagent controls", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-all-tools-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-all-tools");
+	await registry.initialize("main:session-all-tools");
+	const fake = join(root, "all-tools.mjs");
+	await writeFile(fake, `console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:process.env.${ALL_TOOLS_SUBAGENT_ENV} ?? "missing"}]}}));\n`);
+	let childArgs: string[] = [];
+	const coordinator = new LaunchCoordinator(registry, "main:session-all-tools", (args) => {
+		childArgs = args;
+		return { command: process.execPath, args: [fake] };
+	});
+	const launched = await coordinator.launch({
+		operationId: "all-tools", role: "general-purpose", task: "Research", assignment: {}, cwd: root,
+		provider: "test", model: "fake", effort: "low", tools: ["*", "read"], agentPrompt: "Work directly.",
+	});
+	assert.equal(launched.result.text, "1");
+	assert.equal(childArgs.includes("--tools"), false);
+	assert.equal(childArgs[childArgs.indexOf("--exclude-tools") + 1], SUBAGENT_CONTROL_TOOLS.join(","));
 });
 
 test("treats a terminal assistant error as failure when Pi exits zero", async (t) => {

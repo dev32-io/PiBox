@@ -24,7 +24,7 @@ test("derives built-in agent policy from standard markdown frontmatter", () => {
 	const generalPurpose = DEFAULT_HARNESS_CONFIG.agents["general-purpose"];
 	assert.match(generalPurpose?.prompt ?? "", /agent-definitions\/general-purpose\.md$/);
 	assert.equal(generalPurpose?.description, "General execution of assignments delegated by the main session");
-	assert.deepEqual(generalPurpose?.tools, ["read", "grep", "find", "ls", "bash", "edit", "write", "mcp:playwright", "mcp:context7"]);
+	assert.deepEqual(generalPurpose?.tools, ["*"]);
 	assert.equal(generalPurpose?.canDelegate, false);
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.explorer?.tier, "low");

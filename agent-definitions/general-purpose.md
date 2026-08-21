@@ -1,7 +1,7 @@
 ---
 name: general-purpose
 description: General execution of assignments delegated by the main session
-tools: [read, grep, find, ls, bash, edit, write, mcp:playwright, mcp:context7]
+tools: ["*"]
 tier: medium
 ---
 

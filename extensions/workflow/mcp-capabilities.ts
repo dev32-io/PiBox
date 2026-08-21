@@ -1,3 +1,4 @@
+export const ALL_TOOLS_SELECTOR = "*";
 export const MCP_TOOL_SELECTOR_PREFIX = "mcp:";
 export const PIBOX_ALLOWED_MCP_SERVERS_ENV = "PIBOX_ALLOWED_MCP_SERVERS";
 
@@ -13,6 +14,7 @@ export function mcpServerAllowlist(selectors: readonly string[]): string[] {
 }
 
 export function mcpLaunchEnvironment(selectors: readonly string[]): Record<string, string> {
+	if (selectors.includes(ALL_TOOLS_SELECTOR)) return {};
 	const servers = mcpServerAllowlist(selectors);
 	return servers.length > 0 ? { [PIBOX_ALLOWED_MCP_SERVERS_ENV]: servers.join(",") } : {};
 }
