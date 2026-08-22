@@ -65,7 +65,7 @@ function ensureInside(root: string, path: string): void {
 const SENSITIVE_EVIDENCE_NAME = /(^|[._-])(env|credentials?|secrets?|private|token|password|passwd|api[-_]?key|transcript|session)([._-]|$)|\.(pem|key|p12|pfx)$/i;
 const SENSITIVE_EVIDENCE_CONTENT = /(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[^\s]+)/i;
 
-async function validateEvidenceSource(repositoryRoot: string, source: string): Promise<string> {
+export async function validateEvidenceSource(repositoryRoot: string, source: string): Promise<string> {
 	let lexical = resolve(repositoryRoot, source);
 	let absolute = await realpath(lexical).catch(() => undefined);
 	if (!absolute) {
@@ -81,6 +81,8 @@ async function validateEvidenceSource(repositoryRoot: string, source: string): P
 	const allowedRoots = await Promise.all([repositoryRoot, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => resolve(root))));
 	if (!allowedRoots.some((root) => absolute !== root && absolute.startsWith(`${root}${sep}`))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source resolves outside the repository or operating-system temporary directory: ${source}`);
 	if (SENSITIVE_EVIDENCE_NAME.test(basename(absolute)) || SENSITIVE_EVIDENCE_NAME.test(basename(lexical))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source looks sensitive: ${source}. Provide a sanitized minimal artifact instead.`);
+	const info = await stat(absolute).catch(() => undefined);
+	if (!info?.isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence path is not a regular file: ${source}. Provide a specific sanitized file instead of a directory.`);
 	const content = await readFile(absolute);
 	// Fail closed only on obvious credential/private-transcript indicators. PiBox does
 	// not claim to redact arbitrary secrets; callers must curate minimal evidence.
@@ -1333,7 +1335,13 @@ export class WorkItemStore {
 		const attemptReportPath = join(evaluationRoot, "attempts", `${String(attemptNumber).padStart(3, "0")}-report.md`);
 		const previousIndex = await readFile(indexPath, "utf8");
 		const previousReport = await readFile(reportPath, "utf8").catch(() => undefined);
+		const previousManifest = await readFile(manifestPath, "utf8").catch(() => undefined);
+		// Validate every source before creating or copying canonical evidence. A later
+		// invalid path must not leave earlier evidence as untracked rollback debris.
+		const evidenceSources = await Promise.all(input.evidence.map((evidence) => evidence?.path ? validateEvidenceSource(this.repositoryRoot, evidence.path) : undefined));
 		const evidenceEntries: Array<Record<string, unknown>> = [];
+		const attemptPrefix = String(attemptNumber).padStart(3, "0");
+		const evidenceDestinations = evidenceSources.map((source, indexValue) => source ? join(evidenceRoot, "files", `${attemptPrefix}-${indexValue + 1}-${basename(source)}`) : undefined);
 		await mkdir(join(evidenceRoot, "files"), { recursive: true });
 		try {
 			for (let indexValue = 0; indexValue < input.evidence.length; indexValue++) {
@@ -1342,11 +1350,9 @@ export class WorkItemStore {
 				const entry: Record<string, unknown> = { result: evidence.result };
 				if (evidence.command) entry.command = evidence.command;
 				if (evidence.description) entry.description = evidence.description;
-				if (evidence.path) {
-					const source = await validateEvidenceSource(this.repositoryRoot, evidence.path);
-					const info = await stat(source).catch(() => undefined);
-					if (!info?.isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence path is not a regular file: ${evidence.path}`);
-					const destination = join(evidenceRoot, "files", `${indexValue + 1}-${basename(source)}`);
+				const source = evidenceSources[indexValue];
+				const destination = evidenceDestinations[indexValue];
+				if (evidence.path && source && destination) {
 					await copyFile(source, destination);
 					entry.path = relative(evidenceRoot, destination);
 					entry.checksum = `sha256:${createHash("sha256").update(await readFile(destination)).digest("hex")}`;
@@ -1393,7 +1399,8 @@ export class WorkItemStore {
 				{ path: indexPath, content: previousIndex },
 				{ path: reportPath, ...(previousReport === undefined ? {} : { content: previousReport }) },
 				{ path: attemptReportPath },
-				{ path: evidenceRoot },
+				{ path: manifestPath, ...(previousManifest === undefined ? {} : { content: previousManifest }) },
+				...evidenceDestinations.filter((path): path is string => Boolean(path)).map((path) => ({ path })),
 			], error);
 		}
 	}

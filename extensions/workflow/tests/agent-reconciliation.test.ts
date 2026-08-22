@@ -43,6 +43,32 @@ async function git(cwd: string, ...args: string[]): Promise<string> { return (aw
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("failed canonical evaluation settlement stops projecting the exited run as active", async () => {
+	let run = { workItemId: "review", evaluationId: "evaluation", attempt: 1, state: "running" };
+	const runs = {
+		async read() { return run; },
+		async update(_runId: string, patch: Record<string, unknown>) { run = { ...run, ...patch } as typeof run; return run; },
+	};
+	const workItems = {
+		coordinator: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } },
+		async readEvaluation() { throw new Error("invalid directory evidence"); },
+	};
+	await assert.rejects(settleManagedEvaluation({
+		workItems: workItems as any,
+		runs: runs as any,
+		workItemId: "review",
+		evaluationId: "evaluation",
+		runId: "run-id",
+		handoff: { schemaVersion: 1, type: "evaluation_complete", runId: "run-id", evaluationId: "evaluation", verdict: "fail", report: "failed", evidence: [], findings: [], completedAt: new Date().toISOString() },
+		reviewerAgentId: "reviewer",
+		reviewedCommit: "a".repeat(40),
+		exitCode: 0,
+		completionEvent: "run.completed",
+	}), /invalid directory evidence/);
+	assert.equal(run.state, "failed");
+	assert.match(String((run as any).error), /Evaluation settlement failed/);
+});
+
 test("reviewer lifecycle follows verdict and replaces terminal legacy identities", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-reviewer-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

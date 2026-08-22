@@ -261,8 +261,28 @@ test("evaluation evidence accepts source citations with line ranges", async (t) 
 	});
 	const evidenceRoot = join(root, "agent-artifacts", "line-citations", "evidence", "review");
 	const manifest = await readFile(join(evidenceRoot, "manifest.yaml"), "utf8");
-	assert.match(manifest, /path: files\/1-README\.md/);
-	assert.equal(await readFile(join(evidenceRoot, "files", "1-README.md"), "utf8"), "# Fixture\n");
+	assert.match(manifest, /path: files\/001-1-README\.md/);
+	assert.equal(await readFile(join(evidenceRoot, "files", "001-1-README.md"), "utf8"), "# Fixture\n");
+});
+
+test("evaluation evidence rejects directories before copying any canonical files", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "directory-evidence", title: "Directory Evidence", kind: "change", intent: "Reject non-file evidence atomically." });
+	await store.defineEvaluation("directory-evidence", { schemaVersion: 1, id: "review", type: "combined-review", scope: { workItem: "directory-evidence" }, status: "planned", required: true, attempt: 0, methods: ["review"] });
+	await mkdir(join(root, "evidence-directory"));
+	await assert.rejects(store.recordEvaluation({
+		workItemId: "directory-evidence", evaluationId: "review", verdict: "fail", report: "Directory evidence is invalid.",
+		evidence: [
+			{ path: "README.md", result: "Valid file appears before the invalid source." },
+			{ path: "evidence-directory", result: "Directories are not canonical evidence files." },
+		],
+		findings: [],
+	}), /Evidence path is not a regular file.*specific sanitized file/);
+	const evidenceRoot = join(root, "agent-artifacts", "directory-evidence", "evidence", "review");
+	await assert.rejects(readFile(join(evidenceRoot, "files", "001-1-README.md")), /ENOENT/);
+	assert.equal((await store.readEvaluation("directory-evidence", "review")).attempt, 0);
+	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
 test("failed later evaluation recording preserves prior attempt evidence", async (t) => {
@@ -280,10 +300,11 @@ test("failed later evaluation recording preserves prior attempt evidence", async
 	};
 	const failing = store as unknown as { commit: () => Promise<void> };
 	failing.commit = async () => { throw new Error("second evaluation commit failure"); };
-	await assert.rejects(store.recordEvaluation({ workItemId: "evaluation-rollback", evaluationId: "review", verdict: "pass", report: "second report", evidence: [{ command: "second-check", result: "passed" }], findings: [] }), /second evaluation commit failure/);
+	await assert.rejects(store.recordEvaluation({ workItemId: "evaluation-rollback", evaluationId: "review", verdict: "pass", report: "second report", evidence: [{ command: "second-check", result: "passed", path: "README.md" }], findings: [] }), /second evaluation commit failure/);
 	assert.equal(await readFile(join(evaluationRoot, "evaluation.yaml"), "utf8"), before.evaluation);
 	assert.equal(await readFile(join(evaluationRoot, "report.md"), "utf8"), before.report);
 	assert.equal(await readFile(join(evidenceRoot, "manifest.yaml"), "utf8"), before.evidence);
+	await assert.rejects(readFile(join(evidenceRoot, "files", "002-1-README.md")), /ENOENT/);
 	await assert.rejects(readFile(join(evaluationRoot, "attempts", "002-report.md")), /ENOENT/);
 	assert.equal((await store.readEvaluation("evaluation-rollback", "review")).attempt, 1);
 	assert.equal(await git(root, "status", "--porcelain"), "");

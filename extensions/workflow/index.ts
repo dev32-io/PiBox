@@ -1480,14 +1480,14 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "evaluation_record",
 		label: "Record Workflow Evaluation",
-		description: "Atomically record a completed planned evaluation, curated report, and checksummed evidence manifest.",
+		description: "Atomically record a completed planned evaluation, curated report, and checksummed evidence manifest. Evidence paths must name individual sanitized regular files; directories are not accepted.",
 		parameters: Type.Object({
 			workItemId: Type.String(),
 			evaluationId: Type.String(),
 			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
 			report: Type.String({ description: "Evaluation observations; canonical report headings are rendered deterministically." }),
 			residualRisks: Type.Optional(Type.Array(Type.String())),
-			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }))),
+			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String({ description: "Optional repository or temporary regular-file path. Directories are unsupported; provide a specific sanitized file." })), description: Type.Optional(Type.String()) }))),
 			findings: Type.Optional(Type.Array(Type.Object({
 				id: Type.String(),
 				severity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),

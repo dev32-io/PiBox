@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository } from "./repository.js";
 import { HarnessRunStore, type EvaluationHandoff } from "./run-store.js";
-import { WorkItemStore } from "./work-items.js";
+import { validateEvidenceSource, WorkItemStore } from "./work-items.js";
 
 const response = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
@@ -74,12 +74,12 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "evaluation_complete",
 		label: "Complete Evaluation",
-		description: "Submit the terminal verdict with observations, evidence, discrete findings, and residual uncertainty.",
+		description: "Submit the terminal verdict with observations, evidence, discrete findings, and residual uncertainty. Evidence paths must name individual sanitized regular files; directories are not accepted.",
 		parameters: Type.Object({
 			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
 			report: Type.String({ description: "Concise evaluation observations; canonical report structure is rendered by the capability." }),
 			residualRisks: Type.Optional(Type.Array(Type.String())),
-			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String()), description: Type.Optional(Type.String()) }))),
+			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String({ description: "Optional repository or temporary regular-file path. Directories are unsupported; provide a specific sanitized file." })), description: Type.Optional(Type.String()) }))),
 			findings: Type.Optional(Type.Array(Type.Object({
 				id: Type.String(),
 				severity: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("critical")]),
@@ -94,6 +94,9 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 			try {
 				const auth = await authorized(ctx);
 				if (!params.report.trim()) throw new HarnessError("INVALID_HANDOFF", "Evaluation report must not be empty");
+				// Reject invalid evidence while the evaluator is still alive so it can
+				// correct the handoff instead of failing later during canonical settlement.
+				await Promise.all((params.evidence ?? []).map((evidence) => evidence.path ? validateEvidenceSource(auth.identity.root, evidence.path) : undefined));
 				const handoff: EvaluationHandoff = {
 					schemaVersion: 1,
 					type: "evaluation_complete",
