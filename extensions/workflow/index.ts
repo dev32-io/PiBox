@@ -41,6 +41,7 @@ import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
 import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/policy.js";
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
+import { cleanupCompletedWorkItem } from "./completion-cleanup.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
@@ -1542,7 +1543,11 @@ export default function workflow(pi: ExtensionAPI): void {
 						? await runtime.workItems.completeWorkItem(params.workItemId, params.outcome)
 						: await runtime.workItems.completeWorkItem(params.workItemId, undefined, params.outcomeSections);
 					await runtime.events.append("work_item.completed", { workItemId: item.id });
-					await runtime.agents.cleanupWorkItemTransport?.(item.id).catch(() => undefined);
+					await cleanupCompletedWorkItem(runtime.identity, item.id).catch(async () => {
+						// Completion and its semantic event are already durable. Preserve the
+						// prior narrow cleanup as a safe fallback without rolling either back.
+						await runtime.agents.cleanupWorkItemTransport(item.id).catch(() => undefined);
+					});
 					return textResult(`Completed ${item.id}.`, item);
 				});
 			} catch (error) {

@@ -11,6 +11,7 @@ import { atomicWriteFile } from "./repository.js";
 import type { RepositoryIdentity } from "./repository.js";
 import type { NormalizedVerificationCheck } from "./verification-checks.js";
 import { resolveVerificationProfile } from "./verification-config.js";
+import { readCompactedVerificationAttempts } from "./completion-cleanup.js";
 
 const TAIL_LIMIT = 16 * 1024;
 
@@ -132,11 +133,11 @@ export async function readVerificationAttempts(identity: RepositoryIdentity, wor
 			if (!check.isDirectory()) continue;
 			const attemptsRoot = join(stageRoot, check.name, "attempts");
 			const attempts = (await readdir(attemptsRoot).catch(() => [])).filter((name) => /^\d{3,}$/.test(name)).sort((left, right) => Number(left) - Number(right));
-			for (const id of attempts) {
-				const attempt = await readYaml(join(attemptsRoot, id, "attempt.yaml"));
-				if (!attempt || typeof attempt.startedAt !== "string") continue;
+			const physicalIds = new Set(attempts);
+			const append = (attempt: Record<string, unknown>, fallbackId: string) => {
+				if (typeof attempt.startedAt !== "string") return;
 				records.push({
-					id: typeof attempt.id === "string" ? attempt.id : id,
+					id: typeof attempt.id === "string" ? attempt.id : fallbackId,
 					workItemId,
 					stageId: typeof attempt.stageId === "string" ? attempt.stageId : stage.name,
 					checkId: typeof attempt.checkId === "string" ? attempt.checkId : check.name,
@@ -144,10 +145,17 @@ export async function readVerificationAttempts(identity: RepositoryIdentity, wor
 					startedAt: attempt.startedAt,
 					...(typeof attempt.completedAt === "string" ? { completedAt: attempt.completedAt } : {}),
 				});
+			};
+			for (const id of attempts) {
+				const attempt = await readYaml(join(attemptsRoot, id, "attempt.yaml"));
+				if (attempt) append(attempt, id);
+			}
+			for (const archived of await readCompactedVerificationAttempts(attemptsRoot)) {
+				if (!physicalIds.has(archived.id)) append(archived.attempt, archived.id);
 			}
 		}
 	}
-	return records;
+	return records.sort((left, right) => left.startedAt.localeCompare(right.startedAt) || Number(left.id) - Number(right.id));
 }
 
 export async function readStageVerificationActivity(identity: RepositoryIdentity, workItemId: string, stageId: string): Promise<StageVerificationActivity | undefined> {
