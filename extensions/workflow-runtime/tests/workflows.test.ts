@@ -940,6 +940,50 @@ test("manager progress replaces reused fixer startup while workflow reconciliati
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("managed fixer process start refreshes right-widget metric rates", async () => {
+	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "running" } });
+	let publish!: (projection: AgentLiveProjection) => void;
+	let fixerRunning = false;
+	let snapshotReads = 0;
+	const snapshot = (): WorkflowSnapshot => ({
+		ref: "work-item:calendar", title: "Calendar", status: "running",
+		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fixing #2", kind: "evaluation", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
+		metrics: {
+			elapsedMs: 0, runningMs: 0, agentActiveMs: 0, implementerMs: 0, reviewerMs: 0, fixerMs: 0, e2eAgentMs: 0, deterministicMs: 0, harnessSchedulingMs: 0,
+			implementationMs: 0, integrationMs: 0, verificationMs: 0, reviewMs: 0, e2eMs: 0, orchestrationMs: 0, fixes: 1, retries: 0,
+			agentCount: 1, verificationAttempts: 0, inputTokens: 0, outputTokens: 0, toolErrors: 0,
+			live: { sampledAtMs: Date.now(), elapsed: true, running: true, activeCategory: fixerRunning ? "integration" : "orchestration", activeAgents: fixerRunning ? 1 : 0, activeVerifications: 0, activeImplementers: 0, activeReviewers: 0, activeFixers: fixerRunning ? 1 : 0, activeE2e: 0, activeScheduling: 0, orchestrator: !fixerRunning },
+		},
+		repairLoop: { label: "Stage 1 fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:calendar/evaluation:stage-review" },
+	});
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "running", generation: 1, ownerSessionId: "test-session" }; },
+		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
+		async snapshot() { snapshotReads++; return snapshot(); }, async runStep() { return new Promise<WorkflowRunResult>(() => undefined); }, async controlWorkflow() {},
+		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const readsBeforeStart = snapshotReads;
+	const startedAt = new Date().toISOString();
+	fixerRunning = true;
+	publish(liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "running", startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 10, reasoningTokens: 0 } }));
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.ok(snapshotReads > readsBeforeStart, "process start refreshes the workflow metric-rate snapshot");
+	const component = (f.widget() as any)?.({}, f.ctx.ui.theme);
+	const before = component.render(130) as string[];
+	await new Promise((resolve) => setTimeout(resolve, 1_100));
+	const after = component.render(130) as string[];
+	const value = (lines: string[], label: string) => Number(new RegExp(`${label}\\s+(\\d+)s`).exec(lines.find((line) => line.includes(label)) ?? "")?.[1]);
+	assert.ok(value(after, "Fixer") > value(before, "Fixer"), "fixer time advances while its process is active");
+	assert.equal(value(after, "Orchestrator"), value(before, "Orchestrator"), "orchestrator time stops while the fixer owns the interval");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("renders final validation as distinct E2E and whole-branch fix loops", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });

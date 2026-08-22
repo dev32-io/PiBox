@@ -163,6 +163,7 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	const acceptAgentLive = (projection: AgentLiveProjection, epoch: number) => {
 		if (shuttingDown || epoch !== runtimeEpoch) return;
+		const previous = agentLive.get(projection.agentId);
 		const view = dynamicViews.get(projection.operationId);
 		if (projection.active || view) agentLive.set(projection.agentId, projection);
 		else agentLive.delete(projection.agentId);
@@ -170,6 +171,15 @@ export default function workflows(pi: ExtensionAPI): void {
 		renderSubagentStatus();
 		dashboardInvalidate?.();
 		dashboardTui?.requestRender?.();
+		const lifecycleChanged = !previous || previous.active !== projection.active || previous.state !== projection.state ||
+			previous.attemptId !== projection.attemptId || previous.attemptState !== projection.attemptState;
+		const belongsToCurrentWorkflow = projection.workItemId && currentRef === `work-item:${projection.workItemId}`;
+		// Progress stays memory-only and redraws locally. Process start/exit changes
+		// metric rates, so refresh the bounded workflow projection exactly once at
+		// that lifecycle boundary rather than leaving orchestrator/fixer clocks stale.
+		if (lifecycleChanged && (projection.active || previous?.active) && belongsToCurrentWorkflow && sessionCtx && active.get(currentRef!) === "running") {
+			requestTick(sessionCtx, epoch);
+		}
 	};
 
 	const watchAgentLive = (ctx: ExtensionContext) => {
