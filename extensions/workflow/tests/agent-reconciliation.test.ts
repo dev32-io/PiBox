@@ -105,7 +105,7 @@ test("live settlement and reconciliation remain idempotent across every review/f
 		const runs = new HarnessRunStore(identity, scenario.id);
 		const baseCommit = await git(root, "rev-parse", "HEAD");
 		const created = await runs.create({ repositoryId: identity.id, workItemId: scenario.id, evaluationId: "evaluation", role: scenario.type === "e2e" ? "e2e-tester" : "code-reviewer", attempt: 1, state: "running", workspace: root, baseCommit, planningRevision: (await store.read(scenario.id)).planning.revision });
-		const handoff = { schemaVersion: 1 as const, type: "evaluation_complete" as const, runId: created.record.id, evaluationId: "evaluation", verdict: "fail" as const, report: "bounded finding", evidence: [], findings: [{ id: "F1", severity: "high" as const, status: "open" as const, summary: "repair this", blocking: true }], completedAt: new Date().toISOString() };
+		const handoff = { schemaVersion: 1 as const, type: "evaluation_complete" as const, runId: created.record.id, evaluationId: "evaluation", verdict: "fail" as const, report: "bounded finding", evidence: [{ path: "README.md:1-1", result: "source inspected" }], findings: [{ id: "F1", severity: "high" as const, status: "open" as const, summary: "repair this", blocking: true }], completedAt: new Date().toISOString() };
 		await runs.writeEvaluationHandoff(created.record.id, handoff);
 		const registry = new SessionAgentRegistry(identity.privateRoot, `session-${scenario.id}`);
 		await registry.initialize(`main:${scenario.id}`);

@@ -249,6 +249,22 @@ test("removeTask and removeEvaluation report original and rollback failures with
 	});
 });
 
+test("evaluation evidence accepts source citations with line ranges", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "line-citations", title: "Line Citations", kind: "change", intent: "Retain ordinary reviewer source citations." });
+	await store.defineEvaluation("line-citations", { schemaVersion: 1, id: "review", type: "combined-review", scope: { workItem: "line-citations" }, status: "planned", required: true, attempt: 0, methods: ["review"] });
+	await store.recordEvaluation({
+		workItemId: "line-citations", evaluationId: "review", verdict: "fail", report: "A source finding remains.",
+		evidence: [{ path: "README.md:1-1,1", result: "Source inspected", description: "Bounded line citation" }],
+		findings: [{ id: "SRC-001", severity: "medium", status: "open", summary: "Source issue", blocking: true }],
+	});
+	const evidenceRoot = join(root, "agent-artifacts", "line-citations", "evidence", "review");
+	const manifest = await readFile(join(evidenceRoot, "manifest.yaml"), "utf8");
+	assert.match(manifest, /path: files\/1-README\.md/);
+	assert.equal(await readFile(join(evidenceRoot, "files", "1-README.md"), "utf8"), "# Fixture\n");
+});
+
 test("failed later evaluation recording preserves prior attempt evidence", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);

@@ -66,8 +66,17 @@ const SENSITIVE_EVIDENCE_NAME = /(^|[._-])(env|credentials?|secrets?|private|tok
 const SENSITIVE_EVIDENCE_CONTENT = /(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[^\s]+)/i;
 
 async function validateEvidenceSource(repositoryRoot: string, source: string): Promise<string> {
-	const lexical = resolve(repositoryRoot, source);
-	const absolute = await realpath(lexical).catch(() => undefined);
+	let lexical = resolve(repositoryRoot, source);
+	let absolute = await realpath(lexical).catch(() => undefined);
+	if (!absolute) {
+		// Reviewers commonly cite source as path:line or path:start-end,more-ranges.
+		// Preserve that citation in the report while validating/copying the real file.
+		const withoutLineRanges = source.replace(/:(?:L?\d+(?:-L?\d+)?)(?:,(?:L?\d+(?:-L?\d+)?))*$/, "");
+		if (withoutLineRanges !== source) {
+			lexical = resolve(repositoryRoot, withoutLineRanges);
+			absolute = await realpath(lexical).catch(() => undefined);
+		}
+	}
 	if (!absolute) throw new HarnessError("INVALID_ARTIFACT", `Evidence file does not exist: ${source}`);
 	const allowedRoots = await Promise.all([repositoryRoot, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => resolve(root))));
 	if (!allowedRoots.some((root) => absolute !== root && absolute.startsWith(`${root}${sep}`))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source resolves outside the repository or operating-system temporary directory: ${source}`);
