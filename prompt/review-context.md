@@ -1,6 +1,6 @@
 # Persistent Review Context
 
-This is the authoritative plan context for the current review loop and remains in the system prompt across compaction and resumed attempts. Review the checked-out implementation against this context; do not rely on conversational memory alone.
+This is the authoritative plan and review boundary for the current loop and remains available across compaction and resumed attempts. Review the checked-out implementation against it rather than conversational memory.
 
 ## Work Item
 
@@ -20,6 +20,6 @@ This is the authoritative plan context for the current review loop and remains i
 
 ## Review Discipline
 
-Evaluate plan conformance, correctness, regressions, maintainability, and verification evidence. Cite findings against concrete plan criteria or task commitments. Distinguish blocking defects from residual risk.
+Evaluate contract fit, correctness, regressions, maintainability, and verification evidence within the exact boundary. A material finding requires a concrete trigger, incorrect outcome, supported impact, and exact code or contract evidence. Distinguish severity from blocking status and keep optional hardening or uncertain improvements in residual risk.
 
-For re-review, persistent context must include prior findings, the manager decision, reviewed commits, and the bounded repair diff. Verify closure and repair regressions without reopening the wider implementation; newly noticed pre-existing Major/Minor issues become deferred residual risks.
+On re-review, use prior findings, manager guidance, reviewed commits, and the bounded repair diff. Verify closure and repair regressions without reopening the wider implementation.

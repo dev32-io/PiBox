@@ -7,22 +7,41 @@ tier: medium
 
 # Code Review
 
-Review an implementation against supplied requirements and repository evidence without changing the work.
+Review the supplied code or diff boundary rigorously without changing the work or expanding the requested product.
 
-## Inputs
+## Review Discipline
 
-Establish the requested code or diff boundary, expected behavior, design constraints, repository conventions, and available verification evidence from the assignment.
+- Establish the exact base/head or file boundary, expected behavior, authoritative requirements, and available verification evidence.
+- Inspect the complete bounded change and only the surrounding callers, dependencies, and tests needed to judge it. For a whole-branch boundary, review the assembled diff as one integrated feature and look for cross-stage interactions, incompatible assumptions, duplicated policy, missing wiring, and architectural drift.
+- Check relevant correctness, regression, security, privacy, data-integrity, availability, concurrency, API-contract, error-handling, maintainability, performance, and test-quality risks.
+- Be broad in inspection but strict in finding admission. Report only a changed-code defect, regression, unmet requirement, or required proof gap with a concrete trigger, incorrect outcome, supported impact, and exact code or contract evidence.
+- Do not report pre-existing unrelated issues, personal preferences, tooling-enforced style, hypothetical future requirements, optional refactors, or “could be safer” hardening without a reachable failure mode.
+- Report all material findings in the initial review; do not save known issues for later rounds. Recommend the smallest viable correction or verification step rather than a broad rewrite.
 
-## Instructions
+## Finding Contract
 
-1. Inspect the complete bounded change once and report every currently known finding; do not save issues for a later round.
-2. Check requirement conformance, correctness, edge behavior, regressions, security, maintainability, error handling, and test quality within the boundary.
-3. Ground every finding in a concrete code location, violated requirement, or reproducible observation. Use `Critical`, `Major`, or `Minor` severity (normalize legacy low/medium/high as Minor/Major when recording).
-4. Start the final report with exactly one line: `MERGE: YES`, `MERGE: YES_WITH_RISK`, or `MERGE: NO`. Explain each finding's severity and merge impact.
-5. On re-review, verify every prior finding, inspect the bounded repair diff for regressions, and do not reopen the wider implementation or add non-critical requirements. Newly noticed pre-existing Major/Minor issues are deferred residual risks; only a Critical issue, unmet acceptance requirement, or repair-introduced regression may block another fix.
-6. Avoid duplicating tooling-enforced style results or inventing requirements not present in the assignment.
-7. Judge severity by user and system impact and leave the reviewed work unchanged.
+For each discrete finding state:
+
+- category: defect, regression, contract gap, or missing proof;
+- severity and separate blocking status;
+- concrete input, state, timing, or environment that triggers it;
+- expected versus actual outcome and user/system impact;
+- exact file/line or authoritative contract evidence;
+- smallest viable correction or verification step.
+
+Severity means:
+
+- `Critical`: credible severe security/privacy compromise, irreversible data loss, broad outage, or destructive behavior.
+- `Major`: material supported-path correctness, contract, integrity, availability, performance, or integration failure.
+- `Minor`: confirmed localized defect with limited impact or a practical workaround.
+- `Advisory`: optional improvement or unresolved uncertainty; record only as non-blocking residual risk, not as a defect.
+
+A blocking finding requires a concrete Critical/Major impact or an explicitly unmet acceptance requirement. Severity alone does not establish blocking.
+
+## Re-review
+
+Verify every prior finding and inspect the bounded repair for regressions. Do not reopen the wider implementation or introduce new non-critical requirements. Defer newly noticed pre-existing Major/Minor issues as residual risk; only Critical issues, unmet acceptance, or repair-introduced regressions may block closure.
 
 ## Completion
 
-Return evidence, discrete findings, requirement-level conclusions when applicable, an overall verdict, and residual risks.
+Return a clear merge recommendation, evidence, discrete findings, requirement-level conclusions when applicable, and residual risks. An empty finding set is valid when no material defect meets the threshold.

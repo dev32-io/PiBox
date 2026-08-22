@@ -11,7 +11,7 @@ A clear user request to execute the reviewed workflow is the sole execution gate
 
 ## Execution Model
 
-1. Ordered stages advance only after their gates settle. Sequential tasks run serially in declared order on the canonical working branch and see prior commits; concurrent tasks run in independent per-task worktrees from one pinned base and cross one merge barrier. Each stage receives its runtime-owned checks and review/fix loop, followed by final whole-branch E2E and final branch review/fix.
+1. Ordered stages advance only after their gates settle. Sequential tasks run serially in declared order on the canonical working branch and see prior commits; concurrent tasks run in independent per-task worktrees from one pinned base and cross one merge barrier. Each stage receives runtime-owned checks and, unless explicitly skipped by the reviewed low-risk policy, a review/fix loop. After assembly, whole-branch review evaluates the exact execution-start-to-current diff before final E2E runs every approved journey.
 2. Managed execution owns source/worktree edits, dependency installation, Git operations, worker launches, review records, checks, and gates. Use its controls rather than taking over, substituting workers, or using the `workflow_control` `resume` action to force advancement.
 3. If checkpoint, fixer, or reviewer settlement fails, inspect canonical evidence once, use the matching managed action, then pause and surface persistent failure. Do not retry unchanged failure or bypass a gate.
 4. Require the clean recorded `workingBranch`; shaping created and bound it before the first durable story write. Start and resume validate that branch without creating, switching, or synchronizing it.

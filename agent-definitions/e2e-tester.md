@@ -22,7 +22,7 @@ Validate the approved E2E matrix through real product usage and interaction, and
 - Treat code inspection and broad test suites as supporting evidence, not substitutes.
 - Be skeptical and exercise judgment: a usable, passing case does not necessarily indicate a good product. Report friction, counterintuitive behavior, or antipatterns encountered during testing as findings.
 - Record `caseResults` with `caseId`, `status`, `executedActions`, `observations`, and `evidenceRefs`.
-- Mark unexecutable cases `blocked`; never infer success.
+- Mark unexecutable cases `blocked`; never infer success or return an overall pass unless every required case passes.
 - Never modify product code.
 - Clean up disposable test state.
 

@@ -39,7 +39,18 @@ test("agent definitions stay generic while workflow protocols remain launch-time
 	const review = await readFile(join(root, "prompt/workflow-review-agent.md"), "utf8");
 	assert.match(review, /persistent review context/i);
 	assert.match(review, /Do not call `evaluation_context` as a prerequisite/i);
+	assert.match(review, /concrete trigger[\s\S]+incorrect outcome[\s\S]+supported impact[\s\S]+exact code or contract evidence/i);
+	assert.match(review, /Critical\/Major\/Minor[\s\S]+`critical`\/`high`\/`medium`/i);
+	assert.match(review, /caseResults[\s\S]+every approved matrix case exactly once/i);
 	assert.match(review, /evaluation_complete/);
+	const implementer = await readFile(join(root, "agent-definitions/implementer.md"), "utf8");
+	assert.match(implementer, /smallest correct change, not merely the shortest diff/i);
+	assert.match(implementer, /avoid speculative features, abstractions, compatibility layers, dependencies, and drive-by refactors/i);
+	assert.match(implementer, /defensive handling only for a concrete supported failure mode/i);
+	const codeReviewer = await readFile(join(root, "agent-definitions/code-reviewer.md"), "utf8");
+	assert.match(codeReviewer, /broad in inspection but strict in finding admission/i);
+	assert.match(codeReviewer, /Severity means:[\s\S]+Critical[\s\S]+Major[\s\S]+Minor[\s\S]+Advisory/i);
+	assert.match(codeReviewer, /An empty finding set is valid/i);
 });
 
 test("collaboration phases have focused boundaries and natural handoffs", async () => {
@@ -85,9 +96,9 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /omitted mode is retained only for legacy plans/i);
 	assert.match(delivery, /Sequential tasks run serially in declared order on the canonical working branch and see prior task commits/i);
 	assert.match(delivery, /Concurrent independent tasks run in per-task worktrees from one base and cross one merge barrier/i);
-	assert.match(delivery, /stage's checks[\s\S]+required review\/fix loop/i);
-	assert.match(delivery, /final E2E, then final branch review\/fix/i);
-	assert.match(delivery, /planner authors tasks, stages, checks, and review policy, but never evaluations/i);
+	assert.match(delivery, /stage's checks[\s\S]+explicitly skips that low-risk review/i);
+	assert.match(delivery, /reviews the exact execution-start-to-current branch diff[\s\S]+then runs final E2E/i);
+	assert.match(delivery, /planner authors tasks, stages, checks, and explicit review policy, but never evaluations/i);
 	assert.match(delivery, /Map the seams first/i);
 	assert.match(delivery, /aggressively decompose implementation changes/i);
 	assert.match(delivery, /medium\/smaller worker/i);
@@ -126,8 +137,10 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /complete rendered task contract in persistent context/i);
 	assert.match(delivery, /Use `resource_list` to inventory[\s\S]+`resource_read` to inspect each complete task/i);
 	assert.match(delivery, /Check coverage, vagueness, consistency/i);
-	assert.match(delivery, /runtime runs final E2E with `e2e-tester` at `low` by default, then final branch review/i);
-	assert.match(delivery, /planner authors tasks, stages, checks, and review policy, but never evaluations/i);
+	assert.match(delivery, /review\.mode: required[\s\S]+review\.mode: skip/i);
+	assert.match(delivery, /Review necessity follows risk, observability, reversibility, and boundary crossings—not complexity alone/i);
+	assert.match(delivery, /runtime performs whole-branch review before final E2E/i);
+	assert.match(delivery, /planner (?:authors|creates) neither evaluation|planner authors tasks, stages, checks, and explicit review policy, but never evaluations/i);
 	assert.match(delivery, /approved E2E matrix is binding verification context/i);
 	assert.match(delivery, /Preserve every approved case exactly/i);
 	assert.match(delivery, /Correct only the affected resource with `resource_write`/i);
@@ -152,7 +165,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(run, /## Execution Model/i);
 	assert.match(run, /sequential tasks run serially in declared order on the canonical working branch and see prior commits/i);
 	assert.match(run, /concurrent tasks run in independent per-task worktrees from one pinned base and cross one merge barrier/i);
-	assert.match(run, /runtime-owned checks and review\/fix loop[\s\S]+final whole-branch E2E and final branch review\/fix/i);
+	assert.match(run, /runtime-owned checks[\s\S]+review\/fix loop[\s\S]+whole-branch review[\s\S]+before final E2E/i);
 	assert.match(run, /Managed execution owns source\/worktree edits, dependency installation, Git operations, worker launches, review records, checks, and gates/i);
 	assert.match(run, /`workflow_control` `resume` action to force advancement/i);
 	assert.match(run, /checkpoint, fixer, or reviewer settlement fails[\s\S]+inspect canonical evidence once[\s\S]+matching managed action[\s\S]+pause and surface persistent failure/i);
