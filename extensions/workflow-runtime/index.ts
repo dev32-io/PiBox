@@ -52,6 +52,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const dynamicViews = new Map<string, DynamicSubagentView>();
 	let agentLiveSubscription: { controller: AbortController; unsubscribe?: () => void; epoch: number } | undefined;
 	let agentLiveAuthoritative = false;
+	let agentLiveReady = false;
 	const lifecycleSubscriptions = new Map<string, { controller: AbortController; unsubscribe: (() => void) | undefined }>();
 	let tickRequestedEpoch: number | undefined;
 	let runtimeEpoch = 0;
@@ -159,6 +160,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		agentLiveSubscription?.unsubscribe?.();
 		agentLiveSubscription = undefined;
 		agentLiveAuthoritative = false;
+		agentLiveReady = false;
 	};
 
 	const acceptAgentLive = (projection: AgentLiveProjection, epoch: number) => {
@@ -174,11 +176,12 @@ export default function workflows(pi: ExtensionAPI): void {
 		const lifecycleChanged = !previous || previous.active !== projection.active || previous.state !== projection.state ||
 			previous.attemptId !== projection.attemptId || previous.attemptState !== projection.attemptState;
 		const belongsToCurrentWorkflow = projection.workItemId && currentRef === `work-item:${projection.workItemId}`;
-		// Progress stays memory-only and redraws locally. Process start/exit changes
-		// metric rates, so refresh the bounded workflow projection exactly once at
-		// that lifecycle boundary rather than leaving orchestrator/fixer clocks stale.
-		if (lifecycleChanged && (projection.active || previous?.active) && belongsToCurrentWorkflow && sessionCtx && active.get(currentRef!) === "running") {
-			requestTick(sessionCtx, epoch);
+		// The left row and right-side rate clocks consume one lifecycle state. Rebase
+		// immediately at the event boundary; the ensuing durable snapshot refresh
+		// replaces totals, but can no longer leave an old rate attached to them.
+		if (lifecycleChanged && (projection.active || previous?.active) && belongsToCurrentWorkflow) {
+			if (currentSnapshot) currentSnapshot = reconcileAgentMetricRates(currentSnapshot, true);
+			if (sessionCtx && active.get(currentRef!) === "running") requestTick(sessionCtx, epoch);
 		}
 	};
 
@@ -192,16 +195,22 @@ export default function workflows(pi: ExtensionAPI): void {
 		const subscription: { controller: AbortController; unsubscribe?: () => void; epoch: number } = { controller, epoch };
 		agentLiveSubscription = subscription;
 		agentLiveAuthoritative = true;
+		agentLiveReady = false;
 		void Promise.resolve(adapter.subscribeAgentLive!(ctx, (projection) => acceptAgentLive(projection, epoch), controller.signal)).then((unsubscribe) => {
 			if (controller.signal.aborted || shuttingDown || epoch !== runtimeEpoch || agentLiveSubscription !== subscription) {
 				if (typeof unsubscribe === "function") unsubscribe();
 				return;
 			}
 			if (typeof unsubscribe === "function") subscription.unsubscribe = unsubscribe;
+			agentLiveReady = true;
+			if (currentSnapshot) currentSnapshot = reconcileAgentMetricRates(currentSnapshot);
+			dashboardInvalidate?.();
+			dashboardTui?.requestRender?.();
 		}).catch(() => {
 			if (agentLiveSubscription === subscription) {
 				agentLiveSubscription = undefined;
 				agentLiveAuthoritative = false;
+				agentLiveReady = false;
 			}
 		});
 	};
@@ -426,6 +435,52 @@ export default function workflows(pi: ExtensionAPI): void {
 		};
 	};
 
+	const reconcileAgentMetricRates = (snapshot: WorkflowSnapshot, force = false, now = Date.now()): WorkflowSnapshot => {
+		const metrics = snapshot.metrics;
+		if (!metrics?.live || (!force && !agentLiveReady)) return snapshot;
+		const workItemId = snapshot.ref.startsWith("work-item:") ? snapshot.ref.slice("work-item:".length) : undefined;
+		if (!workItemId) return snapshot;
+		const managed = [...agentLive.values()].filter((projection) => projection.workItemId === workItemId && projection.active);
+		const processActive = managed.filter((projection) => agentLiveProcessStatus(projection) === "active");
+		const activeScheduling = managed.filter((projection) => projection.attemptState === "launching").length;
+		const counts = { implementer: 0, reviewer: 0, fixer: 0, e2e: 0 };
+		for (const projection of processActive) {
+			if (projection.activity?.kind === "repair" || projection.role === "repair-implementer") counts.fixer++;
+			else if (projection.role === "e2e-tester") counts.e2e++;
+			else if (projection.activity?.kind === "review" || projection.role === "code-reviewer") counts.reviewer++;
+			else if (projection.taskId || projection.role === "implementer") counts.implementer++;
+		}
+		const activeVerifications = metrics.live.activeVerifications;
+		const running = metrics.live.running;
+		const activeCategory = counts.e2e > 0 ? "e2e"
+			: counts.reviewer > 0 ? "review"
+				: activeVerifications > 0 ? "verification"
+					: counts.fixer > 0 ? "integration"
+						: counts.implementer > 0 ? "implementation"
+							: running ? "orchestration" : undefined;
+		const frozen = freezeMetricProjection(metrics, now);
+		return {
+			...snapshot,
+			metrics: {
+				...frozen,
+				live: {
+					sampledAtMs: now,
+					elapsed: metrics.live.elapsed,
+					running,
+					...(activeCategory ? { activeCategory } : {}),
+					activeAgents: processActive.length,
+					activeVerifications,
+					activeImplementers: counts.implementer,
+					activeReviewers: counts.reviewer,
+					activeFixers: counts.fixer,
+					activeE2e: counts.e2e,
+					activeScheduling,
+					orchestrator: running && processActive.length === 0 && activeVerifications === 0,
+				},
+			},
+		};
+	};
+
 	const metricRows = (snapshot: WorkflowSnapshot): Array<readonly [string, string]> => {
 		const metrics = snapshot.metrics!;
 		return [
@@ -608,7 +663,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				if (shuttingDown || epoch !== runtimeEpoch || !sessionCtx) return;
 				observeStageCompletions(snapshot);
 				if (ref === currentRef) {
-					currentSnapshot = { ...snapshot, steps: snapshot.steps.map((step) => isCurrentInFlight(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) };
+					currentSnapshot = reconcileAgentMetricRates({ ...snapshot, steps: snapshot.steps.map((step) => isCurrentInFlight(step.ref) && step.status !== "done" ? { ...step, status: "running" } : step) });
 					renderDashboard(ctx);
 				}
 				// Reconciliation and snapshot reads cross asynchronous boundaries. Never
@@ -746,7 +801,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				progress("Starting workflow"); activateWorkflowBypass();
 				const control = await adapter.controlExecution?.(params.ref, "start", `tool:${toolCallId}`, ctx);
 				if (control) ownership.set(params.ref, control.generation);
-				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = snapshot; persist(params.ref, "running"); renderDashboard(ctx);
+				active.set(params.ref, "running"); currentRef = params.ref; currentSnapshot = reconcileAgentMetricRates(snapshot); persist(params.ref, "running"); renderDashboard(ctx);
 				watchLifecycle(params.ref, adapter, ctx);
 				requestTick(ctx);
 				if (ctx.hasUI) ctx.ui.setStatus("pibox-workflow-start", undefined);
@@ -1000,7 +1055,8 @@ export default function workflows(pi: ExtensionAPI): void {
 		}
 		if (currentRef) {
 			const adapter = adapterFor(currentRef);
-			currentSnapshot = await adapter.snapshot(currentRef, ctx).catch(() => undefined);
+			const restoredSnapshot = await adapter.snapshot(currentRef, ctx).catch(() => undefined);
+			currentSnapshot = restoredSnapshot ? reconcileAgentMetricRates(restoredSnapshot) : undefined;
 			watchLifecycle(currentRef, adapter, ctx);
 		}
 		renderDashboard(ctx);

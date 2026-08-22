@@ -940,11 +940,10 @@ test("manager progress replaces reused fixer startup while workflow reconciliati
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("managed fixer process start refreshes right-widget metric rates", async () => {
+test("managed lifecycle keeps agent rows and right-widget metric rates in one state", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "running" } });
 	let publish!: (projection: AgentLiveProjection) => void;
-	let fixerRunning = false;
 	let snapshotReads = 0;
 	const snapshot = (): WorkflowSnapshot => ({
 		ref: "work-item:calendar", title: "Calendar", status: "running",
@@ -954,7 +953,10 @@ test("managed fixer process start refreshes right-widget metric rates", async ()
 			elapsedMs: 0, runningMs: 0, agentActiveMs: 0, implementerMs: 0, reviewerMs: 0, fixerMs: 0, e2eAgentMs: 0, deterministicMs: 0, harnessSchedulingMs: 0,
 			implementationMs: 0, integrationMs: 0, verificationMs: 0, reviewMs: 0, e2eMs: 0, orchestrationMs: 0, fixes: 1, retries: 0,
 			agentCount: 1, verificationAttempts: 0, inputTokens: 0, outputTokens: 0, toolErrors: 0,
-			live: { sampledAtMs: Date.now(), elapsed: true, running: true, activeCategory: fixerRunning ? "integration" : "orchestration", activeAgents: fixerRunning ? 1 : 0, activeVerifications: 0, activeImplementers: 0, activeReviewers: 0, activeFixers: fixerRunning ? 1 : 0, activeE2e: 0, activeScheduling: 0, orchestrator: !fixerRunning },
+			// Deliberately stale rates reproduce a delayed/missed snapshot boundary.
+			// The lifecycle projection that renders the agent row is authoritative for
+			// the concurrent local clock rates until the next durable total arrives.
+			live: { sampledAtMs: Date.now(), elapsed: true, running: true, activeCategory: "orchestration", activeAgents: 0, activeVerifications: 0, activeImplementers: 0, activeReviewers: 0, activeFixers: 0, activeE2e: 0, activeScheduling: 0, orchestrator: true },
 		},
 		repairLoop: { label: "Stage 1 fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:calendar/evaluation:stage-review" },
 	});
@@ -970,7 +972,6 @@ test("managed fixer process start refreshes right-widget metric rates", async ()
 	await new Promise((resolve) => setImmediate(resolve));
 	const readsBeforeStart = snapshotReads;
 	const startedAt = new Date().toISOString();
-	fixerRunning = true;
 	publish(liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "running", startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 10, reasoningTokens: 0 } }));
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.ok(snapshotReads > readsBeforeStart, "process start refreshes the workflow metric-rate snapshot");
