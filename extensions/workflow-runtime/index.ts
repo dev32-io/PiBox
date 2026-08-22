@@ -475,7 +475,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					activeFixers: counts.fixer,
 					activeE2e: counts.e2e,
 					activeScheduling,
-					orchestrator: running && processActive.length === 0 && activeVerifications === 0,
+					orchestrator: running && activeScheduling === 0 && processActive.length === 0 && activeVerifications === 0,
 				},
 			},
 		};

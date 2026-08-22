@@ -288,7 +288,7 @@ export function projectWorkflowMetrics(input: WorkflowMetricProjectionInput): Wo
 		return end > start ? [[start, end] as Interval] : [];
 	}));
 	const orchestrationMs = Math.max(0, timing.runningMs - unionDuration(coveredActive));
-	const orchestratorOpen = timing.runningOpen && !attempts.some(({ agent, attempt }) => processIntervalIsOpen(attempt, agent)) && activeVerifications === 0;
+	const orchestratorOpen = timing.runningOpen && activeScheduling === 0 && !attempts.some(({ agent, attempt }) => processIntervalIsOpen(attempt, agent)) && activeVerifications === 0;
 	return {
 		elapsedMs: timing.elapsedMs,
 		runningMs: timing.runningMs,

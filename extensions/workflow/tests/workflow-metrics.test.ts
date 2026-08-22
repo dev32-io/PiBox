@@ -174,6 +174,7 @@ test("keeps launch startup out of process time and closes legacy attempts with t
 	assert.equal(launching.harnessSchedulingMs, 10_000);
 	assert.equal(launching.live?.activeImplementers, 0);
 	assert.equal(launching.live?.activeScheduling, 1);
+	assert.equal(launching.live?.orchestrator, false, "managed launch scheduling exclusively owns the open interval");
 
 	const spawned = projectWorkflowMetrics({
 		workItemId: "example", workflowEvents: [event(1, "workflow.started", 0)],
@@ -184,6 +185,7 @@ test("keeps launch startup out of process time and closes legacy attempts with t
 	assert.equal(spawned.harnessSchedulingMs, 2_000, "a spawned reviewer does not keep accumulating harness scheduling while volatile readiness is pending");
 	assert.equal(spawned.live?.activeReviewers, 1);
 	assert.equal(spawned.live?.activeScheduling, 0);
+	assert.equal(spawned.live?.orchestrator, false);
 
 	const terminal = projectWorkflowMetrics({
 		workItemId: "example", workflowEvents: [event(1, "workflow.started", 0), event(2, "workflow.completed", 30)],
