@@ -83,6 +83,39 @@ test("launches a direct child through the registry with file-backed process outp
 	await assert.rejects(access(registry.eventsPath), /ENOENT/, "the registry snapshot replaces the redundant agent journal");
 });
 
+test("publishes process-start progress only after agent.running is durable", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-launch-event-order-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, "session-event-order");
+	await registry.initialize("main:session-event-order");
+	const fake = join(root, "fast-child.mjs");
+	await writeFile(fake, `console.log(JSON.stringify({type:"turn_end",message:{usage:{output:1}}}));\nconsole.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:"done"}]}}));`);
+	let markCalled!: () => void;
+	const markObserved = new Promise<void>((resolve) => { markCalled = resolve; });
+	let releaseMark!: () => void;
+	const markGate = new Promise<void>((resolve) => { releaseMark = resolve; });
+	const durableMarkRunning = registry.markRunning.bind(registry);
+	registry.markRunning = async (...args: Parameters<SessionAgentRegistry["markRunning"]>) => {
+		markCalled();
+		await markGate;
+		return durableMarkRunning(...args);
+	};
+	const processStartPublications: boolean[] = [];
+	const launch = new LaunchCoordinator(registry, "main:session-event-order", () => ({ command: process.execPath, args: [fake] })).launch({
+		operationId: "event-order", role: "repair-implementer", task: "repair", assignment: {}, cwd: root,
+		provider: "test", model: "fake", effort: "low", tools: [],
+		onProgress: (progress) => processStartPublications.push(Boolean(progress.processStartedAt)),
+	});
+	await markObserved;
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.deepEqual(processStartPublications, [false], "volatile progress cannot announce process start before the durable lifecycle event");
+	releaseMark();
+	const launched = await launch;
+	assert.ok(processStartPublications.includes(true), "durable agent.running releases the process-start projection");
+	const record = await registry.get(launched.agent.id);
+	assert.ok(record.attempts[0]?.timing?.processSpawnedAt);
+});
+
 test("high-turn tool activity is summarized with constant durable registry writes", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-launch-low-write-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

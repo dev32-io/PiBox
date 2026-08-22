@@ -107,9 +107,14 @@ export class LaunchCoordinator {
 				input.onStarted?.(await this.registry.get(reserved.id));
 				const attemptRoot = join(agentRoot, "attempts", attempt.id);
 				let running: Promise<unknown> | undefined;
+				let processStateDurable = false;
 				let progress = initialAgentProgress(attempt.startedAt);
 				let timing: ProcessAttemptTiming = structuredClone(attempt.timing ?? { attemptStartedAt: attempt.startedAt });
 				const publishProgress = () => {
+					// A process-start projection changes metric rates. Never publish it
+					// ahead of the durable agent.running transition that snapshot metrics
+					// consume; later progress remains volatile and write-free.
+					if (progress.processStartedAt && !processStateDurable) return;
 					const snapshot = structuredClone(progress);
 					publishAgentLiveProgress(this.registry.root, reserved.id, attempt.id, snapshot);
 					input.onProgress?.(snapshot);
@@ -171,9 +176,12 @@ export class LaunchCoordinator {
 						if (pid) {
 							const observedAt = new Date().toISOString();
 							timing.processSpawnedAt = observedAt;
-							running = this.registry.markRunning(reserved.id, attempt.id, pid, observedAt);
 							progress = markAgentProcessStarted(progress, observedAt);
-							publishProgress();
+							running = this.registry.markRunning(reserved.id, attempt.id, pid, observedAt);
+							void running.then(() => {
+								processStateDurable = true;
+								publishProgress();
+							}, () => undefined);
 						}
 						input.onSpawn?.(pid);
 					},
