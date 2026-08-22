@@ -222,11 +222,29 @@ export interface EvaluationFinding {
 
 export type ReviewLoopState = "planned" | "reviewing" | "awaiting_manager" | "fixing" | "rereviewing" | "passed" | "skipped";
 
-export interface StageReviewPolicy {
-	/** Medium is the default. High is reserved for a substantively focused risk boundary. */
-	tier: "medium" | "high";
-	focus?: string[];
-	rationale?: string;
+export type StageReviewPolicy =
+	| {
+		/** Omitted mode is the legacy-compatible required review policy. */
+		mode?: "required";
+		/** Medium is the default. High is reserved for a substantively focused risk boundary. */
+		tier: "medium" | "high";
+		focus?: string[];
+		rationale?: string;
+	}
+	| {
+		/** Explicit opt-out; omission never silently skips a legacy stage review. */
+		mode: "skip";
+		rationale: string;
+		tier?: never;
+		focus?: never;
+	};
+
+export interface E2ECaseResult {
+	caseId: string;
+	status: "pass" | "fail" | "blocked";
+	executedActions: string[];
+	observations: string[];
+	evidenceRefs: string[];
 }
 
 export interface VerificationCheck {
@@ -264,7 +282,7 @@ export interface EvaluationManifest {
 	methods: string[];
 	criteria?: string[];
 	findings?: EvaluationFinding[];
-	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string; riskAcceptance?: string };
+	result?: { verdict: "pass" | "fail" | "blocked" | "not_applicable"; report: string; evidence?: string; riskAcceptance?: string; caseResults?: E2ECaseResult[] };
 	/** Durable state for one visible review/fix loop and stable reviewer/fixer identities. */
 	loop?: {
 		state: ReviewLoopState;

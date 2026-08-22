@@ -217,10 +217,19 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 export function normalizePlanStage(value: unknown): PlanAuthoringRecord {
 	const stage = record(value);
 	const review = stage.review === undefined ? undefined : record(stage.review);
-	if (review?.tier === "high" && ((String(review.rationale ?? "").trim().length < 20) || strings(review.focus).join(" ").trim().length < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${String(stage.id)} requires substantive rationale and focus`);
-	if (review?.tier === "max") throw new HarnessError("INVALID_ARTIFACT", "Stage review policy supports medium by default or justified high; max is not available");
+	if (review?.mode !== undefined && review.mode !== "required" && review.mode !== "skip") throw new HarnessError("INVALID_ARTIFACT", `Stage ${String(stage.id)} has unsupported review mode`);
+	if (review?.mode === "skip") {
+		if (String(review.rationale ?? "").trim().length < 20) throw new HarnessError("INVALID_ARTIFACT", `Skipped review for stage ${String(stage.id)} requires a substantive rationale`);
+		if (review.tier !== undefined || review.focus !== undefined) throw new HarnessError("INVALID_ARTIFACT", `Skipped review for stage ${String(stage.id)} cannot declare tier or focus`);
+	} else {
+		if (review?.tier === "high" && ((String(review.rationale ?? "").trim().length < 20) || strings(review.focus).join(" ").trim().length < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${String(stage.id)} requires substantive rationale and focus`);
+		if (review?.tier === "max") throw new HarnessError("INVALID_ARTIFACT", "Stage review policy supports medium by default or justified high; max is not available");
+	}
 	if (stage.mode !== undefined && stage.mode !== "sequential" && stage.mode !== "concurrent") throw new HarnessError("INVALID_ARTIFACT", `Stage ${String(stage.id)} has unsupported execution mode`);
-	return { id: stage.id, tasks: strings(stage.tasks), checks: normalizeVerificationChecks(stage.checks, `Stage ${String(stage.id)} checks`), ...(stage.mode !== undefined ? { mode: stage.mode } : {}), ...(review ? { review: { tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) } } : {}) };
+	const normalizedReview = !review ? undefined : review.mode === "skip"
+		? { mode: "skip", rationale: String(review.rationale).trim() }
+		: { mode: "required", tier: review.tier ?? "medium", ...(review.focus !== undefined ? { focus: strings(review.focus) } : {}), ...(review.rationale !== undefined ? { rationale: review.rationale } : {}) };
+	return { id: stage.id, tasks: strings(stage.tasks), checks: normalizeVerificationChecks(stage.checks, `Stage ${String(stage.id)} checks`), ...(stage.mode !== undefined ? { mode: stage.mode } : {}), ...(normalizedReview ? { review: normalizedReview } : {}) };
 }
 
 export function normalizePlanEvaluation(_value: unknown, _workItemId: string): never {

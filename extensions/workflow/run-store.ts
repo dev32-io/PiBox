@@ -5,6 +5,7 @@ import { parse, stringify } from "yaml";
 import { HarnessError } from "./errors.js";
 import { RepositoryEventStore } from "./event-store.js";
 import { atomicWriteFile, readTextIfExists, type RepositoryIdentity } from "./repository.js";
+import type { E2ECaseResult } from "./types.js";
 
 export type RunState =
 	| "launching"
@@ -32,6 +33,8 @@ export interface RunRecord {
 	state: RunState;
 	workspace: string;
 	baseCommit: string;
+	/** Exact feature-diff base for whole-branch reviews; baseCommit remains the launch HEAD. */
+	reviewBaseCommit?: string;
 	planningRevision?: number;
 	credentialHash: string;
 	requestedModel?: string;
@@ -52,6 +55,7 @@ export interface EvaluationHandoff {
 	evaluationId: string;
 	verdict: "pass" | "fail" | "blocked" | "not_applicable";
 	report: string;
+	caseResults?: E2ECaseResult[];
 	evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
 	residualRisks?: string[];
 	findings: Array<{

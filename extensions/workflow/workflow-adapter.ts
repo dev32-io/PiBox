@@ -305,7 +305,10 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const contributionStates = new Set(["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating", "merged", "integrated"]);
 			const steps: WorkflowStep[] = tasks.map((task) => {
 				const topology = taskExecutionTopology(item, task);
-				const priorStagesDone = stages.slice(0, topology.stageIndex).every((stage) => stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")) && ["passed", "not_applicable"].includes(stageReviews.get(stage.id)?.status ?? ""));
+				const priorStagesDone = stages.slice(0, topology.stageIndex).every((stage) => {
+					const review = stageReviews.get(stage.id);
+					return stage.tasks.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? "")) && (!review || ["passed", "not_applicable"].includes(review.status));
+				});
 				const dependenciesDone = task.dependsOn.every((id) => ["merged", "integrated"].includes(taskById.get(id)?.status ?? ""));
 				const isSequentialStage = resolveStageMode(stages[topology.stageIndex]!) === "sequential";
 				const taskIndex = topology.stageTasks.indexOf(task.id);
@@ -340,19 +343,19 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					...(activity.fast ? { fast: true } : {}),
 				};
 			});
-			const finalJourneyRefs = evaluations
-				.filter((evaluation) => evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id))
-				.map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
+			const finalReviewRefs = evaluations.filter((evaluation) => evaluation.checkpoint === "final-review").map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
 			const stageReviewRefs = evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review").map((evaluation) => `work-item:${item.id}/evaluation:${evaluation.id}`);
-			const evaluationOrder = (evaluation: typeof evaluations[number]): number => evaluation.checkpoint === "stage-review" ? 0 : evaluation.checkpoint === "final-e2e" ? 1 : evaluation.checkpoint === "final-review" ? 2 : 0;
+			const taskRefs = tasks.map((task) => `work-item:${item.id}/task:${task.id}`);
+			const evaluationOrder = (evaluation: typeof evaluations[number]): number => evaluation.checkpoint === "stage-review" ? 0 : evaluation.checkpoint === "final-review" ? 1 : evaluation.checkpoint === "final-e2e" || evaluation.type === "e2e" ? 2 : 1;
 			for (const evaluation of [...evaluations].sort((left, right) => evaluationOrder(left) - evaluationOrder(right))) {
 				const explicitStage = evaluation.stageId ? stages.find((stage) => stage.id === evaluation.stageId) : undefined;
+				const isWholeItemE2E = evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id);
 				const dependencies = evaluation.checkpoint === "stage-review" && explicitStage
 					? explicitStage.tasks.map((taskId) => `work-item:${item.id}/task:${taskId}`)
-					: evaluation.checkpoint === "final-e2e"
-						? stageReviewRefs
-						: evaluation.checkpoint === "final-review"
-							? finalJourneyRefs.filter((candidate) => candidate !== `work-item:${item.id}/evaluation:${evaluation.id}`)
+					: evaluation.checkpoint === "final-review"
+						? [...taskRefs, ...stageReviewRefs]
+						: isWholeItemE2E
+							? finalReviewRefs
 							: [];
 				const dependencySteps = dependencies.map((dependency) => steps.find((step) => step.ref === dependency));
 				const dependenciesDone = dependencySteps.every((step) => step?.status === "done");
@@ -407,14 +410,14 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));
-			const runtimeNodes = evaluations.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => `evaluation:${evaluation.id}`);
+			const runtimeNodes = evaluations.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).sort((left, right) => evaluationOrder(left) - evaluationOrder(right)).map((evaluation) => `evaluation:${evaluation.id}`);
 			const repairBoundaries = [
 				...stages.flatMap((stage, index) => {
 					const evaluation = stageReviews.get(stage.id);
 					return evaluation ? [{ evaluation, label: `Stage ${index + 1} fix loop` }] : [];
 				}),
+				...evaluations.filter((evaluation) => evaluation.checkpoint === "final-review").map((evaluation) => ({ evaluation, label: "Whole-branch fix loop" })),
 				...evaluations.filter((evaluation) => evaluation.checkpoint === "final-e2e" || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id)).map((evaluation) => ({ evaluation, label: "E2E fix loop" })),
-				...evaluations.filter((evaluation) => evaluation.checkpoint === "final-review").map((evaluation) => ({ evaluation, label: "Final fix loop" })),
 			];
 			const currentRepairBoundary = repairBoundaries.find(({ evaluation }) => !["passed", "not_applicable"].includes(evaluation.status) && !["passed", "skipped"].includes(evaluation.loop?.state ?? ""));
 			const currentRepairLimit = configuredRepairLimit ?? currentRepairBoundary?.evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS;

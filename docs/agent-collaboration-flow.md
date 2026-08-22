@@ -154,7 +154,7 @@ Deliver the reviewed plan after the user asks to run it, while the harness manag
 - The main session starts and supervises the workflow rather than manually reproducing the scheduler.
 - Subagents execute bounded contributions under the reviewed contract revision.
 - The harness advances dependencies, stage-mode-specific execution, worktrees, merges, and evaluations.
-- Each assembled stage runs its required checks and runtime-owned review/fix loop before the next stage advances; final E2E and final branch review remain ordered runtime-owned gates.
+- Each assembled stage runs its required checks; risk-bearing stages enter their runtime-owned review/fix loop while an explicitly justified low-risk stage may advance without one. The runtime then reviews the exact assembled feature diff before running every approved E2E journey.
 - The main session resolves material questions, amendments, and recovery decisions while preserving user authority.
 - Dirty or conflicting work is preserved rather than silently discarded.
 - Completion depends on fresh evidence and required verification gates.

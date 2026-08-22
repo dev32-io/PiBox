@@ -138,12 +138,14 @@ export function renderEvaluationReport(input: {
 	observations: string;
 	evidence: Array<{ command?: string; result: string; description?: string }>;
 	findings: Array<{ id: string; severity: string; status: string; summary: string }>;
+	caseResults?: Array<{ caseId: string; status: string; executedActions: string[]; observations: string[]; evidenceRefs: string[] }>;
 	verdict: string;
 	residualRisks?: string[];
 }): string {
 	const evidence = input.evidence.length ? input.evidence.map((entry, index) => `- **EV-${String(index + 1).padStart(3, "0")}:** ${entry.description ?? entry.command ?? "Recorded evidence"} — ${entry.result}`).join("\n") : "None recorded.";
 	const findings = input.findings.length ? input.findings.map((finding) => `- **${finding.id}** (${finding.severity}, ${finding.status}): ${finding.summary}`).join("\n") : "None recorded.";
-	return `# Evaluation Report: ${input.id}\n\n## Boundary\n\n${JSON.stringify(input.boundary)}\n\n## Criteria Evaluated\n\n${input.criteria?.length ? input.criteria.map((criterion) => `- ${criterion}`).join("\n") : "No qualified criteria declared."}\n\n## Observations\n\n${input.observations.trim()}\n\n## Evidence\n\n${evidence}\n\n## Findings\n\n${findings}\n\n## Verdict\n\n${input.verdict}\n\n## Residual Risk\n\n${input.residualRisks?.length ? input.residualRisks.map((risk) => `- ${risk}`).join("\n") : "None recorded."}\n`;
+	const caseResults = input.caseResults?.length ? input.caseResults.map((result) => `- **${result.caseId}** (${result.status}) — ${result.observations.join(" ") || "No observation recorded."}`).join("\n") : undefined;
+	return `# Evaluation Report: ${input.id}\n\n## Boundary\n\n${JSON.stringify(input.boundary)}\n\n## Criteria Evaluated\n\n${input.criteria?.length ? input.criteria.map((criterion) => `- ${criterion}`).join("\n") : "No qualified criteria declared."}\n\n## Observations\n\n${input.observations.trim()}\n\n## Evidence\n\n${evidence}${caseResults ? `\n\n## E2E Case Results\n\n${caseResults}` : ""}\n\n## Findings\n\n${findings}\n\n## Verdict\n\n${input.verdict}\n\n## Residual Risk\n\n${input.residualRisks?.length ? input.residualRisks.map((risk) => `- ${risk}`).join("\n") : "None recorded."}\n`;
 }
 
 export function acceptanceCriterionIds(sections: SemanticSections): string[] {

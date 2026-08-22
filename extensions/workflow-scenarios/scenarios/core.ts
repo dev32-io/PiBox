@@ -62,10 +62,10 @@ export const stageReviewGateScenario: WorkflowScenarioDefinition = {
 		{ id: "stage-one-review", kind: "evaluation", dependsOn: ["stage-one-task"], delayMs: 5 },
 		{ id: "stage-two-task", dependsOn: ["stage-one-review"], delayMs: 5 },
 		{ id: "stage-two-review", kind: "evaluation", dependsOn: ["stage-two-task"], delayMs: 5 },
-		{ id: "final-e2e", kind: "evaluation", dependsOn: ["stage-two-review"], delayMs: 5 },
-		{ id: "final-branch-review", kind: "evaluation", dependsOn: ["final-e2e"], delayMs: 5 },
+		{ id: "final-branch-review", kind: "evaluation", dependsOn: ["stage-two-review"], delayMs: 5 },
+		{ id: "final-e2e", kind: "evaluation", dependsOn: ["final-branch-review"], delayMs: 5 },
 	],
-	expect: { terminal: "complete", started: ["stage-one-task", "stage-one-review", "stage-two-task", "stage-two-review", "final-e2e", "final-branch-review"], completed: ["stage-one-task", "stage-one-review", "stage-two-task", "stage-two-review", "final-e2e", "final-branch-review"], maxPeakConcurrency: 1 },
+	expect: { terminal: "complete", started: ["stage-one-task", "stage-one-review", "stage-two-task", "stage-two-review", "final-branch-review", "final-e2e"], completed: ["stage-one-task", "stage-one-review", "stage-two-task", "stage-two-review", "final-branch-review", "final-e2e"], maxPeakConcurrency: 1 },
 };
 
 export const reviewRepairScenario: WorkflowScenarioDefinition = {

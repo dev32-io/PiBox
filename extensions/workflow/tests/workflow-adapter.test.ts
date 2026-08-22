@@ -664,6 +664,16 @@ test("gates each stage on its harness review while preserving parallel merge bar
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:stage-parallel-review"))?.status, "pending", "the concurrent stage review remains gated by the listed merge barrier");
 });
 
+test("advances past a completed stage with an explicit skipped review", async () => {
+	const tasks: any[] = [task("mechanical", "merged", [], "mechanical"), task("next", "ready", [], "next")];
+	const reviews: any[] = [{ id: "stage-next-review", checkpoint: "stage-review", stageId: "next", status: "planned", scope: { workItem: "selective" }, loop: { state: "planned", iteration: 0, maxIterations: 2 } }];
+	const item: any = { id: "selective", title: "Selective", planning: { revision: 1 }, tasks: tasks.map(({ id }) => ({ id })), executionStages: [{ id: "mechanical", tasks: ["mechanical"], review: { mode: "skip", rationale: "Deterministic proof covers this local mechanical stage completely." } }, { id: "next", tasks: ["next"] }], integrationUnits: [], evaluations: reviews.map(({ id }) => ({ id })) };
+	const runtime: any = { workItems: { async read() { return item; }, async readTask(_w: string, id: string) { return tasks.find((entry) => entry.id === id); }, async readEvaluation() { return reviews[0]; } }, agents: { async list() { return []; } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	const snapshot = await adapter.snapshot("work-item:selective", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("task:next"))?.status, "ready");
+});
+
 test("orders a three-task sequential stage and gates the next stage on review", async () => {
 	const tasks: any[] = [task("first", "contribution_complete"), task("second", "contribution_complete"), task("third", "contribution_complete"), task("next", "ready", [], "next-stage")];
 	const reviews: any[] = [
@@ -741,8 +751,8 @@ test("an upstream review checkpoint keeps final validation queued instead of dup
 		assert.equal(downstream.status, "pending");
 		assert.doesNotMatch(`${downstream.title} ${downstream.detail ?? ""}`, /Approve or Request changes/);
 	}
-	assert.match(finalE2e.detail ?? "", /waiting for/i);
 	assert.match(finalE2e.title, /Journey run queued/);
+	assert.match(finalReview.detail ?? "", /waiting for/i);
 	assert.match(finalReview.title, /Whole-branch review queued/);
 	assert.equal(snapshot.status, "attention", "only the upstream checkpoint owns workflow attention");
 });
@@ -777,23 +787,24 @@ test("projects the independent fix budget at the current review boundary", async
 	assert.deepEqual(snapshot.repairLoop, { label: "Stage 2 fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:stage-second-review" }, "the authorized in-flight repair round counts against the visible budget");
 
 	evaluations[1].status = "passed"; evaluations[1].loop = { state: "passed", iteration: 1, maxIterations: 3 };
-	evaluations[2].status = "failed"; evaluations[2].loop = { state: "awaiting_manager", iteration: 1, maxIterations: 3 };
+	evaluations[3].status = "failed"; evaluations[3].loop = { state: "awaiting_manager", iteration: 1, maxIterations: 3 };
 	snapshot = await adapter.snapshot("work-item:budgets", {} as any);
-	assert.deepEqual(snapshot.repairLoop, { label: "E2E fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:final-e2e" });
+	assert.deepEqual(snapshot.repairLoop, { label: "Whole-branch fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:final-review" });
 
-	evaluations[2].status = "passed"; evaluations[2].loop = { state: "passed", iteration: 1, maxIterations: 3 };
+	evaluations[3].status = "passed"; evaluations[3].loop = { state: "passed", iteration: 1, maxIterations: 3 };
+	evaluations[2].status = "failed"; evaluations[2].loop = { state: "awaiting_manager", iteration: 0, maxIterations: 3 };
 	snapshot = await adapter.snapshot("work-item:budgets", {} as any);
-	assert.deepEqual(snapshot.repairLoop, { label: "Final fix loop", iteration: 0, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:final-review" });
+	assert.deepEqual(snapshot.repairLoop, { label: "E2E fix loop", iteration: 0, maxIterations: 6, evaluationRef: "work-item:budgets/evaluation:final-e2e" });
 });
 
-test("final branch review follows an adopted semantic journey gate instead of a fixed evaluation id", async () => {
+test("an adopted semantic journey gate follows whole-branch review instead of a fixed evaluation id", async () => {
 	const tasks: any[] = [task("implementation", "merged")];
 	const item: any = {
 		id: "legacy", title: "Legacy", planning: { revision: 1 }, tasks: [{ id: "implementation" }],
 		executionStages: [{ id: "delivery", tasks: ["implementation"] }], integrationUnits: [],
 		evaluations: [{ id: "planned-journey" }, { id: "final-branch-review" }],
 	};
-	let journeyStatus = "planned";
+	let reviewStatus = "planned";
 	const runtime: any = {
 		identity: { root: "/repo" },
 		workItems: {
@@ -801,21 +812,21 @@ test("final branch review follows an adopted semantic journey gate instead of a 
 			async readTask() { return tasks[0]; },
 			async readEvaluation(_workItemId: string, id: string) {
 				return id === "planned-journey"
-					? { id, type: "e2e", scope: { workItem: "legacy" }, status: journeyStatus, loop: { state: journeyStatus === "passed" ? "passed" : "planned", iteration: 1, maxIterations: 3 } }
-					: { id, type: "combined-review", checkpoint: "final-review", scope: { workItem: "legacy" }, status: "planned", loop: { state: "planned", iteration: 0, maxIterations: 3 } };
+					? { id, type: "e2e", scope: { workItem: "legacy" }, status: "planned", loop: { state: "planned", iteration: 1, maxIterations: 3 } }
+					: { id, type: "combined-review", checkpoint: "final-review", scope: { workItem: "legacy" }, status: reviewStatus, loop: { state: reviewStatus === "passed" ? "passed" : "planned", iteration: 0, maxIterations: 3 } };
 			},
 		},
 		agents: { async list() { return []; } },
 	};
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	let snapshot = await adapter.snapshot("work-item:legacy", {} as any);
-	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:planned-journey"))?.status, "ready");
-	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:final-branch-review"))?.status, "pending");
-	assert.deepEqual(snapshot.repairLoop, { label: "E2E fix loop", iteration: 1, maxIterations: 3, evaluationRef: "work-item:legacy/evaluation:planned-journey" });
-	journeyStatus = "passed";
-	snapshot = await adapter.snapshot("work-item:legacy", {} as any);
 	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:final-branch-review"))?.status, "ready");
-	assert.deepEqual(snapshot.repairLoop, { label: "Final fix loop", iteration: 0, maxIterations: 3, evaluationRef: "work-item:legacy/evaluation:final-branch-review" });
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:planned-journey"))?.status, "pending");
+	assert.deepEqual(snapshot.repairLoop, { label: "Whole-branch fix loop", iteration: 0, maxIterations: 3, evaluationRef: "work-item:legacy/evaluation:final-branch-review" });
+	reviewStatus = "passed";
+	snapshot = await adapter.snapshot("work-item:legacy", {} as any);
+	assert.equal(snapshot.steps.find((step) => step.ref.endsWith("evaluation:planned-journey"))?.status, "ready");
+	assert.deepEqual(snapshot.repairLoop, { label: "E2E fix loop", iteration: 1, maxIterations: 3, evaluationRef: "work-item:legacy/evaluation:planned-journey" });
 });
 
 test("does not render exited or reported evaluation agents as running", async () => {

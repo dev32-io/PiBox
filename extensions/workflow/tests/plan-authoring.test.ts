@@ -47,10 +47,13 @@ test("normalizes structured verification checks while preserving legacy commands
 	assert.throws(() => normalizePlanStage({ id: "mobile", tasks: ["android"], checks: [{ id: "same", command: "one" }, { id: "same", command: "two" }] }), /duplicate check id/i);
 });
 
-test("normalizes medium stage review and requires substantive high policy", () => {
-	assert.deepEqual(normalizePlanStage({ id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { focus: ["Checkout correctness"] } }), { id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { tier: "medium", focus: ["Checkout correctness"] } });
+test("normalizes explicit stage review decisions and requires substantive policies", () => {
+	assert.deepEqual(normalizePlanStage({ id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { focus: ["Checkout correctness"] } }), { id: "delivery", tasks: ["checkout"], checks: ["npm test"], review: { mode: "required", tier: "medium", focus: ["Checkout correctness"] } });
+	assert.deepEqual(normalizePlanStage({ id: "mechanical", tasks: ["format"], review: { mode: "skip", rationale: "Local mechanical change is fully covered by deterministic checks." } }), { id: "mechanical", tasks: ["format"], checks: [], review: { mode: "skip", rationale: "Local mechanical change is fully covered by deterministic checks." } });
 	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "high", focus: ["bugs"], rationale: "hard" } }), /substantive rationale and focus/i);
 	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { tier: "max" } }), /max is not available/i);
+	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { mode: "skip", rationale: "too short" } }), /substantive rationale/i);
+	assert.throws(() => normalizePlanStage({ id: "delivery", tasks: ["checkout"], review: { mode: "skip", tier: "medium", rationale: "Deterministic checks fully cover this local mechanical stage." } }), /cannot declare tier or focus/i);
 });
 
 test("preserves stage mode through author-facing stage edits", () => {

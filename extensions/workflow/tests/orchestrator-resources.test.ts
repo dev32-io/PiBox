@@ -115,14 +115,16 @@ test("uses a self-contained task contract without eagerly loading story artifact
 	assert.doesNotMatch(packet, /Broad story intent|Optional broader design/);
 });
 
-test("includes the exact E2E matrix only for E2E reviewer context", async (t) => {
+test("includes the exact E2E matrix for E2E and whole-branch reviewer context", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "matrix-context", title: "Matrix context", kind: "story", intent: "Exercise matrix context." });
 	await store.putArtifact({ workItemId: "matrix-context", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Approved Matrix", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "exact approved content", setup: ["Prepare fixture"], actions: ["Run journey"], expectedOutcomes: ["Journey succeeds"], evidence: ["Record observable result"] }] }, operation: "create" });
 	const e2e: EvaluationManifest = { schemaVersion: 1, id: "final-e2e", type: "e2e", scope: { workItem: "matrix-context" }, status: "planned", required: true, attempt: 0, methods: [] };
-	const review: EvaluationManifest = { ...e2e, id: "review", type: "combined-review" };
+	const review: EvaluationManifest = { ...e2e, id: "review", type: "combined-review", checkpoint: "final-review" };
+	const scopedReview: EvaluationManifest = { ...e2e, id: "scoped-review", type: "combined-review" };
 	assert.match(await buildReviewPersistentContext(store, "matrix-context", e2e), /exact approved content/);
-	assert.doesNotMatch(await buildReviewPersistentContext(store, "matrix-context", review), /exact approved content/);
+	assert.match(await buildReviewPersistentContext(store, "matrix-context", review), /exact approved content/);
+	assert.doesNotMatch(await buildReviewPersistentContext(store, "matrix-context", scopedReview), /exact approved content/);
 });
 
 test("idempotently generates one required review per execution stage before final gates", async (t) => {
@@ -135,11 +137,23 @@ test("idempotently generates one required review per execution stage before fina
 	await store.ensureFinalEvaluations("generated-reviews", 2);
 	await store.ensureFinalEvaluations("generated-reviews", 2);
 	const item = await store.read("generated-reviews");
-	assert.deepEqual(item.evaluations.map(({ id }) => id), ["stage-delivery-review", "final-e2e", "final-branch-review"]);
+	assert.deepEqual(item.evaluations.map(({ id }) => id), ["stage-delivery-review", "final-branch-review", "final-e2e"]);
 	const stageReview = await store.readEvaluation("generated-reviews", "stage-delivery-review");
 	assert.equal(stageReview.required, true);
 	assert.equal(stageReview.checkpoint, "stage-review");
 	assert.deepEqual(stageReview.methods, ["npm test -- focused"]);
+});
+
+test("omits only explicitly skipped stage reviews while preserving final gates", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "selective-reviews", title: "Selective reviews", kind: "story", intent: "Review risk selectively." });
+	await store.putArtifact({ workItemId: "selective-reviews", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Journeys", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Run", setup: ["Setup"], actions: ["Act"], expectedOutcomes: ["Pass"], evidence: ["Observe"] }] }, operation: "create" });
+	const mechanical = task("mechanical-task"); mechanical.assembly.stageId = "mechanical";
+	await store.defineTask({ workItemId: "selective-reviews", manifest: mechanical, brief: "Mechanical change", acceptance: "Focused check passes" });
+	await store.putExecutionStage("selective-reviews", { id: "mechanical", tasks: ["mechanical-task"], checks: ["test -f README.md"], review: { mode: "skip", rationale: "Local mechanical behavior is completely covered by its deterministic check." } }, mutation);
+	await store.ensureFinalEvaluations("selective-reviews", 2);
+	const item = await store.read("selective-reviews");
+	assert.deepEqual(item.evaluations.map(({ id }) => id), ["final-branch-review", "final-e2e"]);
 });
 
 test("builds durable reviewer context from scoped tasks and full plan artifacts", async (t) => {
@@ -157,6 +171,19 @@ test("builds durable reviewer context from scoped tasks and full plan artifacts"
 	assert.match(packet, /Render the durable result/);
 	assert.match(packet, /durable boundary design/);
 	assert.match(packet, /across compaction and resumed attempts/i);
+});
+
+test("gives whole-branch review the exact execution diff and complete matrix", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "whole-branch", title: "Whole branch", kind: "story", intent: "Review the assembled feature." });
+	await store.putArtifact({ workItemId: "whole-branch", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Whole journey", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Integrated behavior", setup: ["Setup"], actions: ["Act"], expectedOutcomes: ["Pass"], evidence: ["Observe"] }] }, operation: "create" });
+	await store.beginExecution("whole-branch");
+	const item = await store.read("whole-branch");
+	const head = await git(root, "rev-parse", "HEAD");
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: "whole-branch" }, status: "planned", required: true, attempt: 0, methods: [] };
+	const packet = await buildReviewPersistentContext(store, "whole-branch", evaluation, head);
+	assert.match(packet, new RegExp(`${item.delivery!.executionStartCommit}\\.\\.${head}`));
+	assert.match(packet, /one integrated change|cross-stage interactions|Integrated behavior/);
 });
 
 test("bounds stage review context to its tasks, story artifacts, checks, focus, and reviewed commit", async (t) => {

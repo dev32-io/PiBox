@@ -825,13 +825,13 @@ An implementation task must finish with:
 - No changes under `agent-artifacts/`.
 - No unacknowledged context amendments.
 
-A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the reviewed execution strategy defers those obligations. Optional extra or ad-hoc review and broad testing may be deferred or omitted; however, every managed execution stage still runs its required runtime-owned stage review/fix gate and declared checks. The extension validates actual Git state and the declared handoff rather than imposing a universal per-task test checklist.
+A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the reviewed execution strategy defers those obligations. Optional extra or ad-hoc review and broad testing may be deferred or omitted. Every managed execution stage runs its declared checks; stage review/fix is required by default, but a reviewed plan may explicitly skip one low-risk stage review with a substantive rationale when deterministic proof covers the complete boundary. The extension validates actual Git state and the declared handoff rather than imposing a universal per-task test checklist.
 
 ## 14. Assembly and integration
 
 ### 14.1 Ownership
 
-Sequential-stage children commit directly to the checked-out feature branch under the scheduler's exclusive feature-branch claim, one task at a time. Concurrent-stage children commit only to task branches; the orchestrator owns their atomic stage barrier. Every assembled stage runs its required stage checks and runtime-owned review/fix loop before the next stage advances. Reviewers inspect the integrated stage, while the runtime retains final E2E and final branch review as ordered completion gates on the assembled delivery branch.
+Sequential-stage children commit directly to the checked-out feature branch under the scheduler's exclusive feature-branch claim, one task at a time. Concurrent-stage children commit only to task branches; the orchestrator owns their atomic stage barrier. Every assembled stage runs its required stage checks, followed by its runtime-owned review/fix loop unless the reviewed plan explicitly marks that low-risk review skipped. After assembly, whole-branch review inspects the exact `executionStartCommit..reviewedCommit` diff as one integrated feature before final E2E runs on the reviewed delivery branch.
 
 ### 14.2 Concurrent-stage merge barrier
 
@@ -853,7 +853,7 @@ No later stage observes a partially merged parallel batch. A failed merge or sta
 
 The canonical branch is updated only from an orchestrator-controlled candidate whose expected base still matches. If another unit integrates first, the candidate is rebuilt or rebased under orchestrator control.
 
-The stage's required checks run after sequential integration or the concurrent merge barrier. A failed check or required review enters the managed fix loop and blocks later stages until settled. After all stages, the runtime-owned final E2E (when a meaningful journey exists) and final branch review remain ordered completion gates; the extension never permits their substitution by manual evaluation or an unreviewed shortcut.
+The stage's required checks run after sequential integration or the concurrent merge barrier. A failed check or required review enters the managed fix loop and blocks later stages until settled. After all stages, runtime-owned whole-branch review evaluates the exact assembled feature diff before final E2E runs every approved matrix case. E2E settlement is a deterministic integrity boundary: every case must be reported exactly once, an incomplete matrix cannot pass or be accepted as risk, and completion revalidates the structured results. The extension never permits these gates to be substituted by manual evaluation or an unreviewed shortcut.
 
 ### 14.4 Commit policy
 

@@ -992,10 +992,10 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 	const snapshot: WorkflowSnapshot = {
 		ref: "work-item:calendar", title: "Calendar", status: "running",
 		steps: [
-			{ ref: "work-item:calendar/evaluation:final-e2e", title: "E2E journey/fix loop · Running journeys", kind: "evaluation", checkpoint: "final-e2e", status: "running", fast: true, progress, dependsOn: [], parallelism: "serial", resourceClaims: [] },
-			{ ref: "work-item:calendar/evaluation:final-branch-review", title: "Whole-branch review/fix loop · Whole-branch review queued", kind: "evaluation", checkpoint: "final-review", status: "pending", dependsOn: ["work-item:calendar/evaluation:final-e2e"], parallelism: "serial", resourceClaims: [] },
+			{ ref: "work-item:calendar/evaluation:final-branch-review", title: "Whole-branch review/fix loop · Reviewing whole branch", kind: "evaluation", checkpoint: "final-review", status: "running", fast: true, progress, dependsOn: [], parallelism: "serial", resourceClaims: [] },
+			{ ref: "work-item:calendar/evaluation:final-e2e", title: "E2E journey/fix loop · Journey run queued", kind: "evaluation", checkpoint: "final-e2e", status: "pending", dependsOn: ["work-item:calendar/evaluation:final-branch-review"], parallelism: "serial", resourceClaims: [] },
 		],
-		stages: [{ id: "runtime-verification", index: 8, nodes: ["evaluation:final-e2e", "evaluation:final-branch-review"], parallel: false, group: "runtime" }],
+		stages: [{ id: "runtime-verification", index: 8, nodes: ["evaluation:final-branch-review", "evaluation:final-e2e"], parallel: false, group: "runtime" }],
 	};
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
@@ -1006,11 +1006,11 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(140) as string[];
-	assert.ok(rendered.some((line) => line.includes("Final validation · E2E journey/fix loop · 2 gates")));
-	const journey = rendered.findIndex((line) => line.includes("E2E journey/fix loop · Running journeys"));
-	assert.ok(journey > 0);
-	assert.match(rendered[journey + 1]!.trimStart(), /^Fast · .*4 turns · 13 tools/, "stage-aware review detail puts live agent status on its own continuation row");
-	assert.ok(rendered.some((line) => line.includes("Whole-branch review/fix loop · Whole-branch review queued")));
+	assert.ok(rendered.some((line) => line.includes("Final validation · Whole-branch review/fix loop · 2 gates")));
+	const review = rendered.findIndex((line) => line.includes("Whole-branch review/fix loop · Reviewing whole branch"));
+	assert.ok(review > 0);
+	assert.match(rendered[review + 1]!.trimStart(), /^Fast · .*4 turns · 13 tools/, "stage-aware review detail puts live agent status on its own continuation row");
+	assert.ok(rendered.some((line) => line.includes("E2E journey/fix loop · Journey run queued")));
 	assert.equal(rendered.some((line) => line.includes("Runtime verification") || line.includes("0 tasks")), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });

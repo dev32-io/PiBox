@@ -123,7 +123,7 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 	}
 	for (const artifactItem of artifactItems) {
 		const relationship = artifactItem.id === item.id ? (item.amendment ? "current amendment" : "current work item") : "immutable amendment baseline";
-		for (const entry of artifactItem.artifacts.filter((artifact) => ["intent", "spec", "design", "decision"].includes(artifact.type) || (evaluation.type === "e2e" && artifact.type === "e2e-matrix"))) {
+		for (const entry of artifactItem.artifacts.filter((artifact) => ["intent", "spec", "design", "decision"].includes(artifact.type) || ((evaluation.type === "e2e" || evaluation.checkpoint === "final-review") && artifact.type === "e2e-matrix"))) {
 			const artifact = await store.readArtifact(artifactItem.id, entry.id);
 			artifacts.push(`### ${relationship}: ${artifactItem.id}/${entry.type}:${entry.id}\n\n${body(artifact.content)}`);
 		}
@@ -144,9 +144,20 @@ export async function buildReviewPersistentContext(store: WorkItemStore, workIte
 			artifacts: artifacts.join("\n\n") || "No story artifacts are recorded.",
 		})}\n`;
 	}
+	const currentReviewedCommit = reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded";
+	const wholeBranchBase = item.delivery?.executionStartCommit ?? item.delivery?.createdFromCommit;
+	const wholeBranchBoundary = evaluation.checkpoint === "final-review"
+		? [
+			`Whole-branch base commit: ${wholeBranchBase ?? "not recorded"}`,
+			`Whole-branch head commit: ${currentReviewedCommit}`,
+			`Initial review diff: ${wholeBranchBase && currentReviewedCommit !== "not recorded" ? `${wholeBranchBase}..${currentReviewedCommit}` : "unavailable until both commits are recorded"}`,
+			"Review the assembled feature as one integrated change. Inspect cross-stage interactions, incompatible assumptions, duplicated policy, missing wiring, architectural drift, and regressions that are visible only in the complete diff.",
+			"Use the exact base..head boundary for the initial review; do not substitute an unbounded checkout review or a task-by-task recap.",
+		].join("\n")
+		: "";
 	return `${renderBuiltInPrompt("review-context", {
 		workItem: `${item.id} — ${item.title}`,
-		evaluation: `Reviewed commit: ${reviewedCommit ?? evaluation.loop?.reviewedCommit ?? "not recorded"}\nReview mode: ${evaluation.loop?.state === "rereviewing" ? "closure-focused re-review" : "initial exhaustive review"}\nPrior findings: ${(evaluation.findings ?? []).map((finding) => `${finding.id} (${finding.severity}, ${finding.status}) — ${finding.summary}`).join("; ") || "None recorded."}\nManager decision: ${evaluation.loop?.managerPrompt ?? "No prior manager decision recorded."}\nBounded repair diff: inspect only the repair since the reviewed commit.\n\n\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,
+		evaluation: `Reviewed commit: ${currentReviewedCommit}\nReview mode: ${evaluation.loop?.state === "rereviewing" ? "closure-focused re-review" : "initial exhaustive review"}\n${wholeBranchBoundary ? `${wholeBranchBoundary}\n` : ""}Prior findings: ${(evaluation.findings ?? []).map((finding) => `${finding.id} (${finding.severity}, ${finding.status}) — ${finding.summary}`).join("; ") || "None recorded."}\nManager decision: ${evaluation.loop?.managerPrompt ?? "No prior manager decision recorded."}\nBounded repair diff: inspect only the repair since the reviewed commit.\n\n\`\`\`yaml\n${stringify(evaluation).trim()}\n\`\`\``,
 		tasks: tasks.join("\n\n") || "No task manifest is assigned to this evaluation boundary.",
 		artifacts: artifacts.join("\n\n") || "No specification or design artifacts are recorded.",
 	})}\n`;

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
 import type { EvaluationManifest, ExecutionStageContract, TaskManifest, WorkItemIndex } from "./types.js";
+import { validateStageReviewPolicy } from "./stage-review-policy.js";
 import { normalizeChecks } from "./verification-checks.js";
 import { resolveVerificationProfile, type ResolvedVerificationProfile } from "./verification-config.js";
 
@@ -28,7 +29,14 @@ export function resolveStageMode(stage: ExecutionStageContract): ResolvedStageMo
 
 /** Return the planner-authored task stages in durable order. */
 export function orderedExecutionStages(item: WorkItemIndex): ExecutionStageContract[] {
-	return (item.executionStages ?? []).map((stage) => ({ ...stage, tasks: [...stage.tasks], ...(stage.checks ? { checks: [...stage.checks] } : {}), ...(stage.review ? { review: { ...stage.review, ...(stage.review.focus ? { focus: [...stage.review.focus] } : {}) } } : {}) }));
+	return (item.executionStages ?? []).map((stage) => {
+		const review = stage.review?.mode === "skip"
+			? { mode: "skip" as const, rationale: stage.review.rationale }
+			: stage.review
+				? { ...stage.review, ...(stage.review.focus ? { focus: [...stage.review.focus] } : {}) }
+				: undefined;
+		return { ...stage, tasks: [...stage.tasks], ...(stage.checks ? { checks: [...stage.checks] } : {}), ...(review ? { review } : {}) };
+	});
 }
 
 function retainedRuntimeIsolation(item: WorkItemIndex, task: TaskManifest): TaskExecutionIsolation | undefined {
@@ -113,7 +121,8 @@ export function executionTopologyIssues(item: WorkItemIndex, tasks: TaskManifest
 
 	for (const [stageIndex, stage] of stages.entries()) {
 		if (stage.tasks.length === 0) issues.push({ code: "empty-stage", stageId: stage.id, message: `Execution stage ${stage.id} must contain at least one task` });
-		if (stage.review?.tier === "high" && ((stage.review.focus?.join(" ").trim().length ?? 0) < 20 || (stage.review.rationale?.trim().length ?? 0) < 20)) issues.push({ code: "invalid-review-policy", stageId: stage.id, message: `High review policy for stage ${stage.id} requires substantive rationale and focus` });
+		try { validateStageReviewPolicy(stage.review, `Execution stage ${stage.id} review policy`); }
+		catch (error) { issues.push({ code: "invalid-review-policy", stageId: stage.id, message: error instanceof Error ? error.message : String(error) }); }
 		const mode = resolveStageMode(stage);
 		const claims = new Map<string, string>();
 		const taskOrder = new Map(stage.tasks.map((taskId, order) => [taskId, order]));

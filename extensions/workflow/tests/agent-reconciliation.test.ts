@@ -26,7 +26,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> { return (aw
 	assert.equal(await git(root, "status", "--porcelain"), "", "fixture must be clean before reconciliation");
 	const runs = new HarnessRunStore(identity, "review");
 	const created = await runs.create({ repositoryId: identity.id, workItemId: "review", evaluationId: "evaluation", role: "reviewer", attempt: 1, state: "running", workspace: root, baseCommit: await git(root, "rev-parse", "HEAD"), planningRevision: (await store.read("review")).planning.revision });
-	await runs.writeEvaluationHandoff(created.record.id, { schemaVersion: 1, type: "evaluation_complete", runId: created.record.id, evaluationId: "evaluation", verdict: "fail", report: "finding", evidence: [], findings: [{ id: "F1", severity: "high", status: "open", summary: "finding", blocking: true }], completedAt: new Date().toISOString() });
+	await runs.writeEvaluationHandoff(created.record.id, { schemaVersion: 1, type: "evaluation_complete", runId: created.record.id, evaluationId: "evaluation", verdict: "fail", report: "MERGE: NO\n\nfinding", evidence: [], findings: [{ id: "F1", severity: "high", status: "open", summary: "finding", blocking: true }], completedAt: new Date().toISOString() });
 	const agent: any = { id: "reviewer-agent", sessionId: "session", parentAgentId: "main", depth: 1, role: "code-reviewer", state: "reported", provider: "test", model: "test", effort: "low", operationId: "review-op", assignmentDigest: "digest", assignmentPath: "assignment", attempts: [], workItemId: "review", evaluationId: "evaluation", runId: created.record.id, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 	const registry: any = { async list() { return [agent]; }, async get() { return agent; }, async transition(_id: string, state: string) { agent.state = state; return agent; } };
 	const input = { identity, registry, workItems: store, mutex: new RepositoryMutex(identity.commonDir ?? identity.root) };
@@ -59,7 +59,7 @@ test("failed canonical evaluation settlement stops projecting the exited run as 
 		workItemId: "review",
 		evaluationId: "evaluation",
 		runId: "run-id",
-		handoff: { schemaVersion: 1, type: "evaluation_complete", runId: "run-id", evaluationId: "evaluation", verdict: "fail", report: "failed", evidence: [], findings: [], completedAt: new Date().toISOString() },
+		handoff: { schemaVersion: 1, type: "evaluation_complete", runId: "run-id", evaluationId: "evaluation", verdict: "fail", report: "MERGE: NO\n\nfailed", evidence: [], findings: [], completedAt: new Date().toISOString() },
 		reviewerAgentId: "reviewer",
 		reviewedCommit: "a".repeat(40),
 		exitCode: 0,
@@ -115,6 +115,7 @@ test("live settlement and reconciliation remain idempotent across every review/f
 		const identity = await discoverRepository(root, join(parent, "home"));
 		const store = new WorkItemStore(root);
 		await store.create({ id: scenario.id, title: scenario.id, kind: "change", branchKind: "feature", intent: "exercise managed evaluation settlement" });
+		if (scenario.type === "e2e") await store.putArtifact({ workItemId: scenario.id, id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Journeys", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Managed settlement", setup: ["Setup"], actions: ["Act"], expectedOutcomes: ["Pass"], evidence: ["Observe"] }] }, operation: "create" });
 		await store.defineEvaluation(scenario.id, {
 			schemaVersion: 1,
 			id: "evaluation",
@@ -131,7 +132,7 @@ test("live settlement and reconciliation remain idempotent across every review/f
 		const runs = new HarnessRunStore(identity, scenario.id);
 		const baseCommit = await git(root, "rev-parse", "HEAD");
 		const created = await runs.create({ repositoryId: identity.id, workItemId: scenario.id, evaluationId: "evaluation", role: scenario.type === "e2e" ? "e2e-tester" : "code-reviewer", attempt: 1, state: "running", workspace: root, baseCommit, planningRevision: (await store.read(scenario.id)).planning.revision });
-		const handoff = { schemaVersion: 1 as const, type: "evaluation_complete" as const, runId: created.record.id, evaluationId: "evaluation", verdict: "fail" as const, report: "bounded finding", evidence: [{ path: "README.md:1-1", result: "source inspected" }], findings: [{ id: "F1", severity: "high" as const, status: "open" as const, summary: "repair this", blocking: true }], completedAt: new Date().toISOString() };
+		const handoff = { schemaVersion: 1 as const, type: "evaluation_complete" as const, runId: created.record.id, evaluationId: "evaluation", verdict: "fail" as const, report: "MERGE: NO\n\nbounded finding", ...(scenario.type === "e2e" ? { caseResults: [{ caseId: "E2E-001", status: "fail" as const, executedActions: ["Act"], observations: ["Failed"], evidenceRefs: ["README.md:1-1"] }] } : {}), evidence: [{ path: "README.md:1-1", result: "source inspected" }], findings: [{ id: "F1", severity: "high" as const, status: "open" as const, summary: "repair this", blocking: true }], completedAt: new Date().toISOString() };
 		await runs.writeEvaluationHandoff(created.record.id, handoff);
 		const registry = new SessionAgentRegistry(identity.privateRoot, `session-${scenario.id}`);
 		await registry.initialize(`main:${scenario.id}`);

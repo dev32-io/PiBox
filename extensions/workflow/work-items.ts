@@ -8,8 +8,9 @@ import { HarnessError } from "./errors.js";
 import { executionTopologyIssues, validateExecutionTopology, type ExecutionTopologyIssue } from "./execution-topology.js";
 import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit } from "./repository.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
-import { isTierTaskAssignment, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type E2ECaseResult, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
+import { stageReviewRequired, validateStageReviewPolicy } from "./stage-review-policy.js";
 import { normalizeChecks, verificationCommand } from "./verification-checks.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -152,7 +153,7 @@ export function parseWorkItemIndex(content: string, source = "index.yaml"): Work
 			if (!Array.isArray(stage.checks)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage checks`);
 			normalizeChecks(stage.checks, `${source} stage ${stage.id} checks`);
 		}
-		if (stage.review && (!["medium", "high"].includes(stage.review.tier) || (stage.review.tier === "high" && ((stage.review.rationale?.trim().length ?? 0) < 20 || (stage.review.focus?.join(" ").trim().length ?? 0) < 20)))) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid stage review policy`);
+		validateStageReviewPolicy(stage.review, `${source} stage ${stage.id} review policy`);
 	}
 	const artifactIds = new Set<string>();
 	for (const artifact of index.artifacts) {
@@ -1087,7 +1088,7 @@ export class WorkItemStore {
 		if (new Set(stage.tasks).size !== stage.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} requires unique tasks`);
 		if (index.phase !== "planning" && !stage.tasks.length) throw new HarnessError("INVALID_ARTIFACT", `Execution stage ${stage.id} requires at least one task`);
 		for (const taskId of stage.tasks) if (index.phase !== "planning" && !index.tasks.some((task) => task.id === taskId)) throw new HarnessError("INVALID_ARTIFACT", `Unknown task in execution stage ${stage.id}: ${taskId}`);
-		if (stage.review?.tier === "high" && ((stage.review.rationale?.trim().length ?? 0) < 20 || (stage.review.focus?.join(" ").trim().length ?? 0) < 20)) throw new HarnessError("INVALID_ARTIFACT", `High review policy for stage ${stage.id} requires substantive rationale and focus`);
+		validateStageReviewPolicy(stage.review, `Execution stage ${stage.id} review policy`);
 		index.executionStages ??= [];
 		const originalStages = index.executionStages.map((existing) => ({ ...existing, tasks: [...existing.tasks] }));
 		const previousPosition = originalStages.findIndex((existing) => existing.id === stage.id);
@@ -1197,6 +1198,26 @@ export class WorkItemStore {
 		return item.amendment ? this.readE2EMatrix(item.amendment.baselineWorkItemId, seen) : undefined;
 	}
 
+	async validateE2ECaseResults(workItemId: string, evaluation: EvaluationManifest, verdict: "pass" | "fail" | "blocked" | "not_applicable", caseResults: E2ECaseResult[] | undefined): Promise<void> {
+		if (evaluation.type !== "e2e" || evaluation.scope.workItem !== workItemId) return;
+		const matrix = await this.readE2EMatrix(workItemId);
+		if (!matrix) throw new HarnessError("INVALID_HANDOFF", `E2E evaluation ${evaluation.id} requires an approved matrix`);
+		const expected = [...matrix.content.matchAll(/^### (E2E-\d{3})\b/gm)].map((match) => match[1]!);
+		if (!expected.length) throw new HarnessError("INVALID_ARTIFACT", `Approved E2E matrix for ${workItemId} has no readable case IDs`);
+		if (!caseResults?.length) throw new HarnessError("INVALID_HANDOFF", `E2E evaluation ${evaluation.id} must report every matrix case exactly once`);
+		const actual = caseResults.map((result) => result.caseId);
+		const duplicates = actual.filter((id, index) => actual.indexOf(id) !== index);
+		const missing = expected.filter((id) => !actual.includes(id));
+		const unexpected = actual.filter((id) => !expected.includes(id));
+		if (duplicates.length || missing.length || unexpected.length || actual.length !== expected.length) throw new HarnessError("INVALID_HANDOFF", `E2E evaluation ${evaluation.id} case results do not match the approved matrix`, { missing, unexpected, duplicates: [...new Set(duplicates)] });
+		for (const result of caseResults) {
+			if (!["pass", "fail", "blocked"].includes(result.status) || !Array.isArray(result.executedActions) || !Array.isArray(result.observations) || !Array.isArray(result.evidenceRefs)) throw new HarnessError("INVALID_HANDOFF", `E2E evaluation ${evaluation.id} has an invalid result for ${result.caseId}`);
+		}
+		if (verdict === "not_applicable") throw new HarnessError("INVALID_HANDOFF", `Required E2E evaluation ${evaluation.id} cannot be not_applicable`);
+		const incomplete = caseResults.filter((result) => result.status !== "pass");
+		if (verdict === "pass" && incomplete.length) throw new HarnessError("INVALID_HANDOFF", `E2E evaluation ${evaluation.id} cannot pass with incomplete cases: ${incomplete.map((result) => `${result.caseId}:${result.status}`).join(", ")}`);
+	}
+
 	async ensureFinalEvaluations(workItemId: string, maxIterations = DEFAULT_REVIEW_FIX_ITERATIONS): Promise<EvaluationManifest[]> {
 		return await this.coordinator.run(`ensure-final-evaluations:${workItemId}`, () => this.ensureFinalEvaluationsUnlocked(workItemId, maxIterations));
 	}
@@ -1206,25 +1227,26 @@ export class WorkItemStore {
 		if (!await this.readE2EMatrix(workItemId)) throw new HarnessError("INVALID_HANDOFF", `Work item ${workItemId} cannot launch final E2E without an e2e-matrix artifact in the amendment or its completed baseline chain`);
 		let existing = await Promise.all(item.evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
 		for (const stage of item.executionStages ?? []) {
+			if (!stageReviewRequired(stage.review)) continue;
 			const id = `stage-${stage.id}-review`;
 			const durable = existing.find((evaluation) => evaluation.id === id);
 			if (durable) {
 				if (durable.checkpoint !== "stage-review" || durable.stageId !== stage.id || !durable.required) throw new HarnessError("INVALID_ARTIFACT", `Runtime stage review identity ${id} is occupied by a conflicting evaluation`);
 				continue;
 			}
-			const policy = stage.review ?? { tier: "medium" as const };
-			await this.defineRuntimeEvaluation(workItemId, { schemaVersion: 1, id, type: "combined-review", checkpoint: "stage-review", stageId: stage.id, scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: (stage.checks ?? []).map(verificationCommand), ...(policy.focus ? { criteria: policy.focus } : {}), loop: { state: "planned", iteration: 0, maxIterations } });
+			const policy = stage.review?.mode === "skip" ? undefined : stage.review;
+			await this.defineRuntimeEvaluation(workItemId, { schemaVersion: 1, id, type: "combined-review", checkpoint: "stage-review", stageId: stage.id, scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: (stage.checks ?? []).map(verificationCommand), ...(policy?.focus ? { criteria: policy.focus } : {}), loop: { state: "planned", iteration: 0, maxIterations } });
 			existing = [...existing, await this.readEvaluation(workItemId, id)];
-		}
-		let finalJourney = existing.find((evaluation) => evaluation.checkpoint === "final-e2e");
-		if (!finalJourney) {
-			finalJourney = { schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Execute every case in the approved E2E matrix exactly."], loop: { state: "planned", iteration: 0, maxIterations } };
-			await this.defineRuntimeEvaluation(workItemId, finalJourney);
 		}
 		let finalReview = existing.find((evaluation) => evaluation.checkpoint === "final-review");
 		if (!finalReview) {
-			finalReview = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Review the complete feature-branch diff for specification fit, correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } };
+			finalReview = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Review the complete executionStartCommit..reviewedCommit feature diff as one integrated change for specification fit, cross-stage correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } };
 			await this.defineRuntimeEvaluation(workItemId, finalReview);
+		}
+		let finalJourney = existing.find((evaluation) => evaluation.checkpoint === "final-e2e");
+		if (!finalJourney) {
+			finalJourney = { schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Execute every case in the approved E2E matrix exactly after whole-branch review passes."], loop: { state: "planned", iteration: 0, maxIterations } };
+			await this.defineRuntimeEvaluation(workItemId, finalJourney);
 		}
 		return Promise.all((await this.read(workItemId)).evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
 	}
@@ -1284,6 +1306,7 @@ export class WorkItemStore {
 		evaluationId: string;
 		verdict: "pass" | "fail" | "blocked" | "not_applicable";
 		report: string;
+		caseResults?: E2ECaseResult[];
 		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
 		findings?: NonNullable<EvaluationManifest["findings"]>;
 		residualRisks?: string[];
@@ -1300,6 +1323,7 @@ export class WorkItemStore {
 		evaluationId: string;
 		verdict: "pass" | "fail" | "blocked" | "not_applicable";
 		report: string;
+		caseResults?: E2ECaseResult[];
 		evidence: Array<{ command?: string; result: string; path?: string; description?: string }>;
 		findings?: NonNullable<EvaluationManifest["findings"]>;
 		residualRisks?: string[];
@@ -1323,6 +1347,7 @@ export class WorkItemStore {
 		const manifestPath = join(evidenceRoot, "manifest.yaml");
 		const previousEvaluation = await readFile(evaluationPath, "utf8");
 		const evaluation = parse(previousEvaluation) as EvaluationManifest;
+		await this.validateE2ECaseResults(input.workItemId, evaluation, input.verdict, input.caseResults);
 		if (input.expectedAttempt !== undefined) {
 			if (evaluation.attempt > input.expectedAttempt) throw new HarnessError("INVALID_HANDOFF", `Evaluation ${input.evaluationId} advanced past expected attempt ${input.expectedAttempt}`);
 			if (evaluation.attempt === input.expectedAttempt) {
@@ -1374,6 +1399,7 @@ export class WorkItemStore {
 				verdict: input.verdict,
 				report: "report.md",
 				evidence: `../../evidence/${input.evaluationId}/manifest.yaml`,
+				...(input.caseResults ? { caseResults: input.caseResults } : {}),
 			};
 			const renderedReport = renderEvaluationReport({
 				id: evaluation.id,
@@ -1382,6 +1408,7 @@ export class WorkItemStore {
 				observations: input.report,
 				evidence: input.evidence,
 				findings: input.findings ?? [],
+				...(input.caseResults ? { caseResults: input.caseResults } : {}),
 				verdict: input.verdict,
 				...(input.residualRisks ? { residualRisks: input.residualRisks } : {}),
 			});
@@ -1426,7 +1453,9 @@ export class WorkItemStore {
 			const evaluation = parse(previousEvaluation) as EvaluationManifest;
 			if (evaluation.attempt < 1) throw new HarnessError("INVALID_HANDOFF", "Approval requires a completed evaluation attempt.");
 			if (evaluation.type === "deterministic" && evaluation.status !== "passed") throw new HarnessError("INVALID_HANDOFF", "Deterministic failed checks are hard blockers and cannot be accepted as risk.");
+			if (evaluation.checkpoint === "final-e2e" && evaluation.status !== "passed") throw new HarnessError("INVALID_HANDOFF", "An incomplete final E2E matrix cannot be accepted as risk; every required case must pass.");
 			const unresolved = (evaluation.findings ?? []).filter((finding) => ["open", "needs_user", "accepted"].includes(finding.status));
+			if (!unresolved.length) throw new HarnessError("INVALID_HANDOFF", "Approval with risk requires at least one explicit unresolved finding; request changes or record a passing evaluation instead.");
 			const selected = new Map(acceptedRisks.map((risk) => [risk.findingId, risk]));
 			const missing = unresolved.filter((finding) => !selected.has(finding.id));
 			if (missing.length) throw new HarnessError("INVALID_HANDOFF", `Approval must name every unresolved finding in acceptedRisks: ${missing.map((finding) => finding.id).join(", ")}`);
@@ -1488,6 +1517,7 @@ export class WorkItemStore {
 			if (manifest.required && manifest.status !== "passed" && manifest.status !== "not_applicable") {
 				throw new HarnessError("INVALID_HANDOFF", `Required evaluation has not passed: ${evaluation.id}`);
 			}
+			if (manifest.checkpoint === "final-e2e") await this.validateE2ECaseResults(workItemId, manifest, manifest.result?.verdict ?? "blocked", manifest.result?.caseResults);
 			const acceptedRiskIds = new Set(manifest.loop?.acceptedRisks?.map((risk) => risk.findingId) ?? []);
 			const hasRiskAcceptance = Boolean(manifest.result?.riskAcceptance);
 			if (manifest.findings?.some((finding) => {

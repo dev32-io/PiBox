@@ -1,5 +1,6 @@
 import { SessionAgentRegistry, TERMINAL_AGENT_STATES } from "../workflow-runtime/agent-registry.js";
 import { HarnessError } from "./errors.js";
+import { validateManagedEvaluationReport } from "./evaluation-integrity.js";
 import { HarnessRunStore, type EvaluationHandoff } from "./run-store.js";
 import type { EvaluationManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
@@ -58,6 +59,7 @@ export async function settleManagedEvaluation(input: ManagedEvaluationSettlement
 	if (input.handoff.runId !== input.runId || input.handoff.evaluationId !== input.evaluationId) {
 		throw new HarnessError("INVALID_HANDOFF", `Evaluation handoff does not match run ${input.runId}`);
 	}
+	validateManagedEvaluationReport(input.handoff.report, input.handoff.verdict);
 	try {
 		return await input.workItems.coordinator.run(`managed-evaluation-settlement:${input.runId}`, async () => {
 			const run = await input.runs.read(input.runId);
@@ -79,6 +81,7 @@ export async function settleManagedEvaluation(input: ManagedEvaluationSettlement
 					evaluationId: input.evaluationId,
 					verdict: input.handoff.verdict,
 					report: input.handoff.report,
+					...(input.handoff.caseResults ? { caseResults: input.handoff.caseResults } : {}),
 					evidence: input.handoff.evidence,
 					findings: input.handoff.findings,
 					...(input.handoff.residualRisks ? { residualRisks: input.handoff.residualRisks } : {}),

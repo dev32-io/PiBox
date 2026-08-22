@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
 import { describeHarnessError, HarnessError } from "./errors.js";
+import { validateManagedEvaluationReport } from "./evaluation-integrity.js";
 import { discoverRepository } from "./repository.js";
 import { HarnessRunStore, type EvaluationHandoff } from "./run-store.js";
 import { validateEvidenceSource, WorkItemStore } from "./work-items.js";
@@ -74,10 +75,17 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "evaluation_complete",
 		label: "Complete Evaluation",
-		description: "Submit the terminal verdict with observations, evidence, discrete findings, and residual uncertainty. Evidence paths must name individual sanitized regular files; directories are not accepted.",
+		description: "Submit the terminal verdict with observations, evidence, discrete findings, and residual uncertainty. E2E evaluations must include every approved matrix case exactly once. Evidence paths must name individual sanitized regular files; directories are not accepted.",
 		parameters: Type.Object({
 			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
 			report: Type.String({ description: "Concise evaluation observations; canonical report structure is rendered by the capability." }),
+			caseResults: Type.Optional(Type.Array(Type.Object({
+				caseId: Type.String(),
+				status: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked")]),
+				executedActions: Type.Array(Type.String()),
+				observations: Type.Array(Type.String()),
+				evidenceRefs: Type.Array(Type.String()),
+			}, { additionalProperties: false }))),
 			residualRisks: Type.Optional(Type.Array(Type.String())),
 			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String({ description: "Optional repository or temporary regular-file path. Directories are unsupported; provide a specific sanitized file." })), description: Type.Optional(Type.String()) }))),
 			findings: Type.Optional(Type.Array(Type.Object({
@@ -94,6 +102,9 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 			try {
 				const auth = await authorized(ctx);
 				if (!params.report.trim()) throw new HarnessError("INVALID_HANDOFF", "Evaluation report must not be empty");
+				validateManagedEvaluationReport(params.report, params.verdict);
+				const evaluation = await auth.workItems.readEvaluation(auth.scope.workItemId, auth.scope.evaluationId);
+				await auth.workItems.validateE2ECaseResults(auth.scope.workItemId, evaluation, params.verdict, params.caseResults);
 				// Reject invalid evidence while the evaluator is still alive so it can
 				// correct the handoff instead of failing later during canonical settlement.
 				await Promise.all((params.evidence ?? []).map((evidence) => evidence.path ? validateEvidenceSource(auth.identity.root, evidence.path) : undefined));
@@ -104,6 +115,7 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 					evaluationId: auth.scope.evaluationId,
 					verdict: params.verdict,
 					report: params.report,
+					...(params.caseResults ? { caseResults: params.caseResults } : {}),
 					residualRisks: params.residualRisks ?? [],
 					evidence: params.evidence ?? [],
 					findings: params.findings ?? [],

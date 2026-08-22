@@ -110,6 +110,24 @@ test("rejects a new final E2E launch without a matrix while preserving legacy E2
 	await assert.rejects(store.ensureFinalEvaluations("new-no-matrix"), /without an e2e-matrix artifact/);
 });
 
+test("final E2E cannot pass or be risk-accepted with incomplete matrix results", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "e2e-integrity", title: "E2E integrity", kind: "story", intent: "Require complete structured journey results." });
+	await store.putArtifact({ workItemId: "e2e-integrity", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Journeys", sections: { cases: [
+		{ id: "E2E-001", classification: "golden-path", journey: "First journey", setup: ["Setup"], actions: ["Act"], expectedOutcomes: ["Pass"], evidence: ["Observe"] },
+		{ id: "E2E-002", classification: "recovery", journey: "Recovery journey", setup: ["Disconnect"], actions: ["Reconnect"], expectedOutcomes: ["Recover"], evidence: ["Observe recovery"] },
+	] }, operation: "create" });
+	await store.defineEvaluation("e2e-integrity", { schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: "e2e-integrity" }, status: "planned", required: true, attempt: 0, methods: ["run matrix"] });
+	const result = (caseId: string, status: "pass" | "fail" | "blocked") => ({ caseId, status, executedActions: ["Act"], observations: [status], evidenceRefs: [`${caseId}.json`] });
+	await assert.rejects(store.recordEvaluation({ workItemId: "e2e-integrity", evaluationId: "final-e2e", verdict: "pass", report: "Incomplete pass", evidence: [], caseResults: [result("E2E-001", "pass"), result("E2E-002", "blocked")] }), /cannot pass with incomplete cases/i);
+	await store.recordEvaluation({ workItemId: "e2e-integrity", evaluationId: "final-e2e", verdict: "fail", report: "Recovery remains blocked", evidence: [], caseResults: [result("E2E-001", "pass"), result("E2E-002", "blocked")], findings: [{ id: "E2E-BLOCKED", severity: "high", status: "open", summary: "Recovery is blocked", blocking: true }] });
+	await assert.rejects(store.approveEvaluation("e2e-integrity", "final-e2e", [{ findingId: "E2E-BLOCKED", rationale: "Attempt to accept an incomplete required journey." }]), /cannot be accepted as risk/i);
+	const passed = await store.recordEvaluation({ workItemId: "e2e-integrity", evaluationId: "final-e2e", verdict: "pass", report: "Every journey passed", evidence: [], caseResults: [result("E2E-001", "pass"), result("E2E-002", "pass")], findings: [{ id: "E2E-BLOCKED", severity: "high", status: "resolved", summary: "Recovery now passes", blocking: false }] });
+	assert.equal(passed.status, "passed");
+	assert.equal(passed.result?.caseResults?.length, 2);
+	assert.match(await readFile(join(root, "agent-artifacts", "e2e-integrity", "evaluations", "final-e2e", "report.md"), "utf8"), /## E2E Case Results[\s\S]+E2E-002.*pass/);
+});
+
 test("renders schema-v2 intent, artifacts, and task contracts from semantic values", async (t) => {
 	const root = await repository(t);
 	const store = new WorkItemStore(root);

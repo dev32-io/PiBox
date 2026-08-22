@@ -38,6 +38,7 @@ import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironme
 import { resourceDisplayDiff } from "./resource-diff.js";
 import { RepairRecoveryStore } from "./repair-recovery.js";
 import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
+import { stageReviewTier } from "./stage-review-policy.js";
 import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/policy.js";
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
@@ -152,7 +153,7 @@ const PLAN_STAGE_CHECK = Type.Union([
 	Type.String(),
 	Type.Object({ id: Type.Optional(Type.String()), command: Type.String(), profile: Type.Optional(Type.String()) }, { additionalProperties: false }),
 ]);
-const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { description: "Draft planning may temporarily leave a stage empty; submission rejects empty stages" }), mode: Type.Optional(Type.Union([Type.Literal("sequential"), Type.Literal("concurrent")])), checks: Type.Optional(Type.Array(PLAN_STAGE_CHECK)), review: Type.Optional(Type.Object({ tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
+const PLAN_STAGE = Type.Object({ id: Type.String(), tasks: Type.Array(Type.String(), { description: "Draft planning may temporarily leave a stage empty; submission rejects empty stages" }), mode: Type.Optional(Type.Union([Type.Literal("sequential"), Type.Literal("concurrent")])), checks: Type.Optional(Type.Array(PLAN_STAGE_CHECK)), review: Type.Optional(Type.Object({ mode: Type.Optional(Type.Union([Type.Literal("required"), Type.Literal("skip")])), tier: Type.Optional(Type.Union([Type.Literal("medium"), Type.Literal("high")])), focus: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })) }, { additionalProperties: false });
 const CANONICAL_PLAN_BUNDLE = Type.Object({
 	workItem: WORK_ITEM_RESOURCE_BODY,
 	artifacts: Type.Array(ARTIFACT_RESOURCE_BODY),
@@ -856,20 +857,23 @@ export default function workflow(pi: ExtensionAPI): void {
 		const agentDefinition = runtime.config.agents[agentName];
 		if (!agentDefinition) throw new HarnessError("CONFIG_INVALID", `Missing evaluator agent definition: ${agentName}`);
 		const stagePolicy = evaluation.checkpoint === "stage-review" ? item.executionStages?.find((stage) => stage.id === evaluation.stageId)?.review : undefined;
-		const routing = { tier: evaluation.checkpoint === "stage-review" ? (stagePolicy?.tier ?? "medium") : agentDefinition.tier! };
+		const routing = { tier: evaluation.checkpoint === "stage-review" ? stageReviewTier(stagePolicy) : agentDefinition.tier! };
 		const available = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
 		const resolution = resolveHarnessModel(runtime.config, available, routing);
 		if (resolution.status === "waiting_model") return textResult("MODEL_UNAVAILABLE: No evaluator candidate is available.", resolution);
 		await runtime.mutex.run(`evaluation-preflight:${item.id}:${evaluation.id}`, () => assertCleanRepository(runtime.identity.root));
 		const runs = new HarnessRunStore(runtime.identity, item.id);
+		const reviewedCommit = await runGit(runtime.identity.root, ["rev-parse", "HEAD"]);
+		const reviewBaseCommit = evaluation.checkpoint === "final-review" ? item.delivery?.executionStartCommit ?? item.delivery?.createdFromCommit : undefined;
+		if (evaluation.checkpoint === "final-review" && !reviewBaseCommit) throw new HarnessError("INVALID_HANDOFF", `Whole-branch review ${evaluation.id} requires an executionStartCommit or createdFromCommit boundary`);
+		if (reviewBaseCommit) await runGit(runtime.identity.root, ["merge-base", "--is-ancestor", reviewBaseCommit, reviewedCommit]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Whole-branch review base ${reviewBaseCommit} is not an ancestor of ${reviewedCommit}`); });
 		const created = await runs.create({
 			repositoryId: runtime.identity.id, workItemId: item.id, evaluationId: evaluation.id, role: agentName,
 			attempt: evaluation.attempt + 1, state: "running", workspace: runtime.identity.root,
-			baseCommit: await runGit(runtime.identity.root, ["rev-parse", "HEAD"]), planningRevision: item.planning.revision,
+			baseCommit: reviewedCommit, ...(reviewBaseCommit ? { reviewBaseCommit } : {}), planningRevision: item.planning.revision,
 			requestedModel: routing.tier, resolvedProvider: resolution.model.provider,
 			resolvedModel: resolution.model.id, resolvedEffort: resolution.effort,
 		});
-		const reviewedCommit = await runGit(runtime.identity.root, ["rev-parse", "HEAD"]);
 		const prompt = renderBuiltInPrompt("managed-evaluation", {
 			phase: evaluation.loop?.state === "rereviewing" ? `Re-review iteration ${evaluation.loop.iteration}` : "Evaluate",
 			evaluationId: evaluation.id,
@@ -1485,12 +1489,19 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "evaluation_record",
 		label: "Record Workflow Evaluation",
-		description: "Atomically record a completed planned evaluation, curated report, and checksummed evidence manifest. Evidence paths must name individual sanitized regular files; directories are not accepted.",
+		description: "Atomically record a completed planned evaluation, curated report, and checksummed evidence manifest. E2E evaluations must include every approved matrix case exactly once. Evidence paths must name individual sanitized regular files; directories are not accepted.",
 		parameters: Type.Object({
 			workItemId: Type.String(),
 			evaluationId: Type.String(),
 			verdict: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked"), Type.Literal("not_applicable")]),
 			report: Type.String({ description: "Evaluation observations; canonical report headings are rendered deterministically." }),
+			caseResults: Type.Optional(Type.Array(Type.Object({
+				caseId: Type.String(),
+				status: Type.Union([Type.Literal("pass"), Type.Literal("fail"), Type.Literal("blocked")]),
+				executedActions: Type.Array(Type.String()),
+				observations: Type.Array(Type.String()),
+				evidenceRefs: Type.Array(Type.String()),
+			}, { additionalProperties: false }))),
 			residualRisks: Type.Optional(Type.Array(Type.String())),
 			evidence: Type.Optional(Type.Array(Type.Object({ command: Type.Optional(Type.String()), result: Type.String(), path: Type.Optional(Type.String({ description: "Optional repository or temporary regular-file path. Directories are unsupported; provide a specific sanitized file." })), description: Type.Optional(Type.String()) }))),
 			findings: Type.Optional(Type.Array(Type.Object({
