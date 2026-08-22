@@ -318,7 +318,7 @@ export interface HarnessStatusSnapshot {
 	repositoryId: string;
 	workItems: WorkItemIndex[];
 	taskCounts: Record<string, Record<string, number>>;
-	runs: Array<{ id: string; workItemId: string; taskId?: string; role: string; state: string; model?: string }>;
+	runs: Array<{ id: string; workItemId: string; taskId?: string; role: string; state: string; model?: string; handoffReady?: boolean }>;
 	executionControls: Array<{ workflowRef: string; mode: "running" | "paused" | "stopped" | "completed"; generation: number; updatedAt: string }>;
 	agents: Array<{ id: string; role: string; state: string; model: string; processActive: boolean; runId?: string; taskId?: string; evaluationId?: string }>;
 }

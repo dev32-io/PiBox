@@ -110,6 +110,7 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 					completedAt: new Date().toISOString(),
 				};
 				await auth.runs.writeEvaluationHandoff(auth.scope.runId, handoff);
+				await auth.runs.update(auth.scope.runId, { state: "submitted" }, "run.submitted");
 				return response("Terminal evaluation handoff accepted.", handoff);
 			} catch (error) {
 				throw new Error(describeHarnessError(error));

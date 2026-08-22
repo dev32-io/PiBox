@@ -447,12 +447,17 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 			counts[manifest.status] = (counts[manifest.status] ?? 0) + 1;
 		}
 		taskCounts[item.id] = counts;
-		for (const run of await new HarnessRunStore(runtime.identity, item.id).list()) {
+		const runStore = new HarnessRunStore(runtime.identity, item.id);
+		for (const run of await runStore.list()) {
+			const handoffReady = ["launching", "running"].includes(run.state)
+				? Boolean(run.evaluationId ? await runStore.readEvaluationHandoff(run.id) : await runStore.readHandoff(run.id))
+				: false;
 			runs.push({
 				id: run.id,
 				workItemId: item.id,
 				role: run.role,
 				state: run.state,
+				...(handoffReady ? { handoffReady: true } : {}),
 				...(run.taskId ? { taskId: run.taskId } : {}),
 				...(run.resolvedModel ? { model: `${run.resolvedProvider}/${run.resolvedModel}:${run.resolvedEffort}` } : {}),
 			});
@@ -535,7 +540,7 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 	const attentionAgents = status.agents.filter((agent) => !agent.processActive && !["completed", "failed", "protocol_failed", "cancelled"].includes(agent.state));
 	const active = status.runs.filter((run) => {
 		if (run.state.startsWith("waiting_")) return true;
-		if (run.state !== "running") return false;
+		if (run.state !== "running" || run.handoffReady) return false;
 		const agent = status.agents.find((candidate) => candidate.runId === run.id);
 		return !agent || agent.processActive;
 	});
