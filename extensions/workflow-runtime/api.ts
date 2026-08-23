@@ -163,10 +163,11 @@ export interface SpawnableAgentDefinition {
 /** Free-form main-session delegation. Managed workflow steps keep their canonical adapter-owned refs. */
 export type DynamicSubagentTier = "low" | "medium" | "high" | "max" | "local";
 
-/** Infer provider-isolated local routing only from an explicit local-llm model. */
-export function inferDynamicSubagentTier(tier?: DynamicSubagentTier, model?: string): DynamicSubagentTier {
+/** Resolve call-site overrides before provider isolation, agent policy, and the hard fallback. */
+export function inferDynamicSubagentTier(tier?: DynamicSubagentTier, model?: string, agentTier?: DynamicSubagentTier): DynamicSubagentTier {
 	if (tier) return tier;
-	return model?.trim().startsWith("local-llm/") ? "local" : "medium";
+	if (model?.trim().startsWith("local-llm/")) return "local";
+	return agentTier ?? "medium";
 }
 
 export interface DynamicSubagentRequest {

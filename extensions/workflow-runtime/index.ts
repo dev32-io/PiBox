@@ -882,14 +882,15 @@ export default function workflows(pi: ExtensionAPI): void {
 				agent: Type.String({ description: `Exact configured agent name. Available agents: ${catalog.length > 0 ? catalog.map((agent) => agent.name).join(", ") : "resolved at session start"}` }),
 				task: Type.String({ description: "Detailed, self-contained assignment for one bounded contribution. Include its objective, relevant context, scope boundaries, expected evidence or deliverable, constraints, and stop conditions." }),
 				mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
-				tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Configured fallback list; use local for local-llm requests; defaults to medium" })),
+				tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Configured fallback list; omit to use the selected agent definition's tier, then medium; use local for local-llm requests" })),
 				model: Type.Optional(Type.String({ description: "Exact configured model; accepts model, provider/model, or either form suffixed with #effort. Explicit model or effort failures return an error without fallback; local-llm models require tier local" })),
 				effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Optional preferred-model effort override" })),
 			}, { additionalProperties: false }),
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const adapter = dynamicAdapter();
 				const mode = params.mode ?? "foreground";
-				const tier = inferDynamicSubagentTier(params.tier, params.model);
+				const agentTier = catalog.find((agent) => agent.name === params.agent)?.tier;
+				const tier = inferDynamicSubagentTier(params.tier, params.model, agentTier);
 				const request: DynamicSubagentRequest = {
 					operationId: toolCallId, agent: params.agent, task: params.task, tier, presentation: mode,
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}),

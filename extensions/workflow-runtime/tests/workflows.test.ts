@@ -58,11 +58,12 @@ function fixture(workflowConfirmed = true) {
 	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget, permissionMode: () => permissionMode };
 }
 
-test("infers local routing only for an explicit local-llm provider", () => {
-	assert.equal(inferDynamicSubagentTier(undefined, "local-llm/qwen3.8-27b-uncensored#medium"), "local");
-	assert.equal(inferDynamicSubagentTier(undefined, "openai-codex/gpt-5.6-luna"), "medium");
+test("resolves dynamic tiers from call-site, local provider, agent policy, then medium", () => {
+	assert.equal(inferDynamicSubagentTier("high", "local-llm/qwen3.8-27b-uncensored", "low"), "high");
+	assert.equal(inferDynamicSubagentTier(undefined, "local-llm/qwen3.8-27b-uncensored#medium", "low"), "local");
+	assert.equal(inferDynamicSubagentTier(undefined, "openai-codex/gpt-5.6-luna", "low"), "low");
+	assert.equal(inferDynamicSubagentTier(undefined, undefined, "low"), "low");
 	assert.equal(inferDynamicSubagentTier(undefined, undefined), "medium");
-	assert.equal(inferDynamicSubagentTier("high", "local-llm/qwen3.8-27b-uncensored"), "high");
 });
 
 test("registers the generalized workflow and subagent surface", async () => {
@@ -89,13 +90,14 @@ test("registers the generalized workflow and subagent surface", async () => {
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("refreshes subagent_spawn with the adapter's validated agent catalog", async () => {
+test("refreshes subagent_spawn with the adapter's validated agent catalog and tier defaults", async () => {
 	const f = fixture();
+	const requests: any[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: () => false,
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(request) { return { ref: `agent:${request.agent}`, state: "completed", summary: "done" }; },
+		async spawnSubagent(request) { requests.push(request); return { ref: `agent:${request.agent}`, state: "completed", summary: "done" }; },
 		async listSpawnableAgents() { return [{ name: "project-scout", description: "Project-specific reconnaissance", tier: "low", source: "project" }]; },
 		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
@@ -103,6 +105,16 @@ test("refreshes subagent_spawn with the adapter's validated agent catalog", asyn
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	assert.match(f.tools.get("subagent_spawn").description, /project-scout \(project, low\).*Project-specific reconnaissance/);
 	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /Available agents: project-scout/);
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /selected agent definition's tier, then medium/);
+
+	const spawn = f.tools.get("subagent_spawn");
+	const inherited = await spawn.execute("inherit", { agent: "project-scout", task: "Inspect" }, undefined, undefined, f.ctx);
+	assert.equal(requests.at(-1)?.tier, "low");
+	assert.equal(inherited.details.tier, "low");
+	await spawn.execute("explicit", { agent: "project-scout", task: "Inspect", tier: "high" }, undefined, undefined, f.ctx);
+	assert.equal(requests.at(-1)?.tier, "high");
+	await spawn.execute("local", { agent: "project-scout", task: "Inspect", model: "local-llm/scout" }, undefined, undefined, f.ctx);
+	assert.equal(requests.at(-1)?.tier, "local");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

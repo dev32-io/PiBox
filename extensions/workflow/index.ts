@@ -964,7 +964,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				? normalizeExplicitModelOverride(selectedModel, request.effort as HarnessEffort | undefined)
 				: undefined;
 			const routing = {
-				tier: inferDynamicSubagentTier(request.tier, preferred?.model) as ModelTier,
+				tier: inferDynamicSubagentTier(request.tier, preferred?.model, agentDefinition.tier) as ModelTier,
 				...(preferred ? { override: preferred } : {}),
 				...(request.model ? { strict: true } : {}),
 			};
