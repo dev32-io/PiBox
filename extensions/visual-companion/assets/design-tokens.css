@@ -26,6 +26,7 @@
   --color-danger-soft: rgb(216 120 120 / 14%);
   --color-info: #6eaed4;
   --color-info-soft: rgb(110 174 212 / 14%);
+  --color-scrim: rgb(0 0 0 / 42%);
 
   --gradient-surface-raised: linear-gradient(180deg, var(--color-surface-strong), var(--color-surface-raised));
   --gradient-header: linear-gradient(180deg, rgb(24 28 36 / 96%), rgb(18 21 27 / 96%));

@@ -32,6 +32,7 @@ test("approved semantic tokens provide color, type, spacing, geometry, focus, an
 		"--color-warning": "#d9a85f",
 		"--color-danger": "#d87878",
 		"--color-info": "#6eaed4",
+		"--color-scrim": "rgb(0 0 0 / 42%)",
 		"--header-height": "68px",
 		"--content-max-width": "1180px",
 		"--lane-width": "288px",
