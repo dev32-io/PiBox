@@ -4,12 +4,38 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Visual Companion</title>
+  <!-- The inline system-color rules keep navigation readable if shared assets fail. -->
+  <style>
+    html, body { height: 100%; margin: 0; background: Canvas; color: CanvasText; font-family: system-ui, sans-serif; }
+    body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .shell-header { display: flex; align-items: center; border-bottom: 1px solid ButtonBorder; padding: 0 16px; }
+    .shell-tab { color: inherit; padding: 12px; }
+    .viewer-panel, .viewer-frame { width: 100%; height: 100%; border: 0; }
+  </style>
+  <link rel="stylesheet" href="/assets/design-tokens.css">
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-  <header><strong>Visual Companion</strong><select id="viewer" aria-label="Viewer"></select></header>
-  <main id="empty">Choose a viewer to begin.</main>
-  <iframe id="content" title="Visual Companion viewer" hidden></iframe>
+  <header class="shell-header">
+    <a class="shell-brand" href="/story-board" aria-label="Visual Companion home">
+      <span class="shell-mark" aria-hidden="true">◇</span>
+      <span>Visual Companion</span>
+    </a>
+    <nav class="shell-tabs" aria-label="Visual Companion viewers" role="tablist">
+      <a id="tab-story-board" class="shell-tab" href="/story-board" role="tab" aria-controls="panel-story-board">Story Board</a>
+      <a id="tab-architecture" class="shell-tab" href="/architecture" role="tab" aria-controls="panel-architecture">Architecture</a>
+    </nav>
+  </header>
+  <main class="shell-content">
+    <section id="panel-story-board" class="viewer-panel" role="tabpanel" aria-labelledby="tab-story-board" tabindex="0">
+      <div class="viewer-boundary" role="status">Loading Story Board…</div>
+      <iframe class="viewer-frame" title="Story Board" data-viewer="story-board" hidden></iframe>
+    </section>
+    <section id="panel-architecture" class="viewer-panel" role="tabpanel" aria-labelledby="tab-architecture" tabindex="0" hidden>
+      <div class="viewer-boundary" role="status">Loading Architecture…</div>
+      <iframe class="viewer-frame" title="Architecture" data-viewer="architecture" hidden></iframe>
+    </section>
+  </main>
   <script type="module" src="/assets/app.js"></script>
 </body>
 </html>
