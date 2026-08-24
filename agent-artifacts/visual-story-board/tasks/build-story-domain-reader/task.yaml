@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-domain-reader
 title: Build the read-only Story Board domain reader
-status: ready
+status: running
 dependsOn: []
 execution:
   resourceClaims:
@@ -25,3 +25,9 @@ verification:
       extensions/visual-companion/story-board/tests/evidence-model.test.ts
     - git diff --check
   rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-story-domain-reader
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-story-domain-reader
+  baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
+  lastRunId: 0be2a0f7-7fed-4f1e-92f7-35c7a82decf2
