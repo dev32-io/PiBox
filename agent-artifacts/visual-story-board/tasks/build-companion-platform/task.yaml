@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-companion-platform
 title: Build the reusable Visual Companion platform
-status: contribution_complete
+status: merged
 dependsOn: []
 execution:
   resourceClaims:
@@ -34,3 +34,4 @@ runtime:
   baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
   lastRunId: 40615e9d-ede5-4a26-98e5-5d87c3261e1c
   completedCommit: 765c4c94f6b12895dc979e3ee86926f5b1320a3b
+  mergedCommit: f29dcfa04157a0021679d4b6ed82a831d154072f
