@@ -1,0 +1,17 @@
+schemaVersion: 1
+id: final-branch-review
+type: combined-review
+checkpoint: final-review
+scope:
+  workItem: visual-story-board
+status: planned
+required: true
+attempt: 0
+methods:
+  - Review the complete executionStartCommit..reviewedCommit feature diff as one
+    integrated change for specification fit, cross-stage correctness,
+    regressions, maintainability, and test coverage.
+loop:
+  state: planned
+  iteration: 0
+  maxIterations: 8

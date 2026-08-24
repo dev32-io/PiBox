@@ -52,7 +52,9 @@ delivery:
   workingBranch: feature/visual-story-board
   createdFromCommit: dbb11f6c15637d3478fe2a87959d36181154498c
   executionStartCommit: ae82979f9f89eadcafa7eba8826e7531ef1dd17e
-evaluations: []
+evaluations:
+  - id: final-branch-review
+    path: evaluations/final-branch-review/evaluation.yaml
 executionStages:
   - id: platform-and-domain-foundations
     tasks:
