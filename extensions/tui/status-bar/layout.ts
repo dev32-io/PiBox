@@ -11,6 +11,11 @@ import type { ModelTierProfileStatus } from "../../model-tier-list-profiles/poli
 
 export type LayoutMode = "wide" | "medium" | "narrow";
 
+export interface ServiceStatusSegment {
+	id: string;
+	text: string;
+}
+
 export interface StatusRenderData {
 	ctx: ExtensionContext;
 	usage?: UsageSnapshot;
@@ -22,8 +27,14 @@ export interface StatusRenderData {
 	metrics: SessionMetrics;
 	git: GitSnapshot;
 	config: StatusBarConfig;
-	serviceStatuses?: string[];
+	serviceStatuses?: Array<string | ServiceStatusSegment>;
 	subagentStatuses?: string[];
+	selectedInteractiveId?: string;
+}
+
+export interface StatusBarLayout {
+	lines: string[];
+	interactiveRows: string[][];
 }
 
 export function layoutMode(width: number, config: StatusBarConfig): LayoutMode {
@@ -209,8 +220,56 @@ function costSegment(data: StatusRenderData): string {
 	return data.theme.fg("muted", `$${(data.metrics.cost ?? 0).toFixed(2)}`);
 }
 
-export function renderStatusBar(width: number, data: StatusRenderData): string[] {
-	if (width <= 0) return [];
+interface InteractiveSegment {
+	id: string;
+	text: string;
+}
+
+function decorateInteractiveSegment(segment: InteractiveSegment, data: StatusRenderData): string {
+	return segment.id === data.selectedInteractiveId ? `${data.theme.fg("accent", "›")} ${segment.text}` : segment.text;
+}
+
+function segmentTexts(segments: InteractiveSegment[], divider: string): string[] {
+	return segments.flatMap((segment, index) => index === 0 ? [segment.text] : [divider, segment.text]);
+}
+
+function fitLeftInteractiveSegments(segments: InteractiveSegment[], rightParts: string[], width: number, divider: string): InteractiveSegment[] {
+	const contentWidth = Math.max(0, width - 2);
+	const right = rightParts.filter(Boolean).join(" ");
+	if (visibleWidth(right) >= contentWidth) return [];
+	const available = Math.max(0, contentWidth - visibleWidth(right) - (right ? 1 : 0));
+	const fitted: InteractiveSegment[] = [];
+	let used = 0;
+	for (const segment of segments) {
+		// Reserve the two-column selection marker even while inactive so entering
+		// footer mode cannot make the selected element disappear.
+		const extra = (fitted.length > 0 ? visibleWidth(` ${divider} `) : 0) + visibleWidth(segment.text) + 2;
+		if (used + extra > available) break;
+		fitted.push(segment);
+		used += extra;
+	}
+	return fitted;
+}
+
+function fitServiceSegments(services: ServiceStatusSegment[], width: number, divider: string): ServiceStatusSegment[] {
+	const contentWidth = Math.max(0, width - 2);
+	const fitted: ServiceStatusSegment[] = [];
+	let used = 0;
+	for (const service of services) {
+		// Reserve the selection marker for every service so moving selection does
+		// not make an otherwise reachable trailing service disappear.
+		const extra = (fitted.length > 0 ? visibleWidth(` ${divider} `) : 0) + visibleWidth(service.text) + 2;
+		if (used + extra > contentWidth) break;
+		fitted.push(service);
+		used += extra;
+	}
+	// Keep the first service reachable when even one full segment cannot fit;
+	// buildRow will safely truncate that one visible segment.
+	return fitted.length > 0 ? fitted : services.slice(0, 1);
+}
+
+export function renderStatusBarLayout(width: number, data: StatusRenderData): StatusBarLayout {
+	if (width <= 0) return { lines: [], interactiveRows: [] };
 	const mode = layoutMode(width, data.config);
 	const divider = separator(data.theme);
 	const piMark = data.theme.fg("accent", hasNerdFonts() ? "" : "π");
@@ -219,17 +278,32 @@ export function renderStatusBar(width: number, data: StatusRenderData): string[]
 	const quota = quotaSegment(data, mode, width, context);
 	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
-	const row2BaseLeft = [permissionSegment(data), divider, effortSegment(data)];
+	const baseSegments: InteractiveSegment[] = [
+		{ id: "permissions", text: permissionSegment(data) },
+		{ id: "effort", text: effortSegment(data) },
+	];
 	const tierProfile = tierProfileSegment(data);
-	const row2WithProfile = [...row2BaseLeft, ...(tierProfile ? [divider, tierProfile] : [])];
+	const profileSegments = [...baseSegments, ...(tierProfile ? [{ id: "tier-profile", text: tierProfile }] : [])];
 	const fastMode = fastModeSegment(data);
-	const row2WithFast = [...row2WithProfile, ...(fastMode ? [divider, fastMode] : [])];
-	const row2Left = mode !== "narrow" && rowFits(row2WithFast, row2Right, width)
-		? row2WithFast
-		: mode !== "narrow" && rowFits(row2WithProfile, row2Right, width) ? row2WithProfile : row2BaseLeft;
+	const allSegments = [...profileSegments, ...(fastMode ? [{ id: "fast-mode", text: fastMode }] : [])];
+	const chosenSegments = mode !== "narrow" && rowFits(segmentTexts(allSegments, divider), row2Right, width)
+		? allSegments
+		: mode !== "narrow" && rowFits(segmentTexts(profileSegments, divider), row2Right, width) ? profileSegments : baseSegments;
+	const visibleSettings = fitLeftInteractiveSegments(chosenSegments, row2Right, width, divider);
+	const row2Left = segmentTexts(visibleSettings.map((segment) => ({ ...segment, text: decorateInteractiveSegment(segment, data) })), divider);
 	const row2 = buildRow(row2Left, row2Right, width);
-	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
-	if (data.serviceStatuses?.length) rows.push(buildRow([data.serviceStatuses.join(` ${divider} `)], [], width));
-	for (const status of data.subagentStatuses ?? []) rows.push(buildRow([status], [], width));
-	return rows;
+	const lines = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
+	const interactiveRows = visibleSettings.length > 0 ? [visibleSettings.map((segment) => segment.id)] : [];
+	if (data.serviceStatuses?.length) {
+		const services = data.serviceStatuses.map((status, index): ServiceStatusSegment => typeof status === "string" ? { id: `service:${index}`, text: status } : status);
+		const visibleServices = fitServiceSegments(services, width, divider);
+		lines.push(buildRow([visibleServices.map((service) => decorateInteractiveSegment(service, data)).join(` ${divider} `)], [], width));
+		interactiveRows.push(visibleServices.map((service) => service.id));
+	}
+	for (const status of data.subagentStatuses ?? []) lines.push(buildRow([status], [], width));
+	return { lines, interactiveRows };
+}
+
+export function renderStatusBar(width: number, data: StatusRenderData): string[] {
+	return renderStatusBarLayout(width, data).lines;
 }

@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { createComposeServiceController } from "./compose.js";
 import { getService, listServiceDetails, listServices, operateService, publishService, registerService, serviceStatusKey } from "./registry.js";
 import type { ServiceController, ServiceDescriptor, ServiceSnapshot } from "./types.js";
+import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
+import type { InteractiveFooterRegistration, InteractiveFooterTone } from "../tui/interactive-footer/types.js";
 
 const parameters = Type.Object({
 	action: StringEnum(["status", "start", "stop", "update"] as const),
@@ -104,6 +106,54 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 		return operateService(id, action, { ctx, ...(signal ? { signal } : {}) });
 	};
 
+	const serviceTone = (state: ServiceSnapshot["state"]): InteractiveFooterTone => state === "running"
+		? "success"
+		: state === "starting" || state === "updating"
+			? "warning"
+			: state === "unhealthy" || state === "error" ? "error" : "dim";
+	const serviceMarker = (state: ServiceSnapshot["state"]): string => state === "running"
+		? "●"
+		: state === "starting" || state === "updating" ? "◌" : state === "unhealthy" || state === "error" ? "!" : "○";
+	const interactiveRegistrations: InteractiveFooterRegistration[] = [mem0, searxng, visualCompanion].map((descriptor) => registerInteractiveFooterItem({
+		id: `service:${descriptor.id}`,
+		section: "services",
+		order: descriptor.order,
+		status: () => {
+			const snapshot = getService(descriptor.id)?.snapshot ?? { state: "stopped" as const };
+			return { label: descriptor.name, marker: serviceMarker(snapshot.state), tone: serviceTone(snapshot.state) };
+		},
+		dialog(ctx) {
+			const snapshot = () => getService(descriptor.id)?.snapshot ?? { state: "stopped" as const };
+			const pending = () => snapshot().state === "starting" || snapshot().state === "updating";
+			return {
+				title: descriptor.name,
+				description: descriptor.perSession ? "Session-scoped PiBox service." : "Shared machine-scoped PiBox service; its lifecycle can affect other Pi sessions.",
+				rows: [
+					{ kind: "detail", label: "State", value: () => snapshot().state },
+					{ kind: "detail", label: "Detail", value: () => snapshot().detail ?? snapshot().error ?? "—" },
+					{ kind: "detail", label: "Checked", value: () => snapshot().checkedAt ?? "Not yet" },
+					{ kind: "detail", label: "Lifecycle", value: () => descriptor.perSession ? "Session" : descriptor.stayAlive ? "Shared · stays alive" : "Shared" },
+					{
+						kind: "action",
+						id: "toggle",
+						label: () => snapshot().state === "running" ? `Stop ${descriptor.name}` : `Start ${descriptor.name}`,
+						description: "Enter performs the displayed lifecycle action. Updates remain available only through the approval-gated service command/tool.",
+						tone: snapshot().state === "running" ? "warning" : "success",
+						disabled: pending,
+						run: async (signal) => { await run(snapshot().state === "running" ? "stop" : "start", descriptor.id, ctx, signal); },
+					},
+					{
+						kind: "action",
+						id: "refresh",
+						label: () => "Refresh health",
+						disabled: pending,
+						run: async (signal) => { await run("health", descriptor.id, ctx, signal); },
+					},
+				],
+			};
+		},
+	}));
+
 	pi.registerTool({
 		name: "service_adapter",
 		label: "Service Adapter",
@@ -152,5 +202,6 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.hasUI) for (const service of listServices()) ctx.ui.setStatus(serviceStatusKey(service.descriptor), undefined);
 		for (const remove of unregister) remove();
+		for (const registration of interactiveRegistrations) registration.unregister();
 	});
 }

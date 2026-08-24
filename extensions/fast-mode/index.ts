@@ -1,7 +1,9 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getAgentDir, getSettingsListTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { showInteractiveFooterDialog } from "../tui/interactive-footer/dialog.js";
+import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
+import type { InteractiveFooterDialogSpec, InteractiveFooterRegistration } from "../tui/interactive-footer/types.js";
 import {
 	DEFAULT_FAST_MODE_POLICY,
 	FAST_MODE_CHILD_ENV,
@@ -83,6 +85,7 @@ export default function fastMode(
 	let policy: FastModePolicy = { ...DEFAULT_FAST_MODE_POLICY };
 	let sessionCtx: ExtensionContext | undefined;
 	let childProcess = false;
+	let interactiveRegistration: InteractiveFooterRegistration | undefined;
 
 	const publishStatus = () => {
 		if (!sessionCtx?.hasUI) return;
@@ -96,12 +99,56 @@ export default function fastMode(
 		pi.events.emit(FAST_MODE_POLICY_EVENT, { ...policy });
 		if (persist && !childProcess) pi.appendEntry(FAST_MODE_ENTRY_TYPE, policy);
 		publishStatus();
+		interactiveRegistration?.changed();
 	};
+
+	const dialogSpec = (): InteractiveFooterDialogSpec => ({
+		title: "Fast mode",
+		description: "Requests Fast mode when supported; the provider may downgrade it and additional ChatGPT credits may be used.",
+		rows: [
+			{
+				kind: "setting",
+				id: MAIN_SETTING,
+				label: "Main session",
+				value: () => policy.main ? MAIN_ON : MAIN_OFF,
+				values: [MAIN_OFF, MAIN_ON],
+				setValue(value) {
+					const next = applyFastModeSetting(policy, MAIN_SETTING, value);
+					if (next) applyPolicy(next, true);
+				},
+			},
+			{
+				kind: "setting",
+				id: SUBAGENT_SETTING,
+				label: "Subagents",
+				value: () => SUBAGENT_LABELS[policy.subagents],
+				values: SUBAGENT_VALUES,
+				setValue(value) {
+					const next = applyFastModeSetting(policy, SUBAGENT_SETTING, value);
+					if (next) applyPolicy(next, true);
+				},
+			},
+		],
+	});
 
 	const restore = (ctx: ExtensionContext) => {
 		sessionCtx = ctx;
 		childProcess = isChildProcess(env);
 		const defaults = childProcess ? DEFAULT_FAST_MODE_POLICY : loadDefaults(ctx.cwd);
+		interactiveRegistration?.unregister();
+		interactiveRegistration = registerInteractiveFooterItem({
+			id: "fast-mode",
+			section: "settings",
+			order: 40,
+			status: () => {
+				const status = projectFastModeStatus(policy, sessionCtx?.model);
+				const scopes: string[] = [];
+				if (status.mainEnabled) scopes.push("Main");
+				if (status.subagents !== "off") scopes.push(`Sub≤${status.subagents === "medium" ? "Med" : status.subagents[0]!.toUpperCase() + status.subagents.slice(1)}`);
+				return { label: "Fast", value: scopes.length ? scopes.join("+") : "Off", valueTone: scopes.length ? "warning" : "dim", hidden: scopes.length === 0 && !status.mainAvailable };
+			},
+			dialog: dialogSpec,
+		});
 		applyPolicy(restoreFastModePolicy(ctx, env, defaults), false);
 	};
 
@@ -116,31 +163,7 @@ export default function fastMode(
 				ctx.ui.notify("/fast requires TUI mode", "error");
 				return;
 			}
-			await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
-				const items: SettingItem[] = [
-					{ id: MAIN_SETTING, label: "Main session", currentValue: policy.main ? MAIN_ON : MAIN_OFF, values: [MAIN_OFF, MAIN_ON] },
-					{ id: SUBAGENT_SETTING, label: "Subagents", currentValue: SUBAGENT_LABELS[policy.subagents], values: SUBAGENT_VALUES },
-				];
-				const container = new Container();
-				container.addChild(new Text(theme.fg("accent", theme.bold("Fast mode")), 1, 0));
-				const settings = new SettingsList(
-					items,
-					6,
-					getSettingsListTheme(),
-					(id, value) => {
-						const next = applyFastModeSetting(policy, id, value);
-						if (next) applyPolicy(next, true);
-					},
-					() => done(undefined),
-				);
-				container.addChild(settings);
-				container.addChild(new Text(theme.fg("dim", "Requests Fast mode; provider may downgrade · uses additional ChatGPT credits · esc close"), 1, 0));
-				return {
-					render: (width) => container.render(width),
-					invalidate: () => container.invalidate(),
-					handleInput: (data) => { settings.handleInput?.(data); tui.requestRender(); },
-				};
-			});
+			await showInteractiveFooterDialog(ctx, dialogSpec());
 		},
 	});
 
@@ -153,6 +176,8 @@ export default function fastMode(
 		sessionCtx = undefined;
 		childProcess = false;
 		policy = { ...DEFAULT_FAST_MODE_POLICY };
+		interactiveRegistration?.unregister();
+		interactiveRegistration = undefined;
 		pi.events.emit(FAST_MODE_POLICY_EVENT, { ...policy });
 	});
 }

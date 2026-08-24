@@ -15,3 +15,5 @@ Formatting intentionally includes:
 Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups. The service row retains the same leading/trailing padding and width-safe truncation as the former visual-companion row; segments use `│` separators. A dim `○` means intentionally stopped, not failed.
 
 Git status uses one asynchronous `git status --porcelain=v2 --branch` process every 10 seconds, with a three-second timeout, single-flight protection, failure backoff, cached rendering, and early refresh after file/Git-related activity. No subprocess runs from `render()`.
+
+The footer mounts the reusable `interactive-footer` controller. Press `Alt+Down` to enter, use the arrow keys to move between visible rows and elements, and press Enter to open the item's shared overlay dialog. Up from the first interactive row returns to the editor. Escape is swallowed while footer interaction is active so it cannot accidentally interrupt the agent loop.

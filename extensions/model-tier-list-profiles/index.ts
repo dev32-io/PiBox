@@ -5,6 +5,8 @@ import {
 	loadModelTierListProfiles,
 	type ModelTierListProfilesConfig,
 } from "./profiles.js";
+import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
+import type { InteractiveFooterRegistration } from "../tui/interactive-footer/types.js";
 import {
 	MODEL_TIER_PROFILE_ENTRY_TYPE,
 	MODEL_TIER_PROFILE_EVENT,
@@ -49,17 +51,38 @@ export default function modelTierListProfiles(
 	let config: ModelTierListProfilesConfig | undefined;
 	let activeProfile = DEFAULT_MODEL_TIER_PROFILE;
 	let sessionCtx: ExtensionContext | undefined;
+	let interactiveRegistration: InteractiveFooterRegistration | undefined;
 
 	const publish = (persist: boolean) => {
 		pi.events.emit(MODEL_TIER_PROFILE_EVENT, { profile: activeProfile });
 		if (persist) pi.appendEntry(MODEL_TIER_PROFILE_ENTRY_TYPE, { profile: activeProfile });
 		if (sessionCtx?.hasUI) sessionCtx.ui.setStatus(MODEL_TIER_PROFILE_STATUS_KEY, serializeModelTierProfileStatus({ profile: activeProfile }));
+		interactiveRegistration?.changed();
 	};
 
 	const restore = (ctx: ExtensionContext) => {
 		sessionCtx = ctx;
 		config = loadProfiles(ctx.cwd, ctx.isProjectTrusted());
 		activeProfile = restoreModelTierProfile(ctx, config, loadDefault(ctx.cwd));
+		interactiveRegistration?.unregister();
+		interactiveRegistration = registerInteractiveFooterItem({
+			id: "tier-profile",
+			section: "settings",
+			order: 30,
+			status: () => ({ label: "Tier", value: activeProfile, valueTone: "muted", hidden: !config }),
+			dialog: (dialogCtx) => ({
+				title: "Managed-agent tier profile",
+				description: "Select the session-scoped model routing profile used by managed subagents.",
+				rows: [{
+					kind: "setting",
+					id: "profile",
+					label: "Profile",
+					value: () => activeProfile,
+					values: Object.keys(config?.profiles ?? {}).sort(),
+					setValue: (value) => selectProfile(value, dialogCtx),
+				}],
+			}),
+		});
 		publish(false);
 	};
 
@@ -119,5 +142,7 @@ export default function modelTierListProfiles(
 		sessionCtx = undefined;
 		config = undefined;
 		activeProfile = DEFAULT_MODEL_TIER_PROFILE;
+		interactiveRegistration?.unregister();
+		interactiveRegistration = undefined;
 	});
 }

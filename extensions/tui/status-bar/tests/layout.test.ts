@@ -3,7 +3,7 @@ import test from "node:test";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { normalizeStatusBarConfig } from "../config.js";
-import { layoutMode, renderStatusBar } from "../layout.js";
+import { layoutMode, renderStatusBar, renderStatusBarLayout } from "../layout.js";
 
 const theme = {
 	fg: (_token: string, value: string) => value,
@@ -41,23 +41,23 @@ test("every status layout stays within terminal width", () => {
 	}
 });
 
-test("renders variable provider windows after unchanged context", () => {
+test("renders remaining percentages for variable provider windows after unchanged context", () => {
 	const text = renderStatusBar(160, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [
 		{ usedPercent: 70, resetAt: Date.now() + 60 * 60_000 },
 		{ usedPercent: 85, resetAt: Date.now() + 24 * 60 * 60_000 },
 	] } }).join("\n");
-	assert.match(text, /42\.0% \/ 100k │ 70%/);
-	assert.match(text, /85%/);
+	assert.match(text, /42\.0% \/ 100k │ 30%/);
+	assert.match(text, /15%/);
 });
 
-test("renders a single returned window without reserving text for a missing short window", () => {
+test("renders a single returned window as remaining quota without reserving text for a missing short window", () => {
 	const text = renderStatusBar(160, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [{ usedPercent: 92 }] } }).join("\n");
-	assert.match(text, /\/ 100k │ 92%/);
+	assert.match(text, /\/ 100k │ 8%/);
 	assert.doesNotMatch(text, /—|5h|7d/);
 });
 
 test("hides quota when it cannot fit or no reliable windows exist", () => {
-	assert.doesNotMatch(renderStatusBar(72, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [{ usedPercent: 70 }] } }).join("\n"), /70%/);
+	assert.doesNotMatch(renderStatusBar(72, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [{ usedPercent: 70 }] } }).join("\n"), /30%/);
 	assert.deepEqual(
 		renderStatusBar(160, { ...data, usage: { provider: "ollama-cloud", observedAt: Date.now(), windows: [] } }),
 		renderStatusBar(160, data),
@@ -135,6 +135,56 @@ test("services share one optional row below effort", () => {
 	assert.match(lines[3] ?? "", /Effort: Medium/);
 	assert.match(lines[4] ?? "", /● Mem0 │ ● SearXNG │ ○ Visual companion/);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
+});
+
+test("interactive layout exposes visible footer rows and marks the selected element", () => {
+	const layout = renderStatusBarLayout(160, {
+		...data,
+		tierProfile: { profile: "performance" },
+		fastMode: { mainAvailable: true, mainEnabled: true, subagents: "medium" },
+		serviceStatuses: [
+			{ id: "service:mem0", text: "● Mem0" },
+			{ id: "service:searxng", text: "● SearXNG" },
+		],
+		selectedInteractiveId: "tier-profile",
+	});
+	assert.deepEqual(layout.interactiveRows, [
+		["permissions", "effort", "tier-profile", "fast-mode"],
+		["service:mem0", "service:searxng"],
+	]);
+	assert.match(layout.lines[3] ?? "", /› Tier: Performance/);
+	for (const line of layout.lines) assert.ok(visibleWidth(line) <= 160);
+});
+
+test("settings hidden by right-side metrics are not exposed as invisible interactive targets", () => {
+	const layout = renderStatusBarLayout(20, data);
+	assert.deepEqual(layout.interactiveRows, []);
+	assert.doesNotMatch(layout.lines[3] ?? "", /Permissions|Effort/);
+	assert.ok(layout.lines.every((line) => visibleWidth(line) <= 20));
+});
+
+test("truncated services are not exposed as invisible interactive targets", () => {
+	const layout = renderStatusBarLayout(16, {
+		...data,
+		serviceStatuses: [
+			{ id: "service:mem0", text: "● Mem0" },
+			{ id: "service:searxng", text: "● SearXNG" },
+			{ id: "service:visual-companion", text: "○ Visual companion" },
+		],
+	});
+	assert.deepEqual(layout.interactiveRows.at(-1), ["service:mem0"]);
+	assert.ok(layout.lines.every((line) => visibleWidth(line) <= 16));
+});
+
+test("service targets remain stable when selection markers are applied at a fit boundary", () => {
+	const services = [
+		{ id: "service:mem0", text: "● Mem0" },
+		{ id: "service:searxng", text: "● SearXNG" },
+	];
+	const inactive = renderStatusBarLayout(22, { ...data, serviceStatuses: services });
+	const selected = renderStatusBarLayout(22, { ...data, serviceStatuses: services, selectedInteractiveId: "service:searxng" });
+	assert.deepEqual(inactive.interactiveRows.at(-1), ["service:mem0"]);
+	assert.deepEqual(selected.interactiveRows.at(-1), ["service:mem0"]);
 });
 
 test("subagent dashboard stacks below the compact service row", () => {

@@ -19,4 +19,4 @@ Defaults:
 - SearXNG Compose: bundled `services/searxng/compose.yaml`; override with `PIBOX_SEARXNG_SERVICE_DIR`.
 - SearXNG endpoint: `http://127.0.0.1:6000/`; override with `PIBOX_SEARXNG_URL`.
 
-Durable service data uses bind mounts beneath `~/.pi/pibox/services/<service>/`; PiBox does not use opaque named volumes. The footer renders every registered service in one compact ordered row. Healthy services use green `●`, intentionally stopped services use dim `○`, transitions use warning `◌`, and failures use red `!`.
+Durable service data uses bind mounts beneath `~/.pi/pibox/services/<service>/`; PiBox does not use opaque named volumes. The footer renders every registered service in one compact ordered row. Healthy services use green `●`, intentionally stopped services use dim `○`, transitions use warning `◌`, and failures use red `!`. Each service also registers with the shared interactive footer, whose overlay exposes health details, refresh, and start/stop actions; image updates remain outside that surface and retain their explicit approval gate.
