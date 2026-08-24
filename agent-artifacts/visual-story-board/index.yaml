@@ -2,7 +2,7 @@ schemaVersion: 1
 id: visual-story-board
 kind: story
 title: Visual Story Board
-phase: execution
+phase: evaluation
 state: active
 planning:
   revision: 18

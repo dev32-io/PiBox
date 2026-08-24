@@ -1,0 +1,27 @@
+schemaVersion: 1
+evaluation: final-branch-review
+recordedAt: 2026-08-24T07:58:26.220Z
+entries:
+  - result: Catalog omitted symlink, but direct workspace returned 200 and outside
+      story/task data.
+    description: Sanitized symlink-containment reproduction.
+    path: files/001-1-visual-story-board-symlink-proof.txt
+    checksum: sha256:90c9b99038ba9abd2ce05b3f521d3b1221ddd84be57952192f41f5d05638e5e3
+  - result: Delivery history includes an absolute worktree and run identifier.
+    description: Sanitized task projection proof.
+    path: files/001-2-visual-story-board-runtime-proof.txt
+    checksum: sha256:7c5fb9a37f821154dcb656bf0637115a3721436c2e3d00194bad1586cbbe5144
+  - result: PASS
+    command: npm run check
+  - result: PASS (50/50)
+    command: npx tsx --test focused Visual Companion, Story Board, Architecture, and
+      service-adapter tests
+  - result: PASS
+    description: Exact boundary diff hygiene.
+    path: files/001-5-visual-story-board-diff-check.txt
+    checksum: sha256:75ebccfc18cc5b1a8b32589edccfa2e9f53d9f4dcde857010b3235519655e37f
+  - result: No recorded failure through 275 tests; no terminal summary before
+      1200-second timeout.
+    description: Sanitized full-suite output captured until timeout.
+    path: files/001-6-visual-story-board-npm-test.txt
+    checksum: sha256:db3ab24774f9779c03f344c13566343a461bc26f05ec52c138b785caae801b0d

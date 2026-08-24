@@ -4,14 +4,40 @@ type: combined-review
 checkpoint: final-review
 scope:
   workItem: visual-story-board
-status: planned
+status: failed
 required: true
-attempt: 0
+attempt: 1
 methods:
   - Review the complete executionStartCommit..reviewedCommit feature diff as one
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
-  state: planned
   iteration: 0
   maxIterations: 8
+  state: awaiting_manager
+  reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
+  reviewedCommit: 16f3a8321f707c92a74f7ef8a32b36978afe57c3
+findings:
+  - id: F-001
+    severity: high
+    status: open
+    criterion: Canonical reads remain repository-contained; malformed/symlink
+      resources are rejected; AC-010 containment premise
+    location: extensions/visual-companion/story-board/reader.ts:24-28,38-44,84-89,163-174;
+      extensions/visual-companion/story-board/api.ts:80-109
+    summary: Direct Story Board detail routes read through a symlinked story root
+      outside the repository.
+    blocking: true
+  - id: F-002
+    severity: medium
+    status: open
+    criterion: Browser-safe projections use sanitized repository-relative paths
+    location: extensions/visual-companion/story-board/reader.ts:177-188;
+      extensions/visual-companion/story-board/assets/app.js:184-185
+    summary: Task detail projects and renders raw runtime data containing absolute
+      worktree paths and internal run IDs.
+    blocking: false
+result:
+  verdict: fail
+  report: report.md
+  evidence: ../../evidence/final-branch-review/manifest.yaml
