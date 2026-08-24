@@ -1,0 +1,27 @@
+schemaVersion: 1
+id: build-story-domain-reader
+title: Build the read-only Story Board domain reader
+status: draft
+dependsOn: []
+execution:
+  resourceClaims:
+    - extensions/visual-companion/story-board domain models and canonical readers
+    - extensions/visual-companion/story-board reader fixtures and projector tests
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested and authorized local managed-task
+      execution for every implementation task except the assisted E2E launcher.
+assembly:
+  stageId: platform-and-domain-foundations
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test
+      extensions/visual-companion/story-board/tests/reader-projector.test.ts
+      extensions/visual-companion/story-board/tests/evidence-model.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
