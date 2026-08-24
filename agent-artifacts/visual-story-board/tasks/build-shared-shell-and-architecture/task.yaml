@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-shared-shell-and-architecture
 title: Build the shared shell and migrate Architecture to design tokens
-status: running
+status: submitted
 dependsOn:
   - build-companion-platform
 execution:
@@ -33,3 +33,4 @@ runtime:
   worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-shared-shell-and-architecture
   baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
   lastRunId: ec8218cb-00c4-466f-bc9f-6bd51303a45b
+  completedCommit: 375fc336624ffa25e7aa41b4d17f27a47ba97982
