@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 13
+  revision: 14
 artifacts:
   - id: intent
     type: intent
@@ -49,6 +49,8 @@ tasks:
     path: tasks/read-story-catalog/task.yaml
   - id: read-story-workspace
     path: tasks/read-story-workspace/task.yaml
+  - id: load-story-documents
+    path: tasks/load-story-documents/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-companion-story-board
@@ -65,3 +67,4 @@ executionStages:
       - define-story-board-projections
       - read-story-catalog
       - read-story-workspace
+      - load-story-documents
