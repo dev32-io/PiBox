@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 22
+  revision: 23
 artifacts:
   - id: intent
     type: intent
@@ -67,6 +67,8 @@ tasks:
     path: tasks/render-reports-and-evidence/task.yaml
   - id: add-companion-fixture-launcher
     path: tasks/add-companion-fixture-launcher/task.yaml
+  - id: polish-companion-accessibility
+    path: tasks/polish-companion-accessibility/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-companion-story-board
@@ -92,3 +94,4 @@ executionStages:
       - render-documents-markdown
       - render-reports-and-evidence
       - add-companion-fixture-launcher
+      - polish-companion-accessibility
