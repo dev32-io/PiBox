@@ -4,19 +4,19 @@ type: combined-review
 checkpoint: final-review
 scope:
   workItem: visual-story-board
-status: planned
+status: failed
 required: true
-attempt: 1
+attempt: 2
 methods:
   - Review the complete executionStartCommit..reviewedCommit feature diff as one
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
-  state: rereviewing
   iteration: 1
   maxIterations: 8
+  state: awaiting_manager
   reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
-  reviewedCommit: 16f3a8321f707c92a74f7ef8a32b36978afe57c3
+  reviewedCommit: f507688dcbacdc71f90f3602854bc9a92aff1993
   managerPrompt: "Repair both review findings before re-review. F-001 is blocking:
     enforce realpath containment for every story-root and child read used by
     direct catalog/workspace/task/document/report/evidence routes; reject
@@ -34,21 +34,21 @@ findings:
   - id: F-001
     severity: high
     status: open
-    criterion: Canonical reads remain repository-contained; malformed/symlink
-      resources are rejected; AC-010 containment premise
-    location: extensions/visual-companion/story-board/reader.ts:24-28,38-44,84-89,163-174;
-      extensions/visual-companion/story-board/api.ts:80-109
-    summary: Direct Story Board detail routes read through a symlinked story root
-      outside the repository.
+    criterion: Canonical reads remain contained under the selected story/evaluation
+      identity; malformed/symlink resources are rejected
+    location: extensions/visual-companion/story-board/reader.ts:230-248
+    summary: A symlinked evaluation directory can cause one story's report route to
+      return another story's report body.
     blocking: true
   - id: F-002
     severity: medium
-    status: open
-    criterion: Browser-safe projections use sanitized repository-relative paths
-    location: extensions/visual-companion/story-board/reader.ts:177-188;
-      extensions/visual-companion/story-board/assets/app.js:184-185
-    summary: Task detail projects and renders raw runtime data containing absolute
-      worktree paths and internal run IDs.
+    status: resolved
+    criterion: Browser-safe projections use explicitly allowlisted sanitized
+      delivery-history fields
+    location: extensions/visual-companion/story-board/reader.ts:18-24,215-216;
+      extensions/visual-companion/story-board/api.ts:46-50;
+      extensions/visual-companion/story-board/assets/app.js:57-61,191
+    summary: Raw runtime worktree paths and run IDs are no longer projected or rendered.
     blocking: false
 result:
   verdict: fail
