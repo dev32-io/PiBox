@@ -8,7 +8,8 @@ import { createVisualCompanionBackend } from "../../backend.mjs";
 import { createStoryBoardViewer } from "../index.js";
 
 async function put(root: string, path: string, content: string): Promise<void> { const target = join(root, path); await mkdir(dirname(target), { recursive: true }); await writeFile(target, content); }
-function storyIndex(id: string, tasks: Array<{ id: string; path: string }> = []) { return stringify({ schemaVersion: 1, id, kind: "story", title: id, phase: "execution", state: "active", planning: { revision: 1 }, artifacts: [], tasks, integrationUnits: [], evaluations: [] }); }
+function storyIndex(id: string, tasks: Array<{ id: string; path: string }> = [], evaluations: Array<{ id: string; path: string }> = []) { return stringify({ schemaVersion: 1, id, kind: "story", title: id, phase: "execution", state: "active", planning: { revision: 1 }, artifacts: [], tasks, integrationUnits: [], evaluations }); }
+function evaluation(id: string, story: string) { return stringify({ schemaVersion: 1, id, type: "quality-review", scope: { workItem: story }, status: "passed", required: true, attempt: 1, methods: [], findings: [], result: { verdict: "pass", report: "report.md" } }); }
 
 test("Story Board registration is idle and routes load progressively with single-flight", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "story-routes-")); t.after(() => rm(root, { recursive: true, force: true }));
@@ -55,6 +56,27 @@ test("direct routes deny symlinked external stories and tasks while healthy sibl
 	assert.equal((await fetch(`${base}/task?story=external-story&task=external-task`)).status, 404);
 	assert.equal((await fetch(`${base}/task?story=task-story&task=external-task`)).status, 404);
 	assert.equal((await fetch(`${base}/workspace?story=healthy-story`)).status, 200);
+});
+
+test("report and evidence routes deny an evaluation directory symlinked to another story", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "story-routes-evaluation-")); t.after(() => rm(root, { recursive: true, force: true }));
+	const listed = (id: string) => ({ id, path: `evaluations/${id}/evaluation.yaml` });
+	await put(root, "agent-artifacts/story-a/index.yaml", storyIndex("story-a", [], [listed("shared-review"), listed("healthy-review")]));
+	await put(root, "agent-artifacts/story-b/index.yaml", storyIndex("story-b", [], [listed("shared-review")]));
+	await put(root, "agent-artifacts/story-b/evaluations/shared-review/evaluation.yaml", evaluation("shared-review", "story-b"));
+	await put(root, "agent-artifacts/story-b/evaluations/shared-review/report.md", "# Story B private report\n\nSTORY_B_MARKER\n");
+	await put(root, "agent-artifacts/story-a/evaluations/healthy-review/evaluation.yaml", evaluation("healthy-review", "story-a"));
+	await put(root, "agent-artifacts/story-a/evaluations/healthy-review/report.md", "# Healthy Story A report\n");
+	await put(root, "agent-artifacts/story-a/evidence/shared-review/files/private.txt", "STORY_B_EVIDENCE_MARKER");
+	await put(root, "agent-artifacts/story-a/evidence/shared-review/manifest.yaml", stringify({ schemaVersion: 1, evaluation: "shared-review", entries: [{ id: "private", path: "files/private.txt" }] }));
+	await symlink(join(root, "agent-artifacts/story-b/evaluations/shared-review"), join(root, "agent-artifacts/story-a/evaluations/shared-review"));
+	const backend = await createVisualCompanionBackend({ viewers: [createStoryBoardViewer({ repositoryRoot: root })] }); t.after(() => backend.close());
+	const base = `${backend.url}/v/story-board/api`;
+	const workspaceResponse = await fetch(`${base}/workspace?story=story-a`); const workspaceBody = await workspaceResponse.text();
+	assert.equal(workspaceResponse.status, 200); assert.doesNotMatch(workspaceBody, /STORY_B_MARKER/);
+	const reportResponse = await fetch(`${base}/report?story=story-a&report=shared-review`); assert.equal(reportResponse.status, 404); assert.doesNotMatch(await reportResponse.text(), /STORY_B_MARKER/);
+	const evidenceResponse = await fetch(`${base}/evidence?story=story-a&evaluation=shared-review&path=files%2Fprivate.txt`); assert.equal(evidenceResponse.status, 404); assert.doesNotMatch(await evidenceResponse.text(), /STORY_B_EVIDENCE_MARKER/);
+	const healthyResponse = await fetch(`${base}/report?story=story-a&report=healthy-review`); assert.equal(healthyResponse.status, 200); assert.match(await healthyResponse.text(), /Healthy Story A report/);
 });
 
 test("Refresh returns before replacement discovery and only invalidates Story Board projections", async (t) => {

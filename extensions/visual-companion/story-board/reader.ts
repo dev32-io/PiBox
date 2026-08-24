@@ -45,6 +45,9 @@ async function unsafeExistingTarget(path: string, repositoryRoot: string): Promi
 	const [actual, actualRepository] = await Promise.all([realpath(path).catch(() => undefined), realpath(repositoryRoot).catch(() => undefined)]);
 	return info.isSymbolicLink() || !actual || !actualRepository || !inside(actualRepository, actual);
 }
+async function invalidExistingFile(path: string, root: string, repositoryRoot: string): Promise<boolean> {
+	return Boolean(await lstat(path).catch(() => undefined)) && !(await regularFile(path, root, repositoryRoot));
+}
 
 interface IndexRead { value: RecordValue; strict?: WorkItemIndex; diagnostics: Diagnostic[] }
 
@@ -62,6 +65,16 @@ export class StoryBoardReader {
 		]);
 		if (!repositoryReal || !artifactReal || !storyReal || !artifactInfo?.isDirectory() || artifactInfo.isSymbolicLink() || !storyInfo?.isDirectory() || storyInfo.isSymbolicLink()) return undefined;
 		return inside(repositoryReal, artifactReal) && inside(artifactReal, storyReal) ? root : undefined;
+	}
+	private async containedEvaluationRoot(storyRoot: string, evaluationId: string): Promise<string | undefined> {
+		if (!ID.test(evaluationId)) return undefined;
+		const evaluationsRoot = join(storyRoot, "evaluations"); const evaluationRoot = join(evaluationsRoot, evaluationId);
+		const [repositoryReal, storyReal, evaluationsReal, evaluationReal, evaluationsInfo, evaluationInfo] = await Promise.all([
+			realpath(this.repositoryRoot).catch(() => undefined), realpath(storyRoot).catch(() => undefined), realpath(evaluationsRoot).catch(() => undefined), realpath(evaluationRoot).catch(() => undefined),
+			lstat(evaluationsRoot).catch(() => undefined), lstat(evaluationRoot).catch(() => undefined),
+		]);
+		if (!repositoryReal || !storyReal || !evaluationsReal || !evaluationReal || !evaluationsInfo?.isDirectory() || evaluationsInfo.isSymbolicLink() || !evaluationInfo?.isDirectory() || evaluationInfo.isSymbolicLink()) return undefined;
+		return inside(repositoryReal, storyReal) && inside(storyReal, evaluationsReal) && inside(evaluationsReal, evaluationReal) ? evaluationRoot : undefined;
 	}
 	private async readIndex(id: string, root: string): Promise<IndexRead> {
 		const display = `agent-artifacts/${id}/index.yaml`;
@@ -154,17 +167,18 @@ export class StoryBoardReader {
 		return { kind: "unknown" };
 	}
 
-	private async readReportSummary(storyId: string, root: string, entry: { id: string; path: string; diagnostics: Diagnostic[] }): Promise<{ summary: ReportSummary; raw: RecordValue }> {
+	private async readReportSummary(storyId: string, root: string, entry: { id: string; path: string; diagnostics: Diagnostic[] }): Promise<{ summary: ReportSummary; raw: RecordValue; evaluationRoot?: string }> {
 		const display = `agent-artifacts/${storyId}/${entry.path}`; const diagnostics = [...entry.diagnostics]; let raw: RecordValue = {};
+		const evaluationRoot = await this.containedEvaluationRoot(root, entry.id);
 		try {
 			const evaluationPath = join(root, entry.path);
-			if (!(await regularFile(evaluationPath, root, this.repositoryRoot))) throw new Error("not regular");
+			if (!evaluationRoot || !(await regularFile(evaluationPath, evaluationRoot, this.repositoryRoot))) throw new Error("not regular");
 			raw = record(parse(await readFile(evaluationPath, "utf8"))) ?? {};
 		} catch { diagnostics.push(diagnostic(display, "Evaluation manifest is missing, malformed, or not a contained regular file")); }
 		const valid = Boolean(raw.schemaVersion === 1 && raw.id === entry.id && typeof raw.type === "string" && typeof raw.status === "string" && record(raw.scope) && Number.isInteger(raw.attempt));
 		if (!valid && Object.keys(raw).length) diagnostics.push(diagnostic(display, "Evaluation manifest does not satisfy the current contract; compatible metadata was recovered"));
 		const result = record(raw.result); const scope = this.reportScope(raw); const riskPath = typeof result?.riskAcceptance === "string" ? result.riskAcceptance : undefined;
-		return { raw, summary: {
+		return { raw, ...(evaluationRoot ? { evaluationRoot } : {}), summary: {
 			id: entry.id, type: typeof raw.type === "string" ? raw.type : "unknown", status: typeof raw.status === "string" ? raw.status : "unknown",
 			...(typeof result?.verdict === "string" ? { verdict: result.verdict } : {}), attempt: typeof raw.attempt === "number" ? raw.attempt : 0, scope,
 			...(scope.kind === "task" && scope.id ? { taskId: scope.id } : {}), findingCount: Array.isArray(raw.findings) ? raw.findings.length : 0,
@@ -232,17 +246,21 @@ export class StoryBoardReader {
 	async readReportDetail(storyId: string, reportId: string): Promise<ReportDetail | undefined> {
 		if (!ID.test(reportId)) return undefined; const root = await this.containedStoryRoot(storyId); if (!root) return undefined;
 		const index = await this.readIndex(storyId, root); const entry = this.catalogEntries(storyId, index.value.evaluations, "evaluation").find((item) => item.id === reportId); if (!entry) return undefined;
-		const evaluationManifest = join(root, entry.path); if (await unsafeExistingTarget(evaluationManifest, this.repositoryRoot)) return undefined;
-		const { summary, raw } = await this.readReportSummary(storyId, root, entry); const evaluationRoot = join(root, "evaluations", reportId); const result = record(raw.result);
+		const { summary, raw, evaluationRoot } = await this.readReportSummary(storyId, root, entry); if (!evaluationRoot) return undefined;
+		const evaluationManifest = join(root, entry.path); if (await invalidExistingFile(evaluationManifest, evaluationRoot, this.repositoryRoot)) return undefined;
+		const result = record(raw.result);
 		const reportName = safePath(result?.report) && !result.report.includes("/") ? result.report : "report.md"; const reportDisplay = `agent-artifacts/${storyId}/evaluations/${reportId}/${reportName}`;
-		const reportPath = join(evaluationRoot, reportName); if (await unsafeExistingTarget(reportPath, this.repositoryRoot)) return undefined;
+		const reportPath = join(evaluationRoot, reportName); if (await invalidExistingFile(reportPath, evaluationRoot, this.repositoryRoot)) return undefined;
 		const body = await regularFile(reportPath, evaluationRoot, this.repositoryRoot) ? await readFile(reportPath, "utf8").catch(() => undefined) : undefined;
 		const riskName = safePath(result?.riskAcceptance) && !result.riskAcceptance.includes("/") ? result.riskAcceptance : undefined;
 		const riskPath = riskName ? join(evaluationRoot, riskName) : undefined;
+		if (riskPath && await invalidExistingFile(riskPath, evaluationRoot, this.repositoryRoot)) return undefined;
 		const riskAcceptance = riskPath && await regularFile(riskPath, evaluationRoot, this.repositoryRoot) ? await readFile(riskPath, "utf8").catch(() => undefined) : undefined;
-		const attemptsRoot = join(evaluationRoot, "attempts");
-		const attemptFiles = (await containedDirectory(attemptsRoot, evaluationRoot, this.repositoryRoot) ? await readdir(attemptsRoot).catch(() => []) : []).filter((name) => /^\d+-report\.md$/.test(name)).sort();
-		const history = await Promise.all(attemptFiles.map(async (name) => { const attempt = Number.parseInt(name, 10); const attemptPath = join(attemptsRoot, name); const attemptBody = await regularFile(attemptPath, evaluationRoot, this.repositoryRoot) ? await readFile(attemptPath, "utf8").catch(() => undefined) : undefined; return { attempt, path: `agent-artifacts/${storyId}/evaluations/${reportId}/attempts/${name}`, ...(attemptBody ? { body: attemptBody } : {}), available: Boolean(attemptBody) }; }));
+		const attemptsRoot = join(evaluationRoot, "attempts"); const attemptsInfo = await lstat(attemptsRoot).catch(() => undefined);
+		if (attemptsInfo && !(await containedDirectory(attemptsRoot, evaluationRoot, this.repositoryRoot))) return undefined;
+		const attemptFiles = (attemptsInfo ? await readdir(attemptsRoot).catch(() => []) : []).filter((name) => /^\d+-report\.md$/.test(name)).sort();
+		if ((await Promise.all(attemptFiles.map((name) => regularFile(join(attemptsRoot, name), evaluationRoot, this.repositoryRoot)))).some((valid) => !valid)) return undefined;
+		const history = await Promise.all(attemptFiles.map(async (name) => { const attempt = Number.parseInt(name, 10); const attemptPath = join(attemptsRoot, name); const attemptBody = await readFile(attemptPath, "utf8").catch(() => undefined); return { attempt, path: `agent-artifacts/${storyId}/evaluations/${reportId}/attempts/${name}`, ...(attemptBody ? { body: attemptBody } : {}), available: Boolean(attemptBody) }; }));
 		const findings: Finding[] = (Array.isArray(raw.findings) ? raw.findings : []).flatMap((value): Finding[] => { const item = record(value); if (!item || typeof item.id !== "string") return []; return [{ id: item.id, severity: typeof item.severity === "string" ? item.severity : "unknown", status: typeof item.status === "string" ? item.status : "unknown", summary: typeof item.summary === "string" ? item.summary : "", ...(typeof item.blocking === "boolean" ? { blocking: item.blocking } : {}), ...(typeof item.location === "string" ? { location: item.location } : {}) }]; });
 		const cases = Array.isArray(result?.caseResults) ? result.caseResults.flatMap((value) => { const item = record(value); return item && typeof item.caseId === "string" && typeof item.status === "string" ? [{ caseId: item.caseId, status: item.status, executedActions: strings(item.executedActions), observations: strings(item.observations), evidenceRefs: strings(item.evidenceRefs) }] : []; }) : undefined;
 		const diagnostics = body ? summary.diagnostics : [...summary.diagnostics, diagnostic(reportDisplay, "Evaluation report is missing")];
