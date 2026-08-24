@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-companion-platform
 title: Build the reusable Visual Companion platform
-status: awaiting_ci
+status: contribution_complete
 dependsOn: []
 execution:
   resourceClaims:
