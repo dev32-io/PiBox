@@ -1,0 +1,32 @@
+schemaVersion: 1
+id: polish-accessibility-and-regressions
+title: Polish accessibility, responsive behavior, and Architecture regressions
+status: draft
+dependsOn:
+  - build-story-board-browser
+execution:
+  resourceClaims:
+    - Visual Companion and Story Board production accessibility/responsive polish
+    - Architecture browser regression fixes
+    - accessibility, responsive, token, and Architecture regression tests
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested and authorized local managed-task
+      execution for every implementation task except the assisted E2E launcher.
+assembly:
+  stageId: e2e-readiness-and-polish
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/accessibility.test.ts
+      extensions/visual-companion/tests/design-tokens.test.ts
+      extensions/visual-companion/tests/shell.test.ts
+      extensions/visual-companion/story-board/tests/browser-app.test.ts
+      skills/architecture-visualizer/tests/visualizer.test.ts
+    - npm test
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.

@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 12
+  revision: 13
 artifacts:
   - id: intent
     type: intent
@@ -45,6 +45,8 @@ tasks:
     path: tasks/build-story-board-browser/task.yaml
   - id: build-assisted-e2e-launcher
     path: tasks/build-assisted-e2e-launcher/task.yaml
+  - id: polish-accessibility-and-regressions
+    path: tasks/polish-accessibility-and-regressions/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-story-board
@@ -65,3 +67,4 @@ executionStages:
   - id: e2e-readiness-and-polish
     tasks:
       - build-assisted-e2e-launcher
+      - polish-accessibility-and-regressions
