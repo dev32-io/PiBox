@@ -1,6 +1,7 @@
 :root { color-scheme: dark; font-family: var(--font-sans, system-ui, sans-serif); }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; overflow: hidden; background: var(--color-canvas, Canvas); color: var(--color-text, CanvasText); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 body { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .viewer-toolbar {
   min-height: var(--header-height, 68px);
@@ -39,6 +40,7 @@ main { min-height: 0; position: relative; display: grid; grid-template-columns: 
   background-size: 22px 22px;
 }
 #canvas { position: absolute; inset: 0; }
+#canvas:focus-visible { outline-offset: -4px; }
 #status {
   position: absolute;
   z-index: 4;

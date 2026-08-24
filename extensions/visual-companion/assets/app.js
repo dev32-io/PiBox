@@ -23,6 +23,7 @@ function routeFor(id) {
 function setBoundary(id, message, state = "loading") {
   const boundary = panels.get(id).querySelector(".viewer-boundary");
   boundary.dataset.state = state;
+  boundary.setAttribute("role", state === "error" ? "alert" : "status");
   boundary.textContent = message;
   boundary.hidden = false;
 }

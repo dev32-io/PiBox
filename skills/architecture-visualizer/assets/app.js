@@ -4,6 +4,8 @@ const viewSelect = document.querySelector("#view");
 const layoutSelect = document.querySelector("#layout");
 const groupsToggle = document.querySelector("#groups");
 const fitButton = document.querySelector("#fit");
+const refreshButton = document.querySelector("#refresh");
+const canvas = document.querySelector("#canvas");
 const status = document.querySelector("#status");
 const details = document.querySelector("#details");
 const detailContent = document.querySelector("#detail-content");
@@ -12,6 +14,7 @@ const closeDetails = document.querySelector("#close-details");
 let documentModel;
 let cy;
 let firstRender = true;
+let loadGeneration = 0;
 
 function cssToken(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
@@ -116,7 +119,7 @@ function graphElements(view, theme) {
   return elements;
 }
 
-function renderDetails(raw, kind, isEdge = false) {
+function renderDetails(raw, kind, isEdge = false, focus = true) {
   detailContent.replaceChildren();
   const heading = document.createElement("h2");
   heading.textContent = labelFor(raw);
@@ -145,17 +148,18 @@ function renderDetails(raw, kind, isEdge = false) {
     detailContent.append(section, pre);
   }
   details.dataset.open = "true";
-  if (matchMedia("(max-width: 820px)").matches) details.focus();
+  if (focus && matchMedia("(max-width: 820px)").matches) details.focus();
 }
 
 function renderGraph({ preserveViewport = false } = {}) {
   const view = selectedView();
   if (!view) return;
   const viewport = cy && preserveViewport ? { zoom: cy.zoom(), pan: cy.pan() } : undefined;
+  const selectedId = cy?.elements(":selected").first().id();
   const theme = graphTheme();
   cy?.destroy();
   cy = cytoscape({
-    container: document.querySelector("#canvas"),
+    container: canvas,
     elements: graphElements(view, theme),
     wheelSensitivity: 0.2,
     minZoom: 0.12,
@@ -178,6 +182,12 @@ function renderGraph({ preserveViewport = false } = {}) {
     cy.zoom(viewport.zoom);
     cy.pan(viewport.pan);
   }
+  const restored = selectedId && cy.getElementById(selectedId);
+  if (restored?.length) {
+    restored.select();
+    const data = restored.data();
+    renderDetails(data.raw, data.kind, restored.isEdge(), false);
+  }
 }
 
 function populateViews(previous) {
@@ -192,11 +202,17 @@ function populateViews(previous) {
 }
 
 async function loadDocument() {
+  const generation = ++loadGeneration;
   const previousView = viewSelect.value;
   const response = await fetch("./api/document", { cache: "no-store" });
+  if (!response.ok) throw new Error(`Document request failed (${response.status}).`);
   const payload = await response.json();
+  if (generation !== loadGeneration) return;
   status.style.display = payload.errors?.length ? "block" : "none";
-  status.textContent = payload.errors?.join("\n") ?? "";
+  status.setAttribute("role", payload.errors?.length ? "alert" : "status");
+  status.textContent = payload.errors?.length
+    ? `${payload.document ? "Showing the last valid document. " : ""}${payload.errors.join("\n")}`
+    : "";
   if (!payload.document) return;
   documentModel = payload.document;
   title.textContent = documentModel.title ?? "Architecture Visualizer";
@@ -210,19 +226,60 @@ viewSelect.addEventListener("change", () => renderGraph());
 layoutSelect.addEventListener("change", () => renderGraph());
 groupsToggle.addEventListener("change", () => renderGraph({ preserveViewport: true }));
 fitButton.addEventListener("click", () => cy?.fit(undefined, 54));
-closeDetails.addEventListener("click", () => {
+refreshButton.addEventListener("click", async () => {
+  refreshButton.disabled = true;
+  try { await loadDocument(); } catch (error) { showLoadError(error); }
+  finally { refreshButton.disabled = false; }
+});
+function closeDetailSheet() {
   details.dataset.open = "false";
-  document.querySelector("#canvas").focus?.();
+  cy?.elements(":selected").unselect();
+  canvas.focus();
+}
+closeDetails.addEventListener("click", closeDetailSheet);
+details.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); closeDetailSheet(); return; }
+  if (event.key !== "Tab" || !matchMedia("(max-width: 820px)").matches) return;
+  const controls = [...details.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+  if (!controls.length) return;
+  const first = controls[0];
+  const last = controls.at(-1);
+  if (event.shiftKey && (document.activeElement === first || document.activeElement === details)) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && (document.activeElement === last || document.activeElement === details)) { event.preventDefault(); first.focus(); }
+});
+canvas.addEventListener("keydown", (event) => {
+  if (!cy || !["ArrowLeft", "ArrowRight", "Home", "End", "Enter"].includes(event.key)) return;
+  const elements = cy.elements("node, edge").toArray();
+  if (!elements.length) return;
+  const selectedIndex = elements.findIndex((element) => element.selected());
+  if (event.key === "Enter") {
+    const selected = elements[selectedIndex];
+    if (!selected) return;
+    event.preventDefault();
+    const data = selected.data();
+    renderDetails(data.raw, data.kind, selected.isEdge());
+    return;
+  }
+  event.preventDefault();
+  let nextIndex = event.key === "Home" ? 0 : event.key === "End" ? elements.length - 1 : selectedIndex;
+  if (event.key === "ArrowRight") nextIndex = (selectedIndex + 1) % elements.length;
+  if (event.key === "ArrowLeft") nextIndex = (selectedIndex - 1 + elements.length) % elements.length;
+  cy.elements(":selected").unselect();
+  elements[nextIndex].select();
 });
 
+function showLoadError(error) {
+  status.style.display = "block";
+  status.setAttribute("role", "alert");
+  status.textContent = `Unable to refresh the architecture document. ${error.message}`;
+}
+
 const events = new EventSource("./events");
-events.addEventListener("changed", loadDocument);
+events.addEventListener("changed", () => loadDocument().catch(showLoadError));
 events.addEventListener("error", () => {
   status.style.display = "block";
+  status.setAttribute("role", "alert");
   status.textContent = "Live update connection lost; retrying…";
 });
 
-loadDocument().catch((error) => {
-  status.style.display = "block";
-  status.textContent = error.message;
-});
+loadDocument().catch(showLoadError);
