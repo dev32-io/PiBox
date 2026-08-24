@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: mount-and-restyle-architecture
+title: Mount Architecture in the shell and migrate its visual system
+status: draft
+dependsOn: []
+execution:
+  resourceClaims: []
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested local-tier implementation for every
+      Story Board delivery task.
+assembly:
+  stageId: visual-companion-story-board-delivery
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test skills/architecture-visualizer/tests/visualizer.test.ts
+      extensions/visual-companion/tests/backend.test.ts
+      extensions/visual-companion/tests/architecture-mount.test.ts
+    - node --check skills/architecture-visualizer/assets/app.js
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
