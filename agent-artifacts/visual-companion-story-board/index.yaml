@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 18
+  revision: 19
 artifacts:
   - id: intent
     type: intent
@@ -59,6 +59,8 @@ tasks:
     path: tasks/expose-story-board-api/task.yaml
   - id: render-story-catalog
     path: tasks/render-story-catalog/task.yaml
+  - id: render-task-kanban
+    path: tasks/render-task-kanban/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-companion-story-board
@@ -80,3 +82,4 @@ executionStages:
       - add-story-board-cache
       - expose-story-board-api
       - render-story-catalog
+      - render-task-kanban
