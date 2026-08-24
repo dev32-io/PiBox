@@ -1,7 +1,14 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { RegisteredService, ServiceController, ServiceDescriptor, ServiceSnapshot, ServiceState } from "./types.js";
 
-const services = new Map<string, RegisteredService>();
+const REGISTRY_KEY = Symbol.for("pibox:service-registry");
+type RegistryGlobal = typeof globalThis & { [REGISTRY_KEY]?: Map<string, RegisteredService> };
+
+function registryGlobal(): RegistryGlobal {
+	return globalThis as RegistryGlobal;
+}
+
+const services = registryGlobal()[REGISTRY_KEY] ??= new Map<string, RegisteredService>();
 
 export function serviceStatusKey(descriptor: ServiceDescriptor): string {
 	return `service:${String(descriptor.order).padStart(4, "0")}:${descriptor.id}`;
