@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-board-api
 title: Build the lazy Story Board API and cache
-status: contribution_complete
+status: merged
 dependsOn:
   - build-companion-platform
   - build-story-domain-reader
@@ -39,3 +39,4 @@ runtime:
   baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
   lastRunId: c3b64b6d-7861-4eed-8a02-117faf27d8e7
   completedCommit: c14d54176ab7e93ac009d7ad15d72550215d2346
+  mergedCommit: fa0a41dfdc23ba8d8b73d7b4e4c3ddb1cdf4b311
