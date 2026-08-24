@@ -4,7 +4,7 @@ type: combined-review
 checkpoint: final-review
 scope:
   workItem: visual-story-board
-status: failed
+status: planned
 required: true
 attempt: 2
 methods:
@@ -12,8 +12,8 @@ methods:
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
-  state: fixing
-  iteration: 1
+  state: rereviewing
+  iteration: 2
   maxIterations: 8
   reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
   reviewedCommit: f507688dcbacdc71f90f3602854bc9a92aff1993
