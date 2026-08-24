@@ -12,23 +12,23 @@ methods:
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
+  state: fixing
   iteration: 1
   maxIterations: 8
-  state: awaiting_manager
   reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
   reviewedCommit: f507688dcbacdc71f90f3602854bc9a92aff1993
-  managerPrompt: "Repair both review findings before re-review. F-001 is blocking:
-    enforce realpath containment for every story-root and child read used by
-    direct catalog/workspace/task/document/report/evidence routes; reject
-    symlinked story directories or any resolved path outside repositoryRoot, and
-    add regression tests reproducing a symlinked external story/task returning
-    denial rather than HTTP 200. F-002: remove raw runtime objects from
-    browser-safe task projections; expose only explicitly allowlisted,
-    repository-relative/sanitized delivery-history fields and never absolute
-    worktree paths, private run IDs, or other volatile runtime internals. Add
-    focused projection/UI tests proving those values cannot reach rendered task
-    detail. Preserve read-only behavior, healthy sibling isolation, and existing
-    route contracts."
+  managerPrompt: F-002 is resolved; preserve that repair. Fix remaining blocking
+    F-001 at the evaluation identity boundary. A report selected as Story
+    A/evaluation X must resolve only beneath Story A's canonical evaluations/X
+    directory, with every evaluation directory, manifest, report/attempt report,
+    risk-acceptance file, evidence manifest, and evidence file
+    realpath-contained under both the selected story root and selected
+    evaluation root. Reject symlinked evaluation directories or child paths that
+    resolve to another story/evaluation, even when still somewhere inside
+    repositoryRoot. Add a route-level regression that symlinks Story A's
+    evaluation directory to Story B and proves Story A's report/detail/evidence
+    endpoints deny it rather than returning Story B content. Retain healthy
+    sibling isolation and the resolved sanitized task-history behavior.
   fixerAgentId: dcb1efa1-0afb-4257-ab85-424250bff081
 findings:
   - id: F-001
