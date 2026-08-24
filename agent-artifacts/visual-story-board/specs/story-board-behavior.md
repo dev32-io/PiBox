@@ -26,21 +26,21 @@ Defines the user-visible behavior of the repository-local Visual Companion shell
 
 ## Acceptance Criteria
 
-- **AC-001:** AC-001: Starting Visual Companion makes an interactive loopback shell available without invoking Story Board discovery during backend startup.
-- **AC-002:** AC-002: Starting an already-running companion reuses the backend and reopens its URL; stopping it releases server, watcher, timer, and client resources.
-- **AC-003:** AC-003: Opening Architecture directly displays the architecture viewer under the shared shell without initiating a Story Board scan.
-- **AC-004:** AC-004: Activating Story Board shows a contained loading state and allows immediate navigation to Architecture while parsing continues.
-- **AC-005:** AC-005: The catalog deterministically lists healthy and degraded stories without one malformed artifact preventing healthy stories from rendering.
-- **AC-006:** AC-006: Opening a story produces Board, Documents, and Reports views with stable refreshable local navigation.
-- **AC-007:** AC-007: Every persisted task appears exactly once in To do, In progress, or Done and visibly retains its exact persisted status.
-- **AC-008:** AC-008: Story documents and reports are rendered as safe, readable Markdown and are loaded only when their view or item requires them.
-- **AC-009:** AC-009: Reports and task details provide bidirectional navigation when evaluation scope identifies a task.
-- **AC-010:** AC-010: Canonical copied evidence cannot escape its bounded evidence route; local Markdown images render inline and external images remain inert links.
-- **AC-011:** AC-011: Refresh causes updated or repaired disposable artifacts to be represented without restarting the service.
-- **AC-012:** AC-012: The UI remains keyboard usable and preserves story/task/report inspection at narrow viewports.
-- **AC-013:** AC-013: Architecture remains functional and uses shared semantic design tokens rather than its prior hard-coded palette.
-- **AC-014:** AC-014: A deterministic standalone assisted fixture launcher exposes the same backend, registry, routes, parser, projector, Markdown assets, and browser assets used by the extension so managed E2E does not require a nested interactive Pi session.
-- **AC-015:** AC-015: The launcher prints machine-readable startup and diagnostics data, supports safe fixture-only delay and recovery controls, and releases listeners, watchers, timers, clients, and mutable fixture state on explicit or signal-driven shutdown.
+- **AC-001:** Starting Visual Companion makes an interactive loopback shell available without invoking Story Board discovery during backend startup.
+- **AC-002:** Starting an already-running companion reuses the backend and reopens its URL; stopping it releases server, watcher, timer, and client resources.
+- **AC-003:** Opening Architecture directly displays the architecture viewer under the shared shell without initiating a Story Board scan.
+- **AC-004:** Activating Story Board shows a contained loading state and allows immediate navigation to Architecture while parsing continues.
+- **AC-005:** The catalog deterministically lists healthy and degraded stories without one malformed artifact preventing healthy stories from rendering.
+- **AC-006:** Opening a story produces Board, Documents, and Reports views with stable refreshable local navigation.
+- **AC-007:** Every persisted task appears exactly once in To do, In progress, or Done and visibly retains its exact persisted status.
+- **AC-008:** Story documents and reports are rendered as safe, readable Markdown and are loaded only when their view or item requires them.
+- **AC-009:** Reports and task details provide bidirectional navigation when evaluation scope identifies a task.
+- **AC-010:** Canonical copied evidence cannot escape its bounded evidence route; local Markdown images render inline and external images remain inert links.
+- **AC-011:** Refresh causes updated or repaired disposable artifacts to be represented without restarting the service.
+- **AC-012:** The UI remains keyboard usable and preserves story/task/report inspection at narrow viewports.
+- **AC-013:** Architecture remains functional and uses shared semantic design tokens rather than its prior hard-coded palette.
+- **AC-014:** A deterministic standalone assisted fixture launcher exposes the same backend, registry, routes, parser, projector, Markdown assets, and browser assets used by the extension so managed E2E does not require a nested interactive Pi session.
+- **AC-015:** The launcher prints machine-readable startup and diagnostics data, supports safe fixture-only delay and recovery controls, and releases listeners, watchers, timers, clients, and mutable fixture state on explicit or signal-driven shutdown.
 
 ## Domain Language
 
