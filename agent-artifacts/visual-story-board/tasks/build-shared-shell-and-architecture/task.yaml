@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-shared-shell-and-architecture
 title: Build the shared shell and migrate Architecture to design tokens
-status: ready
+status: running
 dependsOn:
   - build-companion-platform
 execution:
@@ -27,3 +27,9 @@ verification:
       skills/architecture-visualizer/tests/visualizer.test.ts
     - git diff --check
   rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-shared-shell-and-architecture
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-shared-shell-and-architecture
+  baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
+  lastRunId: ec8218cb-00c4-466f-bc9f-6bd51303a45b
