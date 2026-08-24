@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 5
+  revision: 6
 artifacts:
   - id: intent
     type: intent
@@ -32,9 +32,15 @@ artifacts:
     path: design/visual-companion-design-system.md
     status: draft
     narrativeSchemaVersion: 2
-tasks: []
+tasks:
+  - id: generalize-companion-backend
+    path: tasks/generalize-companion-backend/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-companion-story-board
   createdFromCommit: 5d0a494c22a232c3e82ffc37a850d23ae4e54b8b
 evaluations: []
+executionStages:
+  - id: visual-companion-story-board-delivery
+    tasks:
+      - generalize-companion-backend
