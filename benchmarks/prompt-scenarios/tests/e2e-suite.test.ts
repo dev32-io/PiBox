@@ -8,12 +8,10 @@ const expectedScenarios = [
 	"web-upload-recovery",
 	"household-delete-permission",
 	"backend-migration-restraint",
-	"cross-surface-task-planning",
-	"unavailable-ios-planning",
 ];
 
-test("v2 uses five small focused scenarios", () => {
-	assert.equal(e2ePromptBenchmarkSuite.version, "2.0.0");
+test("v3 keeps three focused shaping scenarios", () => {
+	assert.equal(e2ePromptBenchmarkSuite.version, "3.0.0");
 	assert.deepEqual(e2ePromptBenchmarkSuite.scenarios.map((scenario) => scenario.id), expectedScenarios);
 	for (const scenario of e2ePromptBenchmarkSuite.scenarios) {
 		assert.ok(scenario.fixture.length < 700, `${scenario.id} should stay concise`);

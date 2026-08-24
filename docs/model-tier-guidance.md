@@ -30,10 +30,10 @@ Each tier list contains availability fallbacks, not quality escalation after wea
 
 - **Max:** exceptional architecture, security/privacy, irreversible decisions, and unusually high-blast-radius work.
 - **High:** difficult bounded implementation and review where medium is insufficient and further decomposition would damage the required seam.
-- **Medium:** default for aggressively decomposed implementation and review tasks. DeepSeek V4 Flash at maximum reasoning is appropriate here; use Pro for harder agentic work rather than every routine task.
+- **Medium:** default for coherent, bounded implementation and review assignments. DeepSeek V4 Flash at maximum reasoning is appropriate here; use Pro for harder agentic work rather than every routine task.
 - **Low:** genuinely mechanical, low-risk changes only.
 
-Ollama Pro allows three concurrent cloud models, while usage is weighted by model compute. DeepSeek V4 Pro is an extra-heavy model, so using Flash for routine medium workers preserves substantially more workflow throughput.
+Ollama Pro allows three concurrent cloud models, while usage is weighted by model compute. DeepSeek V4 Pro is an extra-heavy model, so using Flash for routine medium agents preserves substantially more workflow throughput.
 
 ## Orchestrator Guidance
 
@@ -60,8 +60,8 @@ An alternative is to retain GLM-5.2 as the main product and technical orchestrat
 
 ## Selection Principles
 
-1. Decompose work before increasing model strength. Medium is the default because tasks should be small enough for medium workers.
-2. Use model strength for irreducible complexity, not to compensate for vague tickets.
+1. Set coherent fresh-agent boundaries before increasing model strength. Medium is the default when one agent can retain the assignment's relevant invariants, implementation, and proof without crossing into an unrelated problem domain.
+2. Use model strength for irreducible complexity, not to compensate for vague tickets or artificial task splitting.
 3. Prefer GLM-5.2 where product, architecture, and security exploration matter most.
 4. Prefer Sol for unattended workflow control and recovery until alternatives pass PiBox behavioral evaluations.
 5. Use `performance` when start-to-green dominates and `token-conservative` when weekly subscription capacity dominates; select a new-session default with the optional global Pi setting `modelTierListProfiles.defaultProfile`.

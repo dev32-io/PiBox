@@ -12,9 +12,13 @@ import { plannedRunKeys, rescorePromptBenchmark, runPromptBenchmark } from "./fr
 import { buildPromptBenchmarkReport, writeJson, writeReport } from "./report.js";
 import { BenchmarkRouteResolutionError, resolveBenchmarkRoute } from "./route.js";
 import { e2ePromptBenchmarkSuite } from "./suites/e2e/suite.js";
+import { plannerBoundariesBenchmarkSuite } from "./suites/planner-boundaries/suite.js";
 import type { PromptBenchmarkManifest, PromptBenchmarkSuite } from "./types.js";
 
-const exec = promisify(execFile); const suites = new Map<string, PromptBenchmarkSuite>([[e2ePromptBenchmarkSuite.id, e2ePromptBenchmarkSuite]]); const MAX_REPETITIONS = 10; const MAX_TOTAL_CALLS = 500;
+const exec = promisify(execFile); const suites = new Map<string, PromptBenchmarkSuite>([
+	[e2ePromptBenchmarkSuite.id, e2ePromptBenchmarkSuite],
+	[plannerBoundariesBenchmarkSuite.id, plannerBoundariesBenchmarkSuite],
+]); const MAX_REPETITIONS = 10; const MAX_TOTAL_CALLS = 500;
 export type CliCommand = "run" | "resume" | "report";
 export interface ParsedArgs { command: CliCommand; values: Map<string, string>; flags: Set<string> }
 const RUN_VALUES = new Set(["suite", "tier", "condition", "scenario", "repetitions", "concurrency", "timeout-ms", "output-root", "repository"]); const RUN_FLAGS = new Set(["execute", "help"]); const EXISTING_VALUES = new Set(["run", "repository"]); const EXISTING_FLAGS = new Set(["execute", "help"]);

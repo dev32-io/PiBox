@@ -5,23 +5,19 @@ import { scoreE2EScenario, type E2EBenchmarkOutput } from "./scorer.js";
 
 const promptFile = (name: string) => readFileSync(fileURLToPath(new URL(`./prompts/${name}`, import.meta.url)), "utf8").trim();
 const shapingBaseline = promptFile("baseline-shaping.md");
-const planningBaseline = promptFile("baseline-planning.md");
 const outsideInCandidate = promptFile("candidate-outside-in.md");
-
-const phase = (scenario: PromptScenario): "shaping" | "planning" => scenario.metadata?.phase === "planning" ? "planning" : "shaping";
 
 const baseline: PromptCondition = {
 	id: "current-baseline",
 	role: "baseline",
 	title: "Current relevant PiBox instruction",
 	version: "1.0.0",
-	description: "Frozen current shaping or planning E2E instruction.",
-	render(scenario) {
-		const selectedPhase = phase(scenario);
+	description: "Frozen current shaping E2E instruction.",
+	render() {
 		return {
-			variantId: `current-baseline@1.0.0:${selectedPhase}`,
-			instruction: selectedPhase === "planning" ? planningBaseline : shapingBaseline,
-			sourceRefs: [selectedPhase === "planning" ? "skills/plan-delivery/SKILL.md" : "skills/shape-story/SKILL.md"],
+			variantId: "current-baseline@1.0.0:shaping",
+			instruction: shapingBaseline,
+			sourceRefs: ["skills/shape-story/SKILL.md"],
 		};
 	},
 };
@@ -31,13 +27,12 @@ const candidate: PromptCondition = {
 	role: "candidate",
 	title: "Compact outside-in candidate",
 	version: "1.0.0",
-	description: "Current instruction plus the compact outside-in guidance.",
-	render(scenario) {
-		const selectedPhase = phase(scenario);
+	description: "Current shaping instruction plus the compact outside-in guidance.",
+	render() {
 		return {
-			variantId: `outside-in-candidate@1.0.0:${selectedPhase}`,
-			instruction: `${selectedPhase === "planning" ? planningBaseline : shapingBaseline}\n\n${outsideInCandidate}`,
-			sourceRefs: [selectedPhase === "planning" ? "skills/plan-delivery/SKILL.md" : "skills/shape-story/SKILL.md", "benchmarks/prompt-scenarios/suites/e2e/prompts/candidate-outside-in.md"],
+			variantId: "outside-in-candidate@1.0.0:shaping",
+			instruction: `${shapingBaseline}\n\n${outsideInCandidate}`,
+			sourceRefs: ["skills/shape-story/SKILL.md", "benchmarks/prompt-scenarios/suites/e2e/prompts/candidate-outside-in.md"],
 		};
 	},
 };
@@ -64,30 +59,16 @@ const scenarios: PromptScenario[] = [
 		metadata: { phase: "shaping" },
 		fixture: `Product request: Rename nullable database column ledger.memo to ledger.note while the API continues returning “memo” for two releases. Existing null and Unicode values must survive migration and rollback. A restart during migration must allow a safe retry. Verification uses a disposable local database; there are no UI or mobile changes. Shape the smallest useful verification matrix.`,
 	},
-	{
-		id: "cross-surface-task-planning",
-		title: "Cross-surface task planning",
-		description: "A concise approved journey plus repository proof seams.",
-		metadata: { phase: "planning" },
-		fixture: `Approved behavior: A user marks a task complete on web and the same task becomes complete on Android without duplication. If sync disconnects after the web action, reconnect converges to the persisted state. Repository context: web and Android drivers are available; the task API can corroborate canonical identity; iOS is unchanged. Reconcile the E2E cases and proof approach. Do not create runtime evaluation resources.`,
-	},
-	{
-		id: "unavailable-ios-planning",
-		title: "Unavailable iOS planning",
-		description: "A required platform whose executable environment is unavailable.",
-		metadata: { phase: "planning" },
-		fixture: `Approved behavior: Exporting a trip on Android and iOS opens each platform's system share sheet. Repository context: the Android emulator and driver are available. The iOS implementation is affected, but this environment has no Xcode, simulator, or remote iOS driver; static compilation cannot prove the share-sheet journey. Plan the E2E cases without weakening the requirement or reporting unexecuted behavior as passed.`,
-	},
 ];
 
 const OUTPUT_GUIDANCE = `Return a concise Markdown E2E matrix. Use whatever compact structure best follows the instruction. Make each case understandable as a journey with setup, actions, observable outcomes, evidence or safety notes where useful, and blocked status/reason when proof cannot run. Include questions and exclusions only when they matter. This is authoring/planning, not execution: do not claim that a case passed.`;
 
 export const e2ePromptBenchmarkSuite: PromptBenchmarkSuite<E2EBenchmarkOutput> = {
 	id: "e2e-outside-in",
-	title: "Outside-in E2E Prompt Benchmark",
-	version: "2.0.0",
-	scorerVersion: "reviewer-only@2.0.0",
-	description: "Small scenario comparison reviewed qualitatively by independent subagents.",
+	title: "Outside-in E2E Shaping Prompt Benchmark",
+	version: "3.0.0",
+	scorerVersion: "reviewer-only@3.0.0",
+	description: "Small shaping-scenario comparison reviewed qualitatively by independent subagents; planner decomposition is covered by planner-agent-boundaries.",
 	baselineConditionId: "current-baseline",
 	conditions: [baseline, candidate],
 	scenarios,

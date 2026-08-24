@@ -108,14 +108,15 @@ Make the high-level story executable in technical terms and optimize delivery th
 
 - Inspect the actual repository, architecture, tests, and integration boundaries.
 - Resolve technical feasibility and compatibility unknowns.
-- Aggressively decompose implementation tasks around focused contribution concerns, keeping each task's tests and checks embedded rather than creating proof-only tasks.
-- Sequential stages may contain compiling intermediate commits; the stage is the coherent review boundary. Concurrent-stage tasks remain independent, while setup and layers stay with the contribution that needs them.
+- Define tasks as coherent fresh-agent assignments rather than individual implementation steps. Keep coupled discovery, invariants, implementation, and focused proof in one agent context.
+- Split substantial work when assignments are independent and can run concurrently, when a successor needs only durable predecessor output, or when one context would cross into an unrelated problem domain.
+- Write each task as a self-contained context capsule with explicit scope, interfaces, acceptance, checks, and integration expectations; never create proof-only tasks.
 - Write the complete draft atomically with explicit identity: create a new plan when the user says new/fresh/separate/ignore previous, and update only an explicitly selected existing plan revision.
 - Encode execution as ordered stages with an explicit `mode: sequential | concurrent`; blockers live in earlier stages.
-- Use sequential stages for declared-order tasks on the canonical `feature/<work-item>` branch, integrating each task before the next starts.
-- Use concurrent stages for independent tasks in individual worktrees from one pinned common base, followed by one atomic merge barrier in declared order. If mode is omitted, legacy singleton stages resolve to sequential and legacy multi-task stages to concurrent; new plans should state the mode.
+- After task boundaries are settled, put every independent, resource-compatible task that can start from one base into the same concurrent stage and integrate it through one atomic merge barrier.
+- Use a multi-task sequential stage only for an exceptional fresh-agent baton pass whose tasks must consume prior commits or cannot safely run concurrently.
 - Define resource claims, intermediate states, integration expectations, and recovery boundaries only where they constrain safe execution.
-- Assign one semantic capability tier after decomposition; let harness configuration resolve its ordered concrete `provider/model#effort` pairs.
+- Assign one semantic capability tier after task boundaries and stages are settled; let harness configuration resolve its ordered concrete `provider/model#effort` pairs.
 - Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
 - Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
 - Write the complete draft atomically, read the whole plan at the exact written revision back, then self-review once for criterion/constraint coverage, vague placeholders, and consistency across dependencies, stages, references, and interfaces.
@@ -198,7 +199,7 @@ When changing prompts, skills, or workflow mechanics, check:
 - Does the agent challenge feature fixation and recover the underlying outcome when useful?
 - Is the transition into story shaping explicit and user-chosen?
 - Are high-level product artifacts coherent before technical decomposition begins?
-- Does delivery planning produce user-reviewed, aggressively decomposed implementation tasks with honest blockers, coherent sequential-stage boundaries, independent concurrent tasks, and runtime-derived execution mechanics?
+- Does delivery planning produce user-reviewed, coherent fresh-agent assignments with honest blockers, maximal safe concurrency after task boundaries are settled, exceptional sequential baton passes, and runtime-derived execution mechanics?
 - Can new evidence move the collaboration back to the correct phase?
 - Does authorization persist across intermediate checkpoints without leaking into execution?
 - Does each skill have one clear deliverable and a natural next-step invitation?

@@ -8,10 +8,12 @@ Real model calls are opt-in and generated data must remain under the repository'
 
 ```bash
 npm run eval:prompt -- --tier local --execute
+npm run eval:prompt -- --suite planner-agent-boundaries --tier low --condition current-skill \
+  --repetitions 1 --concurrency 4 --execute
 npm run eval:prompt -- --tier low --condition current-baseline,outside-in-candidate \
   --scenario web-upload-recovery --repetitions 3 --concurrency 1 --execute
-npm run eval:prompt -- resume --run .benchmark/prompt-scenarios/e2e-outside-in/<run-id> --execute
-npm run eval:prompt -- report --run .benchmark/prompt-scenarios/e2e-outside-in/<run-id>
+npm run eval:prompt -- resume --run .benchmark/prompt-scenarios/<suite>/<run-id> --execute
+npm run eval:prompt -- report --run .benchmark/prompt-scenarios/<suite>/<run-id>
 ```
 
 The CLI prints an execution preview, rejects unknown options, caps repetitions and total calls, and caps concurrency at harness `maxConcurrency`. There is no concrete model flag: routes follow configured tier order and verify both exact model availability and supported effort. Resolution attempts and the explicit provider-extension selection are recorded.
@@ -28,8 +30,12 @@ Parser/scorer exceptions are converted to per-run hard failures, so malformed mo
 
 Original `runs/<key>/result.json` automatic evidence is immutable. `report` creates `scoring-revisions/<revision-id>/` with scorer version, revised parse/automatic records, and a revision report. It never rewrites original results. In `curation.json`, a verdict determines effective pass. Without a verdict, matching assertion overrides affect only schema/hard-failure outcomes in effective scoring; automatic normalized scores and pass values remain untouched.
 
+## Planner agent-boundary method
+
+`planner-agent-boundaries` loads the current `skills/plan-delivery/SKILL.md` directly and tests it against five synthetic seam maps. The scenarios cover coherent feature lanes, independent fan-out, expand–migrate–contract ordering, one shared state machine, and cross-platform context limits. Subjects return a bounded task/stage JSON sketch. Automatic scoring checks exact work ownership, expected task grouping, concurrency, durable-output ordering, and topology integrity.
+
 ## E2E review method
 
-The suite declares `current-baseline` as the baseline role and identity, so comparison direction does not depend on launch order. Subjects receive the same concise Markdown output guidance; no rigid matrix schema or automatic semantic dimensions are imposed.
+The separate `e2e-outside-in` suite declares `current-baseline` as the baseline role and identity, so comparison direction does not depend on launch order. Subjects receive the same concise Markdown output guidance; no rigid matrix schema or automatic semantic dimensions are imposed.
 
-E2E suite `2.0.0` uses five small scenarios. Automatic handling checks only that a subject returned a non-empty result. A separate reviewer scores each result, then a final high-tier reviewer compares the paired observations and reports variance and limitations. See `FANOUT_METHOD.md`.
+E2E suite `3.0.0` retains three shaping scenarios. Automatic handling checks only that a subject returned a non-empty result. A separate reviewer scores each result, then a final high-tier reviewer compares the paired observations and reports variance and limitations. `FANOUT_METHOD.md` documents the archived five-scenario v2 comparison method.

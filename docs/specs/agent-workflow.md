@@ -496,17 +496,17 @@ Dimensions represent independently understandable concerns, not arbitrary docume
 
 Each task must be:
 
-- A bounded authoritative context capsule for one implementer attempt.
-- Focused on one dominant contribution concern and primary failure boundary.
-- Grounded in explicit canonical artifact references and only its assigned acceptance criteria.
+- A bounded, self-contained context capsule for one fresh agent.
+- A coherent assignment that preserves coupled discovery, reasoning, invariants, implementation, and focused proof.
+- Explicit about its included and excluded scope, consumed and produced interfaces, acceptance, checks, and integration expectations.
 - Clear about whether it is a complete behavior or a partial contribution.
 - Honest about dependencies and its expected intermediate state.
 - Assigned to a stage when several tasks must be assembled before they are meaningful.
 - Assigned to an ordered stage with an explicit `mode`: `sequential` or `concurrent`; blockers live in earlier stages.
-- Given a proportionate verification timing: task, integration-unit, work-item, or intentionally skipped.
-- Assigned a capability tier only after decomposition.
+- Given proportionate verification at the task, stage, or whole-work-item boundary.
+- Assigned a capability tier only after task boundaries and stages are settled.
 
-The planner aggressively decomposes implementation work rather than requiring every task to be a tracer bullet or independently demoable. Each task owns a focused contribution concern with its implementation and embedded tests/checks; it may be a compiling intermediate commit in an explicit sequential stage, where the stage is the coherent review boundary. Concurrent-stage tasks remain independent. No proof-only, test-only, review-only, or verification-only tasks are created. Setup belongs with the behavior that needs it, and preparatory seams or expand–migrate–contract sequences are used when a safe ordered intermediate state is required.
+The planner defines tasks around fresh-agent boundaries rather than implementation-step boundaries. Coupled work stays together when one agent benefits from retaining the same source context and implementation-and-test feedback loop. Substantial work splits when assignments are independent and can run concurrently, when a successor needs only durable predecessor output, or when one context would cross into an unrelated problem domain. Focused proof stays with the implementation it constrains; no proof-only, test-only, review-only, or verification-only tasks are created. Preparatory seams and expand–migrate–contract sequences remain valid when they create a safe durable intermediate state.
 
 The planner writes the complete draft atomically, reads the whole plan graph at the exact written revision back, and only then performs one lightweight self-review with fresh eyes: map each binding criterion and constraint to an owning task and proof, find vague placeholders, and verify dependencies, stages, references, and produced/consumed interfaces agree across the graph. If needed, it applies one revision-pinned surgical edit without rewriting unchanged resources and does not repeat the review. Planner-facing writes default harness-owned lifecycle and schema boilerplate, but task briefs and acceptance contracts remain structured because they are injected into implementation context. A stronger tier or deep deliberation never compensates for avoidable task scope.
 
