@@ -11,9 +11,9 @@ execution:
     - accessibility, responsive, token, and Architecture regression tests
   assignment:
     agent: implementer
-    tier: local
-    rationale: The user explicitly requested and authorized local managed-task
-      execution for every implementation task except the assisted E2E launcher.
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
 assembly:
   stageId: e2e-readiness-and-polish
   intermediateState: complete

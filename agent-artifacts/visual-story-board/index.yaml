@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: execution
 state: active
 planning:
-  revision: 17
+  revision: 18
 artifacts:
   - id: intent
     type: intent
