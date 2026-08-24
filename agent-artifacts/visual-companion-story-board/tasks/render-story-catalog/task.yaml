@@ -1,0 +1,26 @@
+schemaVersion: 1
+id: render-story-catalog
+title: Render the asynchronous Story Board catalog
+status: draft
+dependsOn: []
+execution:
+  resourceClaims: []
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested local-tier implementation for every
+      Story Board delivery task.
+assembly:
+  stageId: visual-companion-story-board-delivery
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test
+      extensions/visual-companion/story-board/tests/catalog-ui.test.ts
+      extensions/visual-companion/tests/shell.test.ts
+    - node --check extensions/visual-companion/story-board/assets/app.js
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
