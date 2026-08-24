@@ -1,7 +1,8 @@
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { extname } from "node:path";
+import { dirname, extname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { VisualCompanionRouteHandler, VisualCompanionViewer } from "../backend.mjs";
 import { StoryBoardCache } from "./cache.js";
 import { resolveEvidenceMember } from "./evidence.js";
@@ -10,6 +11,7 @@ import type { DocumentDetail, ReportDetail, StoryWorkspace, TaskDetail } from ".
 import { StoryBoardReader } from "./reader.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const ASSETS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "assets");
 const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
 const EVIDENCE_TYPES: Record<string, string> = {
 	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
@@ -115,5 +117,5 @@ export function createStoryBoardViewer(options: StoryBoardViewerOptions): Visual
 		}),
 	};
 	function diagnostics(): StoryBoardDiagnostics { return { state, catalogRequests, catalogReads, refreshes, completedEntries: cache.size, inFlightEntries: cache.pending }; }
-	return { id: "story-board", handlers, diagnostics, close() { state = "closed"; cache.close(); } };
+	return { id: "story-board", assetsDir: ASSETS_DIR, handlers, diagnostics, close() { state = "closed"; cache.close(); } };
 }
