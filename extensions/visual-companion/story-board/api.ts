@@ -8,7 +8,7 @@ import { StoryBoardCache } from "./cache.js";
 import { resolveEvidenceMember } from "./evidence.js";
 import { sanitizeMarkdown } from "./markdown-policy.js";
 import type { DocumentDetail, ReportDetail, StoryWorkspace, TaskDetail } from "./models.js";
-import { StoryBoardReader } from "./reader.js";
+import { projectDeliveryHistory, StoryBoardReader } from "./reader.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ASSETS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "assets");
@@ -44,7 +44,9 @@ function parameter(url: URL, name: string): string | undefined { return url.sear
 function idParameter(url: URL, name: string): string | undefined { const value = parameter(url, name); return value && ID.test(value) ? value : undefined; }
 
 function safeTask(detail: TaskDetail): TaskDetail {
-	return { ...detail, ...(detail.brief ? { brief: sanitizeMarkdown(detail.brief) } : {}), ...(detail.acceptance ? { acceptance: sanitizeMarkdown(detail.acceptance) } : {}) };
+	const { deliveryHistory: rawDeliveryHistory, ...safe } = detail;
+	const deliveryHistory = projectDeliveryHistory(rawDeliveryHistory);
+	return { ...safe, ...(safe.brief ? { brief: sanitizeMarkdown(safe.brief) } : {}), ...(safe.acceptance ? { acceptance: sanitizeMarkdown(safe.acceptance) } : {}), ...(deliveryHistory ? { deliveryHistory } : {}) };
 }
 function safeDocument(detail: DocumentDetail): DocumentDetail { return { ...detail, ...(detail.body ? { body: sanitizeMarkdown(detail.body) } : {}) }; }
 function safeReport(detail: ReportDetail, storyId: string): ReportDetail {

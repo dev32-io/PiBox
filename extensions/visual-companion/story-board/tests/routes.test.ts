@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { stringify } from "yaml";
 import { createVisualCompanionBackend } from "../../backend.mjs";
 import { createStoryBoardViewer } from "../index.js";
+
+async function put(root: string, path: string, content: string): Promise<void> { const target = join(root, path); await mkdir(dirname(target), { recursive: true }); await writeFile(target, content); }
+function storyIndex(id: string, tasks: Array<{ id: string; path: string }> = []) { return stringify({ schemaVersion: 1, id, kind: "story", title: id, phase: "execution", state: "active", planning: { revision: 1 }, artifacts: [], tasks, integrationUnits: [], evaluations: [] }); }
 
 test("Story Board registration is idle and routes load progressively with single-flight", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "story-routes-")); t.after(() => rm(root, { recursive: true, force: true }));
@@ -13,7 +17,7 @@ test("Story Board registration is idle and routes load progressively with single
 	const reader: any = {
 		async readCatalog() { calls.catalog += 1; await new Promise<void>((resolve) => { release = resolve; }); return [{ id: "story" }]; },
 		async readWorkspace() { calls.workspace += 1; return { story: { id: "story" }, tasks: [], documentGroups: [], reports: [] }; },
-		async readTaskDetail() { calls.task += 1; return { id: "task", title: "Task", status: "ready", column: "To do", dependsOn: [], relatedReportIds: [], degraded: false, diagnostics: [], brief: "<b>Brief</b>", verification: { methods: [], taskChecks: [] } }; },
+		async readTaskDetail() { calls.task += 1; return { id: "task", title: "Task", status: "ready", column: "To do", dependsOn: [], relatedReportIds: [], degraded: false, diagnostics: [], brief: "<b>Brief</b>", verification: { methods: [], taskChecks: [] }, deliveryHistory: { executionMode: "worktree", completedCommit: "abcdef1234567890", worktree: "/private/worktree", lastRunId: "private-run-id" } }; },
 		async readDocumentDetail() { calls.document += 1; return { id: "doc", title: "Doc", type: "spec", group: "Specifications", path: "safe", status: "ok", available: true, diagnostics: [], body: "<script>bad()</script># Safe" }; },
 		async readReportDetail() { calls.report += 1; return undefined; },
 	};
@@ -27,10 +31,30 @@ test("Story Board registration is idle and routes load progressively with single
 	assert.equal((await first.then((r) => r.json()) as any).stories[0].id, "story"); await second; assert.equal(calls.catalog, 1);
 	await fetch(`${backend.url}/v/story-board/api/workspace?story=story`); assert.equal(calls.workspace, 1); assert.equal(calls.task, 0);
 	const task = await fetch(`${backend.url}/v/story-board/api/task?story=story&task=task`).then((r) => r.json()) as any;
-	assert.equal(task.task.brief, "Brief"); assert.equal(calls.task, 1); assert.equal(calls.document, 0);
+	assert.equal(task.task.brief, "Brief"); assert.deepEqual(task.task.deliveryHistory, { executionMode: "worktree", completedCommit: "abcdef1234567890" });
+	assert.doesNotMatch(JSON.stringify(task), /private\/worktree|private-run-id|lastRunId|"worktree":/); assert.equal(calls.task, 1); assert.equal(calls.document, 0);
 	const document = await fetch(`${backend.url}/v/story-board/api/document?story=story&document=doc`).then((r) => r.json()) as any;
 	assert.doesNotMatch(document.document.body, /<script>/); assert.equal(calls.document, 1);
 	assert.equal((await fetch(`${backend.url}/v/story-board/api/workspace?story=../escape`)).status, 400);
+});
+
+test("direct routes deny symlinked external stories and tasks while healthy siblings remain available", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "story-routes-containment-")); const outside = await mkdtemp(join(tmpdir(), "story-routes-outside-"));
+	t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
+	await put(root, "agent-artifacts/healthy-story/index.yaml", storyIndex("healthy-story"));
+	await put(outside, "external-story/index.yaml", storyIndex("external-story"));
+	await mkdir(join(root, "agent-artifacts"), { recursive: true }); await symlink(join(outside, "external-story"), join(root, "agent-artifacts", "external-story"));
+	await put(root, "agent-artifacts/task-story/index.yaml", storyIndex("task-story", [{ id: "external-task", path: "tasks/external-task/task.yaml" }]));
+	await put(outside, "external-task/task.yaml", stringify({ schemaVersion: 1, id: "external-task", title: "External", status: "ready", dependsOn: [], execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "test" } }, verification: { timing: "task", methods: [], taskChecks: [] } }));
+	await mkdir(join(root, "agent-artifacts/task-story/tasks"), { recursive: true }); await symlink(join(outside, "external-task"), join(root, "agent-artifacts/task-story/tasks/external-task"));
+	const backend = await createVisualCompanionBackend({ viewers: [createStoryBoardViewer({ repositoryRoot: root })] }); t.after(() => backend.close());
+	const base = `${backend.url}/v/story-board/api`;
+	const catalog = await fetch(`${base}/catalog`).then((response) => response.json()) as any;
+	assert.ok(catalog.stories.some((story: any) => story.id === "healthy-story")); assert.ok(!catalog.stories.some((story: any) => story.id === "external-story"));
+	assert.equal((await fetch(`${base}/workspace?story=external-story`)).status, 404);
+	assert.equal((await fetch(`${base}/task?story=external-story&task=external-task`)).status, 404);
+	assert.equal((await fetch(`${base}/task?story=task-story&task=external-task`)).status, 404);
+	assert.equal((await fetch(`${base}/workspace?story=healthy-story`)).status, 200);
 });
 
 test("Refresh returns before replacement discovery and only invalidates Story Board projections", async (t) => {

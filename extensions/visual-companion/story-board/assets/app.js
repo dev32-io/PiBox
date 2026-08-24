@@ -53,6 +53,12 @@ export function evidencePresentation(item) {
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 }
+
+export function renderDeliveryHistory(history) {
+  if (!history) return "";
+  const rows = [["Execution mode", history.executionMode], ["Completed commit", history.completedCommit], ["Merged commit", history.mergedCommit]].filter(([, value]) => value);
+  return rows.length ? `<section><h3>Delivery history</h3><dl class="metadata">${rows.map(([label, value]) => `<div><dt>${label}</dt><dd><code>${escapeHtml(value)}</code></dd></div>`).join("")}</dl></section>` : "";
+}
 function safeHref(value = "") {
   const trimmed = String(value).trim().replaceAll("&amp;", "&");
   if (/^\/v\/story-board\/api\/evidence\?/.test(trimmed) || /^(?:https?:|mailto:)/i.test(trimmed)) return trimmed;
@@ -182,7 +188,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   }
   function markdownSection(title, body) { return body ? `<section><h3>${title}</h3><div class="markdown">${renderMarkdown(body)}</div></section>` : ""; }
   function taskDetail(task) {
-    return `<p>${badge(task.status, "status")}${task.stage ? ` ${badge(`Stage: ${task.stage}`)}` : ""}</p>${task.dependsOn?.length ? `<p><strong>Dependencies:</strong> ${task.dependsOn.map(escapeHtml).join(", ")}</p>` : ""}${markdownSection("Brief", task.brief)}${task.assignment ? `<section><h3>Assignment</h3><p>${escapeHtml(task.assignment.agent)}${task.assignment.tier ? ` · ${escapeHtml(task.assignment.tier)}` : ""}</p>${task.assignment.rationale ? `<p>${escapeHtml(task.assignment.rationale)}</p>` : ""}</section>` : ""}${markdownSection("Acceptance", task.acceptance)}<section><h3>Verification</h3><ul>${[...(task.verification?.methods || []), ...(task.verification?.taskChecks || [])].map((check) => `<li><code>${escapeHtml(check)}</code></li>`).join("") || "<li>Not specified</li>"}</ul></section>${task.deliveryHistory ? `<section><h3>Delivery history</h3><pre><code>${escapeHtml(JSON.stringify(task.deliveryHistory, null, 2))}</code></pre></section>` : ""}${task.relatedReportIds?.length ? `<section><h3>Related reports</h3><ul>${task.relatedReportIds.map((id) => `<li><button class="link-button" data-related-report="${id}">${escapeHtml(id)}</button></li>`).join("")}</ul></section>` : ""}${diagnostics(task.diagnostics)}`;
+    return `<p>${badge(task.status, "status")}${task.stage ? ` ${badge(`Stage: ${task.stage}`)}` : ""}</p>${task.dependsOn?.length ? `<p><strong>Dependencies:</strong> ${task.dependsOn.map(escapeHtml).join(", ")}</p>` : ""}${markdownSection("Brief", task.brief)}${task.assignment ? `<section><h3>Assignment</h3><p>${escapeHtml(task.assignment.agent)}${task.assignment.tier ? ` · ${escapeHtml(task.assignment.tier)}` : ""}</p>${task.assignment.rationale ? `<p>${escapeHtml(task.assignment.rationale)}</p>` : ""}</section>` : ""}${markdownSection("Acceptance", task.acceptance)}<section><h3>Verification</h3><ul>${[...(task.verification?.methods || []), ...(task.verification?.taskChecks || [])].map((check) => `<li><code>${escapeHtml(check)}</code></li>`).join("") || "<li>Not specified</li>"}</ul></section>${renderDeliveryHistory(task.deliveryHistory)}${task.relatedReportIds?.length ? `<section><h3>Related reports</h3><ul>${task.relatedReportIds.map((id) => `<li><button class="link-button" data-related-report="${id}">${escapeHtml(id)}</button></li>`).join("")}</ul></section>` : ""}${diagnostics(task.diagnostics)}`;
   }
   function evidence(report) {
     if (!report.evidence?.length) return "";

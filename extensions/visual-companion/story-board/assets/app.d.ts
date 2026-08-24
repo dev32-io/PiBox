@@ -12,5 +12,6 @@ export function createRequestGate(): {
 	cancel(): void;
 };
 export function evidencePresentation(item: { available?: boolean; supported?: boolean; manifestMember?: boolean; mediaType?: string }): "missing" | "unsupported" | "image" | "text";
+export function renderDeliveryHistory(history?: { executionMode?: string; completedCommit?: string; mergedCommit?: string; [key: string]: unknown }): string;
 export function renderMarkdown(markdown?: string): string;
 export function createStoryBoardApp(options: { root: HTMLElement; fetchImpl?: typeof fetch; navigationWindow?: Window }): { state: Record<string, unknown>; loadRoute(): Promise<void>; destroy(): void };

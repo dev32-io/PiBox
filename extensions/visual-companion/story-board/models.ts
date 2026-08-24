@@ -31,12 +31,18 @@ export interface TaskCard {
 	diagnostics: Diagnostic[];
 }
 
+export interface DeliveryHistory {
+	executionMode?: "repository" | "worktree";
+	completedCommit?: string;
+	mergedCommit?: string;
+}
+
 export interface TaskDetail extends TaskCard {
 	brief?: string;
 	acceptance?: string;
 	assignment?: { agent: string; tier?: string; rationale?: string };
 	verification: { methods: string[]; taskChecks: string[] };
-	deliveryHistory?: Record<string, unknown>;
+	deliveryHistory?: DeliveryHistory;
 }
 
 export type DocumentGroup = "Intent and scope" | "Specifications" | "Design" | "Decisions" | "Journey cases" | "Outcome";

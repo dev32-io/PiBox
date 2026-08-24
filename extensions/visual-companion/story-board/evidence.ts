@@ -26,8 +26,11 @@ export async function readEvidenceMetadata(repositoryRoot: string, storyId: stri
 	const displayRoot = `agent-artifacts/${storyId}/evidence/${evaluationId}`;
 	const manifestPath = join(evidenceRoot, "manifest.yaml");
 	let value: unknown;
-	const [storyReal, rootReal, rootInfo] = await Promise.all([realpath(lexicalStoryRoot).catch(() => undefined), realpath(evidenceRoot).catch(() => undefined), lstat(evidenceRoot).catch(() => undefined)]);
-	const rootContained = Boolean(storyReal && rootReal && rootInfo?.isDirectory() && !rootInfo.isSymbolicLink() && inside(storyReal, rootReal));
+	const [repositoryReal, storyReal, rootReal, storyInfo, rootInfo] = await Promise.all([
+		realpath(repository).catch(() => undefined), realpath(lexicalStoryRoot).catch(() => undefined), realpath(evidenceRoot).catch(() => undefined),
+		lstat(lexicalStoryRoot).catch(() => undefined), lstat(evidenceRoot).catch(() => undefined),
+	]);
+	const rootContained = Boolean(repositoryReal && storyReal && rootReal && storyInfo?.isDirectory() && !storyInfo.isSymbolicLink() && rootInfo?.isDirectory() && !rootInfo.isSymbolicLink() && inside(repositoryReal, storyReal) && inside(storyReal, rootReal));
 	if (!rootContained) return rootInfo ? [{ id: "manifest", manifestMember: false, available: false, supported: false, diagnostics: [diagnostic(`${displayRoot}/manifest.yaml`, "Evidence root is not a contained canonical directory")] }] : [];
 	const manifestInfo = await lstat(manifestPath).catch(() => undefined);
 	const manifestReal = await realpath(manifestPath).catch(() => undefined);

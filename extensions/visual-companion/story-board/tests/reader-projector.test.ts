@@ -39,7 +39,7 @@ test("workspace isolates malformed children and links task-scoped reports", asyn
 	await put(root, `agent-artifacts/${story}/index.yaml`, stringify(index(story, "Mixed story")));
 	await put(root, `agent-artifacts/${story}/intent.md`, "# Intent\n\nA useful story intent.\n");
 	await put(root, `agent-artifacts/${story}/specs/spec.md`, "# Specification\n\nBody.\n");
-	await put(root, `agent-artifacts/${story}/tasks/healthy-task/task.yaml`, stringify(taskManifest("healthy-task", "ready")));
+	await put(root, `agent-artifacts/${story}/tasks/healthy-task/task.yaml`, stringify({ ...taskManifest("healthy-task", "ready"), runtime: { executionMode: "worktree", branch: "private/worker", worktree: "/private/worktrees/story", lastRunId: "private-run-id", baseCommit: "1234567890abcdef", completedCommit: "abcdef1234567890", mergedCommit: "fedcba0987654321" } }));
 	await put(root, `agent-artifacts/${story}/tasks/healthy-task/brief.md`, "# Brief\n\nExact brief.\n");
 	await put(root, `agent-artifacts/${story}/tasks/healthy-task/acceptance.md`, "# Acceptance\n\nExact acceptance.\n");
 	await put(root, `agent-artifacts/${story}/tasks/broken-task/task.yaml`, "status: [not yaml\n");
@@ -55,6 +55,8 @@ test("workspace isolates malformed children and links task-scoped reports", asyn
 	assert.deepEqual(workspace?.documentGroups.map((group) => group.group), ["Intent and scope", "Specifications"]);
 	const detail = await reader.readTaskDetail(story, "healthy-task");
 	assert.match(detail?.brief ?? "", /Exact brief/);
+	assert.deepEqual(detail?.deliveryHistory, { executionMode: "worktree", completedCommit: "abcdef1234567890", mergedCommit: "fedcba0987654321" });
+	assert.doesNotMatch(JSON.stringify(detail), /private\/worktrees|private-run-id|private\/worker|baseCommit|lastRunId|"worktree":/);
 	const report = await reader.readReportDetail(story, "task-review");
 	assert.equal(report?.findings[0]?.status, "accepted");
 	assert.match(report?.riskAcceptance ?? "", /Accepted risk/);
