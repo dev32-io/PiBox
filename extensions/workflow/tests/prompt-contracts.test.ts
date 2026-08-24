@@ -115,6 +115,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /multi-task sequential stage only when each task independently warrants a fresh agent/i);
 	assert.match(delivery, /true blockers/i);
 	assert.match(delivery, /high\/max require a substantive justification/i);
+	assert.match(delivery, /`local` is a permission-gated[\s\S]+only after the user explicitly requests or approves[\s\S]+record that permission/i);
 	assert.doesNotMatch(delivery, /aggressively decompose|Compressed\/decompressed example|fresh worker|actor stages/i);
 	assert.match(delivery, /Use `resource_write` to create or update tasks and stages/i);
 	assert.match(delivery, /complete rendered task contract in persistent context/i);

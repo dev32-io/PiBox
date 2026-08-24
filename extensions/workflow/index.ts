@@ -23,7 +23,7 @@ import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceTy
 import { normalizePlanArtifact, normalizePlanBundle, normalizePlanEdit, normalizePlanStage, normalizePlanTask, normalizeResourceArtifact } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
 import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
-import { isTierTaskAssignment, taskAgentName, type CapabilityTier, type HarnessEffort, type HarnessStatusSnapshot, type ModelTier, type MutationAuthority, type TaskManifest } from "./types.js";
+import { isTierTaskAssignment, taskAgentName, type HarnessEffort, type HarnessStatusSnapshot, type ModelTier, type MutationAuthority, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { CanonicalMutationCoordinator, runManagedChild } from "./canonical-mutation.js";
 import { isWorkerProcess, registerWorkerCapabilities } from "./worker-capabilities.js";
@@ -102,7 +102,10 @@ const MUTATION_AUTHORITY = Type.Object({
 	sources: Type.Optional(Type.Array(Type.String())),
 }, { additionalProperties: false });
 const EFFORT = Type.Union([Type.Literal("off"), Type.Literal("minimal"), Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("xhigh"), Type.Literal("max")]);
-const CAPABILITY_TIER = Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("max")]);
+const TASK_TIER = Type.Union([
+	Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("max"),
+	Type.Literal("local", { description: "Permission-gated: use only after the user explicitly requests local managed-task execution" }),
+]);
 const TASK_MANIFEST_RESOURCE = Type.Object({
 	schemaVersion: Type.Literal(1), id: Type.String({ description: "Bare kebab-case task id" }), title: Type.String(),
 	status: Type.Union([Type.Literal("draft"), Type.Literal("blocked"), Type.Literal("ready")]),
@@ -112,8 +115,8 @@ const TASK_MANIFEST_RESOURCE = Type.Object({
 		resourceClaims: Type.Array(Type.String({ description: "Shared files or external resources used to validate parallel-stage compatibility" })),
 		assignment: Type.Object({
 			agent: Type.String({ description: "Configured agent definition, normally implementer" }),
-			tier: CAPABILITY_TIER,
-			rationale: Type.String({ description: "Why this task needs the selected capability tier after decomposition" }),
+			tier: TASK_TIER,
+			rationale: Type.String({ description: "Why this task needs the selected tier; local must record the user's explicit permission" }),
 			tierJustification: Type.Optional(Type.String({ description: "Required by policy for high/max: why medium is insufficient, irreducible ambiguity, and why further decomposition is unsafe or incoherent" })),
 		}, { additionalProperties: false }),
 	}, { additionalProperties: false }),
@@ -204,8 +207,8 @@ const SELF_CONTAINED_PLAN_TASK = Type.Object({
 	integrationExpectation: Type.Optional(Type.String()),
 	resourceClaims: Type.Optional(Type.Array(Type.String())),
 	assignment: Type.Optional(Type.Object({
-		agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER),
-		rationale: Type.Optional(Type.String()), tierJustification: Type.Optional(Type.String()),
+		agent: Type.Optional(Type.String()), tier: Type.Optional(TASK_TIER),
+		rationale: Type.Optional(Type.String({ description: "Required for local and must record the user's explicit permission" })), tierJustification: Type.Optional(Type.String()),
 	}, { additionalProperties: false })),
 	verification: Type.Optional(Type.Object({
 		timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])),
@@ -216,7 +219,7 @@ const LEGACY_PLAN_TASK = Type.Object({
 	id: Type.String(), title: Type.Optional(Type.String()), dependsOn: Type.Optional(Type.Array(Type.String())),
 	references: Type.Optional(Type.Object({ specs: Type.Optional(Type.Array(Type.String())), designs: Type.Optional(Type.Array(Type.String())), decisions: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false })),
 	stageId: Type.Optional(Type.String()), intermediateState: Type.Optional(Type.Union([Type.Literal("complete"), Type.Literal("partial")])), resourceClaims: Type.Optional(Type.Array(Type.String())),
-	assignment: Type.Optional(Type.Object({ agent: Type.Optional(Type.String()), tier: Type.Optional(CAPABILITY_TIER), rationale: Type.Optional(Type.String()), tierJustification: Type.Optional(Type.String()) }, { additionalProperties: false })),
+	assignment: Type.Optional(Type.Object({ agent: Type.Optional(Type.String()), tier: Type.Optional(TASK_TIER), rationale: Type.Optional(Type.String({ description: "Required for local and must record the user's explicit permission" })), tierJustification: Type.Optional(Type.String()) }, { additionalProperties: false })),
 	verification: Type.Optional(Type.Object({ timing: Type.Optional(Type.Union([Type.Literal("task"), Type.Literal("integration-unit"), Type.Literal("work-item"), Type.Literal("skipped")])), methods: Type.Optional(Type.Array(Type.String())), taskChecks: Type.Optional(Type.Array(Type.String())), rationale: Type.Optional(Type.String()) }, { additionalProperties: false })),
 	briefSections: Type.Object({ contributionGoal: Type.String(), boundaryIncluded: Type.Array(Type.String()), requiredWork: Type.Optional(Type.Array(Type.String())), integrationExpectation: Type.Optional(Type.String()), boundaryExcluded: Type.Optional(Type.Array(Type.String())), interfacesAndDependencies: Type.Optional(Type.Array(Type.String())), constraints: Type.Optional(Type.Array(Type.String())), risksAndUncertainties: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
 	acceptanceSections: Type.Object({ deliverables: Type.Optional(Type.Array(Type.String())), criterionContributions: Type.Array(Type.Object({ criteria: Type.Array(Type.String()), contribution: Type.String() }, { additionalProperties: false })), boundaryProof: Type.Array(Type.String()), expectedIntermediateState: Type.Optional(Type.String()), integrationProof: Type.Optional(Type.Array(Type.String())) }, { additionalProperties: false }),
@@ -1088,8 +1091,8 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "resource_write",
 		label: "Write Resource",
-		description: "Create or update one planner-owned resource. Planning drafts may be temporarily incomplete; topology diagnostics are advisory here and become blocking when workflow_transition submits the plan. Evaluation resources are harness-owned.",
-		promptSnippet: "Create or update one structured story, task, or stage resource; never create evaluations",
+		description: "Create or update one planner-owned resource. Planning drafts may be temporarily incomplete; topology diagnostics are advisory here and become blocking when workflow_transition submits the plan. Evaluation resources are harness-owned. The local task tier is permission-gated: use it only after explicit user permission and record that permission in assignment.rationale.",
+		promptSnippet: "Create or update one structured story, task, or stage resource; never create evaluations; never use local task routing without explicit user permission",
 		parameters: Type.Object({ ref: Type.Optional(Type.String()), type: Type.Optional(AUTHORABLE_RESOURCE_TYPE), parent: Type.Optional(Type.String()), value: OPEN_OBJECT }, { additionalProperties: false }),
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
@@ -1231,7 +1234,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_schema",
 		label: "Read Workflow Mutation Schema",
-		description: "Read a bounded exact schema for a complete plan write or one low-level resource mutation. Use before an unfamiliar write instead of keeping every schema in prompt context.",
+		description: "Read a bounded exact schema for a complete plan write or one low-level resource mutation. Use before an unfamiliar write instead of keeping every schema in prompt context. Local task routing is permission-gated and requires explicit user permission recorded in assignment.rationale.",
 		parameters: Type.Object({ operation: Type.Union([Type.Literal("plan-write"), Type.Literal("create"), Type.Literal("patch"), Type.Literal("apply-change")]), resource: Type.Optional(CANONICAL_RESOURCE_TYPE), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12000 })) }, { additionalProperties: false }),
 		async execute(_id, params) {
 			try {
@@ -1247,7 +1250,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "workflow_plan_write",
 		label: "Write Complete Workflow Plan",
-		description: "Write tasks and ordered stages for a workflow plan. Stage checks and optional medium/high review policy are planner-owned; all evaluation resources are harness-owned. Use create, complete update, or revision-pinned surgical edit. Read workflow_schema operation=plan-write for exact fields.",
+		description: "Write tasks and ordered stages for a workflow plan. Stage checks and optional medium/high review policy are planner-owned; all evaluation resources are harness-owned. Local task routing may be used only after explicit user permission recorded in assignment.rationale. Use create, complete update, or revision-pinned surgical edit. Read workflow_schema operation=plan-write for exact fields.",
 		parameters: COMPACT_PLAN_WRITE_PARAMETERS,
 		async execute(toolCallId, params, _signal, _update, ctx) {
 			try {
