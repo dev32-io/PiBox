@@ -1,0 +1,20 @@
+schemaVersion: 1
+id: visual-companion-story-board
+kind: story
+title: Visual Companion Story Board
+phase: planning
+state: active
+planning:
+  revision: 1
+artifacts:
+  - id: intent
+    type: intent
+    path: intent.md
+    status: draft
+    narrativeSchemaVersion: 2
+tasks: []
+integrationUnits: []
+delivery:
+  workingBranch: feature/visual-companion-story-board
+  createdFromCommit: 5d0a494c22a232c3e82ffc37a850d23ae4e54b8b
+evaluations: []
