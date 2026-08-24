@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 10
+  revision: 11
 artifacts:
   - id: intent
     type: intent
@@ -43,6 +43,8 @@ tasks:
     path: tasks/introduce-companion-design-tokens/task.yaml
   - id: mount-and-restyle-architecture
     path: tasks/mount-and-restyle-architecture/task.yaml
+  - id: define-story-board-projections
+    path: tasks/define-story-board-projections/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-companion-story-board
@@ -56,3 +58,4 @@ executionStages:
       - wire-companion-service-lifecycle
       - introduce-companion-design-tokens
       - mount-and-restyle-architecture
+      - define-story-board-projections
