@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-shared-shell-and-architecture
 title: Build the shared shell and migrate Architecture to design tokens
-status: awaiting_ci
+status: contribution_complete
 dependsOn:
   - build-companion-platform
 execution:
