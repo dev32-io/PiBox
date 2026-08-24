@@ -2,7 +2,7 @@ schemaVersion: 1
 id: visual-story-board
 kind: story
 title: Visual Story Board
-phase: planning
+phase: execution
 state: active
 planning:
   revision: 17
@@ -51,6 +51,7 @@ integrationUnits: []
 delivery:
   workingBranch: feature/visual-story-board
   createdFromCommit: dbb11f6c15637d3478fe2a87959d36181154498c
+  executionStartCommit: ae82979f9f89eadcafa7eba8826e7531ef1dd17e
 evaluations: []
 executionStages:
   - id: platform-and-domain-foundations
