@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 6
+  revision: 7
 artifacts:
   - id: intent
     type: intent
@@ -35,6 +35,8 @@ artifacts:
 tasks:
   - id: generalize-companion-backend
     path: tasks/generalize-companion-backend/task.yaml
+  - id: add-companion-shell
+    path: tasks/add-companion-shell/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-companion-story-board
@@ -44,3 +46,4 @@ executionStages:
   - id: visual-companion-story-board-delivery
     tasks:
       - generalize-companion-backend
+      - add-companion-shell

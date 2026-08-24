@@ -1,0 +1,25 @@
+schemaVersion: 1
+id: add-companion-shell
+title: Add the shared companion shell and viewer navigation
+status: draft
+dependsOn: []
+execution:
+  resourceClaims: []
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested local-tier implementation for every
+      Story Board delivery task.
+assembly:
+  stageId: visual-companion-story-board-delivery
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+      extensions/visual-companion/tests/shell.test.ts
+    - node --check extensions/visual-companion/assets/app.js
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
