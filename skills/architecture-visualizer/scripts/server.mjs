@@ -110,7 +110,9 @@ export async function createVisualizerServer({ artifactPath, assetsDir = default
     return {
       host: backend.host,
       port: backend.port,
-      url: shown.url,
+      // Preserve the standalone Architecture server's viewer-scoped URL while
+      // direct Visual Companion opens use the shared shell URL.
+      url: shown.viewerUrl,
       artifactPath: shown.artifactPath,
       close: () => backend.close(),
     };
