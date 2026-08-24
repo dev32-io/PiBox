@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: polish-accessibility-and-regressions
 title: Polish accessibility, responsive behavior, and Architecture regressions
-status: running
+status: blocked
 dependsOn:
   - build-story-board-browser
 execution:
