@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 8
+  revision: 9
 artifacts:
   - id: intent
     type: intent
@@ -37,6 +37,8 @@ tasks:
     path: tasks/build-companion-platform/task.yaml
   - id: build-story-domain-reader
     path: tasks/build-story-domain-reader/task.yaml
+  - id: build-shared-shell-and-architecture
+    path: tasks/build-shared-shell-and-architecture/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-story-board
@@ -47,3 +49,6 @@ executionStages:
     tasks:
       - build-companion-platform
       - build-story-domain-reader
+  - id: shell-and-story-api
+    tasks:
+      - build-shared-shell-and-architecture

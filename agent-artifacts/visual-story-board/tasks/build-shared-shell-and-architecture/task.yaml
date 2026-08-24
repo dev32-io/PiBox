@@ -1,0 +1,29 @@
+schemaVersion: 1
+id: build-shared-shell-and-architecture
+title: Build the shared shell and migrate Architecture to design tokens
+status: draft
+dependsOn:
+  - build-companion-platform
+execution:
+  resourceClaims:
+    - extensions/visual-companion common shell and design-token assets
+    - skills/architecture-visualizer browser assets and adapter
+    - shell, token, and Architecture regression tests
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested and authorized local managed-task
+      execution for every implementation task except the assisted E2E launcher.
+assembly:
+  stageId: shell-and-story-api
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/shell.test.ts
+      extensions/visual-companion/tests/design-tokens.test.ts
+      skills/architecture-visualizer/tests/visualizer.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
