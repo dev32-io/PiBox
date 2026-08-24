@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-domain-reader
 title: Build the read-only Story Board domain reader
-status: running
+status: cancelled
 dependsOn: []
 execution:
   resourceClaims:
