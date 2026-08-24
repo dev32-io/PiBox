@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-board-api
 title: Build the lazy Story Board API and cache
-status: ready
+status: running
 dependsOn:
   - build-companion-platform
   - build-story-domain-reader
@@ -32,3 +32,9 @@ verification:
       extensions/visual-companion/tests/backend.test.ts
     - git diff --check
   rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-story-board-api
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-story-board-api
+  baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
+  lastRunId: c3b64b6d-7861-4eed-8a02-117faf27d8e7
