@@ -12,7 +12,12 @@ function strings(value: unknown): string[] {
 	return Array.isArray(value) ? value as string[] : [];
 }
 
-function assertTierJustification(tier: unknown, justification: unknown): void {
+const LOCAL_PERMISSION_RATIONALE = /(?=.*\buser\b)(?=.*\b(?:request(?:ed)?|permission|approv(?:ed|al)?|authoriz(?:ed|ation)?)\b)/i;
+
+function assertTierJustification(tier: unknown, justification: unknown, rationale: unknown): void {
+	if (tier === "local" && (typeof rationale !== "string" || rationale.trim().length < 20 || !LOCAL_PERMISSION_RATIONALE.test(rationale))) {
+		throw new HarnessError("INVALID_ARTIFACT", "local routing is permission-gated and requires assignment.rationale to record the user's explicit request, permission, approval, or authorization");
+	}
 	if ((tier === "high" || tier === "max") && (typeof justification !== "string" || justification.trim().length < 20)) {
 		throw new HarnessError("INVALID_ARTIFACT", `${String(tier)} routing requires a substantive tierJustification explaining why medium is insufficient, the irreducible ambiguity, and why further decomposition is unsafe or incoherent`);
 	}
@@ -140,7 +145,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 		const assignment = record(task.assignment);
 		const verification = record(task.verification);
 		const tier = assignment.tier ?? "medium";
-		assertTierJustification(tier, assignment.tierJustification);
+		assertTierJustification(tier, assignment.tierJustification, assignment.rationale);
 		const stageId = task.stageId ?? task.id;
 		const included = strings(brief.boundaryIncluded);
 		const goal = brief.contributionGoal;
@@ -160,7 +165,7 @@ export function normalizePlanTask(value: unknown): PlanAuthoringRecord {
 	const assignment = record(task.assignment);
 	const verification = record(task.verification);
 	const tier = assignment.tier ?? "medium";
-	assertTierJustification(tier, assignment.tierJustification);
+	assertTierJustification(tier, assignment.tierJustification, assignment.rationale);
 	const stageId = task.stageId ?? task.id;
 	const included = strings(task.included);
 	const goal = task.goal;

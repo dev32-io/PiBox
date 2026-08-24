@@ -10,7 +10,7 @@ import type { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.j
 import { classifyFailure } from "./failure-classifier.js";
 import type { RepositoryIdentity } from "./repository.js";
 import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.js";
-import { taskAgentName, type CapabilityTier, type TaskManifest } from "./types.js";
+import { taskAgentName, type ModelTier, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { DEFAULT_SUBAGENT_TOOLS, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } from "./tool-groups.js";
@@ -27,7 +27,7 @@ export interface LaunchModel {
 	effort: string;
 	providerCandidates?: Array<{ provider: string; model: string; effort: string }>;
 	requested: string;
-	capabilityTier?: CapabilityTier;
+	capabilityTier?: ModelTier;
 }
 
 const HARNESS_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
