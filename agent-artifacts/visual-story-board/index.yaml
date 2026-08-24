@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 14
+  revision: 15
 artifacts:
   - id: intent
     type: intent
@@ -78,6 +78,25 @@ executionStages:
     tasks:
       - build-shared-shell-and-architecture
       - build-story-board-api
+    checks:
+      - npm run check
+      - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+        extensions/visual-companion/tests/shell.test.ts
+        extensions/visual-companion/tests/design-tokens.test.ts
+        skills/architecture-visualizer/tests/visualizer.test.ts
+        extensions/visual-companion/story-board/tests/routes.test.ts
+        extensions/visual-companion/story-board/tests/cache.test.ts
+        extensions/visual-companion/story-board/tests/markdown-policy.test.ts
+        extensions/visual-companion/story-board/tests/evidence-route.test.ts
+      - git diff --check
+    mode: concurrent
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews.
+        Shell/Architecture assets and Story Board cache/routes have separate
+        ownership and focused checks for direct-open compatibility, semantic
+        tokens, lazy activation, concurrency, Markdown safety, evidence
+        containment, Refresh, and cleanup before the medium whole-branch review.
   - id: story-board-browser
     tasks:
       - build-story-board-browser
