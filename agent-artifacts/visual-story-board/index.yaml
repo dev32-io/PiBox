@@ -5,11 +5,16 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 1
+  revision: 2
 artifacts:
   - id: intent
     type: intent
     path: intent.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: story-board-behavior
+    type: spec
+    path: specs/story-board-behavior.md
     status: draft
     narrativeSchemaVersion: 2
 tasks: []
