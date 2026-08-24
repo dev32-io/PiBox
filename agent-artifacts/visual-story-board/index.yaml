@@ -55,6 +55,8 @@ delivery:
 evaluations:
   - id: final-branch-review
     path: evaluations/final-branch-review/evaluation.yaml
+  - id: final-e2e
+    path: evaluations/final-e2e/evaluation.yaml
 executionStages:
   - id: platform-and-domain-foundations
     tasks:

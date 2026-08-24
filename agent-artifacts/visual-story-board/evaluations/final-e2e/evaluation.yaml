@@ -1,0 +1,16 @@
+schemaVersion: 1
+id: final-e2e
+type: e2e
+checkpoint: final-e2e
+scope:
+  workItem: visual-story-board
+status: planned
+required: true
+attempt: 0
+methods:
+  - Execute every case in the approved E2E matrix exactly after whole-branch
+    review passes.
+loop:
+  state: planned
+  iteration: 0
+  maxIterations: 8
