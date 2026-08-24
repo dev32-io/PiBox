@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 3
+  revision: 4
 artifacts:
   - id: intent
     type: intent
@@ -21,6 +21,11 @@ artifacts:
     type: design
     path: design/story-board-design.md
     status: draft
+    narrativeSchemaVersion: 2
+  - id: story-board-e2e
+    type: e2e-matrix
+    path: e2e-matrix/story-board-e2e.md
+    status: approved
     narrativeSchemaVersion: 2
 tasks: []
 integrationUnits: []
