@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-board-browser
 title: Build the complete Story Board browser application
-status: draft
+status: blocked
 dependsOn:
   - build-shared-shell-and-architecture
   - build-story-board-api

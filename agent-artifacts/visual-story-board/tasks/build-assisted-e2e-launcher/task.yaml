@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-assisted-e2e-launcher
 title: Build the production-path assisted E2E launcher
-status: draft
+status: blocked
 dependsOn:
   - build-story-board-browser
 execution:
