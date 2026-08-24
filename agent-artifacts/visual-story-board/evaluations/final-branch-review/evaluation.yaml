@@ -4,7 +4,7 @@ type: combined-review
 checkpoint: final-review
 scope:
   workItem: visual-story-board
-status: failed
+status: planned
 required: true
 attempt: 1
 methods:
@@ -12,8 +12,8 @@ methods:
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
-  state: fixing
-  iteration: 0
+  state: rereviewing
+  iteration: 1
   maxIterations: 8
   reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
   reviewedCommit: 16f3a8321f707c92a74f7ef8a32b36978afe57c3
@@ -29,6 +29,7 @@ loop:
     focused projection/UI tests proving those values cannot reach rendered task
     detail. Preserve read-only behavior, healthy sibling isolation, and existing
     route contracts."
+  fixerAgentId: dcb1efa1-0afb-4257-ab85-424250bff081
 findings:
   - id: F-001
     severity: high
