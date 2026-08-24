@@ -1,0 +1,34 @@
+schemaVersion: 1
+id: build-story-board-browser
+title: Build the complete Story Board browser application
+status: draft
+dependsOn:
+  - build-shared-shell-and-architecture
+  - build-story-board-api
+execution:
+  resourceClaims:
+    - extensions/visual-companion/story-board browser assets and browser-state
+      modules
+    - Story Board catalog, board, documents, reports, and browser-app tests
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested and authorized local managed-task
+      execution for every implementation task except the assisted E2E launcher.
+assembly:
+  stageId: story-board-browser
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test
+      extensions/visual-companion/story-board/tests/browser-app.test.ts
+      extensions/visual-companion/story-board/tests/catalog-ui.test.ts
+      extensions/visual-companion/story-board/tests/board-ui.test.ts
+      extensions/visual-companion/story-board/tests/documents-reports-ui.test.ts
+      extensions/visual-companion/tests/shell.test.ts
+    - node --check extensions/visual-companion/story-board/assets/app.js
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
