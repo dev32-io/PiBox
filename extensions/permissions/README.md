@@ -48,7 +48,7 @@ Pi binds `Shift+Tab` to thinking-level cycling by default. PiBox overrides that 
 }
 ```
 
-in `~/.pi/agent/keybindings.json`. Reasoning effort remains available through `/effort`.
+in `~/.pi/agent/keybindings.json`. Thinking-level selection remains available through Pi's native `/thinking` command.
 
 ## Managed workflows
 

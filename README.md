@@ -7,8 +7,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **`rattle` theme** — cool-steel colors for Pi.
 - **TUI extensions** — responsive status bar, refined chat input with a clickable fullscreen return-to-bottom action, compact tool previews/diffs, animated working status, and startup display.
 - **Repository permissions** — Claude Code-style `.pi/permissions.yaml` rules with enforced/bypass modes, inherited child state, and `Shift+Tab` switching.
-- **`/effort`** — choose a reasoning effort supported by the active model; local-LLM endpoints expose `off`, `low`, `medium`, `high`, and `xhigh`, using the configured default unless explicitly overridden.
-- **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints, variable Codex subscription-usage status, and transparent same-tier provider fallback for spawned agents.
+- **Providers** — Ollama Cloud and custom OpenAI-compatible local endpoints, variable Codex subscription-usage status, and transparent same-tier provider fallback for spawned agents. Local endpoints integrate with Pi's native `/thinking` levels.
 - **Sound hooks** — optional response, workflow task-completion, and workflow-attention feedback using user-supplied audio.
 - **Context rules** — Claude-compatible path-scoped instructions loaded only after matching files are read, from `.claude/rules/` or `.pi/rules/`.
 - **Workflow** — collaborative story shaping, capability-backed delivery planning, delegated worktrees, runtime-owned final verification, and recovery. See [docs/workflow.md](docs/workflow.md).
@@ -30,7 +29,6 @@ Pi loads the package extensions listed in `package.json`. For a local preview wi
 pi --no-extensions \
   -e ./extensions/permissions/index.ts \
   -e ./extensions/tui/chat-input/index.ts \
-  -e ./extensions/tui/effort/index.ts \
   -e ./extensions/tui/status-bar/index.ts \
   -e ./extensions/tui/styled-outputs/index.ts \
   -e ./extensions/tui/spinners/index.ts \
@@ -38,20 +36,20 @@ pi --no-extensions \
   --theme ./themes/rattle.json
 ```
 
-## Effort defaults
+## Thinking levels
 
-PiBox preserves Pi's resolved effort from global settings, CLI flags, or session restoration unless an explicit PiBox override is configured. Unsupported explicit overrides are safely clamped for each model. User configuration loads first and repository configuration overrides it:
+PiBox uses Pi's native thinking controls. Use `/thinking`, `/thinking high`, or `/settings` to select a model-compatible level. `/thinking` changes only the current session unless you press `Ctrl+S` in its selector to save the global default. Global and repository defaults use Pi's standard `~/.pi/agent/settings.json` and `.pi/settings.json` hierarchy:
 
-- `~/.pi/agent/pibox/effort.yaml`
-- `.pi/pibox-effort.yaml`
-
-```yaml
-default: medium
-models:
-  openai-codex/gpt-5.6-luna: high
+```json
+{
+  "defaultThinkingLevel": "medium",
+  "modelThinkingLevels": {
+    "openai-codex/gpt-5.6-luna": "high"
+  }
+}
 ```
 
-Use `/effort` to select a compatible level interactively, or `/effort high` directly. A per-model entry overrides the optional shared PiBox default. PiBox uses `Shift+Tab` for permission mode instead of effort cycling; set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding.
+PiBox's local OpenAI-compatible provider advertises `off`, `low`, `medium`, `high`, and `xhigh`; Pi automatically hides unsupported `minimal` and `max` choices. The former PiBox `effort.yaml` files and `/effort` command are no longer supported; migrate their values to Pi settings. PiBox uses `Shift+Tab` for permission mode, so set `"app.thinking.cycle": []` in `~/.pi/agent/keybindings.json` to remove Pi's stock binding while keeping `/thinking` available.
 
 ## Provider capacity and usage
 

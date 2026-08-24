@@ -668,7 +668,7 @@ The first visual phase may show:
 - Native command hint
 - Native Bash hint
 - Model-cycle shortcut
-- Permission-mode shortcut (`Shift+Tab`); effort selection remains available through `/effort`
+- Permission-mode shortcut (`Shift+Tab`); thinking-level selection remains available through Pi's native `/thinking` command
 
 Do not show or advertise features that PiBox has not implemented, such as skills, MCP, plan mode, or chat mode.
 
