@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-companion-platform
 title: Build the reusable Visual Companion platform
-status: running
+status: submitted
 dependsOn: []
 execution:
   resourceClaims:
@@ -33,3 +33,4 @@ runtime:
   worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-companion-platform
   baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
   lastRunId: 40615e9d-ede5-4a26-98e5-5d87c3261e1c
+  completedCommit: 765c4c94f6b12895dc979e3ee86926f5b1320a3b
