@@ -4,19 +4,19 @@ type: combined-review
 checkpoint: final-review
 scope:
   workItem: visual-story-board
-status: planned
+status: passed
 required: true
-attempt: 2
+attempt: 3
 methods:
   - Review the complete executionStartCommit..reviewedCommit feature diff as one
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
-  state: rereviewing
   iteration: 2
   maxIterations: 8
+  state: passed
   reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
-  reviewedCommit: f507688dcbacdc71f90f3602854bc9a92aff1993
+  reviewedCommit: a6e69985cb5d4041a9e494bb151ae1c39bc3e873
   managerPrompt: F-002 is resolved; preserve that repair. Fix remaining blocking
     F-001 at the evaluation identity boundary. A report selected as Story
     A/evaluation X must resolve only beneath Story A's canonical evaluations/X
@@ -33,24 +33,26 @@ loop:
 findings:
   - id: F-001
     severity: high
-    status: open
+    status: resolved
     criterion: Canonical reads remain contained under the selected story/evaluation
       identity; malformed/symlink resources are rejected
-    location: extensions/visual-companion/story-board/reader.ts:230-248
-    summary: A symlinked evaluation directory can cause one story's report route to
-      return another story's report body.
-    blocking: true
+    location: extensions/visual-companion/story-board/reader.ts:66-76,167-181,246-267;
+      extensions/visual-companion/story-board/evidence.ts:18-27,32-76
+    summary: Evaluation, report, risk, attempt, evidence-manifest, and evidence-file
+      reads are now bound to the selected contained story/evaluation identity.
+    blocking: false
   - id: F-002
     severity: medium
     status: resolved
     criterion: Browser-safe projections use explicitly allowlisted sanitized
       delivery-history fields
-    location: extensions/visual-companion/story-board/reader.ts:18-24,215-216;
+    location: extensions/visual-companion/story-board/reader.ts:18-24,228-229;
       extensions/visual-companion/story-board/api.ts:46-50;
       extensions/visual-companion/story-board/assets/app.js:57-61,191
-    summary: Raw runtime worktree paths and run IDs are no longer projected or rendered.
+    summary: Raw runtime worktree paths and run IDs remain excluded from projection
+      and rendering.
     blocking: false
 result:
-  verdict: fail
+  verdict: pass
   report: report.md
   evidence: ../../evidence/final-branch-review/manifest.yaml
