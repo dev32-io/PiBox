@@ -278,9 +278,12 @@ export default function workflows(pi: ExtensionAPI): void {
 			const processStatus = agentLiveProcessStatus(live);
 			return formatAgentProgress(live.progress, Date.now(), { fallbackStartedAt: live.startedAt, ...(processStatus ? { processStatus } : {}), showStarting: true });
 		}
-		return agentLiveAuthoritative ? "" : formatAgentProgress(step.progress);
+		return formatAgentProgress(step.progress, Date.now(), { showStarting: agentLiveAuthoritative && (step.kind === "task" || step.kind === "evaluation") });
 	};
-	const displayFast = (step: WorkflowStep): boolean => liveAgentForStep(step)?.fast === true || (!agentLiveAuthoritative && step.fast === true);
+	const displayFast = (step: WorkflowStep): boolean => {
+		const live = liveAgentForStep(step);
+		return live ? live.fast === true : step.fast === true;
+	};
 	const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
 	const stateIcon = (status: WorkflowStep["status"], kind: string): string => {
 		if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? DEFAULT_RUNNING_FRAMES; return frames[frame % frames.length]!; }

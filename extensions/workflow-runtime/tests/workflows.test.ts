@@ -584,6 +584,91 @@ test("schedules an explicit sequential stage one serial repository task at a tim
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("a running task keeps a starting row while the authoritative feed lacks its projection", async () => {
+	const f = fixture();
+	const snapshot: WorkflowSnapshot = {
+		ref: "work-item:example", title: "Projection gap", status: "running",
+		steps: [{ ref: "work-item:example/task:second", title: "Second worker", kind: "task", status: "running", fast: true, dependsOn: [], parallelism: "serial", resourceClaims: [] }],
+		stages: [{ id: "delivery", index: 0, nodes: ["task:second"], parallel: false, group: "planner" }],
+	};
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		subscribeAgentLive() { return () => undefined; },
+		async snapshot() { return snapshot; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "work-item:example" }, undefined, undefined, f.ctx);
+	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	const secondLine = rendered.findIndex((line) => line.includes("Implementing · Second worker"));
+	assert.ok(secondLine > 0);
+	assert.match(rendered[secondLine + 1]!.trim(), /^Fast · starting$/, "the temporary projection gap stays visible instead of rendering a blank continuation row");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("a sequential replacement worker falls back to snapshot status until its live projection arrives", async () => {
+	const f = fixture();
+	const statuses = new Map<"first" | "second", "pending" | "ready" | "done">([["first", "ready"], ["second", "pending"]]);
+	let publish!: (projection: AgentLiveProjection) => void;
+	let releaseFirst!: () => void;
+	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+	let firstStarted!: () => void;
+	const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
+	let secondStarted!: () => void;
+	const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve; });
+	const secondGate = new Promise<WorkflowRunResult>(() => undefined);
+	const snapshotStartedAt = new Date(Date.now() - 65_000).toISOString();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
+		async snapshot(ref) {
+			return {
+				ref, title: "Sequential replacement", status: "ready",
+				steps: [
+					{ ref: `${ref}/task:first`, title: "First worker", kind: "task", status: statuses.get("first")!, dependsOn: [], parallelism: "serial", resourceClaims: [] },
+					{ ref: `${ref}/task:second`, title: "Second worker", kind: "task", status: statuses.get("second")!, fast: true, progress: { startedAt: snapshotStartedAt, lastEventAt: snapshotStartedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1200, reasoningTokens: 0 }, dependsOn: [`${ref}/task:first`], parallelism: "serial", resourceClaims: [] },
+				],
+				stages: [{ id: "delivery", index: 0, nodes: ["task:first", "task:second"], parallel: false, group: "planner" as const }],
+			};
+		},
+		async runStep(ref) {
+			if (ref.endsWith("task:first")) {
+				const startedAt = new Date().toISOString();
+				publish(liveProjection({ agentId: "first", operationId: "first", workItemId: "example", taskId: "first", startedAt }));
+				firstStarted();
+				await firstGate;
+				statuses.set("first", "done");
+				statuses.set("second", "ready");
+				publish(liveProjection({ agentId: "first", operationId: "first", workItemId: "example", taskId: "first", state: "completed", attemptState: "exited", active: false, startedAt }));
+				return { ref, state: "completed", summary: "First settled." };
+			}
+			secondStarted();
+			return secondGate;
+		},
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("call", { ref: "work-item:example" }, undefined, undefined, f.ctx);
+	await firstStartedPromise;
+	releaseFirst();
+	await secondStartedPromise;
+
+	let rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	let secondLine = rendered.findIndex((line) => line.includes("Implementing · Second worker"));
+	assert.ok(secondLine > 0);
+	assert.match(rendered[secondLine + 1]!.trimStart(), /^Fast · .*2 turns · 3 tools · ↓ 1\.2k · active/, "snapshot status remains visible during the authoritative feed gap");
+
+	const liveStartedAt = new Date(Date.now() - 120_000).toISOString();
+	publish(liveProjection({ agentId: "second", operationId: "second", workItemId: "example", taskId: "second", fast: true, startedAt: liveStartedAt, progress: { startedAt: liveStartedAt, lastEventAt: new Date().toISOString(), processStartedAt: liveStartedAt, turns: 7, toolCalls: 11, toolErrors: 0, outputTokens: 4400, reasoningTokens: 0 } }));
+	rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
+	secondLine = rendered.findIndex((line) => line.includes("Implementing · Second worker"));
+	assert.match(rendered[secondLine + 1]!.trimStart(), /^Fast · .*7 turns · 11 tools · ↓ 4\.4k · active/, "matching live metrics replace the bounded snapshot fallback");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("explicit background spawning returns its report to the main agent and shows running status", async () => {
 	const f = fixture();
 	let release!: () => void;
