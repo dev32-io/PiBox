@@ -22,6 +22,7 @@ export interface StatusRenderData {
 	theme: Theme;
 	thinkingLevel: string;
 	permissionMode: "enforce" | "bypass";
+	profile?: string;
 	tierProfile?: ModelTierProfileStatus;
 	fastMode?: FastModeStatus;
 	metrics: SessionMetrics;
@@ -58,6 +59,14 @@ function hasNerdFonts(): boolean {
 
 function separator(theme: Theme): string {
 	return theme.fg("dim", "│");
+}
+
+function profileMark(data: StatusRenderData, mode: LayoutMode): string {
+	if (data.profile === "designer") {
+		const icon = hasNerdFonts() ? "󰏘" : "◇";
+		return mode === "narrow" ? data.theme.fg("accent", icon) : `${data.theme.fg("accent", icon)} ${data.theme.fg("muted", "designer")}`;
+	}
+	return data.theme.fg("accent", hasNerdFonts() ? "" : "π");
 }
 
 function buildRow(leftParts: string[], rightParts: string[], width: number): string {
@@ -272,7 +281,7 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	if (width <= 0) return { lines: [], interactiveRows: [] };
 	const mode = layoutMode(width, data.config);
 	const divider = separator(data.theme);
-	const piMark = data.theme.fg("accent", hasNerdFonts() ? "" : "π");
+	const piMark = profileMark(data, mode);
 	const row1Left = [piMark, divider, modelSegment(data), divider, pathSegment(data, mode), gitSegment(data)];
 	const context = contextSegment(data, mode);
 	const quota = quotaSegment(data, mode, width, context);

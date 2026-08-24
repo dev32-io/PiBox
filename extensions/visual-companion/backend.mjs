@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, watch } from "node:fs";
+import { createReadStream, existsSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,8 +8,19 @@ const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
+  ".mp4": "video/mp4",
 };
 
 function notFound(response, message = "Not found") {
@@ -17,10 +28,11 @@ function notFound(response, message = "Not found") {
   response.end(message);
 }
 
-function sendFile(response, path) {
+function sendFile(response, path, headers = {}) {
   response.writeHead(200, {
     "content-type": contentTypes[extname(path)] ?? "application/octet-stream",
     "cache-control": "no-store",
+    ...headers,
   });
   createReadStream(path).once("error", () => response.destroy()).pipe(response);
 }
@@ -153,7 +165,7 @@ export async function createVisualCompanionBackend({
         response.end(JSON.stringify({ viewers: [...registry.keys()], selected: selectedViewer }));
         return;
       }
-      if (url.pathname === "/" || /^\/(?:story-board|architecture)(?:\/.*)?$/.test(url.pathname)) {
+      if (url.pathname === "/" || /^\/(?:story-board|architecture|mockup)(?:\/.*)?$/.test(url.pathname)) {
         const shell = containedPath(commonAssetsDir, "index.html");
         if (shell && existsSync(shell)) sendFile(response, shell);
         else notFound(response);
@@ -197,8 +209,10 @@ export async function createVisualCompanionBackend({
       }
 
       const explicit = registration.staticRoutes.get(route);
-      const file = explicit ?? (registration.viewer.assetsDir ? containedPath(registration.viewer.assetsDir, route === "/" ? "index.html" : route.slice(1)) : undefined);
-      if (file && existsSync(file)) sendFile(response, file);
+      const dynamic = explicit ? undefined : registration.viewer.resolveAsset?.(route, { url, viewerId, state, backend: api });
+      const dynamicPath = typeof dynamic === "string" ? dynamic : dynamic?.path;
+      const file = explicit ?? dynamicPath ?? (registration.viewer.assetsDir ? containedPath(registration.viewer.assetsDir, route === "/" ? "index.html" : route.slice(1)) : undefined);
+      if (file && existsSync(file) && statSync(file).isFile()) sendFile(response, file, typeof dynamic === "object" ? dynamic.headers : undefined);
       else notFound(response);
     } catch (error) {
       if (!response.headersSent) response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
@@ -237,12 +251,19 @@ export async function createVisualCompanionBackend({
 
       disposeState(viewerId);
       const latest = registration.viewer.loadDocument(resolvedArtifact);
+      const watchPath = latest.ok ? registration.viewer.watchPath?.(resolvedArtifact, latest.document) ?? resolvedArtifact : resolvedArtifact;
+      if (!existsSync(watchPath)) throw new Error(`Visual companion watch path not found: ${watchPath}`);
       const state = { artifactPath: resolvedArtifact, latest, lastValid: latest.ok ? latest.document : undefined, clients: new Set(), watcher: undefined, timer: undefined };
-      state.watcher = watch(resolvedArtifact, () => {
+      const onChange = () => {
         clearTimeout(state.timer);
         state.timer = setTimeout(() => refresh(viewerId), 60);
         state.timer.unref?.();
-      });
+      };
+      try {
+        state.watcher = watch(watchPath, { recursive: statSync(watchPath).isDirectory() }, onChange);
+      } catch {
+        state.watcher = watch(watchPath, onChange);
+      }
       state.watcher.unref?.();
       states.set(viewerId, state);
       return {

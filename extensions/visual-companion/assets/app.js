@@ -1,4 +1,4 @@
-const viewerIds = ["story-board", "architecture"];
+const viewerIds = ["story-board", "architecture", "mockup"];
 const tabs = new Map(viewerIds.map((id) => [id, document.querySelector(`#tab-${id}`)]));
 const panels = new Map(viewerIds.map((id) => [id, document.querySelector(`#panel-${id}`)]));
 let registered = new Set();
@@ -54,7 +54,7 @@ function activate(id, { updateHistory = false } = {}) {
     tabs.get(viewerId).tabIndex = selected ? 0 : -1;
     panels.get(viewerId).hidden = !selected;
   }
-  // Mount lazily: a direct Architecture route never initializes Story Board.
+  // Mount lazily: a direct viewer route never initializes the other viewers.
   mount(id);
   if (updateHistory) history.pushState({ viewer: id }, "", routeFor(id));
 }

@@ -12,6 +12,7 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **Context rules** — Claude-compatible path-scoped instructions loaded only after matching files are read, from `.claude/rules/` or `.pi/rules/`.
 - **Workflow** — collaborative story shaping, capability-backed delivery planning, delegated worktrees, runtime-owned final verification, and recovery. See [docs/workflow.md](docs/workflow.md).
 - **Architecture visualizer skill** — agent-authored JSON rendered as a live, interactive local browser diagram with deterministic automatic layouts.
+- **Designer profile and visual mockups** — `pi --profile designer` adds repository-aware visual refinement instructions, closest-ancestor `DESIGN.md` authority, and a live browser canvas for mockups under `design/`.
 - **Local service adapter** — lazy, health-checked lifecycle management for shared Mem0 and SearXNG services plus the session-scoped visual companion.
 - **Repository memory** — explicit curated Mem0 writes, bounded recall, and an advisory `/memory-audit` with no silent mutation.
 - **Knowledge distillation** — `/distill` resolves arbitrary code/time/workflow/session ranges into local evidence packets and user-reviewed promotion or demotion proposals without depending on one memory backend.
@@ -90,6 +91,20 @@ Project rules live under `.claude/rules/` or `.pi/rules/`; user rules live under
 ## Architecture visualizer
 
 Invoke `/skill:architecture-visualizer` to explore a codebase and create a live visual explanation. The skill writes a flexible JSON document while its local renderer owns layout, grouping, arrows, and interaction. The `visual_companion` tool starts or stops one random-port loopback backend per Pi session; updating the JSON during later conversation automatically refreshes the open page. Session shutdown closes the in-process server, and its listener/watchers are unreferenced so they cannot keep Pi alive after an abrupt quit. The footer includes it in the compact service row, using a neutral dim `○` while intentionally stopped.
+
+## Designer profile and visual mockups
+
+Start a dedicated design session with:
+
+```bash
+pi --profile designer
+```
+
+Omitting `--profile` (or using `--profile default`) preserves the normal Pi session. Profiles are fixed at startup; PiBox does not switch them mid-session. In the designer profile, PiBox snapshots the closest `DESIGN.md` found from the current working directory up to the repository root and appends it as repository design authority. Restart or `/reload` to pick up a changed `DESIGN.md`.
+
+The editable designer system prompt lives at [`prompt/designer.md`](prompt/designer.md). It directs rapid repository-aware iteration under `design/prototypes/<name>/`, opens HTML files or directories through the Visual Companion `mockup` viewer, and creates checkpoints or `handoff.md` only when useful or requested. Installed Pi skills remain progressively disclosed and may be used when relevant; PiBox does not install or maintain a separate design-skill catalogue.
+
+The mockup viewer accepts either a single HTML file or a directory containing `index.html`. It serves only that bounded prototype tree, reloads the open canvas when files change, and uses the same session-local loopback backend as Story Board and Architecture.
 
 ## Sound feedback
 

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createVisualCompanionBackend } from "../backend.mjs";
-import visualCompanion from "../index.js";
+import visualCompanion, { resolveArtifact } from "../index.js";
 import { getService } from "../../service-adapter/registry.js";
 
 async function fixture(root: string, id: string) {
@@ -69,6 +69,22 @@ test("backend and artifact watcher cannot pin the owning Pi process after quit",
 			child.once("error", (error) => { clearTimeout(timer); reject(error); });
 			child.once("exit", (code) => { clearTimeout(timer); code === 0 ? done() : reject(new Error(`child exited ${code}`)); });
 		});
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("repository-relative artifacts resolve from a nested working directory", async () => {
+	const root = await mkdtemp(join(tmpdir(), "visual-companion-root-"));
+	const nested = join(root, "apps", "web");
+	const prototype = join(root, "design", "prototypes", "demo");
+	await mkdir(join(root, ".git"));
+	await mkdir(nested, { recursive: true });
+	await mkdir(prototype, { recursive: true });
+	await writeFile(join(prototype, "index.html"), "<h1>Demo</h1>");
+	try {
+		assert.equal(resolveArtifact(nested, "design/prototypes/demo"), await realpath(prototype));
+		assert.throws(() => resolveArtifact(nested, "../outside"), /not found|inside the current repository/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

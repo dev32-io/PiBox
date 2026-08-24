@@ -2,19 +2,20 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { existsSync, realpathSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { createArchitectureViewer } from "../../skills/architecture-visualizer/scripts/server.mjs";
 import { registerService, setServiceSnapshot } from "../service-adapter/registry.js";
 import { createVisualCompanionPlatform } from "./platform.js";
+import { createMockupViewer } from "./mockup/index.js";
 import { createStoryBoardViewer } from "./story-board/index.js";
 
 const SERVICE_ID = "visual-companion";
 
 const parameters = Type.Object({
-	action: StringEnum(["start", "stop"] as const, { description: "Open Architecture or stop the session backend." }),
-	visualizer: Type.Optional(Type.String({ description: "Visualizer to serve. Currently: architecture." })),
-	artifactPath: Type.Optional(Type.String({ description: "Repository-relative JSON artifact path. Required when starting." })),
+	action: StringEnum(["start", "stop"] as const, { description: "Open a visualizer or stop the session backend." }),
+	visualizer: Type.Optional(StringEnum(["architecture", "mockup"] as const, { description: "Visualizer to serve." })),
+	artifactPath: Type.Optional(Type.String({ description: "Repository-relative artifact file or directory. Required when starting." })),
 });
 
 export type VisualCompanionInput = Static<typeof parameters>;
@@ -24,10 +25,20 @@ function setState(ctx: ExtensionContext, state: CompanionState, detail?: string)
 	setServiceSnapshot(SERVICE_ID, { state, ...(detail ? { detail } : {}) }, ctx);
 }
 
-function resolveArtifact(cwd: string, input: string): string {
-	const candidate = resolve(cwd, input.replace(/^@/, ""));
+export function repositoryRoot(cwd: string): string {
+	let current = resolve(cwd);
+	while (true) {
+		if (existsSync(join(current, ".git"))) return current;
+		const parent = dirname(current);
+		if (parent === current) return resolve(cwd);
+		current = parent;
+	}
+}
+
+export function resolveArtifact(cwd: string, input: string): string {
+	const root = realpathSync(repositoryRoot(cwd));
+	const candidate = resolve(root, input.replace(/^@/, ""));
 	if (!existsSync(candidate)) throw new Error(`Visualization artifact not found: ${candidate}`);
-	const root = realpathSync(cwd);
 	const artifact = realpathSync(candidate);
 	const fromRoot = relative(root, artifact);
 	if (fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
@@ -76,9 +87,9 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "visual_companion",
 		label: "Visual Companion",
-		description: "Open an Architecture artifact in the single session-local shared Visual Companion shell, or stop its loopback backend.",
-		promptSnippet: "Open or stop the session-local browser visual companion for an Architecture artifact",
-		promptGuidelines: ["Use visual_companion after the Architecture skill writes its JSON artifact; update the artifact directly for live rerendering, and stop the companion when it is no longer needed."],
+		description: "Open an Architecture document or browser-renderable visual mockup in the single session-local Visual Companion shell, or stop its loopback backend.",
+		promptSnippet: "Open or stop the session-local browser visual companion for an Architecture document or visual mockup",
+		promptGuidelines: ["Use visual_companion after an Architecture document or visual mockup exists; update the same artifact directly for live rerendering, and stop the companion when it is no longer needed."],
 		parameters,
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
 			if (input.action === "stop") {
@@ -95,14 +106,17 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 
 			if (!input.artifactPath) throw new Error("artifactPath is required when starting the visual companion.");
 			const viewerId = input.visualizer ?? "architecture";
-			if (viewerId !== "architecture") throw new Error(`Unknown visualizer: ${viewerId}`);
 			const artifactPath = resolveArtifact(ctx.cwd, input.artifactPath);
 			signal?.throwIfAborted();
 			setState(ctx, "starting");
 			try {
 				const { backend } = await platform.start(signal);
 				if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
-				const shown = await platform.open({ viewer: () => createArchitectureViewer(), artifactPath, ...(signal ? { signal } : {}) });
+				const shown = await platform.open({
+					viewer: () => viewerId === "mockup" ? createMockupViewer() : createArchitectureViewer(),
+					artifactPath,
+					...(signal ? { signal } : {}),
+				});
 				activeViewer = viewerId;
 				activeArtifact = artifactPath;
 				setState(ctx, "running", platform.status().url);

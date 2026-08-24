@@ -19,12 +19,21 @@ export type VisualCompanionRouteHandler = (
 	context: VisualCompanionRouteContext,
 ) => void | Promise<void>;
 
+export interface VisualCompanionAsset {
+	path: string;
+	headers?: Record<string, string>;
+}
+
 export interface VisualCompanionViewer {
 	id: string;
 	assetsDir?: string;
 	routes?: Record<string, string>;
 	handlers?: Record<string, VisualCompanionRouteHandler>;
+	/** Resolve viewer-owned dynamic static content after explicit routes. */
+	resolveAsset?(route: string, context: VisualCompanionRouteContext): string | VisualCompanionAsset | undefined;
 	loadDocument?(path: string): VisualDocumentLoadResult;
+	/** Select the watched file or directory after a successful load. */
+	watchPath?(artifactPath: string, document: unknown): string;
 	close?(): void | Promise<void>;
 }
 

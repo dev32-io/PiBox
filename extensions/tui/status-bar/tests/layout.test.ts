@@ -64,6 +64,12 @@ test("hides quota when it cannot fit or no reliable windows exist", () => {
 	);
 });
 
+test("designer profile replaces the Pi mark with a visible designer identity", () => {
+	const designer = renderStatusBar(160, { ...data, profile: "designer" })[1] ?? "";
+	assert.match(designer, /designer/);
+	assert.doesNotMatch(renderStatusBar(160, data)[1] ?? "", /designer/);
+});
+
 test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
 	assert.match(text, /42\.0%/);
