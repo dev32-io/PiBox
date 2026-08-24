@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: polish-accessibility-and-regressions
 title: Polish accessibility, responsive behavior, and Architecture regressions
-status: ready
+status: running
 dependsOn:
   - build-story-board-browser
 execution:
@@ -35,4 +35,4 @@ runtime:
   branch: harness/visual-story-board/polish-accessibility-and-regressions
   worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/polish-accessibility-and-regressions
   baseCommit: 2e6b9b5b2a768d0005dfe937a66f5b30d0f52503
-  lastRunId: 2646acfe-4ae4-4aeb-b809-69ebd7659fc4
+  lastRunId: e46838e5-5a29-4601-9c65-8d9e1a9b6c24
