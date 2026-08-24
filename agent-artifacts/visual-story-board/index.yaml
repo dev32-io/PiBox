@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 16
+  revision: 17
 artifacts:
   - id: intent
     type: intent
@@ -122,3 +122,25 @@ executionStages:
     tasks:
       - build-assisted-e2e-launcher
       - polish-accessibility-and-regressions
+    checks:
+      - npm run check
+      - npx tsx --test
+        extensions/visual-companion/tests/assisted-launcher.test.ts
+        extensions/visual-companion/story-board/tests/fixture-integrity.test.ts
+        extensions/visual-companion/tests/accessibility.test.ts
+        extensions/visual-companion/tests/design-tokens.test.ts
+        extensions/visual-companion/tests/shell.test.ts
+        extensions/visual-companion/story-board/tests/browser-app.test.ts
+        extensions/visual-companion/tests/backend.test.ts
+        skills/architecture-visualizer/tests/visualizer.test.ts
+      - npm test
+      - git diff --check
+    mode: concurrent
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews. Launcher/fixture
+        process control and production accessibility/Architecture polish use
+        disjoint claims and comprehensive composition, lifecycle,
+        fixture-integrity, accessibility, responsive, compatibility, focused,
+        and full-suite checks before the medium whole-branch review and low-tier
+        six-case E2E.
