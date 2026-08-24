@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-shared-shell-and-architecture
 title: Build the shared shell and migrate Architecture to design tokens
-status: contribution_complete
+status: merged
 dependsOn:
   - build-companion-platform
 execution:
@@ -34,3 +34,4 @@ runtime:
   baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
   lastRunId: ec8218cb-00c4-466f-bc9f-6bd51303a45b
   completedCommit: 375fc336624ffa25e7aa41b4d17f27a47ba97982
+  mergedCommit: fa0a41dfdc23ba8d8b73d7b4e4c3ddb1cdf4b311
