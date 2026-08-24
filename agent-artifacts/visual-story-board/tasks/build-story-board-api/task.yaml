@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-board-api
 title: Build the lazy Story Board API and cache
-status: blocked
+status: ready
 dependsOn:
   - build-companion-platform
   - build-story-domain-reader
