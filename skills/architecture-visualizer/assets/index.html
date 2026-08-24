@@ -13,7 +13,7 @@
       <span class="mark" aria-hidden="true">◇</span>
       <div><h1 id="title">Architecture Visualizer</h1><p id="description"></p></div>
     </div>
-    <div class="controls" aria-label="Graph controls">
+    <div class="controls" role="group" aria-label="Graph controls">
       <label>View <select id="view"></select></label>
       <label>Layout
         <select id="layout">
@@ -24,13 +24,15 @@
         </select>
       </label>
       <label class="check"><input id="groups" type="checkbox" checked> Groups</label>
-      <button id="fit" type="button">Fit</button>
+      <button id="fit" type="button" aria-label="Fit graph to viewport">Fit</button>
+      <button id="refresh" type="button">Refresh</button>
     </div>
   </header>
   <main>
     <section class="canvas-wrap" aria-label="Architecture graph">
       <div id="status" role="status"></div>
-      <div id="canvas" tabindex="0"></div>
+      <p id="canvas-help" class="sr-only">Use Left and Right Arrow keys to select graph elements and Enter to inspect the selection.</p>
+      <div id="canvas" tabindex="0" role="region" aria-label="Interactive architecture graph" aria-describedby="canvas-help"></div>
       <div class="legend" aria-label="Graph legend"><span><i class="node-dot"></i> Concept</span><span><i class="note-dot"></i> Note</span><span><i class="edge-dot"></i> Relationship</span></div>
     </section>
     <aside id="details" aria-label="Selected element details" aria-live="polite" tabindex="-1" data-open="false">

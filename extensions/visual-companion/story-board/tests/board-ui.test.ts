@@ -19,6 +19,6 @@ test("task details are action-loaded and provide accessible drawer and focus ret
 	assert.match(app, /data-task=/);
 	assert.match(app, /role=\\?"dialog/);
 	assert.match(app, /aria-modal=\\?"true/);
-	assert.match(app, /querySelector\(returnFocus\)\?\.focus/);
+	assert.match(app, /querySelector\(focusTarget\)\?\.focus/);
 	assert.match(app, /event\.key === "Escape"/);
 });

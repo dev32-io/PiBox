@@ -198,7 +198,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     if (state.detailLoading) content = `<p role="status">Loading detail…</p>`;
     else if (state.detail?.error) content = errorRegion(state.detail.error, "retry-detail");
     else if (state.detail) { title = state.detail.title || state.detail.id; content = state.route.taskId ? taskDetail(state.detail) : state.route.documentId ? markdownSection("Document", state.detail.body) || "<p>Document content is missing.</p>" : reportDetail(state.detail); }
-    return `<aside class="drawer detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title"><header><h2 id="detail-title">${escapeHtml(title)}</h2><button type="button" data-action="close-detail" aria-label="Close detail">×</button></header><div class="drawer-content">${content || ""}</div></aside><div class="scrim" data-action="close-detail"></div>`;
+    return `<aside class="drawer detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title"><header><h2 id="detail-title">${escapeHtml(title)}</h2><button type="button" data-action="close-detail" aria-label="Close detail">×</button></header><div class="drawer-content">${content || ""}</div></aside><div class="scrim" data-action="close-detail" aria-hidden="true"></div>`;
   }
   function workspace() {
     if (state.loading) return `<section class="boundary" role="status"><span class="spinner" aria-hidden="true"></span> Loading story…</section>`;
@@ -209,14 +209,19 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   }
   function render() {
     const willShowDrawer = Boolean(state.route.taskId || state.route.documentId || state.route.reportId);
+    const focusWasInDrawer = Boolean(root.querySelector(".drawer")?.contains(document.activeElement));
     root.innerHTML = state.route.view === "catalog" ? catalog() : workspace();
-    if (willShowDrawer && !drawerVisible) queueMicrotask(() => root.querySelector('[data-action="close-detail"]')?.focus());
+    if (willShowDrawer && (!drawerVisible || focusWasInDrawer)) {
+      queueMicrotask(() => root.querySelector('[data-action="close-detail"]')?.focus());
+    }
     drawerVisible = willShowDrawer;
   }
   function closeDetail() {
     const route = { view: state.route.view, storyId: state.route.storyId };
+    const focusTarget = returnFocus;
+    returnFocus = undefined;
     detailGate.cancel(); setRoute(route);
-    queueMicrotask(() => { if (returnFocus) root.querySelector(returnFocus)?.focus(); });
+    queueMicrotask(() => { if (focusTarget) root.querySelector(focusTarget)?.focus(); });
   }
   root.addEventListener("click", (event) => {
     const target = event.target.closest("a,button,[data-action]"); if (!target) return;
@@ -237,7 +242,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     if (event.key === "Escape" && open) { closeDetail(); return; }
     if (event.key !== "Tab" || !open) return;
     const drawer = root.querySelector(".drawer");
-    const controls = [...drawer.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    const controls = [...drawer.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
     if (!controls.length) return;
     const first = controls[0]; const last = controls.at(-1);
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
