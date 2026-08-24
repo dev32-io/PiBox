@@ -1,0 +1,24 @@
+schemaVersion: 1
+id: add-companion-fixture-launcher
+title: Add the production-path companion fixture launcher
+status: draft
+dependsOn: []
+execution:
+  resourceClaims: []
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested local-tier implementation for every
+      Story Board delivery task.
+assembly:
+  stageId: visual-companion-story-board-delivery
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/fixture-launcher.test.ts
+      extensions/visual-companion/story-board/tests/fixture-integrity.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
