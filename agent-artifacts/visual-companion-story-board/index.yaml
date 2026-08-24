@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 23
+  revision: 24
 artifacts:
   - id: intent
     type: intent
@@ -95,3 +95,18 @@ executionStages:
       - render-reports-and-evidence
       - add-companion-fixture-launcher
       - polish-companion-accessibility
+    checks:
+      - npm run check
+      - npm test
+      - git diff --check
+    mode: sequential
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage review. This is one
+        sequential canonical-branch stage with small mechanically bounded tasks,
+        focused checks in every task, full repository checks at the stage
+        boundary, no concurrent merge barrier, and read-only loopback product
+        behavior. The runtime-owned medium whole-branch review and low-tier
+        six-case E2E remain the single integrated review and journey gates, so
+        an additional stage review would duplicate those exact assembled
+        boundaries.
