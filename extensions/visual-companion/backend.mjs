@@ -153,7 +153,7 @@ export async function createVisualCompanionBackend({
         response.end(JSON.stringify({ viewers: [...registry.keys()], selected: selectedViewer }));
         return;
       }
-      if (url.pathname === "/") {
+      if (url.pathname === "/" || /^\/(?:story-board|architecture)(?:\/.*)?$/.test(url.pathname)) {
         const shell = containedPath(commonAssetsDir, "index.html");
         if (shell && existsSync(shell)) sendFile(response, shell);
         else notFound(response);
