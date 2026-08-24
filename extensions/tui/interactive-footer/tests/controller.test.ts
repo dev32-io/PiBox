@@ -30,7 +30,6 @@ test("terminal routing consumes Escape in footer and while a dialog resolves, th
 	const registration = registerInteractiveFooterItem({ id: "permissions", section: "settings", order: 10, status: () => ({ label: "Permissions" }), dialog: () => spec });
 	let terminalInput!: (data: string) => { consume?: boolean } | undefined;
 	let overlayComponent: { handleInput?(data: string): void } | undefined;
-	let closeOverlay!: () => void;
 	const theme = { fg: (_token: string, text: string) => text, bold: (text: string) => text };
 	const ctx = {
 		mode: "tui",
@@ -40,7 +39,6 @@ test("terminal routing consumes Escape in footer and while a dialog resolves, th
 			custom(factory: any) {
 				return new Promise<void>((resolve) => {
 					overlayComponent = factory({ requestRender() {} }, theme, {}, () => { resolve(); });
-					closeOverlay = () => overlayComponent?.handleInput?.("\x1b[A");
 				});
 			},
 		},
@@ -53,15 +51,17 @@ test("terminal routing consumes Escape in footer and while a dialog resolves, th
 	resolveSpec({ title: "Permissions", rows: [{ kind: "setting", id: "mode", label: "Mode", value: () => "Enforced", values: ["Enforced", "Bypass"], setValue() {} }] });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(terminalInput("\x1b"), undefined, "the mounted overlay receives terminal input directly");
+	overlayComponent?.handleInput?.("\x1b[A");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(terminalInput("\x1b"), undefined, "Up on the first popup row does not close it");
 	overlayComponent?.handleInput?.("\x1b");
-	closeOverlay();
 	await new Promise((resolve) => setImmediate(resolve));
 	controller.dispose();
 	registration.unregister();
 	resetInteractiveFooterRegistryForTests();
 });
 
-test("Up aborts and closes a busy dialog action from any selected row", async () => {
+test("Escape aborts and closes a busy dialog action from any selected row", async () => {
 	let component: { handleInput?(data: string): void } | undefined;
 	let aborted = false;
 	const ctx = {
@@ -89,7 +89,7 @@ test("Up aborts and closes a busy dialog action from any selected row", async ()
 	await new Promise((resolve) => setImmediate(resolve));
 	component?.handleInput?.("\x1b[B");
 	component?.handleInput?.("\r");
-	component?.handleInput?.("\x1b[A");
+	component?.handleInput?.("\x1b");
 	await opened;
 	assert.equal(aborted, true);
 });

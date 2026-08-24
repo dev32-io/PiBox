@@ -77,24 +77,17 @@ class InteractiveFooterDialog implements Component {
 	}
 
 	handleInput(data: string): void {
-		// Escape is intentionally swallowed. It must never leak through to Pi's
-		// agent interrupt while the footer or one of its dialogs owns interaction.
-		if (matchesKey(data, Key.escape)) return;
+		// Once the overlay owns focus, Escape safely closes it instead of reaching
+		// Pi's agent interrupt handler. Footer-grid mode still uses Up to exit.
+		if (matchesKey(data, Key.escape)) {
+			this.actionAbort?.abort();
+			this.done();
+			return;
+		}
 		const rows = selectableRows(this.spec.rows);
-		if (this.busy) {
-			if (matchesKey(data, Key.up)) {
-				this.actionAbort?.abort();
-				this.done();
-			}
-			return;
-		}
-		if (rows.length === 0) {
-			if (matchesKey(data, Key.up)) this.done();
-			return;
-		}
+		if (this.busy || rows.length === 0) return;
 		if (matchesKey(data, Key.up)) {
-			if (this.selected === 0) this.done();
-			else this.selected -= 1;
+			this.selected = Math.max(0, this.selected - 1);
 			return;
 		}
 		if (matchesKey(data, Key.down)) {
@@ -149,7 +142,7 @@ class InteractiveFooterDialog implements Component {
 		if (selectable.length === 0) lines.push(line(`  ${this.theme.fg("dim", "No actions available")}`));
 		if (this.message) lines.push(line(`  ${tone(this.theme, this.message.tone, this.message.text)}`));
 		lines.push(border(`├${"─".repeat(innerWidth)}┤`));
-		lines.push(line(` ${this.theme.fg("dim", "↑ on first item closes · ↑↓ navigate · ←→ change · Enter activate")}`));
+		lines.push(line(` ${this.theme.fg("dim", "↑↓ navigate · ←→ change · Enter activate · Esc close")}`));
 		lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
 		return lines;
 	}
