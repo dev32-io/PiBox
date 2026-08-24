@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-companion-platform
 title: Build the reusable Visual Companion platform
-status: ready
+status: running
 dependsOn: []
 execution:
   resourceClaims:
@@ -27,3 +27,9 @@ verification:
       skills/architecture-visualizer/tests/visualizer.test.ts
     - git diff --check
   rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-companion-platform
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-companion-platform
+  baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
+  lastRunId: df2e3b93-9747-496d-8974-904739e81bc2
