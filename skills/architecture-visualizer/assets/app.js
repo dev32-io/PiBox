@@ -6,18 +6,49 @@ const groupsToggle = document.querySelector("#groups");
 const fitButton = document.querySelector("#fit");
 const status = document.querySelector("#status");
 const details = document.querySelector("#details");
+const detailContent = document.querySelector("#detail-content");
+const closeDetails = document.querySelector("#close-details");
 
 let documentModel;
 let cy;
 let firstRender = true;
 
-const nodeStyles = {
-  note: { background: "#5a451f", border: "#dcae51", shape: "round-rectangle" },
-  label: { background: "#192536", border: "#607690", shape: "round-rectangle" },
-  actor: { background: "#173a51", border: "#65b8ff", shape: "round-rectangle" },
-  decision: { background: "#45324f", border: "#bc87e8", shape: "diamond" },
-  database: { background: "#23443e", border: "#71d1b4", shape: "barrel" },
-};
+function cssToken(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function graphTheme() {
+  const token = (name, fallback) => cssToken(`--color-${name}`, fallback);
+  return {
+    canvas: token("canvas", "black"),
+    surface: token("surface", "black"),
+    raised: token("surface-raised", "black"),
+    strong: token("surface-strong", "gray"),
+    border: token("border", "gray"),
+    borderStrong: token("border-strong", "gray"),
+    text: token("text", "white"),
+    textSecondary: token("text-secondary", "white"),
+    textMuted: token("text-muted", "silver"),
+    accent: token("accent", "blue"),
+    accentSoft: token("accent-soft", "gray"),
+    success: token("success", "green"),
+    successSoft: token("success-soft", "gray"),
+    warning: token("warning", "orange"),
+    warningSoft: token("warning-soft", "gray"),
+    info: token("info", "deepskyblue"),
+    infoSoft: token("info-soft", "gray"),
+  };
+}
+
+function nodeStyles(theme) {
+  return {
+    note: { background: theme.warningSoft, border: theme.warning, shape: "round-rectangle" },
+    label: { background: theme.raised, border: theme.borderStrong, shape: "round-rectangle" },
+    actor: { background: theme.infoSoft, border: theme.info, shape: "round-rectangle" },
+    decision: { background: theme.accentSoft, border: theme.accent, shape: "diamond" },
+    database: { background: theme.successSoft, border: theme.success, shape: "barrel" },
+  };
+}
 
 function valueText(value) {
   if (value === undefined || value === null) return "";
@@ -42,8 +73,9 @@ function layoutOptions(name) {
   return { ...common, name: "grid", avoidOverlap: true, avoidOverlapPadding: 30, condense: false };
 }
 
-function graphElements(view) {
+function graphElements(view, theme) {
   const elements = [];
+  const semanticStyles = nodeStyles(theme);
   const groupIds = new Set((view.groups ?? []).map((group) => group.id));
   if (groupsToggle.checked) {
     for (const group of view.groups ?? []) {
@@ -52,7 +84,7 @@ function graphElements(view) {
   }
   for (const item of [...(view.nodes ?? []), ...(view.annotations ?? [])]) {
     const kind = item.kind ?? item.type ?? ((view.annotations ?? []).includes(item) ? "note" : "concept");
-    const semantic = nodeStyles[kind] ?? {};
+    const semantic = semanticStyles[kind] ?? {};
     const group = item.group ?? item.groupId ?? item.parent;
     elements.push({
       data: {
@@ -61,8 +93,8 @@ function graphElements(view) {
         kind,
         raw: item,
         parent: groupsToggle.checked && groupIds.has(group) ? `group:${group}` : undefined,
-        background: semantic.background ?? "#17304a",
-        border: semantic.border ?? "#4b8fc2",
+        background: semantic.background ?? theme.strong,
+        border: semantic.border ?? theme.accent,
         shape: semantic.shape ?? "round-rectangle",
       },
     });
@@ -85,13 +117,13 @@ function graphElements(view) {
 }
 
 function renderDetails(raw, kind, isEdge = false) {
-  details.replaceChildren();
+  detailContent.replaceChildren();
   const heading = document.createElement("h2");
   heading.textContent = labelFor(raw);
   const kindLine = document.createElement("div");
   kindLine.className = "kind";
   kindLine.textContent = kind || (isEdge ? "relationship" : "concept");
-  details.append(heading, kindLine);
+  detailContent.append(heading, kindLine);
 
   const preferred = ["description", "summary", "details", "content"];
   for (const key of preferred) {
@@ -100,7 +132,7 @@ function renderDetails(raw, kind, isEdge = false) {
     section.textContent = key;
     const body = document.createElement("p");
     body.textContent = valueText(raw[key]);
-    details.append(section, body);
+    detailContent.append(section, body);
   }
 
   const omitted = new Set(["id", "label", "title", "name", "text", "kind", "type", "description", "summary", "details", "content", "source", "target", "from", "to"]);
@@ -110,28 +142,31 @@ function renderDetails(raw, kind, isEdge = false) {
     section.textContent = "Additional data";
     const pre = document.createElement("pre");
     pre.textContent = JSON.stringify(rest, null, 2);
-    details.append(section, pre);
+    detailContent.append(section, pre);
   }
+  details.dataset.open = "true";
+  if (matchMedia("(max-width: 820px)").matches) details.focus();
 }
 
 function renderGraph({ preserveViewport = false } = {}) {
   const view = selectedView();
   if (!view) return;
   const viewport = cy && preserveViewport ? { zoom: cy.zoom(), pan: cy.pan() } : undefined;
+  const theme = graphTheme();
   cy?.destroy();
   cy = cytoscape({
     container: document.querySelector("#canvas"),
-    elements: graphElements(view),
+    elements: graphElements(view, theme),
     wheelSensitivity: 0.2,
     minZoom: 0.12,
     maxZoom: 2.5,
     style: [
-      { selector: "node", style: { "background-color": "data(background)", "border-color": "data(border)", "border-width": 1.5, shape: "data(shape)", label: "data(label)", color: "#e7edf6", "font-size": 12, "font-weight": 600, "text-wrap": "wrap", "text-max-width": 155, width: 175, height: 64, padding: 12, "text-valign": "center", "text-halign": "center" } },
+      { selector: "node", style: { "background-color": "data(background)", "border-color": "data(border)", "border-width": 1.5, shape: "data(shape)", label: "data(label)", color: theme.text, "font-size": 12, "font-weight": 600, "text-wrap": "wrap", "text-max-width": 155, width: 175, height: 64, padding: 12, "text-valign": "center", "text-halign": "center" } },
       { selector: "node[kind = 'label']", style: { "background-opacity": 0.45, "border-style": "dashed", "font-weight": 400 } },
       { selector: "node[kind = 'note']", style: { "text-valign": "top", "text-margin-y": 11, "font-weight": 400, height: 78 } },
-      { selector: ":parent", style: { "background-color": "#192334", "background-opacity": 0.55, "border-color": "#52657d", "border-style": "dashed", "border-width": 1.5, label: "data(label)", color: "#91a1b7", "font-size": 11, "text-valign": "top", "text-halign": "center", padding: 28 } },
-      { selector: "edge", style: { width: 1.6, "line-color": "#6f829a", "target-arrow-color": "#6f829a", "target-arrow-shape": "triangle", "curve-style": "bezier", label: "data(label)", color: "#b9c6d6", "font-size": 10, "text-background-color": "#0b1018", "text-background-opacity": 0.86, "text-background-padding": 3, "text-rotation": "autorotate", "arrow-scale": 0.85 } },
-      { selector: ":selected", style: { "border-color": "#ffffff", "border-width": 3, "line-color": "#65b8ff", "target-arrow-color": "#65b8ff" } },
+      { selector: ":parent", style: { "background-color": theme.raised, "background-opacity": 0.55, "border-color": theme.borderStrong, "border-style": "dashed", "border-width": 1.5, label: "data(label)", color: theme.textMuted, "font-size": 11, "text-valign": "top", "text-halign": "center", padding: 28 } },
+      { selector: "edge", style: { width: 1.6, "line-color": theme.textMuted, "target-arrow-color": theme.textMuted, "target-arrow-shape": "triangle", "curve-style": "bezier", label: "data(label)", color: theme.textSecondary, "font-size": 10, "text-background-color": theme.canvas, "text-background-opacity": 0.86, "text-background-padding": 3, "text-rotation": "autorotate", "arrow-scale": 0.85 } },
+      { selector: ":selected", style: { "border-color": theme.text, "border-width": 3, "line-color": theme.accent, "target-arrow-color": theme.accent, "overlay-color": theme.accent, "overlay-opacity": 0.16 } },
     ],
     layout: layoutOptions(layoutSelect.value),
   });
@@ -175,6 +210,10 @@ viewSelect.addEventListener("change", () => renderGraph());
 layoutSelect.addEventListener("change", () => renderGraph());
 groupsToggle.addEventListener("change", () => renderGraph({ preserveViewport: true }));
 fitButton.addEventListener("click", () => cy?.fit(undefined, 54));
+closeDetails.addEventListener("click", () => {
+  details.dataset.open = "false";
+  document.querySelector("#canvas").focus?.();
+});
 
 const events = new EventSource("./events");
 events.addEventListener("changed", loadDocument);
