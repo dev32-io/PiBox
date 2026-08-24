@@ -8,6 +8,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createVisualCompanionBackend } from "../backend.mjs";
 import visualCompanion from "../index.js";
+import { getService } from "../../service-adapter/registry.js";
 
 async function fixture(root: string, id: string) {
 	const assetsDir = join(root, id);
@@ -38,8 +39,9 @@ test("one random-port backend serves multiple registered visualizers", async () 
 		assert.equal(new URL(architecture.url).port, String(backend.port));
 		assert.equal(new URL(sequence.url).port, String(backend.port));
 		assert.notEqual(architecture.url, sequence.url);
-		assert.equal((await fetch(`${architecture.url}api/document`).then((response) => response.json())).document.id, "architecture");
-		assert.equal((await fetch(`${sequence.url}api/document`).then((response) => response.json())).document.id, "sequence");
+		assert.equal((await fetch(`${architecture.viewerUrl}api/document`).then((response) => response.json()) as any).document.id, "architecture");
+		assert.equal((await fetch(`${sequence.viewerUrl}api/document`).then((response) => response.json()) as any).document.id, "sequence");
+		assert.equal((await fetch(architecture.url)).status, 200);
 		assert.equal((await fetch(`${backend.url}/package.json`)).status, 404);
 	} finally {
 		await backend.close();
@@ -83,7 +85,17 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	assert.equal(definition.name, "visual_companion");
 	assert.match(definition.description, /single.*session/i);
 	assert.deepEqual([...events.keys()], ["session_start", "session_shutdown"]);
-	const ctx = { hasUI: false, cwd: process.cwd() };
+	const ctx = { hasUI: false, cwd: process.cwd() } as any;
+	const service = getService("visual-companion");
+	assert.ok(service?.controller.start);
+	const first = await service.controller.start({ ctx });
+	const second = await service.controller.start({ ctx });
+	assert.equal(first.state, "running");
+	assert.equal(second.detail, first.detail);
+	assert.equal((await fetch(first.detail!)).status, 200);
+	assert.equal((await service.controller.health({ ctx })).state, "running");
+	assert.equal((await service.controller.stop!({ ctx })).state, "stopped");
+	assert.equal((await service.controller.stop!({ ctx })).state, "stopped");
 	const result = await definition.execute("stop", { action: "stop" }, undefined, undefined, ctx);
 	assert.match(result.content[0].text, /already stopped/);
 	await events.get("session_shutdown")?.({ reason: "quit" }, ctx);

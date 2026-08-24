@@ -1,0 +1,6 @@
+html, body { height: 100%; margin: 0; font: 14px system-ui, sans-serif; background: #10151d; color: #e6edf5; }
+body { display: grid; grid-template-rows: 42px 1fr; }
+header { display: flex; align-items: center; gap: 16px; padding: 0 14px; border-bottom: 1px solid #344252; }
+select { background: #1b2531; color: inherit; border: 1px solid #526477; padding: 4px 8px; }
+main { display: grid; place-items: center; color: #94a3b5; }
+iframe { width: 100%; height: 100%; border: 0; background: white; }
