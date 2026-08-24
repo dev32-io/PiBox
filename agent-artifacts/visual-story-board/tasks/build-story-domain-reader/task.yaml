@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-domain-reader
 title: Build the read-only Story Board domain reader
-status: awaiting_ci
+status: contribution_complete
 dependsOn: []
 execution:
   resourceClaims:
