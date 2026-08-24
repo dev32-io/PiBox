@@ -14,6 +14,7 @@ import { stageReviewRequired, validateStageReviewPolicy } from "./stage-review-p
 import { normalizeChecks, verificationCommand } from "./verification-checks.js";
 
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const LOCAL_PERMISSION_RATIONALE = /(?=.*\buser\b)(?=.*\b(?:request(?:ed)?|permission|approv(?:ed|al)?|authoriz(?:ed|ation)?)\b)/i;
 const ARTIFACT_DIRECTORIES = { spec: "specs", design: "design", decision: "decisions", "e2e-matrix": "e2e-matrix" } as const;
 export type MutableArtifactType = keyof typeof ARTIFACT_DIRECTORIES;
 
@@ -223,7 +224,8 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 	const agent = "agent" in assignment ? assignment.agent : assignment.role;
 	if (typeof agent !== "string" || typeof assignment.rationale !== "string" || !assignment.rationale.trim()) throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid assignment`);
 	if (isTierTaskAssignment(assignment)) {
-		if (!["low", "medium", "high", "max"].includes(assignment.tier)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid tier routing`);
+		if (!["low", "medium", "high", "max", "local"].includes(assignment.tier)) throw new HarnessError("INVALID_ARTIFACT", `${source} has invalid tier routing`);
+		if (assignment.tier === "local" && !LOCAL_PERMISSION_RATIONALE.test(assignment.rationale)) throw new HarnessError("INVALID_ARTIFACT", `${source} local routing requires a rationale recording explicit user permission`);
 	} else if (typeof assignment.model !== "string" || typeof assignment.effort !== "string" || typeof assignment.minimumCapabilityRank !== "number" || typeof assignment.allowFallback !== "boolean") {
 		throw new HarnessError("INVALID_ARTIFACT", `${source} has an invalid legacy model assignment`);
 	}

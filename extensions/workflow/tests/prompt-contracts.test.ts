@@ -130,6 +130,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(delivery, /prefactor-only and expand.?migrate.?contract tasks remain exceptions/i);
 	assert.match(delivery, /high\/max require a substantive justification/i);
 	assert.match(delivery, /Compressed\/decompressed example/i);
+	assert.match(delivery, /`local` is a permission-gated[\s\S]+only after the user explicitly requests or approves[\s\S]+record that permission/i);
 	assert.doesNotMatch(delivery, /Every completed task must leave a runnable, demonstrable behavior/i);
 	assert.match(delivery, /first greenfield task may combine setup with the smallest useful behavior/i);
 	assert.match(delivery, /one fresh worker/i);

@@ -432,6 +432,26 @@ verification: { timing: task, methods: [], taskChecks: [], rationale: Historical
 	assert.equal("model" in manifest.execution.assignment ? manifest.execution.assignment.model : undefined, "luna");
 });
 
+test("accepts permission-recorded local task routing and rejects unapproved local manifests", () => {
+	const source = (rationale: string) => `schemaVersion: 1
+id: local-task
+title: Local task
+status: ready
+dependsOn: []
+execution:
+  resourceClaims: []
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: ${rationale}
+assembly: { stageId: local-stage, intermediateState: complete }
+verification: { timing: task, methods: [], taskChecks: [], rationale: Local proof }
+`;
+	const approved = parseTaskManifest(source("The user explicitly requested local execution.")).execution.assignment;
+	assert.equal("tier" in approved ? approved.tier : undefined, "local");
+	assert.throws(() => parseTaskManifest(source("Default local routing.")), /explicit user permission/i);
+});
+
 test("rejects unsupported persisted execution stage modes", () => {
 	assert.throws(() => parseWorkItemIndex(`schemaVersion: 1
 id: invalid-mode

@@ -107,6 +107,19 @@ test("requires explicit justification for high and max planner routing", () => {
 	}), /tierJustification/);
 });
 
+test("accepts local task routing only with recorded explicit user permission", () => {
+	const plan = normalizePlanBundle({
+		workItem: { id: "local-plan", title: "Local plan", branchKind: "feature", intentSections: { problem: "Local execution is blocked.", desiredOutcome: "Permission-gated local work.", scopeIncluded: ["One slice"], successSignals: ["Local task routing"] } },
+		tasks: [{ id: "local-task", goal: "Do the bounded work locally.", included: ["One vertical slice"], acceptance: ["The slice works."], assignment: { tier: "local", rationale: "The user explicitly requested local execution for this task." } }],
+	}) as any;
+	assert.equal(plan.tasks[0].manifest.execution.assignment.tier, "local");
+	assert.match(plan.tasks[0].manifest.execution.assignment.rationale, /user explicitly requested/i);
+	assert.throws(() => normalizePlanBundle({
+		workItem: { id: "unapproved-local", title: "Unapproved local", branchKind: "feature", intentSections: { problem: "Missing permission.", desiredOutcome: "Reject it.", scopeIncluded: ["One slice"], successSignals: ["Rejection"] } },
+		tasks: [{ id: "local-task", goal: "Do work.", included: ["One slice"], acceptance: ["The slice works."], assignment: { tier: "local" } }],
+	}), /permission-gated.*user/i);
+});
+
 test("keeps legacy artifact-referenced task plans readable", () => {
 	const plan = normalizePlanBundle({
 		workItem: { id: "legacy-plan", title: "Legacy plan", branchKind: "feature", intentSections: { problem: "Legacy task.", desiredOutcome: "Remain readable.", scopeIncluded: ["Compatibility"], successSignals: ["Normalization succeeds"] } },

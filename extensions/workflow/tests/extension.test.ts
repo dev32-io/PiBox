@@ -105,12 +105,16 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_apply_change")), /expectedRevision|contractDigest/);
 	assert.doesNotMatch(JSON.stringify(schemas.get("workflow_create")), /tier|deliberation|isolation|parallelism/);
 	const resourceWriteSchema = JSON.stringify(schemas.get("resource_write"));
+	assert.match(descriptions.get("resource_write") ?? "", /local task tier.*explicit user permission.*assignment\.rationale/i);
+	assert.match(descriptions.get("workflow_plan_write") ?? "", /local task routing.*explicit user permission.*assignment\.rationale/i);
 	assert.match(resourceWriteSchema, /ref.*type.*parent.*value/);
 	assert.doesNotMatch(resourceWriteSchema, /authority|expectedRevision|briefSections|criterionContributions/);
 	assert.ok(resourceWriteSchema.length < 1000, "always-visible resource writer stays shallow");
 	assert.ok(JSON.stringify(schemas.get("workflow_apply_change")).length < 2500, "always-visible repair batch stays compact");
 	assert.match(JSON.stringify(schemas.get("resource_list")), /type.*parent.*query/);
 	assert.match(JSON.stringify(schemas.get("resource_read")), /ref/);
+	const taskSchemaResult = await definitions.get("workflow_schema").execute("test-task", { operation: "create", resource: "task", limit: 12000 });
+	assert.match((taskSchemaResult as any).content[0].text, /local[\s\S]*Permission-gated[\s\S]*explicitly requests local/i);
 	const schemaResult = await definitions.get("workflow_schema").execute("test", { operation: "create", resource: "stage", limit: 12000 });
 	const exactStageCreateSchema = JSON.parse((schemaResult as any).content[0].text.split("\n", 2)[1]);
 	const stageSchema = exactStageCreateSchema.properties.body;

@@ -1,6 +1,7 @@
 import type {
 	CapabilityTier,
 	HarnessEffort,
+	ModelTier,
 	ModelTierListProfilesConfig,
 } from "../model-tier-list-profiles/profiles.js";
 
@@ -145,7 +146,8 @@ export interface TaskManifest {
 		assignment:
 			| {
 				agent: string;
-				tier: CapabilityTier;
+				/** Local is permission-gated planner routing; agent defaults remain capability tiers. */
+				tier: ModelTier;
 				rationale: string;
 				/** Required by planning policy for high/max routing; optional for compatibility. */
 				tierJustification?: string;
@@ -153,7 +155,7 @@ export interface TaskManifest {
 			| {
 				/** Legacy assignment retained only so existing plans remain readable and replannable. */
 				role: string;
-				tier: CapabilityTier;
+				tier: ModelTier;
 				deliberation?: "standard" | "deep";
 				modelOverride?: { model: string; effort?: HarnessEffort; strict?: boolean };
 				rationale: string;
@@ -200,7 +202,7 @@ export interface TaskManifest {
 
 export function isTierTaskAssignment(
 	assignment: TaskManifest["execution"]["assignment"],
-): assignment is Extract<TaskManifest["execution"]["assignment"], { tier: CapabilityTier }> {
+): assignment is Extract<TaskManifest["execution"]["assignment"], { tier: ModelTier }> {
 	return "tier" in assignment;
 }
 
