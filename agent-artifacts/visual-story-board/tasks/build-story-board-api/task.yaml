@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-board-api
 title: Build the lazy Story Board API and cache
-status: running
+status: submitted
 dependsOn:
   - build-companion-platform
   - build-story-domain-reader
@@ -38,3 +38,4 @@ runtime:
   worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-story-board-api
   baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
   lastRunId: c3b64b6d-7861-4eed-8a02-117faf27d8e7
+  completedCommit: c14d54176ab7e93ac009d7ad15d72550215d2346
