@@ -25,8 +25,8 @@ export function publishService(ctx: ExtensionContext, service: RegisteredService
 	ctx.ui.setStatus(serviceStatusKey(service.descriptor), formatServiceStatus(ctx, service));
 }
 
-export function registerService(descriptor: ServiceDescriptor, controller: ServiceController): () => void {
-	if (services.has(descriptor.id)) throw new Error(`Service already registered: ${descriptor.id}`);
+export function registerService(descriptor: ServiceDescriptor, controller: ServiceController, options: { replace?: boolean } = {}): () => void {
+	if (services.has(descriptor.id) && !options.replace) throw new Error(`Service already registered: ${descriptor.id}`);
 	const registration = { descriptor, controller, snapshot: { state: "stopped" } } satisfies RegisteredService;
 	services.set(descriptor.id, registration);
 	return () => {
@@ -63,7 +63,10 @@ export function setServiceState(id: string, state: ServiceState, ctx?: Extension
 
 export async function operateService(id: string, action: "start" | "stop" | "health" | "update", operation: Parameters<ServiceController["health"]>[0]): Promise<ServiceSnapshot> {
 	const service = services.get(id);
-	if (!service) throw new Error(`Unknown service: ${id}`);
+	if (!service) {
+		const available = listServices().map(({ descriptor }) => descriptor.id);
+		throw new Error(`Unknown service: ${id}.${available.length ? ` Available services: ${available.join(", ")}.` : " No services are registered."}`);
+	}
 	const method = service.controller[action];
 	if (!method) throw new Error(`${service.descriptor.name} does not support ${action}.`);
 	const pending: ServiceState = action === "update" ? "updating" : action === "stop" ? service.snapshot.state : "starting";

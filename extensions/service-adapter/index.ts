@@ -53,8 +53,14 @@ function describe(snapshot: ServiceSnapshot): string {
 	return [snapshot.state, snapshot.detail, snapshot.error].filter(Boolean).join(" · ");
 }
 
-function summarizeServices(): string {
-	return listServices().map(({ descriptor, snapshot }) => `${descriptor.id}: ${describe(snapshot)} [internal=${descriptor.internal}, stayAlive=${descriptor.stayAlive}, singleton=${descriptor.singleton}, perSession=${descriptor.perSession}]`).join("\n");
+export function summarizeServices(): string {
+	const services = listServices();
+	if (services.length === 0) return "";
+	return [
+		"Available services:",
+		...services.map(({ descriptor, snapshot }) => `- ${descriptor.id} — ${describe(snapshot)}`),
+		"Use /services start <service-id> to start one.",
+	].join("\n");
 }
 
 export default function serviceAdapter(pi: ExtensionAPI): void {
@@ -77,9 +83,16 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 	};
 	const mem0: ServiceDescriptor = { id: "mem0", name: "Mem0", order: 10, internal: true, stayAlive: true, singleton: true, perSession: false };
 	const searxng: ServiceDescriptor = { id: "searxng", name: "SearXNG", order: 20, internal: true, stayAlive: true, singleton: true, perSession: false };
+	const visualCompanion: ServiceDescriptor = { id: "visual-companion", name: "Visual companion", order: 30, internal: true, stayAlive: false, singleton: true, perSession: true };
+	const unloadedVisualCompanion: ServiceController = {
+		health: async () => ({ state: "stopped", detail: "extension not loaded; run /reload" }),
+		start: async () => { throw new Error("Visual companion extension is not loaded. Run /reload and try again."); },
+		stop: async () => ({ state: "stopped", detail: "extension not loaded" }),
+	};
 	const unregister = [
 		registerService(mem0, composeController(pi, mem0, resolve(process.env.PIBOX_MEM0_SERVICE_DIR ?? join(bundledServicesDirectory, "mem0")), healthEndpoint(process.env.PIBOX_MEM0_URL ?? "http://127.0.0.1:6001", "/health"), prepareMem0, "build")),
 		registerService(searxng, composeController(pi, searxng, resolve(process.env.PIBOX_SEARXNG_SERVICE_DIR ?? join(bundledServicesDirectory, "searxng")), process.env.PIBOX_SEARXNG_URL ?? "http://127.0.0.1:6000/", prepareSearxng)),
+		registerService(visualCompanion, unloadedVisualCompanion),
 	];
 
 	const run = async (action: "start" | "stop" | "health" | "update", id: string, ctx: ExtensionContext, signal?: AbortSignal) => {

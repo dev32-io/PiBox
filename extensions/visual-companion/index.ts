@@ -71,7 +71,7 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 			return status.state === "running" ? { state: "running", detail: status.url } : { state: "stopped" };
 		},
 		stop: async () => platform.stop(),
-	});
+	}, { replace: true });
 
 	pi.registerTool({
 		name: "visual_companion",
