@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-domain-reader
 title: Build the read-only Story Board domain reader
-status: running
+status: submitted
 dependsOn: []
 execution:
   resourceClaims:
@@ -31,3 +31,4 @@ runtime:
   worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-story-domain-reader
   baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
   lastRunId: 5363f596-bbad-40bd-acec-faaa1c2f7432
+  completedCommit: 06a6a5568e078c7b7824b01ceae4d021b8905c50
