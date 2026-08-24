@@ -2,8 +2,8 @@ schemaVersion: 1
 id: visual-story-board
 kind: story
 title: Visual Story Board
-phase: evaluation
-state: active
+phase: complete
+state: complete
 planning:
   revision: 18
 artifacts:
@@ -32,6 +32,10 @@ artifacts:
     path: e2e-matrix/story-board-e2e.md
     status: approved
     narrativeSchemaVersion: 2
+  - id: outcome
+    type: outcome
+    path: outcome.md
+    status: complete
 tasks:
   - id: build-companion-platform
     path: tasks/build-companion-platform/task.yaml
