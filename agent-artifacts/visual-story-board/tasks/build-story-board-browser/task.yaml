@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-story-board-browser
 title: Build the complete Story Board browser application
-status: running
+status: submitted
 dependsOn:
   - build-shared-shell-and-architecture
   - build-story-board-api
@@ -38,3 +38,4 @@ runtime:
   worktree: /Users/kevinye/Development/PiBox
   baseCommit: dda0fd4d3b3372a6b5f1ce5a383ef55cfd6c7c6c
   lastRunId: e8bfb25a-1b5d-4ddf-97c0-cd26d88e5bd0
+  completedCommit: a26aef79516413b7b89d8bdf6960f5d2df9e07d8
