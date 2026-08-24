@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 13
+  revision: 14
 artifacts:
   - id: intent
     type: intent
@@ -57,6 +57,23 @@ executionStages:
     tasks:
       - build-companion-platform
       - build-story-domain-reader
+    checks:
+      - npm run check
+      - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+        extensions/visual-companion/tests/platform.test.ts
+        extensions/service-adapter/tests/registry.test.ts
+        skills/architecture-visualizer/tests/visualizer.test.ts
+        extensions/visual-companion/story-board/tests/reader-projector.test.ts
+        extensions/visual-companion/story-board/tests/evidence-model.test.ts
+      - git diff --check
+    mode: concurrent
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews. The
+        host/lifecycle and read-only domain seams use disjoint worktrees and
+        resource claims, integrate behind typed contracts, and run direct
+        lifecycle, compatibility, parser, projection, containment, and
+        immutability checks before the medium whole-branch review.
   - id: shell-and-story-api
     tasks:
       - build-shared-shell-and-architecture
