@@ -1,0 +1,29 @@
+schemaVersion: 1
+id: build-companion-platform
+title: Build the reusable Visual Companion platform
+status: draft
+dependsOn: []
+execution:
+  resourceClaims:
+    - extensions/visual-companion/backend.mjs and backend.d.mts
+    - extensions/visual-companion/index.ts lifecycle composition
+    - extensions/service-adapter visual-companion lifecycle tests
+  assignment:
+    agent: implementer
+    tier: local
+    rationale: The user explicitly requested and authorized local managed-task
+      execution for every implementation task except the assisted E2E launcher.
+assembly:
+  stageId: platform-and-domain-foundations
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+      extensions/visual-companion/tests/platform.test.ts
+      extensions/service-adapter/tests/registry.test.ts
+      skills/architecture-visualizer/tests/visualizer.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.

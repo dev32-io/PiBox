@@ -5,7 +5,7 @@ title: Visual Story Board
 phase: planning
 state: active
 planning:
-  revision: 6
+  revision: 7
 artifacts:
   - id: intent
     type: intent
@@ -32,9 +32,15 @@ artifacts:
     path: e2e-matrix/story-board-e2e.md
     status: approved
     narrativeSchemaVersion: 2
-tasks: []
+tasks:
+  - id: build-companion-platform
+    path: tasks/build-companion-platform/task.yaml
 integrationUnits: []
 delivery:
   workingBranch: feature/visual-story-board
   createdFromCommit: dbb11f6c15637d3478fe2a87959d36181154498c
 evaluations: []
+executionStages:
+  - id: platform-and-domain-foundations
+    tasks:
+      - build-companion-platform
