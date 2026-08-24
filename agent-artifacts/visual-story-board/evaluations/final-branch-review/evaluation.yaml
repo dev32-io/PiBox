@@ -12,11 +12,23 @@ methods:
     integrated change for specification fit, cross-stage correctness,
     regressions, maintainability, and test coverage.
 loop:
+  state: fixing
   iteration: 0
   maxIterations: 8
-  state: awaiting_manager
   reviewerAgentId: 0177e24c-1558-401c-80e3-5265a75fa3e1
   reviewedCommit: 16f3a8321f707c92a74f7ef8a32b36978afe57c3
+  managerPrompt: "Repair both review findings before re-review. F-001 is blocking:
+    enforce realpath containment for every story-root and child read used by
+    direct catalog/workspace/task/document/report/evidence routes; reject
+    symlinked story directories or any resolved path outside repositoryRoot, and
+    add regression tests reproducing a symlinked external story/task returning
+    denial rather than HTTP 200. F-002: remove raw runtime objects from
+    browser-safe task projections; expose only explicitly allowlisted,
+    repository-relative/sanitized delivery-history fields and never absolute
+    worktree paths, private run IDs, or other volatile runtime internals. Add
+    focused projection/UI tests proving those values cannot reach rendered task
+    detail. Preserve read-only behavior, healthy sibling isolation, and existing
+    route contracts."
 findings:
   - id: F-001
     severity: high
