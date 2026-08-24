@@ -5,7 +5,7 @@ title: Visual Companion Story Board
 phase: planning
 state: active
 planning:
-  revision: 2
+  revision: 3
 artifacts:
   - id: intent
     type: intent
@@ -15,6 +15,11 @@ artifacts:
   - id: story-board-behavior
     type: spec
     path: specs/story-board-behavior.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: story-board-design
+    type: design
+    path: design/story-board-design.md
     status: draft
     narrativeSchemaVersion: 2
 tasks: []
