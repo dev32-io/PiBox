@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { createArchitectureViewer } from "../../skills/architecture-visualizer/scripts/server.mjs";
 import { registerService, setServiceSnapshot } from "../service-adapter/registry.js";
 import { createVisualCompanionPlatform } from "./platform.js";
+import { createStoryBoardViewer } from "./story-board/index.js";
 
 const SERVICE_ID = "visual-companion";
 
@@ -61,6 +62,8 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	}, {
 		start: async ({ ctx, signal }) => {
 			const { backend } = await platform.start(signal);
+			if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
+			backend.select("story-board");
 			return { state: "running", detail: backend.url };
 		},
 		health: async () => {
@@ -97,6 +100,8 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 			signal?.throwIfAborted();
 			setState(ctx, "starting");
 			try {
+				const { backend } = await platform.start(signal);
+				if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
 				const shown = await platform.open({ viewer: () => createArchitectureViewer(), artifactPath, ...(signal ? { signal } : {}) });
 				activeViewer = viewerId;
 				activeArtifact = artifactPath;
