@@ -1,7 +1,7 @@
 schemaVersion: 1
 id: build-assisted-e2e-launcher
 title: Build the production-path assisted E2E launcher
-status: running
+status: submitted
 dependsOn:
   - build-story-board-browser
 execution:
@@ -34,3 +34,4 @@ runtime:
   worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-assisted-e2e-launcher
   baseCommit: 2e6b9b5b2a768d0005dfe937a66f5b30d0f52503
   lastRunId: 60551bb3-4e7b-4de4-a1e9-f0638e845a89
+  completedCommit: ec6f5ee1a3ad6e8a979021dfb3270a1153ef62ec
