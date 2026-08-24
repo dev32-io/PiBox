@@ -6,3 +6,6 @@ dist/
 /.worktree/
 /.pibox/
 /.benchmark/
+!/.pibox/
+/.pibox/*
+!/.pibox/verification.yaml
