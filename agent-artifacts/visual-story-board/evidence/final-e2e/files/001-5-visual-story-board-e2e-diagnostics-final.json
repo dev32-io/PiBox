@@ -1,0 +1,1 @@
+{"schemaVersion":1,"backendCount":1,"state":"running","viewers":["story-board","architecture"],"storyBoard":{"discovery":"complete","discoveryStarts":1,"delayMs":0,"catalogRequests":2,"catalogReads":1,"refreshes":0},"recovery":{"enabled":true,"applied":false,"resource":"malformed-recovery"}}

@@ -1,0 +1,29 @@
+schemaVersion: 1
+evaluation: final-e2e
+recordedAt: 2026-08-24T09:10:33.208Z
+entries:
+  - result: Saved browser screenshot showing contained Story Board loading state.
+    description: Sanitized browser screenshot of loading state.
+    path: files/001-1-visual-story-board-e2e-001-loading.png
+    checksum: sha256:4eb0b7e38b405d7bcb75a69e86599633c01bf3fac5caa2d80cb172033401a923
+  - result: Saved browser screenshot showing report detail and evidence presentation.
+    description: Sanitized browser screenshot of report detail.
+    path: files/001-2-visual-story-board-e2e-003-report.png
+    checksum: sha256:cc596bd316399ad21c2884c95a156722aaa546ee519ab6192bf782209b8c8bbd
+  - result: Saved browser screenshot at narrow viewport.
+    description: Sanitized narrow-viewport browser screenshot.
+    path: files/001-3-visual-story-board-e2e-006-narrow.png
+    checksum: sha256:1523db8859ac9d06be15780c9e29a63ac5fdf377df7f4dba0b482f1724554e97
+  - result: Contains sanitized observations for E2E-001 through E2E-006.
+    description: Evaluator observation summary.
+    path: files/001-4-visual-story-board-e2e-case-observations.json
+    checksum: sha256:070e79fece9b89b0f4e66d2bcca226bcaf68b618e673565d7a9a47bf5120b193
+  - result: Bounded diagnostics recorded one backend and completed Story Board
+      discovery.
+    description: Launcher diagnostics JSON.
+    path: files/001-5-visual-story-board-e2e-diagnostics-final.json
+    checksum: sha256:65c379697b48ac60719b74391a96d14c82e0eaa41686ab8e14c353550ff3dd2d
+  - result: listener closed
+    description: Explicit-close listener cleanup result.
+    path: files/001-6-visual-story-board-e2e-after-close.txt
+    checksum: sha256:1e5b2510eb6d80f47bf9c1964b664415260112145837f91046caca0227f46662
