@@ -14,11 +14,13 @@ export const SUBAGENT_CONTROL_TOOLS = ["subagent_spawn", "subagent_status", "sub
 export const PIBOX_TOOL_GROUPS = {
 	"pibox:task": ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"],
 	"pibox:evaluation": ["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"],
+	"pibox:ledger": ["workflow_ledger"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type PiBoxToolGroup = keyof typeof PIBOX_TOOL_GROUPS;
 export const PIBOX_TASK_TOOL_GROUP: PiBoxToolGroup = "pibox:task";
 export const PIBOX_EVALUATION_TOOL_GROUP: PiBoxToolGroup = "pibox:evaluation";
+export const PIBOX_LEDGER_TOOL_GROUP: PiBoxToolGroup = "pibox:ledger";
 
 export function validateToolSelectors(selectors: readonly string[]): void {
 	for (const selector of selectors) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ALL_TOOLS_SELECTOR, DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors, validateToolSelectors } from "../tool-groups.js";
+import { ALL_TOOLS_SELECTOR, DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_LEDGER_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors, validateToolSelectors } from "../tool-groups.js";
 
 test("expands namespaced PiBox tool groups without leaking selector names", () => {
 	const resolved = resolveToolSelectors(["read", PIBOX_TASK_TOOL_GROUP, "read"]);
@@ -11,6 +11,8 @@ test("expands namespaced PiBox tool groups without leaking selector names", () =
 
 test("adds managed capability groups at runtime while preserving agent restrictions", () => {
 	assert.deepEqual(resolveToolSelectors(["read"], [PIBOX_EVALUATION_TOOL_GROUP]), ["read", ...PIBOX_TOOL_GROUPS[PIBOX_EVALUATION_TOOL_GROUP]]);
+	assert.deepEqual(resolveToolSelectors(["read"], [PIBOX_TASK_TOOL_GROUP, PIBOX_LEDGER_TOOL_GROUP]), ["read", ...PIBOX_TOOL_GROUPS[PIBOX_TASK_TOOL_GROUP], "workflow_ledger"]);
+	assert.equal(resolveToolSelectors(["read"], [PIBOX_EVALUATION_TOOL_GROUP]).includes("workflow_ledger"), false);
 });
 
 test("preserves wildcard union semantics while expanding other selectors", () => {

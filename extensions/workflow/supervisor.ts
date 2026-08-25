@@ -13,7 +13,7 @@ import { HarnessRunStore, type RunRecord, type TaskHandoff } from "./run-store.j
 import { taskAgentName, type ModelTier, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
-import { DEFAULT_SUBAGENT_TOOLS, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } from "./tool-groups.js";
+import { DEFAULT_SUBAGENT_TOOLS, PIBOX_LEDGER_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, resolveToolSelectors } from "./tool-groups.js";
 import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
 import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
 import { fastModeChildEnvironment } from "../fast-mode/runtime.js";
@@ -147,7 +147,7 @@ export class SubagentSupervisor {
 					effort: options.model.effort,
 					...(options.model.capabilityTier ? { capabilityTier: options.model.capabilityTier } : {}),
 					...(options.model.providerCandidates ? { providerCandidates: options.model.providerCandidates } : {}),
-					tools: resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]),
+					tools: resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP, PIBOX_LEDGER_TOOL_GROUP]),
 					...(options.agentPrompt ? { agentPrompt: options.agentPrompt } : { promptPath: join(BUILT_IN_AGENT_ROOT, `${taskAgentName(options.task)}.md`) }),
 					additionalPrompt: readBuiltInPrompt("workflow-task-agent"),
 					persistentContext: options.persistentContext,
@@ -165,6 +165,7 @@ export class SubagentSupervisor {
 						PIBOX_HARNESS_CREDENTIAL: created.credential,
 						PIBOX_HARNESS_PRIVATE_ROOT: options.identity.privateRoot,
 						PIBOX_HARNESS_REPOSITORY_ID: options.identity.id,
+						PIBOX_WORKFLOW_LEDGER_ATTEMPT: protocolAttempt === 1 ? "2" : "1",
 					},
 					...(options.signal ? { signal: options.signal } : {}),
 					onSpawn: (pid) => void runs.update(created.record.id, { state: "running", ...(pid === undefined ? {} : { pid }) }, "run.started"),
@@ -344,7 +345,7 @@ export class SubagentSupervisor {
 		const agentPrompt = parseFrontmatter<Record<string, unknown>>(options.agentPrompt ?? builtInAgentPrompt).body;
 		const systemPrompt = [agentPrompt, readBuiltInPrompt("workflow-task-agent"), options.persistentContext].filter(Boolean).join("\n\n");
 		await writeFile(promptPath, `${systemPrompt.trim()}\n`, { encoding: "utf8", mode: 0o600 });
-		const tools = resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP]);
+		const tools = resolveToolSelectors(options.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_TASK_TOOL_GROUP, PIBOX_LEDGER_TOOL_GROUP]);
 		const args = [
 			"-e", HARNESS_EXTENSION_PATH,
 			"-e", FAST_MODE_EXTENSION_PATH,
@@ -377,6 +378,7 @@ export class SubagentSupervisor {
 						PIBOX_HARNESS_CREDENTIAL: credential,
 						PIBOX_HARNESS_PRIVATE_ROOT: options.identity.privateRoot,
 						PIBOX_HARNESS_REPOSITORY_ID: options.identity.id,
+						PIBOX_WORKFLOW_LEDGER_ATTEMPT: protocolNudge ? "2" : "1",
 					},
 				});
 				this.#active.set(runId, child);

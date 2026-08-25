@@ -77,6 +77,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 		"finding_report",
 		"evaluation_checkpoint",
 		"evaluation_complete",
+		"workflow_ledger",
 		"resource_list",
 		"resource_read",
 		"resource_write",
@@ -135,6 +136,7 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.equal(tools.includes("agent_run"), false, "direct specialist duplication is removed");
 	for (const preferred of ["resource_list", "resource_read", "resource_write", "resource_delete", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
 	for (const compatibility of ["workflow_list", "workflow_get", "workflow_schema", "workflow_plan_write", "workflow_create", "workflow_patch", "workflow_delete"]) assert.equal(activeTools.includes(compatibility), false, compatibility);
+	assert.equal(activeTools.includes("workflow_ledger"), false, "main sessions do not receive the worker ledger");
 	assert.equal(activeTools.includes("read"), true);
 	await handlers.get("session_shutdown")?.({ reason: "quit" });
 	assert.deepEqual(getActiveFastModePolicy(), { main: false, subagents: "off" });

@@ -36,6 +36,11 @@ test("agent definitions stay generic while workflow protocols remain launch-time
 	assert.match(task, /Read the one relevant canonical resource with `task_clarify`[\s\S]+use `task_request_change`/i);
 	assert.match(task, /conflicting clauses[\s\S]+smallest safe contract correction/i);
 	assert.match(task, /same logical worker/i);
+	assert.match(task, /Before inspecting the repository[\s\S]+`workflow_ledger`[\s\S]+latest ten entries/i);
+	assert.match(task, /Immediately before handing off[\s\S]+3–5 sentence summary/i);
+	const repair = await readFile(join(root, "prompt/workflow-repair-agent.md"), "utf8");
+	assert.match(repair, /Before inspecting the repository[\s\S]+`workflow_ledger`[\s\S]+latest ten entries/i);
+	assert.match(repair, /Immediately before handing off[\s\S]+3–5 sentence summary/i);
 	const review = await readFile(join(root, "prompt/workflow-review-agent.md"), "utf8");
 	assert.match(review, /persistent review context/i);
 	assert.match(review, /Do not call `evaluation_context` as a prerequisite/i);
@@ -43,6 +48,7 @@ test("agent definitions stay generic while workflow protocols remain launch-time
 	assert.match(review, /Critical\/Major\/Minor[\s\S]+`critical`\/`high`\/`medium`/i);
 	assert.match(review, /caseResults[\s\S]+every approved matrix case exactly once/i);
 	assert.match(review, /evaluation_complete/);
+	assert.doesNotMatch(review, /workflow_ledger/i);
 	const implementer = await readFile(join(root, "agent-definitions/implementer.md"), "utf8");
 	assert.match(implementer, /smallest correct change, not merely the shortest diff/i);
 	assert.match(implementer, /avoid speculative features, abstractions, compatibility layers, dependencies, and drive-by refactors/i);

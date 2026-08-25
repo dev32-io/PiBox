@@ -33,7 +33,7 @@ import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CO
 import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
 import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
 import { BUILT_IN_AGENT_ROOT, readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
-import { ALL_TOOLS_SUBAGENT_ENV, DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors, SUBAGENT_CONTROL_TOOLS } from "./tool-groups.js";
+import { ALL_TOOLS_SUBAGENT_ENV, DEFAULT_SUBAGENT_TOOLS, PIBOX_EVALUATION_TOOL_GROUP, PIBOX_LEDGER_TOOL_GROUP, PIBOX_TASK_TOOL_GROUP, PIBOX_TOOL_GROUPS, resolveToolSelectors, SUBAGENT_CONTROL_TOOLS } from "./tool-groups.js";
 import { authorizeMcpProxyCall, configuredMcpServerAllowlist, mcpLaunchEnvironment } from "./mcp-capabilities.js";
 import { resourceDisplayDiff } from "./resource-diff.js";
 import { RepairRecoveryStore } from "./repair-recovery.js";
@@ -43,6 +43,7 @@ import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/po
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
 import { cleanupCompletedWorkItem } from "./completion-cleanup.js";
+import { registerWorkflowLedgerCapability } from "./workflow-ledger.js";
 
 const WORKFLOW_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "index.ts");
 const MEMORY_EXTENSION_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../memory-adapter/index.ts");
@@ -51,7 +52,9 @@ export const WORKFLOW_CHILD_EXTENSION_PATHS = [WORKFLOW_EXTENSION_PATH, MEMORY_E
 
 const WORKER_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_TASK_TOOL_GROUP]);
 const EVALUATOR_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_EVALUATION_TOOL_GROUP]);
+const LEDGER_TOOL_NAMES = new Set(PIBOX_TOOL_GROUPS[PIBOX_LEDGER_TOOL_GROUP]);
 const isSubagentProcess = () => Boolean(process.env.PIBOX_SUBAGENT_ID);
+const isRepairProcess = () => isSubagentProcess() && process.env.PIBOX_SUBAGENT_ROLE === "repair-implementer";
 const ORCHESTRATOR_CONTRACT = readBuiltInPrompt("orchestrator-routing");
 
 const ORCHESTRATOR_TOOL_NAMES = new Set([
@@ -581,6 +584,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 	registerWorkerCapabilities(pi);
 	registerEvaluatorCapabilities(pi);
+	registerWorkflowLedgerCapability(pi);
 
 	pi.on("tool_call", (event) => {
 		if (event.toolName !== "mcp") return;
@@ -756,7 +760,7 @@ export default function workflow(pi: ExtensionAPI): void {
 				role: "repair-implementer", task: prompt,
 				assignment: { schemaVersion: 1, workItemId, stageId, taskIds, managerPrompt: prompt, generation }, cwd: failure.candidatePath,
 				provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: "medium", providerCandidates: resolution.candidates,
-				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), workItemId,
+				tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_LEDGER_TOOL_GROUP]), workItemId,
 				workspace: failure.candidatePath, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), deferCompletion: true,
 				persistentContext: `${await buildTaskPersistentContext(runtime.workItems, workItemId, task)}\n\n${prompt}`,
 				env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
@@ -812,7 +816,7 @@ export default function workflow(pi: ExtensionAPI): void {
 					task: renderBuiltInPrompt("managed-repair", { evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }),
 					assignment: { schemaVersion: 1, workItemId, evaluationId, iteration: repairIteration, managerPrompt: loop.managerPrompt! }, cwd: runtime.identity.root,
 					activity: { kind: "repair", generation: repairIteration },
-					provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: routing.tier, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS),
+					provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort, capabilityTier: routing.tier, providerCandidates: resolution.candidates, tools: resolveToolSelectors(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS, [PIBOX_LEDGER_TOOL_GROUP]),
 					workItemId, evaluationId, workspace: runtime.identity.root, additionalPrompt: readBuiltInPrompt("workflow-repair-agent"), persistentContext, deferCompletion: true,
 					env: mcpLaunchEnvironment(agentDefinition.tools ?? DEFAULT_SUBAGENT_TOOLS), ...(signal ? { signal } : {}),
 					promptPath: agentDefinition.prompt && resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) ? resolveConfiguredPath(runtime.identity.root, agentDefinition.prompt) as string : join(BUILT_IN_AGENT_ROOT, "repair-implementer.md"),
@@ -1730,10 +1734,10 @@ export default function workflow(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		sessionShuttingDown = false;
 		const disallowed = new Set<string>();
-		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...LEDGER_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		else if (isWorkerProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
-		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...SUBAGENT_CONTROL_TOOLS].forEach((name) => disallowed.add(name));
-		else [...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES].forEach((name) => disallowed.add(name));
+		else if (isSubagentProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...SUBAGENT_CONTROL_TOOLS, ...(isRepairProcess() ? [] : LEDGER_TOOL_NAMES)].forEach((name) => disallowed.add(name));
+		else [...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...EVALUATOR_TOOL_NAMES, ...LEDGER_TOOL_NAMES].forEach((name) => disallowed.add(name));
 		const activeTools = isSubagentProcess() && process.env[ALL_TOOLS_SUBAGENT_ENV] === "1"
 			? pi.getAllTools().map((tool) => tool.name)
 			: pi.getActiveTools();

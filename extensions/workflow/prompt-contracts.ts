@@ -35,4 +35,5 @@ export const BUILT_IN_PROMPT_SURFACES: PromptSurface[] = [
 	{ id: "progressive-workflow-reads", category: "tool-pointer", source: "extensions/workflow/progressive-disclosure.ts#paginateCatalog", completion: "none" },
 	{ id: "worker-tool-pointers", category: "tool-pointer", source: "extensions/workflow/worker-capabilities.ts#registerWorkerCapabilities", completion: "task_complete" },
 	{ id: "evaluator-tool-pointers", category: "tool-pointer", source: "extensions/workflow/evaluator-capabilities.ts#registerEvaluatorCapabilities", completion: "evaluation_complete" },
+	{ id: "workflow-ledger", category: "tool-pointer", source: "extensions/workflow/workflow-ledger.ts#registerWorkflowLedgerCapability", completion: "none" },
 ];
