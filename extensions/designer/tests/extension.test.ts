@@ -10,7 +10,11 @@ import designerExtension, { loadClosestDesignAuthority } from "../index.js";
 test("published package includes the editable designer prompt after workflow routing", async () => {
 	const packageJson = JSON.parse(await readFile("package.json", "utf8")) as { files?: string[]; pi?: { extensions?: string[] } };
 	assert.ok(packageJson.files?.includes("prompt"));
-	assert.match(await readFile("prompt/designer.md", "utf8"), /# Visual Designer/);
+	const prompt = await readFile("prompt/designer.md", "utf8");
+	assert.match(prompt, /# Visual Designer/);
+	assert.doesNotMatch(prompt, /design-handoff skill/i);
+	for (const section of ["Outcome", "Source", "Behavior", "Decisions", "Open"]) assert.match(prompt, new RegExp(`\\*\\*${section}\\*\\*`));
+	assert.match(prompt, /Do not repeat values visible in the prototype or CSS/);
 	const extensions = packageJson.pi?.extensions ?? [];
 	assert.ok(extensions.indexOf("./extensions/designer/index.ts") > extensions.indexOf("./extensions/workflow/index.ts"));
 });

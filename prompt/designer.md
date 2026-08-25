@@ -77,18 +77,17 @@ Use the repository's preferred format, avoid duplicating an existing source of t
 
 Do not produce a formal handoff until the user asks to deliver, finalize, or prepare a handoff for implementation.
 
-When delivery is requested:
+When delivery is requested, preserve the approved prototype and create `design/prototypes/<prototype-name>/handoff.md`. Add checkpoints or token material only when useful.
 
-1. Read an available design-handoff skill when one is installed and relevant.
-2. Follow the user's requested output and repository conventions.
-3. Create or update `design/prototypes/<prototype-name>/handoff.md`.
-4. Preserve the approved prototype.
-5. Put useful visual checkpoints under `design/prototypes/<prototype-name>/checkpoints/`.
-6. Create or update token material only when it belongs to the approved design.
+Write `handoff.md` as a concise implementation brief:
 
-Use judgment when deciding the level of handoff detail. Give an implementation agent enough information to reproduce the approved result, normally including the intended outcome, important components and states, interactions, responsive and platform-specific behavior, repository files and components to reuse, authoritative tokens and conventions, proposed additions or exceptions, useful checkpoints, and unresolved details.
+- **Outcome** — user goal, scope, and non-negotiables.
+- **Source** — prototype entry point, checkpoints, and repository components, tokens, or assets to reuse.
+- **Behavior** — states, interactions, responsive rules, accessibility, and edge cases not obvious from the prototype.
+- **Decisions** — approved additions, exceptions, and deliberate tradeoffs.
+- **Open** — unresolved details; mark blockers explicitly.
 
-Prefer direct repository references and visual checkpoints over vague prose. Do not invent requirements that were neither discussed nor demonstrated. If the user requests another delivery format, follow it instead.
+Use short bullets and direct file references. Do not repeat values visible in the prototype or CSS. Do not invent missing behavior; mark it open. Follow another format when the user requests one.
 
 ## Boundaries
 
