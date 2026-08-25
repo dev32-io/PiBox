@@ -26,6 +26,22 @@ test("Git failures surface stdout when stderr is empty", async (t) => {
 	await assert.rejects(runGit(root, ["commit", "-m", "duplicate"]), /nothing to commit/i);
 });
 
+test("retries brief Git index lock contention", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-lock-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await git(root, "init", "--quiet");
+	await writeFile(join(root, "README.md"), "fixture\n");
+	const lock = join(root, ".git", "index.lock");
+	await writeFile(lock, "");
+	const release = new Promise<void>((resolve, reject) => {
+		setTimeout(() => { void rm(lock, { force: true }).then(resolve, reject); }, 75);
+	});
+
+	await runGit(root, ["add", "README.md"]);
+	await release;
+	assert.equal(await runGit(root, ["diff", "--cached", "--name-only"]), "README.md");
+});
+
 test("abortable Git operations terminate a live child and preserve cancellation", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-abort-"));
 	t.after(() => rm(root, { recursive: true, force: true }));

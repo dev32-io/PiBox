@@ -8,6 +8,12 @@ import { promisify } from "node:util";
 import { HarnessError } from "./errors.js";
 
 const execFileAsync = promisify(execFile);
+const INDEX_LOCK_RETRY_ATTEMPTS = 40;
+const INDEX_LOCK_RETRY_DELAY_MS = 50;
+
+function isIndexLockContention(stderr: string, stdout: string): boolean {
+	return /index\.lock['"]?: File exists/i.test(`${stderr}\n${stdout}`);
+}
 
 export interface RepositoryIdentity {
 	id: string;
@@ -22,19 +28,25 @@ export interface RunGitOptions {
 }
 
 export async function runGit(cwd: string, args: string[], options: RunGitOptions = {}): Promise<string> {
-	try {
-		const result = await execFileAsync("git", args, {
-			cwd,
-			encoding: "utf8",
-			...(options.signal ? { signal: options.signal } : {}),
-			...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
-		});
-		return result.stdout.trim();
-	} catch (error) {
-		if (options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
-		const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr).trim() : "";
-		const stdout = typeof error === "object" && error !== null && "stdout" in error ? String(error.stdout).trim() : "";
-		throw new HarnessError("GIT_OPERATION_FAILED", stderr || stdout || `git ${args.join(" ")} failed`, { args });
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const result = await execFileAsync("git", args, {
+				cwd,
+				encoding: "utf8",
+				...(options.signal ? { signal: options.signal } : {}),
+				...(options.timeoutMs === undefined ? {} : { timeout: options.timeoutMs }),
+			});
+			return result.stdout.trim();
+		} catch (error) {
+			if (options.signal?.aborted || (error instanceof Error && error.name === "AbortError")) throw error;
+			const stderr = typeof error === "object" && error !== null && "stderr" in error ? String(error.stderr).trim() : "";
+			const stdout = typeof error === "object" && error !== null && "stdout" in error ? String(error.stdout).trim() : "";
+			if (attempt < INDEX_LOCK_RETRY_ATTEMPTS && isIndexLockContention(stderr, stdout)) {
+				await new Promise((resolve) => setTimeout(resolve, INDEX_LOCK_RETRY_DELAY_MS));
+				continue;
+			}
+			throw new HarnessError("GIT_OPERATION_FAILED", stderr || stdout || `git ${args.join(" ")} failed`, { args });
+		}
 	}
 }
 

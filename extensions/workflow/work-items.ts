@@ -266,6 +266,11 @@ export class WorkItemStore {
 		return indexes;
 	}
 
+	async listForCurrentBranch(): Promise<WorkItemIndex[]> {
+		const current = await this.currentBranch();
+		return (await this.list()).filter((item) => item.delivery?.workingBranch === current);
+	}
+
 	async findDelivery(id: string): Promise<WorkItemDelivery | undefined> {
 		const indexPath = relative(this.repositoryRoot, join(this.workItemRoot(id), "index.yaml"));
 		const branches = (await runGit(this.repositoryRoot, ["for-each-ref", "--format=%(refname:short)", "refs/heads/feature", "refs/heads/fix"])).split("\n").filter(Boolean);
@@ -1258,14 +1263,21 @@ export class WorkItemStore {
 		const index = await this.read(workItemId);
 		const evaluationRoot = join(root, "evaluations", manifest.id);
 		const manifestPath = join(evaluationRoot, "evaluation.yaml");
+		const reportPath = join(evaluationRoot, "report.md");
 		const indexPath = join(root, "index.yaml");
 		if (index.evaluations.some((entry) => entry.id === manifest.id)) return;
+		const previous = await Promise.all([manifestPath, reportPath, indexPath].map(async (path) => ({ path, content: await readFile(path, "utf8").catch(() => undefined) })));
 		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
-		await mkdir(evaluationRoot, { recursive: true });
-		await atomicWriteFile(manifestPath, stringify(manifest));
-		await atomicWriteFile(join(evaluationRoot, "report.md"), "# Evaluation\n\nPending.\n");
-		await atomicWriteFile(indexPath, stringify(index));
-		await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): add final review checkpoint ${manifest.id}`);
+		try {
+			await mkdir(evaluationRoot, { recursive: true });
+			await atomicWriteFile(manifestPath, stringify(manifest));
+			await atomicWriteFile(reportPath, "# Evaluation\n\nPending.\n");
+			await atomicWriteFile(indexPath, stringify(index));
+			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): add final review checkpoint ${manifest.id}`);
+		} catch (error) {
+			await this.restore(previous);
+			throw error;
+		}
 	}
 
 	async updateEvaluationLoop(workItemId: string, evaluationId: string, update: Partial<NonNullable<EvaluationManifest["loop"]>>, status?: EvaluationManifest["status"]): Promise<EvaluationManifest> {
@@ -1739,13 +1751,16 @@ export class WorkItemStore {
 	}
 
 	private async restore(files: Array<{ path: string; content: string | undefined }>): Promise<void> {
+		// Clear the transaction's staged entries before changing working files. If Git
+		// remains unavailable, leave one coherent attempted state instead of an MM
+		// mirror with staged new content and restored old content.
+		await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", ...files.map((file) => relative(this.repositoryRoot, file.path))]);
 		for (const file of files) {
 			// restore() owns file paths only. Never recursively remove a path that
 			// unexpectedly resolves to a pre-existing directory.
 			if (file.content === undefined) await rm(file.path, { force: true });
 			else await atomicWriteFile(file.path, file.content);
 		}
-		await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", ...files.map((file) => relative(this.repositoryRoot, file.path))]);
 		const createdParents = [...new Set(files.filter((file) => file.content === undefined).map((file) => dirname(file.path)))].sort((left, right) => right.length - left.length);
 		for (const directory of createdParents) {
 			if (basename(directory) === basename(this.artifactRoot)) continue;

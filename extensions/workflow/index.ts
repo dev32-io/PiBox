@@ -444,7 +444,7 @@ function formatWorktreeProgress(progress: WorktreeProgress): string {
 }
 
 async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot> {
-	const workItems = await runtime.workItems.list();
+	const workItems = await runtime.workItems.listForCurrentBranch();
 	const taskCounts: Record<string, Record<string, number>> = {};
 	const runs: HarnessStatusSnapshot["runs"] = [];
 	for (const item of workItems) {

@@ -104,6 +104,64 @@ test("workflow start begins execution and activates draft tasks according to dep
 	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
+test("failed task activation restores both the index and working files", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "activation-rollback", title: "Activation rollback", kind: "change", intent: "Recover failed startup." });
+	const manifest: TaskManifest = {
+		schemaVersion: 1, id: "first", title: "first", status: "draft", dependsOn: [],
+		references: { specs: [], designs: [], decisions: [] },
+		execution: { resourceClaims: ["first"], assignment: { agent: "implementer", tier: "low", rationale: "Fixture" } },
+		assembly: { stageId: "delivery", intermediateState: "complete" },
+		verification: { timing: "task", methods: [], taskChecks: [], rationale: "Fixture" },
+	};
+	await store.defineTask({ workItemId: "activation-rollback", manifest, brief: "First task", acceptance: "First accepted" });
+	await store.beginExecution("activation-rollback");
+	const failing = store as unknown as { commit(paths: string[]): Promise<void> };
+	failing.commit = async () => {
+		await git(root, "add", "-A", "--", "agent-artifacts/activation-rollback");
+		throw new Error("injected commit failure");
+	};
+
+	await assert.rejects(store.activateDraftTasks("activation-rollback"), /injected commit failure/);
+	assert.equal((await store.readTask("activation-rollback", "first")).status, "draft");
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("failed runtime gate creation removes staged and working artifacts", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "gate-rollback", title: "Gate rollback", kind: "change", intent: "Recover failed gate setup." });
+	const internal = store as unknown as {
+		commit(paths: string[]): Promise<void>;
+		defineRuntimeEvaluation(workItemId: string, manifest: EvaluationManifest): Promise<void>;
+	};
+	internal.commit = async () => {
+		await git(root, "add", "-A", "--", "agent-artifacts/gate-rollback");
+		throw new Error("injected gate commit failure");
+	};
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "final-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: "gate-rollback" }, status: "planned", required: true, attempt: 0, methods: ["Review"] };
+
+	await assert.rejects(internal.defineRuntimeEvaluation("gate-rollback", evaluation), /injected gate commit failure/);
+	assert.deepEqual((await store.read("gate-rollback")).evaluations, []);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("lists only work items bound to the checked-out branch", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "status-current", title: "Current", kind: "change", intent: "Show current work." });
+	const currentPath = join(root, "agent-artifacts", "status-current", "index.yaml");
+	const otherRoot = join(root, "agent-artifacts", "status-other");
+	const other = (await readFile(currentPath, "utf8"))
+		.replace(/^id: status-current$/m, "id: status-other")
+		.replace(/^  workingBranch: feature\/status-current$/m, "  workingBranch: feature/status-other");
+	await mkdir(otherRoot, { recursive: true });
+	await writeFile(join(otherRoot, "index.yaml"), other);
+
+	assert.deepEqual((await store.listForCurrentBranch()).map((item) => item.id), ["status-current"]);
+});
+
 test("rejects a new final E2E launch without a matrix while preserving legacy E2E stories", async (t) => {
 	const root = await repository(t); const store = new WorkItemStore(root);
 	await store.create({ id: "new-no-matrix", title: "New", kind: "story", intent: "Needs journeys." });
