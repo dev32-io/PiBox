@@ -663,10 +663,7 @@ export class WorktreeManager {
 		return this.promoteTrain(state, taskId, results);
 	}
 
-	private async mergeConcurrentStage(workItemId: string, taskId: string, stageId: string, taskIds: string[], tasks: TaskManifest[], checks?: VerificationCheckSpec[]): Promise<IntegrationResult> {
-		const baseCommit = await this.parallelStageBase(workItemId, stageId);
-		const contributions = tasks.map((task) => task.runtime!.completedCommit!);
-		const state = await this.prepareTrain(workItemId, stageId, taskIds, contributions, baseCommit);
+	private async continueConcurrentTrain(state: StageTrainState, tasks: TaskManifest[], priorEvidencePath?: string): Promise<void> {
 		for (let index = state.prefixCommits.length; index < tasks.length; index++) {
 			const task = tasks[index]!;
 			try {
@@ -678,9 +675,17 @@ export class WorktreeManager {
 				const diff = await runGit(state.candidatePath, ["diff", "--cc"]).catch(() => "");
 				const detail = `${error instanceof Error ? error.message : String(error)}\nstatus:\n${status}\ncombined diff:\n${diff}`;
 				const evidence = await this.recordIntegrationFailure(state, { kind: "merge_conflict", position: index, ownerTaskId: task.id, detail });
-				throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${stageId} candidate conflicts while applying ${task.id}; deterministic repair owns ${evidence.evidencePath}`, { workerRoutable: true, ...evidence });
+				if (priorEvidencePath && priorEvidencePath !== evidence.evidencePath) await this.clearConflict(state.workItemId, priorEvidencePath);
+				throw new HarnessError("GIT_OPERATION_FAILED", `Stage ${state.stageId} candidate conflicts while applying ${task.id}; deterministic repair owns ${evidence.evidencePath}`, { workerRoutable: true, ...evidence });
 			}
 		}
+	}
+
+	private async mergeConcurrentStage(workItemId: string, taskId: string, stageId: string, taskIds: string[], tasks: TaskManifest[], checks?: VerificationCheckSpec[]): Promise<IntegrationResult> {
+		const baseCommit = await this.parallelStageBase(workItemId, stageId);
+		const contributions = tasks.map((task) => task.runtime!.completedCommit!);
+		const state = await this.prepareTrain(workItemId, stageId, taskIds, contributions, baseCommit);
+		await this.continueConcurrentTrain(state, tasks);
 		const item = await this.workItems.read(workItemId);
 		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);
 		const allTaskChecks = [...new Set(tasks.flatMap((task) => task.verification.taskChecks))];
@@ -693,9 +698,25 @@ export class WorktreeManager {
 		const status = await runGit(state.candidatePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
 		if (status) throw new HarnessError("DIRTY_CANONICAL_BRANCH", `Integration repair left the candidate dirty: ${state.candidatePath}`, { status, evidencePath });
 		const tasks = await Promise.all(taskIds.map((id) => this.workItems.readTask(workItemId, id)));
+		for (const task of tasks) if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Integration repair lost completed commit for ${task.id}`);
+
+		// A merge-conflict repair seals only the failed train position. The harness,
+		// not the repair agent, must then continue applying the deterministic suffix.
+		if (state.prefixCommits.length < tasks.length) {
+			const repairedIndex = state.prefixCommits.length;
+			const repairedTask = tasks[repairedIndex]!;
+			const repairedCommit = repairedTask.runtime!.completedCommit!;
+			await runGit(state.candidatePath, ["merge-base", "--is-ancestor", repairedCommit, "HEAD"]).catch(() => {
+				throw new HarnessError("INVALID_HANDOFF", `Integration candidate does not contain repaired ${repairedTask.id} contribution ${repairedCommit}`);
+			});
+			state.prefixCommits[repairedIndex] = await runGit(state.candidatePath, ["rev-parse", "HEAD"]);
+			state.state = "assembling";
+			await this.writeTrain(state);
+			await this.continueConcurrentTrain(state, tasks, evidencePath);
+		}
+
 		for (const task of tasks) {
-			if (!task.runtime?.completedCommit) throw new HarnessError("INVALID_HANDOFF", `Integration repair lost completed commit for ${task.id}`);
-			await runGit(state.candidatePath, ["merge-base", "--is-ancestor", task.runtime.completedCommit, "HEAD"]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Integration candidate does not contain ${task.id} contribution ${task.runtime!.completedCommit}`); });
+			await runGit(state.candidatePath, ["merge-base", "--is-ancestor", task.runtime!.completedCommit!, "HEAD"]).catch(() => { throw new HarnessError("INVALID_HANDOFF", `Integration candidate does not contain ${task.id} contribution ${task.runtime!.completedCommit}`); });
 		}
 		const item = await this.workItems.read(workItemId);
 		const stage = (item.executionStages ?? []).find((candidate) => candidate.id === stageId);

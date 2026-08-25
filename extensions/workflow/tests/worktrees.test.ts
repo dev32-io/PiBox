@@ -463,45 +463,62 @@ test("concurrent candidate CI stays isolated and a repaired candidate promotes a
 	await assert.rejects(access(failure!.candidatePath), /ENOENT/);
 });
 
-test("concurrent merge train preserves the green prefix when a downstream contribution conflicts", async (t) => {
+test("concurrent merge train continues its suffix after repeated conflict repairs", async (t) => {
 	const { root, identity } = await fixture(t);
 	await writeFile(join(root, "shared.txt"), "base\n");
 	await git(root, "add", "shared.txt");
 	await git(root, "commit", "--quiet", "-m", "shared base");
 	const store = new WorkItemStore(root);
+	const taskIds = ["first", "second", "third", "fourth"];
 	await store.create({ id: "merge-train", title: "Merge train", kind: "change", branchKind: "feature", intent: "Integrate in deterministic order" });
-	for (const id of ["first", "second"]) {
+	for (const id of taskIds) {
 		const planned = task(id, "delivery");
-		planned.verification.taskChecks = ["test -f shared.txt"];
-		await store.defineTask({ workItemId: "merge-train", manifest: planned, brief: `${id} edits shared`, acceptance: `${id} retained` });
+		planned.verification.taskChecks = [id === "fourth" ? "test -f fourth.txt" : "test -f shared.txt"];
+		await store.defineTask({ workItemId: "merge-train", manifest: planned, brief: `${id} contribution`, acceptance: `${id} retained` });
 	}
-	await store.putExecutionStage("merge-train", { id: "delivery", tasks: ["first", "second"], mode: "concurrent" }, { rationale: "fixture" });
+	await store.putExecutionStage("merge-train", { id: "delivery", tasks: taskIds, mode: "concurrent" }, { rationale: "fixture" });
 	await store.submitPlanning("merge-train");
 	const manager = new WorktreeManager(identity);
-	for (const id of ["first", "second"]) {
+	for (const id of taskIds) {
 		const allocation = await manager.allocate("merge-train", await store.readTask("merge-train", id));
 		await store.updateTask("merge-train", id, { status: "running", runtime: { executionMode: allocation.isolation, branch: allocation.branch, worktree: allocation.path, baseCommit: allocation.baseCommit } });
-		await writeFile(join(allocation.path, "shared.txt"), `${id}\n`);
-		await git(allocation.path, "add", "shared.txt");
-		await git(allocation.path, "commit", "--quiet", "-m", `${id} shared edit`);
+		const path = id === "fourth" ? "fourth.txt" : "shared.txt";
+		await writeFile(join(allocation.path, path), `${id}\n`);
+		await git(allocation.path, "add", path);
+		await git(allocation.path, "commit", "--quiet", "-m", `${id} contribution`);
 		await store.updateTask("merge-train", id, { status: "contribution_complete", runtime: { completedCommit: await git(allocation.path, "rev-parse", "HEAD") } });
 	}
 	const canonicalHead = await git(root, "rev-parse", "HEAD");
 	await assert.rejects(manager.mergeTask("merge-train", "first"), /conflicts while applying second/);
 	assert.equal(await git(root, "rev-parse", "HEAD"), canonicalHead);
 	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "base\n");
-	const failure = await manager.activeConflict("merge-train");
-	assert.equal(failure?.kind, "merge_conflict");
-	assert.equal(failure?.position, 1);
-	assert.equal(failure?.ownerTaskId, "second");
+	const firstFailure = await manager.activeConflict("merge-train");
+	assert.equal(firstFailure?.kind, "merge_conflict");
+	assert.equal(firstFailure?.position, 1);
+	assert.equal(firstFailure?.ownerTaskId, "second");
 	const train = JSON.parse(await readFile(join(identity.privateRoot, "work-items", "merge-train", "integration", "delivery", "train.json"), "utf8")) as { taskIds: string[]; prefixCommits: string[] };
-	assert.deepEqual(train.taskIds, ["first", "second"]);
+	assert.deepEqual(train.taskIds, taskIds);
 	assert.equal(train.prefixCommits.length, 1, "the successful first train position stays sealed");
-	await writeFile(join(failure!.candidatePath, "shared.txt"), "first + second\n");
-	await git(failure!.candidatePath, "add", "shared.txt");
-	await git(failure!.candidatePath, "commit", "--quiet", "-m", "resolve downstream train conflict");
-	await manager.settleIntegrationRepair("merge-train", "delivery", ["first", "second"], failure!.evidencePath);
-	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "first + second\n");
+
+	await writeFile(join(firstFailure!.candidatePath, "shared.txt"), "first + second\n");
+	await git(firstFailure!.candidatePath, "add", "shared.txt");
+	await git(firstFailure!.candidatePath, "commit", "--quiet", "-m", "resolve second contribution conflict");
+	await assert.rejects(manager.settleIntegrationRepair("merge-train", "delivery", taskIds, firstFailure!.evidencePath), /conflicts while applying third/);
+	await assert.rejects(access(firstFailure!.evidencePath), /ENOENT/, "superseded conflict evidence is removed");
+
+	const secondFailure = await manager.activeConflict("merge-train");
+	assert.equal(secondFailure?.kind, "merge_conflict");
+	assert.equal(secondFailure?.position, 2);
+	assert.equal(secondFailure?.ownerTaskId, "third");
+	await writeFile(join(secondFailure!.candidatePath, "shared.txt"), "first + second + third\n");
+	await git(secondFailure!.candidatePath, "add", "shared.txt");
+	await git(secondFailure!.candidatePath, "commit", "--quiet", "-m", "resolve third contribution conflict");
+	const integrated = await manager.settleIntegrationRepair("merge-train", "delivery", taskIds, secondFailure!.evidencePath);
+
+	assert.deepEqual(integrated.taskIds, taskIds);
+	assert.equal(await readFile(join(root, "shared.txt"), "utf8"), "first + second + third\n");
+	assert.equal(await readFile(join(root, "fourth.txt"), "utf8"), "fourth\n", "the harness merges the remaining non-conflicting suffix");
+	for (const id of taskIds) assert.equal((await store.readTask("merge-train", id)).status, "merged");
 });
 
 test("merge train resubmission invalidates only the changed contribution suffix", async (t) => {
