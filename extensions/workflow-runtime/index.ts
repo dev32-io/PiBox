@@ -2,11 +2,11 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_LIFECYCLE_EVENT, type DynamicSubagentRequest, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowLifecycleEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
+import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_CONTROL_EVENT, WORKFLOW_LIFECYCLE_EVENT, type DynamicSubagentRequest, type DynamicSubagentStarted, type SpawnableAgentDefinition, type WorkflowAdapter, type WorkflowAdapterDiscovery, type WorkflowControlEvent, type WorkflowLifecycleEvent, type WorkflowLifecycleUpdate, type WorkflowMetrics, type WorkflowRunResult, type WorkflowSnapshot, type WorkflowStep } from "./api.js";
 import { renderBuiltInPrompt } from "../workflow/prompt-loader.js";
 import { formatBackgroundSubagentStatus, SUBAGENT_PULSE_INTERVAL_MS, subagentPulseDot } from "./subagent-display.js";
 import { activateWorkflowBypass, confirmWorkflowBypass } from "../permissions/runtime.js";
-import { formatAgentProgress } from "./agent-progress.js";
+import { formatAgentProgress, type AgentProgress } from "./agent-progress.js";
 import { agentLiveProcessStatus, type AgentLiveProjection } from "./agent-live-projection.js";
 import { DEFAULT_SUBAGENT_STATUS_LIMIT, MAX_SUBAGENT_STATUS_LIMIT, projectSubagentStatus, subagentStatusEmptyText, type SubagentStatusFilters } from "./subagent-status.js";
 import { renderWorkflowEventMessage } from "./workflow-event-display.js";
@@ -30,6 +30,9 @@ type DynamicSubagentView = {
 	mode: "background" | "foreground";
 	tier?: string;
 	onUpdate?: (update: ReturnType<typeof result>) => void;
+	directlyStarted?: DynamicSubagentStarted;
+	directProgress?: AgentProgress;
+	directProcessStatus?: "starting" | "active";
 };
 
 export default function workflows(pi: ExtensionAPI): void {
@@ -131,6 +134,18 @@ export default function workflows(pi: ExtensionAPI): void {
 		...(projection.progress ? { progress: projection.progress } : {}),
 	});
 
+	const dynamicViewDetails = (view: DynamicSubagentView, projection?: AgentLiveProjection) => {
+		const shared = projection ? liveDetails(projection, view.tier) : { agent: view.agent, state: "starting", ...(view.tier ? { tier: view.tier } : {}) };
+		const processStatus = view.directProcessStatus ?? (projection ? agentLiveProcessStatus(projection) : "starting");
+		return {
+			...shared,
+			...(view.directlyStarted ? { resolved: view.directlyStarted } : {}),
+			...(processStatus ? { processStatus } : {}),
+			...(view.directProgress ? { progress: view.directProgress } : {}),
+			...(processStatus === "active" && ["starting", "reserved", "launching"].includes(shared.state) ? { state: "running" } : {}),
+		};
+	};
+
 	const backgroundAgents = () => [...agentLive.values()].filter((projection) => {
 		if (!projection.active || projection.workItemId || projection.taskId || projection.evaluationId) return false;
 		return dynamicViews.get(projection.operationId)?.mode !== "foreground";
@@ -174,7 +189,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		const view = dynamicViews.get(projection.operationId);
 		if (projection.active || view) agentLive.set(projection.agentId, projection);
 		else agentLive.delete(projection.agentId);
-		if (view?.mode === "foreground" && view.onUpdate) view.onUpdate(result("", liveDetails(projection, view.tier)));
+		if (view?.mode === "foreground" && view.onUpdate) view.onUpdate(result("", dynamicViewDetails(view, projection)));
 		renderSubagentStatus();
 		dashboardInvalidate?.();
 		dashboardTui?.requestRender?.();
@@ -909,25 +924,36 @@ export default function workflows(pi: ExtensionAPI): void {
 					operationId: toolCallId, agent: params.agent, task: params.task, tier, presentation: mode,
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}),
 				};
-				dynamicViews.set(toolCallId, { agent: params.agent, mode, tier, ...(mode === "foreground" && onUpdate ? { onUpdate } : {}) });
+				const view: DynamicSubagentView = { agent: params.agent, mode, tier, ...(mode === "foreground" && onUpdate ? { onUpdate, directProcessStatus: "starting" as const } : {}) };
+				dynamicViews.set(toolCallId, view);
 				persistDynamicRuntime(toolCallId, "active");
 				const projection = () => [...agentLive.values()].find((candidate) => candidate.operationId === toolCallId);
-				const startingDetails = () => ({ agent: params.agent, state: "starting", tier });
+				const currentDetails = () => dynamicViewDetails(view, projection());
+				const publishDirectStatus = () => {
+					if (mode === "foreground" && onUpdate) onUpdate(result("", currentDetails()));
+				};
 				const promise = adapter.spawnSubagent!(
 					request,
 					ctx,
 					mode === "foreground" ? signal : undefined,
-					mode === "foreground" && onUpdate ? (text) => {
-						const live = projection();
-						onUpdate(result(text, live ? liveDetails(live, tier) : startingDetails()));
+					mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, currentDetails())) : undefined,
+					mode === "foreground" ? (started) => {
+						view.directlyStarted = started;
+						delete view.directProgress;
+						view.directProcessStatus = "starting";
+						publishDirectStatus();
+					} : undefined,
+					mode === "foreground" ? (progress) => {
+						view.directProgress = progress;
+						view.directProcessStatus = progress.processStartedAt ? "active" : "starting";
+						publishDirectStatus();
 					} : undefined,
 				);
 				if (mode === "foreground") {
 					try {
 						const settled = await promise;
 						if (settled.state === "failed") throw new Error(settled.summary);
-						const live = projection();
-						return result(settled.summary, { ...settled, ...(live ? liveDetails(live, tier) : startingDetails()) });
+						return result(settled.summary, { ...currentDetails(), ...settled });
 					} finally {
 						persistDynamicRuntime(toolCallId, "settled");
 						releaseDynamicView(toolCallId);

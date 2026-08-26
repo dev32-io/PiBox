@@ -781,6 +781,97 @@ test("omitted mode waits in foreground without using the background footer", asy
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("foreground launch callbacks advance starting to active when the shared live monitor is stale", async () => {
+	const f = fixture();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const startedAt = new Date().toISOString();
+	let publish!: (projection: AgentLiveProjection) => void;
+	const staleStarting = liveProjection({
+		agentId: "critic", operationId: "call", role: "plan-critic", presentation: "foreground",
+		provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, state: "launching", attemptState: "launching", startedAt,
+		progress: { startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
+	});
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async spawnSubagent(input, _ctx, _signal, onText, onStarted, onProgress) {
+			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, startedAt });
+			publish({ ...staleStarting, operationId: input.operationId });
+			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 });
+			onProgress?.({ startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 });
+			publish({ ...staleStarting, operationId: input.operationId });
+			onText?.("Working");
+			await gate;
+			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
+		},
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const updates: any[] = [];
+	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(
+		{
+			state: updates.at(-1)?.details.state,
+			processStatus: updates.at(-1)?.details.processStatus,
+			agentId: updates.at(-1)?.details.resolved?.agentId,
+			model: updates.at(-1)?.details.resolved?.model,
+			turns: updates.at(-1)?.details.progress?.turns,
+			toolCalls: updates.at(-1)?.details.progress?.toolCalls,
+		},
+		{ state: "running", processStatus: "active", agentId: "critic", model: "gpt-5.6-luna", turns: 1, toolCalls: 2 },
+		"stale shared projections and text callbacks cannot downgrade authoritative launch progress",
+	);
+	release();
+	const settled = await pending;
+	assert.equal(settled.details.state, "completed", "stale shared state cannot overwrite terminal settlement");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("foreground provider fallback resets direct status before the next process attempt", async () => {
+	const f = fixture();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const firstStartedAt = new Date().toISOString();
+	const secondStartedAt = new Date(Date.now() + 1).toISOString();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		subscribeAgentLive() { return () => undefined; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
+			onStarted?.({ agentId: "critic", provider: "first", model: "primary", effort: "high", fast: false, startedAt: firstStartedAt });
+			onProgress?.({ startedAt: firstStartedAt, lastEventAt: firstStartedAt, processStartedAt: firstStartedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 400, reasoningTokens: 10 });
+			onStarted?.({ agentId: "critic", provider: "second", model: "fallback", effort: "max", fast: false, startedAt: secondStartedAt });
+			await gate;
+			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
+		},
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	const updates: any[] = [];
+	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(
+		{
+			state: updates.at(-1)?.details.state,
+			processStatus: updates.at(-1)?.details.processStatus,
+			provider: updates.at(-1)?.details.resolved?.provider,
+			model: updates.at(-1)?.details.resolved?.model,
+			progress: updates.at(-1)?.details.progress,
+		},
+		{ state: "starting", processStatus: "starting", provider: "second", model: "fallback", progress: undefined },
+	);
+	release();
+	await pending;
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("a foreground dynamic subagent recovered without its inline renderer moves to the footer", async () => {
 	const f = fixture();
 	f.entries.push({ type: "custom", customType: "pibox-subagent-runtime", data: { operationId: "prior-tool-call", status: "active" } });
