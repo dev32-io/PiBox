@@ -20,6 +20,7 @@ const RUNNING_FRAMES: Record<string, readonly string[]> = {
 };
 const DEFAULT_RUNNING_FRAMES = RUNNING_FRAMES.task!;
 const SUBAGENT_STATUS_KEY = "subagent-dashboard";
+const SUBAGENT_RUNTIME_ENTRY = "pibox-subagent-runtime";
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
@@ -77,6 +78,10 @@ export default function workflows(pi: ExtensionAPI): void {
 	const persist = (ref: string, state: "running" | "paused" | "stopped") => {
 		try { pi.appendEntry("pibox-workflow", { ref, state, at: new Date().toISOString() }); }
 		catch { /* Session replacement leaves adapter-owned durable state authoritative. */ }
+	};
+	const persistDynamicRuntime = (operationId: string, status: "active" | "settled") => {
+		try { pi.appendEntry(SUBAGENT_RUNTIME_ENTRY, { operationId, status, at: new Date().toISOString() }); }
+		catch { /* Session replacement leaves the agent registry authoritative. */ }
 	};
 
 	const observedStageCompletions = new Map<string, Set<string>>();
@@ -213,6 +218,10 @@ export default function workflows(pi: ExtensionAPI): void {
 				agentLiveReady = false;
 			}
 		});
+	};
+
+	const ensureAgentLive = (ctx: ExtensionContext) => {
+		if (!agentLiveSubscription && !agentLiveAuthoritative) watchAgentLive(ctx);
 	};
 
 	const releaseDynamicView = (operationId: string) => {
@@ -787,6 +796,7 @@ export default function workflows(pi: ExtensionAPI): void {
 				const confirmed = await confirmWorkflowBypass(ctx, params.ref);
 				if (!confirmed) return result(`Workflow start cancelled. ${params.ref} was not launched and permission mode was not changed.`, { ref: params.ref, cancelled: true });
 				const adapter = adapterFor(params.ref);
+				ensureAgentLive(ctx);
 				progress("Validating prerequisites");
 				const preflight = await adapter.preflightWorkflow?.(params.ref, ctx);
 				if (preflight && !preflight.ok) {
@@ -891,6 +901,7 @@ export default function workflows(pi: ExtensionAPI): void {
 			}, { additionalProperties: false }),
 			async execute(toolCallId, params, signal, onUpdate, ctx) {
 				const adapter = dynamicAdapter();
+				ensureAgentLive(ctx);
 				const mode = params.mode ?? "foreground";
 				const agentTier = catalog.find((agent) => agent.name === params.agent)?.tier;
 				const tier = inferDynamicSubagentTier(params.tier, params.model, agentTier);
@@ -899,6 +910,7 @@ export default function workflows(pi: ExtensionAPI): void {
 					...(params.model ? { model: params.model } : {}), ...(params.effort ? { effort: params.effort } : {}),
 				};
 				dynamicViews.set(toolCallId, { agent: params.agent, mode, tier, ...(mode === "foreground" && onUpdate ? { onUpdate } : {}) });
+				persistDynamicRuntime(toolCallId, "active");
 				const projection = () => [...agentLive.values()].find((candidate) => candidate.operationId === toolCallId);
 				const startingDetails = () => ({ agent: params.agent, state: "starting", tier });
 				const promise = adapter.spawnSubagent!(
@@ -917,6 +929,7 @@ export default function workflows(pi: ExtensionAPI): void {
 						const live = projection();
 						return result(settled.summary, { ...settled, ...(live ? liveDetails(live, tier) : startingDetails()) });
 					} finally {
+						persistDynamicRuntime(toolCallId, "settled");
 						releaseDynamicView(toolCallId);
 					}
 				}
@@ -928,7 +941,10 @@ export default function workflows(pi: ExtensionAPI): void {
 						summary: error instanceof Error ? error.message : String(error),
 						attention: true,
 					}))
-					.finally(() => releaseDynamicView(toolCallId));
+					.finally(() => {
+						persistDynamicRuntime(toolCallId, "settled");
+						releaseDynamicView(toolCallId);
+					});
 				return result(`Spawned ${params.agent} in background. Its terminal report will be returned to this session and trigger a response.`, { agent: params.agent, state: "starting" });
 			},
 		});
@@ -1025,43 +1041,56 @@ export default function workflows(pi: ExtensionAPI): void {
 		const catalog = catalogAdapter ? await catalogAdapter.listSpawnableAgents!(ctx).catch(() => []) : [];
 		registerSubagentSpawn(catalog);
 		sessionCtx = ctx;
-		watchAgentLive(ctx);
-		const entries = ctx.sessionManager.getEntries();
 		const states = new Map<string, "running" | "paused" | "stopped">();
-		for (const entry of entries) {
-			if (entry.type !== "custom" || entry.customType !== "pibox-workflow") continue;
-			const data = entry.data as { ref?: string; state?: "running" | "paused" | "stopped" };
-			if (data.ref && data.state) states.set(data.ref, data.state);
-		}
-		const controlled = new Set<string>();
-		for (const adapter of adapters) {
-			const records = adapter.listExecutionControls ? await adapter.listExecutionControls(ctx).catch(() => []) : [];
-			for (const record of records) {
-				controlled.add(record.workflowRef);
-				if (record.mode !== "running" && record.mode !== "paused") continue;
-				if (record.ownerSessionId && record.ownerSessionId !== ctx.sessionManager.getSessionId()) continue;
-				const attached = await adapter.controlExecution?.(record.workflowRef, "attach", `session:${ctx.sessionManager.getSessionId()}:attach:${record.generation}`, ctx).catch(() => undefined);
-				if (attached) ownership.set(record.workflowRef, attached.generation);
-				active.set(record.workflowRef, record.mode);
-				currentRef = record.workflowRef;
+		const dynamicStates = new Map<string, "active" | "settled">();
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type !== "custom") continue;
+			if (entry.customType === "pibox-workflow") {
+				const data = entry.data as { ref?: string; state?: "running" | "paused" | "stopped" };
+				if (data.ref && data.state) states.set(data.ref, data.state);
+			} else if (entry.customType === SUBAGENT_RUNTIME_ENTRY) {
+				const data = entry.data as { operationId?: string; status?: "active" | "settled" };
+				if (data.operationId && data.status) dynamicStates.set(data.operationId, data.status);
 			}
 		}
-		// Compatibility for workflows started before durable control records existed.
-		// Establish fence 1 during attach so an automatic post-reload tick never runs
-		// outside durable ownership while waiting for an explicit resume command.
-		for (const [ref, state] of states) {
-			if (state === "stopped" || controlled.has(ref)) continue;
-			const adapter = adapterFor(ref);
-			const migrated = await adapter.controlExecution?.(ref, state === "running" ? "resume" : "pause", `session:${ctx.sessionManager.getSessionId()}:migrate:${state}`, ctx).catch(() => undefined);
-			if (migrated) ownership.set(ref, migrated.generation);
-			active.set(ref, state);
-			currentRef = ref;
-		}
-		if (currentRef) {
-			const adapter = adapterFor(currentRef);
-			const restoredSnapshot = await adapter.snapshot(currentRef, ctx).catch(() => undefined);
-			currentSnapshot = restoredSnapshot ? reconcileAgentMetricRates(restoredSnapshot) : undefined;
-			watchLifecycle(currentRef, adapter, ctx);
+		const restorable: Array<[string, "running" | "paused"]> = [...states].flatMap(([ref, state]) =>
+			state === "running" || state === "paused" ? [[ref, state]] : []);
+		const hasRestorableSubagents = [...dynamicStates.values()].some((status) => status === "active");
+		if (restorable.length > 0 || hasRestorableSubagents) ensureAgentLive(ctx);
+		if (restorable.length > 0) {
+			// Only a session with durable active-workflow intent initializes control
+			// storage during restoration. Fresh sessions remain registration-only.
+			const controlled = new Set<string>();
+			for (const adapter of adapters) {
+				const records = adapter.listExecutionControls ? await adapter.listExecutionControls(ctx).catch(() => []) : [];
+				for (const record of records) {
+					if (!states.has(record.workflowRef)) continue;
+					controlled.add(record.workflowRef);
+					if (record.mode !== "running" && record.mode !== "paused") continue;
+					if (record.ownerSessionId && record.ownerSessionId !== ctx.sessionManager.getSessionId()) continue;
+					const attached = await adapter.controlExecution?.(record.workflowRef, "attach", `session:${ctx.sessionManager.getSessionId()}:attach:${record.generation}`, ctx).catch(() => undefined);
+					if (attached) ownership.set(record.workflowRef, attached.generation);
+					active.set(record.workflowRef, record.mode);
+					currentRef = record.workflowRef;
+				}
+			}
+			// Compatibility for workflows started before durable control records existed.
+			// Establish fence 1 during attach so an automatic post-reload tick never runs
+			// outside durable ownership while waiting for an explicit resume command.
+			for (const [ref, state] of restorable) {
+				if (controlled.has(ref)) continue;
+				const adapter = adapterFor(ref);
+				const migrated = await adapter.controlExecution?.(ref, state === "running" ? "resume" : "pause", `session:${ctx.sessionManager.getSessionId()}:migrate:${state}`, ctx).catch(() => undefined);
+				if (migrated) ownership.set(ref, migrated.generation);
+				active.set(ref, state);
+				currentRef = ref;
+			}
+			if (currentRef) {
+				const adapter = adapterFor(currentRef);
+				const restoredSnapshot = await adapter.snapshot(currentRef, ctx).catch(() => undefined);
+				currentSnapshot = restoredSnapshot ? reconcileAgentMetricRates(restoredSnapshot) : undefined;
+				watchLifecycle(currentRef, adapter, ctx);
+			}
 		}
 		renderDashboard(ctx);
 		renderSubagentStatus();

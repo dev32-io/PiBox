@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { Check, Errors } from "typebox/value";
 import { reconcileReportedAgents } from "./agent-reconciliation.js";
-import { AGENT_HEARTBEAT_FRESH_MS, AGENT_HEARTBEAT_INTERVAL_MS, isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import { AGENT_HEARTBEAT_INTERVAL_MS, isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
@@ -22,7 +22,7 @@ import { buildReviewPersistentContext, buildTaskPersistentContext } from "./impl
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType, type PlanEdit } from "./orchestrator-resources.js";
 import { normalizePlanArtifact, normalizePlanBundle, normalizePlanEdit, normalizePlanStage, normalizePlanTask, normalizeResourceArtifact } from "./plan-authoring.js";
 import { paginateCatalog, sliceText } from "./progressive-disclosure.js";
-import { assertCleanRepository, atomicWriteFile, discoverRepository, readTextIfExists, runGit, type RepositoryIdentity } from "./repository.js";
+import { assertCleanRepository, atomicWriteFile, discoverRepository, runGit, type RepositoryIdentity } from "./repository.js";
 import { isTierTaskAssignment, taskAgentName, type HarnessEffort, type HarnessStatusSnapshot, type ModelTier, type MutationAuthority, type TaskManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
 import { CanonicalMutationCoordinator, runManagedChild } from "./canonical-mutation.js";
@@ -489,52 +489,6 @@ async function snapshot(runtime: HarnessRuntime): Promise<HarnessStatusSnapshot>
 	return { repositoryRoot: runtime.identity.root, repositoryId: runtime.identity.id, workItems, taskCounts, runs, executionControls, agents };
 }
 
-async function reconcileSessionAgents(runtime: HarnessRuntime): Promise<{ reported: number; interrupted: number; ambiguous: number }> {
-	const result = { reported: 0, interrupted: 0, ambiguous: 0 };
-	for (const agent of await runtime.agents.list()) {
-		if (["completed", "failed", "protocol_failed", "cancelled", "waiting_model", "waiting_capacity", "waiting_decision", "blocked", "paused", "reported"].includes(agent.state)) continue;
-		const agentRoot = join(runtime.agents.root, "agents", agent.id);
-		let hasHandoff = Boolean(await readTextIfExists(join(agentRoot, "handoff.json")));
-		if (!hasHandoff && agent.workItemId && agent.runId) {
-			const runs = new HarnessRunStore(runtime.identity, agent.workItemId);
-			hasHandoff = agent.evaluationId ? Boolean(await runs.readEvaluationHandoff(agent.runId).catch(() => undefined)) : Boolean(await runs.readHandoff(agent.runId).catch(() => undefined));
-		}
-		if (hasHandoff) {
-			await runtime.agents.transition(agent.id, "reported", { summary: agent.summary ?? "Recovered durable handoff" }).catch(() => undefined);
-			result.reported += 1;
-			continue;
-		}
-		const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
-		if (!attempt) continue;
-		const attemptRoot = join(agentRoot, "attempts", attempt.id);
-		const processExit = await readTextIfExists(join(attemptRoot, "process-exit.json"));
-		const finalResult = await readTextIfExists(join(attemptRoot, "result.json"));
-		if (processExit && finalResult && !agent.taskId && !agent.evaluationId) {
-			const summary = (JSON.parse(finalResult) as { text?: string }).text ?? "Background specialist completed";
-			await runtime.agents.transition(agent.id, "reported", { summary }).catch(() => undefined);
-			await runtime.agents.transition(agent.id, "completed", { summary }).catch(() => undefined);
-			result.reported += 1;
-			continue;
-		}
-		const heartbeatText = await readTextIfExists(join(attemptRoot, "heartbeat.json"));
-		const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
-		const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at !== undefined && Date.now() - Date.parse(heartbeat.at) < AGENT_HEARTBEAT_FRESH_MS;
-		let alive = false;
-		if (heartbeat?.pid) {
-			try { process.kill(heartbeat.pid, 0); alive = true; } catch { alive = false; }
-		}
-		if (fresh && alive) continue;
-		if (alive) {
-			await runtime.agents.transition(agent.id, "recovery_required", { error: "Process PID exists but its scoped heartbeat is stale" }).catch(() => undefined);
-			result.ambiguous += 1;
-		} else {
-			await runtime.agents.transition(agent.id, "interrupted", { error: "Child process exited without a valid handoff" }).catch(() => undefined);
-			result.interrupted += 1;
-		}
-	}
-	return result;
-}
-
 function formatStatus(status: HarnessStatusSnapshot): string {
 	if (status.workItems.length === 0) return `Workflow: no managed work items\nRepository: ${status.repositoryRoot}`;
 	const lines = status.workItems.map((item) => {
@@ -562,6 +516,7 @@ function formatStatus(status: HarnessStatusSnapshot): string {
 
 export default function workflow(pi: ExtensionAPI): void {
 	let sessionRuntime: HarnessRuntime | undefined;
+	let sessionRuntimePromise: Promise<HarnessRuntime> | undefined;
 	let modelTierProfile: string | undefined;
 	let heartbeatTimer: NodeJS.Timeout | undefined;
 	let sessionShuttingDown = false;
@@ -594,10 +549,16 @@ export default function workflow(pi: ExtensionAPI): void {
 	});
 
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
-		if (sessionRuntime?.identity.root === ctx.cwd || sessionRuntime?.identity.root === (await discoverRepository(ctx.cwd)).root) {
+		const identity = await discoverRepository(ctx.cwd);
+		if (sessionRuntime?.identity.root === identity.root) return syncRuntimeModelTierProfile(sessionRuntime);
+		if (sessionRuntimePromise) return sessionRuntimePromise;
+		const pending = createRuntime(ctx, modelTierProfile).then((runtime) => {
+			sessionRuntime = syncRuntimeModelTierProfile(runtime);
 			return sessionRuntime;
-		}
-		return syncRuntimeModelTierProfile(await createRuntime(ctx, modelTierProfile));
+		});
+		sessionRuntimePromise = pending;
+		try { return await pending; }
+		finally { if (sessionRuntimePromise === pending) sessionRuntimePromise = undefined; }
 	};
 
 	const runWorktreeOperation = async <T>(
@@ -1025,9 +986,13 @@ export default function workflow(pi: ExtensionAPI): void {
 
 	const listSpawnableAgents = async (ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]> => {
 		if (!ctx.isProjectTrusted()) return [];
-		const runtime = await runtimeFor(ctx);
-		const projectAgentRoot = join(runtime.identity.root, ".pi", "agents");
-		return Object.entries(runtime.config.agents).sort(([left], [right]) => left.localeCompare(right)).map(([name, definition]) => ({
+		// Catalog publication is startup metadata, not workflow activation. Read the
+		// lightweight repository policy without creating registries, event stores, or
+		// recovery state; the complete runtime remains single-flight and tool-lazy.
+		const identity = await discoverRepository(ctx.cwd);
+		const config = loadHarnessConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}) }).config;
+		const projectAgentRoot = join(identity.root, ".pi", "agents");
+		return Object.entries(config.agents).sort(([left], [right]) => left.localeCompare(right)).map(([name, definition]) => ({
 			name,
 			description: definition.description ?? `Configured ${name} agent`,
 			tier: definition.tier!,
@@ -1731,7 +1696,7 @@ export default function workflow(pi: ExtensionAPI): void {
 		return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_CONTRACT}` };
 	});
 
-	pi.on("session_start", async (event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		sessionShuttingDown = false;
 		const disallowed = new Set<string>();
 		if (isEvaluatorProcess()) [...ORCHESTRATOR_TOOL_NAMES, ...COMPATIBILITY_RESOURCE_TOOL_NAMES, ...WORKER_TOOL_NAMES, ...LEDGER_TOOL_NAMES].forEach((name) => disallowed.add(name));
@@ -1754,29 +1719,9 @@ export default function workflow(pi: ExtensionAPI): void {
 			return;
 		}
 		if (isWorkerProcess() || isEvaluatorProcess()) return;
-		try {
-			sessionRuntime = syncRuntimeModelTierProfile(await createRuntime(ctx, modelTierProfile));
-			const staleLockRecovered = await sessionRuntime.mutex.recoverStale();
-			await sessionRuntime.events.append("session.started", {
-				reason: event.reason,
-				sessionFile: ctx.sessionManager.getSessionFile() ?? null,
-				staleLockRecovered,
-			});
-			if (!isWorkerProcess() && !isEvaluatorProcess()) {
-				const agents = await reconcileSessionAgents(sessionRuntime);
-				const finalized = await reconcileReportedAgents({ identity: sessionRuntime.identity, registry: sessionRuntime.agents, workItems: sessionRuntime.workItems, mutex: sessionRuntime.mutex });
-				if (agents.reported || agents.interrupted || agents.ambiguous || finalized.completed.length || finalized.errors.length) ctx.ui.notify(`Workflow reconciled subagents: ${finalized.completed.length} completed, ${agents.reported} reported, ${agents.interrupted} interrupted, ${agents.ambiguous + finalized.errors.length} require recovery.`, agents.ambiguous || finalized.errors.length ? "warning" : "info");
-				const recovered = [];
-				for (const item of await sessionRuntime.workItems.list()) {
-					recovered.push(...(await new HarnessRunStore(sessionRuntime.identity, item.id).recoverInterrupted()));
-				}
-				if (recovered.length > 0) ctx.ui.notify(`Workflow recovered ${recovered.length} interrupted run(s). Use /workflow recover or /workflow resume <task>.`, "warning");
-			}
-		} catch (error) {
-			sessionRuntime = undefined;
-			if (error instanceof HarnessError && error.code === "NOT_A_GIT_REPOSITORY") return;
-			ctx.ui.notify(`Workflow initialization failed: ${describeHarnessError(error)}`, "warning");
-		}
+		// Main sessions only register their capability surface here. Runtime storage,
+		// event-log validation, reconciliation, and recovery are initialized lazily by
+		// the first workflow operation (or by restoration of an active workflow).
 	});
 
 	pi.on("message_end", async (event) => {
@@ -1799,9 +1744,13 @@ export default function workflow(pi: ExtensionAPI): void {
 			await atomicWriteFile(join(process.env.PIBOX_SUBAGENT_ROOT, "attempts", process.env.PIBOX_SUBAGENT_ATTEMPT_ID, "process-exit.json"), `${JSON.stringify({ agentId: process.env.PIBOX_SUBAGENT_ID, attemptId: process.env.PIBOX_SUBAGENT_ATTEMPT_ID, reason: event.reason, at: new Date().toISOString() }, null, 2)}\n`, 0o600).catch(() => undefined);
 		}
 		heartbeatTimer = undefined;
-		if (!sessionRuntime) return;
+		if (!sessionRuntime) {
+			sessionRuntimePromise = undefined;
+			return;
+		}
 		await sessionRuntime.events.append("session.shutdown", { reason: event.reason });
 		await sessionRuntime.events.flush();
 		sessionRuntime = undefined;
+		sessionRuntimePromise = undefined;
 	});
 }

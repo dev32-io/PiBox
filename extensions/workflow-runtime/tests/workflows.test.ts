@@ -90,6 +90,30 @@ test("registers the generalized workflow and subagent surface", async () => {
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("fresh sessions publish the agent catalog without restoring workflow runtime state", async () => {
+	const f = fixture();
+	let catalogReads = 0;
+	let controlReads = 0;
+	let liveSubscriptions = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => false,
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async listSpawnableAgents() { catalogReads++; return []; },
+		async spawnSubagent() { return { ref: "agent:unused", state: "completed", summary: "unused" }; },
+		async listExecutionControls() { controlReads++; return []; },
+		subscribeAgentLive() { liveSubscriptions++; return () => undefined; },
+		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+	};
+	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	assert.equal(catalogReads, 1, "lightweight catalog metadata remains available");
+	assert.equal(controlReads, 0, "fresh sessions do not open durable workflow control state");
+	assert.equal(liveSubscriptions, 0, "fresh sessions do not initialize the agent registry");
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("refreshes subagent_spawn with the adapter's validated agent catalog and tier defaults", async () => {
 	const f = fixture();
 	const requests: any[] = [];
@@ -759,6 +783,7 @@ test("omitted mode waits in foreground without using the background footer", asy
 
 test("a foreground dynamic subagent recovered without its inline renderer moves to the footer", async () => {
 	const f = fixture();
+	f.entries.push({ type: "custom", customType: "pibox-subagent-runtime", data: { operationId: "prior-tool-call", status: "active" } });
 	const startedAt = new Date(Date.now() - 5_000).toISOString();
 	const recovered = liveProjection({
 		agentId: "recovered", operationId: "prior-tool-call", role: "explorer", presentation: "foreground",

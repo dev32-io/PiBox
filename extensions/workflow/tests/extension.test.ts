@@ -131,7 +131,11 @@ test("registers the resource API and hides legacy planning tools from the main s
 	assert.match(descriptions.get("task_blocked") ?? "", /external blocker[\s\S]+cannot be resolved through a task-contract amendment/i);
 	assert.deepEqual(events, ["tool_call", "before_agent_start", "session_start", "message_end", "session_shutdown"], "workflow logging does not write one repository event per main-agent turn");
 	activeTools = [...tools, "read"];
-	await handlers.get("session_start")?.({ reason: "startup" }, { cwd: "/tmp/not-a-pibox-repository", sessionManager: { getSessionId: () => "session", getSessionFile: () => undefined }, ui: { notify() {} } });
+	await handlers.get("session_start")?.({ reason: "startup" }, {
+		cwd: "/tmp/not-a-pibox-repository",
+		sessionManager: { getSessionId: () => { throw new Error("fresh startup must not initialize workflow runtime"); }, getSessionFile: () => undefined },
+		ui: { notify() {} },
+	});
 	for (const legacy of ["work_item_create", "artifact_update", "task_define", "evaluation_define", "planning_submit"]) assert.equal(tools.includes(legacy), false, legacy);
 	assert.equal(tools.includes("agent_run"), false, "direct specialist duplication is removed");
 	for (const preferred of ["resource_list", "resource_read", "resource_write", "resource_delete", "workflow_apply_change"]) assert.equal(activeTools.includes(preferred), true, preferred);
