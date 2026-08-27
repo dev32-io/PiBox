@@ -5,7 +5,9 @@ import { formatSkillsForPrompt, type BeforeAgentStartEvent, type ExtensionAPI } 
 import { activeProfile, registerProfile } from "../profile/registry.js";
 
 const DESIGNER_PROFILE = "designer";
-const PROMPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../../prompt/designer.md");
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const PROMPT_PATH = resolve(PACKAGE_ROOT, "prompt/designer.md");
+const HANDOFF_SKILL_PATH = resolve(PACKAGE_ROOT, "skills/designer-handoff/SKILL.md");
 const REQUIRED_TOOL = "subagent_spawn";
 const HIDDEN_SKILLS = new Set(["product-discussion", "shape-story", "plan-delivery", "workflow-run"]);
 
@@ -81,6 +83,11 @@ export default function designerExtension(pi: ExtensionAPI): void {
 			const detail = authority ? `designer · ${relative(ctx.cwd, authority.path).replaceAll("\\", "/") || "DESIGN.md"}` : "designer";
 			ctx.ui.setStatus("pibox-designer", detail);
 		}
+	});
+
+	pi.on("resources_discover", () => {
+		if (!active) return;
+		return { skillPaths: [HANDOFF_SKILL_PATH] };
 	});
 
 	pi.on("before_agent_start", (event) => {

@@ -21,6 +21,7 @@
     "prompt",
     "services",
     "docs",
+    "examples",
     "README.md",
     "LICENSE"
   ],
@@ -61,7 +62,8 @@
       "./extensions/tui/startup/index.ts"
     ],
     "skills": [
-      "./skills"
+      "./skills",
+      "!./skills/designer-handoff/SKILL.md"
     ],
     "themes": [
       "./themes/rattle.json"

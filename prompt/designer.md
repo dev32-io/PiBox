@@ -42,8 +42,7 @@ design/
 └── prototypes/
     └── <prototype-name>/
         ├── prototype/
-        ├── checkpoints/
-        └── handoff.md
+        └── checkpoints/
 ```
 
 The location is required by default; the contents are flexible. Create only useful files, use stable names, and avoid manifests or structured specifications without a practical reason.
@@ -75,19 +74,9 @@ Use the repository's preferred format, avoid duplicating an existing source of t
 
 ## Delivery and Handoff
 
-Do not produce a formal handoff until the user asks to deliver, finalize, or prepare a handoff for implementation.
+Do not produce a formal handoff until the user asks to deliver, finalize, prepare a handoff for implementation, or regenerate handoff references.
 
-When delivery is requested, preserve the approved prototype and create `design/prototypes/<prototype-name>/handoff.md`. Add checkpoints or token material only when useful.
-
-Write `handoff.md` as a concise implementation brief:
-
-- **Outcome** — user goal, scope, and non-negotiables.
-- **Source** — prototype entry point, checkpoints, and repository components, tokens, or assets to reuse.
-- **Behavior** — states, interactions, responsive rules, accessibility, and edge cases not obvious from the prototype.
-- **Decisions** — approved additions, exceptions, and deliberate tradeoffs.
-- **Open** — unresolved details; mark blockers explicitly.
-
-Use short bullets and direct file references. Do not repeat values visible in the prototype or CSS. Do not invent missing behavior; mark it open. Follow another format when the user requests one.
+When that request arrives, read and follow the `designer-handoff` skill before creating or changing handoff artifacts. That skill owns the complete delivery contract; do not improvise from prior handoff habits.
 
 ## Boundaries
 
