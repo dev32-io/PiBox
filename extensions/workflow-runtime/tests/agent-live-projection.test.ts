@@ -104,6 +104,97 @@ test("process-local progress reaches live projections without durable registry w
 	assert.equal((await value.get(agentId)).attempts[0]!.progress, undefined, "live progress remains memory-only");
 });
 
+test("live manager coalesces four concurrent progress bursts per agent", async (t) => {
+	const value = await registry(t);
+	const agents: Array<{ agentId: string; attemptId: string; startedAt: string }> = [];
+	for (let index = 1; index <= 4; index += 1) {
+		const agentId = await reserve(value, `burst-${index}`);
+		const { attempt } = await value.startAttempt(agentId, undefined, { kind: "review", generation: 3 });
+		await value.markRunning(agentId, attempt.id, 405 + index);
+		publishAgentLiveProgress(value.root, agentId, attempt.id, markAgentProcessStarted(initialAgentProgress(attempt.startedAt)));
+		agents.push({ agentId, attemptId: attempt.id, startedAt: attempt.startedAt });
+	}
+
+	const latestAgents = new Set<string>();
+	let resolveLatest!: () => void;
+	const latest = new Promise<void>((resolve) => { resolveLatest = resolve; });
+	const manager = new AgentLiveProjectionManager(value);
+	const unsubscribe = await manager.watch((projection) => {
+		if (projection.operationId.startsWith("burst-") && projection.progress?.turns === 40) {
+			latestAgents.add(projection.agentId);
+			if (latestAgents.size === agents.length) resolveLatest();
+		}
+	});
+	t.after(unsubscribe);
+
+	const originalGet = value.get.bind(value);
+	const reads = new Map<string, number>();
+	const blockedAgents = new Set<string>();
+	let releaseFirstReads!: () => void;
+	let resolveFirstReads!: () => void;
+	const firstReadsBlocked = new Promise<void>((resolve) => { releaseFirstReads = resolve; });
+	const firstReadsStarted = new Promise<void>((resolve) => { resolveFirstReads = resolve; });
+	value.get = async (requestedAgentId: string) => {
+		const count = (reads.get(requestedAgentId) ?? 0) + 1;
+		reads.set(requestedAgentId, count);
+		if (count === 1) {
+			blockedAgents.add(requestedAgentId);
+			if (blockedAgents.size === agents.length) resolveFirstReads();
+			await firstReadsBlocked;
+		}
+		return originalGet(requestedAgentId);
+	};
+
+	for (const agent of agents) {
+		publishAgentLiveProgress(value.root, agent.agentId, agent.attemptId, markAgentProcessStarted({ ...initialAgentProgress(agent.startedAt), turns: 1 }));
+	}
+	await firstReadsStarted;
+	for (let turns = 2; turns <= 40; turns += 1) for (const agent of agents) {
+		publishAgentLiveProgress(value.root, agent.agentId, agent.attemptId, markAgentProcessStarted({ ...initialAgentProgress(agent.startedAt), turns }));
+	}
+	releaseFirstReads();
+	await Promise.race([latest, new Promise((_, reject) => setTimeout(() => reject(new Error("latest concurrent burst progress was not published")), 1_000))]);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual([...reads.values()], [2, 2, 2, 2], "each agent is bounded to one active read plus one latest-wins catch-up");
+});
+
+test("initial watch catch-up cannot overwrite a newer lifecycle projection", async (t) => {
+	const value = await registry(t);
+	const agentId = await reserve(value, "initial-race");
+	const { attempt } = await value.startAttempt(agentId, undefined, { kind: "review", generation: 4 });
+	await value.markRunning(agentId, attempt.id, 406);
+	publishAgentLiveProgress(value.root, agentId, attempt.id, markAgentProcessStarted(initialAgentProgress(attempt.startedAt)));
+
+	const originalGet = value.get.bind(value);
+	let releaseCapturedRead!: () => void;
+	let resolveCapturedRead!: () => void;
+	const capturedReadBlocked = new Promise<void>((resolve) => { releaseCapturedRead = resolve; });
+	const capturedReadReady = new Promise<void>((resolve) => { resolveCapturedRead = resolve; });
+	let firstRead = true;
+	value.get = async (requestedAgentId: string) => {
+		const captured = await originalGet(requestedAgentId);
+		if (firstRead) {
+			firstRead = false;
+			resolveCapturedRead();
+			await capturedReadBlocked;
+		}
+		return captured;
+	};
+
+	const seen: boolean[] = [];
+	const manager = new AgentLiveProjectionManager(value);
+	const watching = manager.watch((projection) => {
+		if (projection.operationId === "initial-race") seen.push(projection.active);
+	});
+	await capturedReadReady;
+	await value.transition(agentId, "cancelled");
+	releaseCapturedRead();
+	const unsubscribe = await watching;
+	t.after(unsubscribe);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(seen.at(-1), false, "the queued lifecycle read must supersede the stale initial record");
+});
+
 test("a replacement live manager reconstructs an active attempt from its transport", async (t) => {
 	const value = await registry(t);
 	const agentId = await reserve(value, "reattach");
