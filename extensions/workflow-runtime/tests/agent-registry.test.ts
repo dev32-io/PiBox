@@ -160,6 +160,21 @@ test("serializes concurrent reservations across registry instances", async (t) =
 	assert.equal((await registries[0]!.list()).length, 16);
 });
 
+test("reconciles configured limits when restoring an existing session registry", async (t) => {
+	const { root, registry } = await fixture(t, 3);
+	await registry.reserve(input(1));
+	await registry.reserve(input(2));
+
+	const lowered = new SessionAgentRegistry(root, "session-1", 1, 1);
+	await lowered.initialize("main:session-1");
+	assert.equal(await lowered.activeCount(), 2, "lowering the limit preserves existing logical agents");
+	await assert.rejects(lowered.reserve(input(3)), /SUBAGENT_LIMIT_REACHED: 2 of 1/);
+
+	const raised = new SessionAgentRegistry(root, "session-1", 3, 1);
+	await raised.initialize("main:session-1");
+	assert.equal((await raised.reserve(input(3))).state, "reserved");
+});
+
 test("persists blocking requests and responses without releasing the logical slot", async (t) => {
 	const { registry } = await fixture(t, 1);
 	const agent = await registry.reserve(input(1));

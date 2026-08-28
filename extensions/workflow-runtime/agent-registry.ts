@@ -258,6 +258,17 @@ export class SessionAgentRegistry {
 	async initialize(mainAgentId = `main:${this.sessionId}`): Promise<void> {
 		await this.mutex.run("agent-registry:init", async () => {
 			if (await readTextIfExists(this.snapshotPath)) {
+				const snapshot = await this.read();
+				if (snapshot.maxActiveAgents !== this.maxActiveAgents || snapshot.maxSubagentDepth !== this.maxSubagentDepth) {
+					const previous = { maxActiveAgents: snapshot.maxActiveAgents, maxSubagentDepth: snapshot.maxSubagentDepth };
+					snapshot.maxActiveAgents = this.maxActiveAgents;
+					snapshot.maxSubagentDepth = this.maxSubagentDepth;
+					await this.commit(snapshot, "agent.limits_updated", {
+						previous,
+						maxActiveAgents: snapshot.maxActiveAgents,
+						maxSubagentDepth: snapshot.maxSubagentDepth,
+					});
+				}
 				await rm(this.eventsPath, { force: true }).catch(() => undefined);
 				return;
 			}
