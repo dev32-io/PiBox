@@ -24,6 +24,7 @@ Do not edit production code until you have explored the relevant source and targ
 
 For the requested mockup slice, trace:
 
+- read and understand handoff, readme docs and DESIGN.MD
 - its exact HTML boundary, semantics, content, variants, and states;
 - every relevant CSS rule, variable, pseudo-element, responsive query, keyframe, asset, inherited style, layout constraint, and stacking relationship;
 - the JavaScript owning events, state transitions, DOM updates, timing, interruption, and reduced-motion behavior.
@@ -64,7 +65,7 @@ Before adding a token or primitive, confirm that an existing semantic equivalent
 
 - Run the focused build, type, behavior, preview, and accessibility checks used by the target codebase. Exercise every requested state and relevant responsive or adaptive configuration.
 - For each visual correction, re-read the responsible HTML, CSS, or JavaScript and identify the target-platform mapping causing the difference. Change that cause, not an unrelated offset that happens to reduce a score.
-- Treat visual-diff measurements as diagnostic evidence, never as the sole completion target across different renderers.
+- Treat visual-diff measurements as diagnostic evidence, never as the sole completion target across different renderers. Inspect visual-diff report carefully, and prioritize the most meaningful differences, safely ignoring minor pixel-level differences that are caused by text rasterization, anti-aliasing, or platform rendering differences.
 - If you are about to add a magic constant, no-op modifier, impossible platform state, test-only production branch, or a second unexplained pixel nudge to the same element, stop. Re-derive the implementation from the source and shared primitives, or report the native difference; do not try another offset.
 - Preserve correct native rendering, accessibility, and adaptive behavior when they require a deliberate platform difference, and report that adaptation.
 
