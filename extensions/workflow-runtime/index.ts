@@ -21,6 +21,7 @@ const RUNNING_FRAMES: Record<string, readonly string[]> = {
 const DEFAULT_RUNNING_FRAMES = RUNNING_FRAMES.task!;
 const SUBAGENT_STATUS_KEY = "subagent-dashboard";
 const SUBAGENT_RUNTIME_ENTRY = "pibox-subagent-runtime";
+const DIRECT_PROGRESS_RENDER_INTERVAL_MS = 50;
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
@@ -30,6 +31,8 @@ type DynamicSubagentView = {
 	mode: "background" | "foreground";
 	tier?: string;
 	onUpdate?: (update: ReturnType<typeof result>) => void;
+	scheduleUpdate?: () => void;
+	cancelUpdate?: () => void;
 	directlyStarted?: DynamicSubagentStarted;
 	directProgress?: AgentProgress;
 	directProcessStatus?: "starting" | "active";
@@ -48,6 +51,8 @@ export default function workflows(pi: ExtensionAPI): void {
 	let ticking = false;
 	let frame = 0;
 	let subagentPulseFrame = 0;
+	let subagentStatusPublished = false;
+	let publishedSubagentStatus: string | undefined;
 	let sessionCtx: ExtensionContext | undefined;
 	let visualTimer: NodeJS.Timeout | undefined;
 	let dashboardTui: { requestRender?: () => void } | undefined;
@@ -155,24 +160,26 @@ export default function workflows(pi: ExtensionAPI): void {
 		const ctx = sessionCtx;
 		if (!ctx?.hasUI) return;
 		const agents = backgroundAgents();
-		if (agents.length === 0) {
-			ctx.ui.setStatus(SUBAGENT_STATUS_KEY, undefined);
-			return;
+		let status: string | undefined;
+		if (agents.length > 0) {
+			const dot = subagentPulseDot(subagentPulseFrame);
+			status = agents.map((projection) => {
+				const view = dynamicViews.get(projection.operationId);
+				const processStatus = agentLiveProcessStatus(projection);
+				const liveStatus = formatBackgroundSubagentStatus({
+					...(view?.tier ? { tier: view.tier } : {}),
+					resolved: { provider: projection.provider, model: projection.model, effort: projection.effort, fast: projection.fast === true },
+					...(projection.progress ? { progress: projection.progress } : {}),
+					...(processStatus ? { processStatus } : {}),
+					startedAt: projection.startedAt,
+				});
+				return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", view?.agent ?? projection.role)} ${ctx.ui.theme.fg("dim", liveStatus)}`;
+			}).join("\n");
 		}
-		const dot = subagentPulseDot(subagentPulseFrame);
-		const lines = agents.map((projection) => {
-			const view = dynamicViews.get(projection.operationId);
-			const processStatus = agentLiveProcessStatus(projection);
-			const liveStatus = formatBackgroundSubagentStatus({
-				...(view?.tier ? { tier: view.tier } : {}),
-				resolved: { provider: projection.provider, model: projection.model, effort: projection.effort, fast: projection.fast === true },
-				...(projection.progress ? { progress: projection.progress } : {}),
-				...(processStatus ? { processStatus } : {}),
-				startedAt: projection.startedAt,
-			});
-			return `${ctx.ui.theme.fg("warning", dot)} ${ctx.ui.theme.fg("text", view?.agent ?? projection.role)} ${ctx.ui.theme.fg("dim", liveStatus)}`;
-		});
-		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, lines.join("\n"));
+		if (subagentStatusPublished && status === publishedSubagentStatus) return;
+		subagentStatusPublished = true;
+		publishedSubagentStatus = status;
+		ctx.ui.setStatus(SUBAGENT_STATUS_KEY, status);
 	};
 
 	const stopAgentLive = () => {
@@ -189,7 +196,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		const view = dynamicViews.get(projection.operationId);
 		if (projection.active || view) agentLive.set(projection.agentId, projection);
 		else agentLive.delete(projection.agentId);
-		if (view?.mode === "foreground" && view.onUpdate) view.onUpdate(result("", dynamicViewDetails(view, projection)));
+		if (view?.mode === "foreground") view.scheduleUpdate?.();
 		renderSubagentStatus();
 		dashboardInvalidate?.();
 		dashboardTui?.requestRender?.();
@@ -240,6 +247,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	};
 
 	const releaseDynamicView = (operationId: string) => {
+		dynamicViews.get(operationId)?.cancelUpdate?.();
 		dynamicViews.delete(operationId);
 		for (const [agentId, projection] of agentLive) if (projection.operationId === operationId && !projection.active) agentLive.delete(agentId);
 		renderSubagentStatus();
@@ -929,24 +937,42 @@ export default function workflows(pi: ExtensionAPI): void {
 				persistDynamicRuntime(toolCallId, "active");
 				const projection = () => [...agentLive.values()].find((candidate) => candidate.operationId === toolCallId);
 				const currentDetails = () => dynamicViewDetails(view, projection());
-				const publishDirectStatus = () => {
+				let directProgressTimer: NodeJS.Timeout | undefined;
+				const cancelDirectProgressUpdate = () => {
+					if (!directProgressTimer) return;
+					clearTimeout(directProgressTimer);
+					directProgressTimer = undefined;
+				};
+				const flushDirectStatus = () => {
+					directProgressTimer = undefined;
 					if (mode === "foreground" && onUpdate) onUpdate(result("", currentDetails()));
 				};
+				const scheduleDirectStatus = () => {
+					if (mode !== "foreground" || !onUpdate || directProgressTimer) return;
+					directProgressTimer = setTimeout(flushDirectStatus, DIRECT_PROGRESS_RENDER_INTERVAL_MS);
+					directProgressTimer.unref();
+				};
+				view.scheduleUpdate = scheduleDirectStatus;
+				view.cancelUpdate = cancelDirectProgressUpdate;
 				const promise = adapter.spawnSubagent!(
 					request,
 					ctx,
 					mode === "foreground" ? signal : undefined,
-					mode === "foreground" && onUpdate ? (text) => onUpdate(result(text, currentDetails())) : undefined,
+					mode === "foreground" && onUpdate ? (text) => {
+						cancelDirectProgressUpdate();
+						onUpdate(result(text, currentDetails()));
+					} : undefined,
 					mode === "foreground" ? (started) => {
 						view.directlyStarted = started;
 						delete view.directProgress;
 						view.directProcessStatus = "starting";
-						publishDirectStatus();
+						cancelDirectProgressUpdate();
+						flushDirectStatus();
 					} : undefined,
 					mode === "foreground" ? (progress) => {
 						view.directProgress = progress;
 						view.directProcessStatus = progress.processStartedAt ? "active" : "starting";
-						publishDirectStatus();
+						scheduleDirectStatus();
 					} : undefined,
 				);
 				if (mode === "foreground") {
@@ -955,6 +981,7 @@ export default function workflows(pi: ExtensionAPI): void {
 						if (settled.state === "failed") throw new Error(settled.summary);
 						return result(settled.summary, { ...currentDetails(), ...settled });
 					} finally {
+						cancelDirectProgressUpdate();
 						persistDynamicRuntime(toolCallId, "settled");
 						releaseDynamicView(toolCallId);
 					}
@@ -1056,6 +1083,8 @@ export default function workflows(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		runtimeEpoch++;
 		shuttingDown = false;
+		subagentStatusPublished = false;
+		publishedSubagentStatus = undefined;
 		// In-memory promises belong to the prior extension epoch. Durable adapter and
 		// agent state below reconstructs active work without letting stale startup
 		// overlays pin the replacement dashboard at `starting`.
@@ -1141,6 +1170,7 @@ export default function workflows(pi: ExtensionAPI): void {
 		subagentPulseTimer = undefined;
 		stopAgentLive();
 		agentLive.clear();
+		for (const view of dynamicViews.values()) view.cancelUpdate?.();
 		dynamicViews.clear();
 		observedStageCompletions.clear();
 		runtimeEpoch++;

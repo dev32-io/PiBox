@@ -218,17 +218,41 @@ export class AgentLiveProjectionManager {
 			listener(this.project(agent));
 			await attachFallback(agent);
 		};
+		// Progress events can arrive in bursts across several child processes. Keep
+		// at most one registry read in flight per logical agent and project only the
+		// newest cached progress after each read completes.
+		const pendingEmits = new Set<string>();
+		const inFlightEmits = new Map<string, Promise<void>>();
+		const requestEmit = (agentId: string): Promise<void> => {
+			if (closed) return Promise.resolve();
+			pendingEmits.add(agentId);
+			const existing = inFlightEmits.get(agentId);
+			if (existing) return existing;
+			const drain = (async () => {
+				try {
+					while (!closed && pendingEmits.delete(agentId)) {
+						try { await emit(agentId); } catch { /* presentation catches up on the next durable or live event */ }
+					}
+				} finally {
+					inFlightEmits.delete(agentId);
+					if (!closed && pendingEmits.has(agentId)) void requestEmit(agentId);
+				}
+			})();
+			inFlightEmits.set(agentId, drain);
+			return drain;
+		};
 		const onLiveProgress = (update: LiveProgressUpdate) => {
 			if (closed || update.registryRoot !== this.registry.root) return;
 			if (update.source === "launcher") {
 				const key = `${update.agentId}\0${update.attemptId}`;
 				if (fallbackAttempts.has(key)) releaseFallback(key, fallbackObservers.get(key));
 			}
-			void emit(update.agentId).catch(() => undefined);
+			requestEmit(update.agentId);
 		};
 		const dispose = () => {
 			if (closed) return;
 			closed = true;
+			pendingEmits.clear();
 			bus.listeners.delete(onLiveProgress);
 			unsubscribeRegistry();
 			for (const [key, owned] of [...fallbackAttempts]) releaseFallback(key, fallbackObservers.get(key));
@@ -240,15 +264,10 @@ export class AgentLiveProjectionManager {
 		}
 		try {
 			unsubscribeRegistry = await this.registry.watch((event) => {
-				if (event.data.agentId) void emit(event.data.agentId).catch(() => undefined);
+				if (event.data.agentId) void requestEmit(event.data.agentId);
 			}, signal);
-			for (const agent of await this.registry.list()) {
-				if (closed) break;
-				const active = isAgentProcessActive(agent);
-				if (!active) clearAgentLiveProgress(this.registry.root, agent.id, agent.currentAttemptId);
-				listener(this.project(agent));
-				await attachFallback(agent);
-			}
+			const initialAgents = await this.registry.list();
+			await Promise.all(initialAgents.map((agent) => requestEmit(agent.id)));
 			return dispose;
 		} catch (error) {
 			dispose();
