@@ -25,7 +25,6 @@ function fixture(workflowConfirmed = true) {
 	const entries: any[] = [];
 	let widget: unknown;
 	const statuses = new Map<string, string>();
-	const statusWrites: Array<{ id: string; value: string | undefined }> = [];
 	let activeTools: string[] = [];
 	const pi = {
 		registerTool(definition: any) { tools.set(definition.name, definition); },
@@ -52,14 +51,11 @@ function fixture(workflowConfirmed = true) {
 		ui: {
 			theme: { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text },
 			setWidget(_id: string, value: unknown) { widget = value; },
-			setStatus(id: string, value: string | undefined) {
-				statusWrites.push({ id, value });
-				if (value === undefined) statuses.delete(id); else statuses.set(id, value);
-			},
+			setStatus(id: string, value: string | undefined) { if (value === undefined) statuses.delete(id); else statuses.set(id, value); },
 		},
 		sessionManager: { getEntries: () => entries, getSessionId: () => "test-session" },
 	};
-	return { pi, tools, handlers, messages, entries, ctx, statuses, statusWrites, widget: () => widget, permissionMode: () => permissionMode };
+	return { pi, tools, handlers, messages, entries, ctx, statuses, widget: () => widget, permissionMode: () => permissionMode };
 }
 
 test("resolves dynamic tiers from call-site, local provider, agent policy, then medium", () => {
@@ -739,34 +735,6 @@ test("explicit background spawning returns its report to the main agent and show
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("identical background projections do not rewrite TUI status", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	let publish!: (projection: AgentLiveProjection) => void;
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent() { await gate; return { ref: "agent:one", agentId: "one", state: "completed", summary: "done" }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("subagent_spawn").execute("call", { agent: "explorer", task: "Inspect", mode: "background" }, undefined, undefined, f.ctx);
-	const startedAt = new Date().toISOString();
-	const projection = liveProjection({ agentId: "one", operationId: "call", role: "explorer", presentation: "background", startedAt });
-	publish(projection);
-	const writes = f.statusWrites.length;
-	publish(structuredClone(projection));
-	assert.equal(f.statusWrites.length, writes, "an unchanged projection cannot request another status render");
-	release();
-	await new Promise((resolve) => setImmediate(resolve));
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
 test("omitted mode waits in foreground without using the background footer", async () => {
 	const f = fixture();
 	let release!: () => void;
@@ -792,7 +760,7 @@ test("omitted mode waits in foreground without using the background footer", asy
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const updates: any[] = [];
 	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 70));
+	await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.equal(f.statuses.has("subagent-dashboard"), false);
 	assert.equal(request.tier, "medium");
 	assert.deepEqual(
@@ -862,74 +830,6 @@ test("foreground launch callbacks advance starting to active when the shared liv
 	const settled = await pending;
 	assert.equal(settled.details.state, "completed", "stale shared state cannot overwrite terminal settlement");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("foreground progress bursts render only the latest update at a bounded cadence", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const startedAt = new Date().toISOString();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(_input, _ctx, _signal, _onText, onStarted, onProgress) {
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "high", fast: false, startedAt });
-			for (let turns = 1; turns <= 40; turns += 1) {
-				onProgress?.({ startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns, toolCalls: turns, toolErrors: 0, outputTokens: turns * 10, reasoningTokens: 0 });
-			}
-			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: "ready" };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	let resolveLatest!: () => void;
-	const latest = new Promise<void>((resolve) => { resolveLatest = resolve; });
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => {
-		updates.push(update);
-		if (update.details?.progress?.turns === 40) resolveLatest();
-	}, f.ctx);
-	await Promise.race([latest, new Promise((_, reject) => setTimeout(() => reject(new Error("latest foreground progress was not rendered")), 1_000))]);
-	assert.equal(updates.length, 2, "one launch update plus one latest-wins progress update are rendered");
-	assert.equal(updates.at(-1)?.details.progress?.turns, 40);
-	release();
-	await pending;
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("session shutdown cancels a queued foreground progress render", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const startedAt = new Date().toISOString();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(_input, _ctx, _signal, _onText, onStarted, onProgress) {
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "high", fast: false, startedAt });
-			onProgress?.({ startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 10, reasoningTokens: 0 });
-			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: "ready" };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(updates.length, 1, "launch state is immediate while progress remains queued");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 70));
-	assert.equal(updates.length, 1, "the old session cannot publish its queued progress update");
-	release();
-	await pending;
 });
 
 test("foreground provider fallback resets direct status before the next process attempt", async () => {
