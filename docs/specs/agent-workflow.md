@@ -6,7 +6,7 @@
 
 ## 1. Purpose
 
-PiBox will provide a capability-backed managed development workflow for Pi. It will help a persistent main Pi session research work, turn understood intent into durable specifications and designs, plan an executable task graph, delegate isolated work to specialized agents, evaluate the results, integrate reviewed changes, and recover from interruptions.
+PiBox provides a capability-backed managed development workflow for Pi. One live main-session activation owns conversation and child execution; durable workflow state preserves reviewed intent, plans, Git evidence, and safe restart points across later activations.
 
 The harness is not intended to replace a capable model with a rigid workflow engine. Its central design principle is:
 
@@ -54,7 +54,7 @@ Deferred work is tracked in [`../../todo-harness.md`](../../todo-harness.md).
 
 ### 4.1 Main session
 
-The user's normal Pi session is the persistent orchestrator. Research, chat, planning, execution control, evaluation triage, and user decisions all remain in this session.
+The user's current main-session activation is the orchestrator. Research, chat, planning, execution control, evaluation triage, and user decisions remain there. A resumed, new, forked, cloned, or restarted session is a new activation; it may read durable workflow state but never adopts the prior activation's child processes or event stream.
 
 The main session may:
 
@@ -147,35 +147,28 @@ MAIN PI SESSION — ORCHESTRATOR
 ### 5.2 Extension components
 
 ```text
-Harness extension
-├── Configuration and model resolver
-├── Artifact registry
-├── Work-item state machine
-├── Agent-definition and prompt registry
-├── Subagent supervisor
-├── Scheduler and control inbox
-├── Git/worktree manager
-├── Evaluation coordinator
-├── Lifecycle and failure classifier
-└── Private event/run store
+workflow extension/runtime
+├── durable work-item scheduler and per-workflow runner
+├── Git/worktree, checks, review/fix, and recovery
+├── workflow adapter capability and dashboard
+└── child executor adapter
+        ↓
+standalone subagent service
+├── generic agent catalog and model/tool resolution
+├── activation ownership and continuation handles
+├── bounded Pi JSON process manager and normalized events
+└── generic tools and TUI projection
 ```
 
-Components expose typed operations rather than allowing prompts to invent state paths or Git procedures.
+Workflow depends on the standalone subagent API and registered service; the standalone package never imports workflow code. Components expose typed operations rather than allowing prompts to invent state paths or Git procedures.
 
 ### 5.3 Child process topology
 
-The initial runtime will use supervised Pi child processes with structured event output. Each child starts with:
+The standalone service runs each child as one bounded `pi --mode json -p` turn with a fixed working directory, stable system context, one attempt-specific user turn, resolved provider/model/effort, exact tool and extension policy, and an activation-owned cancellation/stop path. It parses LF-delimited JSON directly from stdout. Message deltas are display-only; final message/agent settlement, process exit, stdout drain, and terminal classification determine the result.
 
-- A fixed working directory.
-- An exact role prompt and skill set.
-- A resolved provider, model, and effort level.
-- A role-specific tool and capability set.
-- An immutable run identity.
-- A cancellation signal owned by the supervisor.
+Ownership is `RuntimeOwner { sessionId, processInstanceId, activationId }`. `/reload` may rebind to the exact process-global manager and active children. `pi -r`, `/resume`, `/new`, `/fork`, `/clone`, process restart, or a different activation ID cannot resolve, adopt, or receive events from old children. `/tree` is blocked while children are active. `PIBOX_RUNTIME_ROLE` alone selects main versus child; `PIBOX_SUBAGENT_ID` is managed identity/fencing metadata only.
 
-Every model-backed child is reserved in one private registry keyed by the stable main Pi session ID. The main agent is depth zero and direct children depth one; recursive launching fails mechanically. A session may own at most sixteen nonterminal logical children, and each retains its slot across process attempts, waits, pauses, blockers, reporting, and recovery.
-
-Children run in independent process groups and write stdout, stderr, transcript events, heartbeat, checkpoints, asynchronous messages, and handoffs directly to private files. They may continue after the main Pi process exits. Resuming the same session reconciles handoffs before liveness, preserves positively identified live processes, marks dead attempts without handoff interrupted, and treats stale-heartbeat PID ambiguity as recovery-required. The adapter boundary remains reusable by a future Pi SDK-backed runner.
+A logical agent may start another bounded turn against its existing transcript only after settlement and through an opaque same-activation continuation handle. One writer owns a transcript at a time. A parent-lifetime lease terminates the child process group when ownership disappears. There is no Pi RPC mode, detached process adoption, PID recovery, file-tail observer, durable generic event journal, or generic lifecycle reattachment. Workflow attempt records, credentials, checkpoints, handoffs, and Git state remain durable so a later activation can classify interruption and start a fresh process without attaching to the old one.
 
 ## 6. Authority model
 
@@ -625,9 +618,7 @@ They do not choose private operational paths and cannot mutate canonical plannin
 
 The orchestrator judges the impact of canonical changes.
 
-For a small context-only clarification, the orchestrator sends a focused durable response. For a material contract or dependency change, it restarts the affected process attempt so the persistent packet is rebuilt from current canonical files. No context-version acknowledgement protocol is required.
-
-A child cannot complete while a required context update is unacknowledged.
+A blocking clarification or change request ends the current process attempt. For a focused factual answer, the orchestrator records a durable response and the scheduler starts a fresh bounded attempt against the same logical transcript when the same live activation still owns it. For a settled contract defect, one atomic `workflow_apply_change` applies the amendment and response before that fresh attempt. A later activation starts from durable workflow/Git/checkpoint state with a new service transcript; it never adopts the old child. No live response or context-version acknowledgement protocol exists.
 
 ### 11.4 Checkpoints
 
@@ -702,7 +693,7 @@ At spawn time:
 4. Filter against Pi's live registry, auth, scoped models, and exact effort support.
 5. Record the requested tier, every attempted pair, and actual provider/model/effort.
 
-Fallback remains inside the selected capability tier after any preferred route and the final route plus private attempt lineage stay auditable. There is no automatic capability downgrade or effort clamping. Provider/auth/capacity/transport recovery restarts the same logical child session and workspace on the next valid route while a foreground caller remains pending; intermediate provider-failure output is not injected into the main session. Context overflow, cancellation, implementation, tool, and protocol failure do not justify changing providers or effort. If no acceptable route exists, the run enters `waiting_model` rather than pretending to execute.
+Fallback remains inside the selected capability tier after any preferred route and the final route plus private attempt lineage stay auditable. There is no automatic capability downgrade or effort clamping. Within one live activation, provider/auth/capacity/transport recovery may start another bounded attempt for the same compatible logical transcript and workspace while a foreground caller remains pending; intermediate provider-failure output is not injected into the main session. Context overflow, cancellation, implementation, tool, and protocol failure do not justify changing providers or effort. If no acceptable route exists, the run enters `waiting_model` rather than pretending to execute.
 
 ### 12.4 Main-session model selection
 
@@ -1038,20 +1029,18 @@ The resource API is authoritative for normal main-session planning. Earlier reso
 
 ### 16.2 Execution capabilities
 
-The separate workflow extension provides:
+The standalone subagent extension provides:
 
 ```text
-workflow_start
-workflow_control
 subagent_spawn
 subagent_status
 subagent_control
-subagent_respond
+subagent_continue
 ```
 
-The workflow extension owns generic scheduling, lifecycle messages, and the progress widget. It discovers adapters through Pi's in-process event bus and never imports harness planning or artifact code. The harness adapter translates reviewed tasks, integration units, and evaluations into current workflow steps and performs their domain-specific execution.
+The separate workflow runtime provides `workflow_start`, `workflow_control`, and `workflow_checkpoint`. Workflow adapters register through an explicit process-global capability registry; there is no discovery-event RPC. The harness adapter translates reviewed tasks, stages, and evaluations into workflow steps and launches every model-backed attempt through `SubagentService`. Workflow never spawns Pi directly, and the standalone service never depends on workflow.
 
-`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured agent definition and task prompt, inventories validated built-in/configured/trusted-project definitions in its live description, defaults to background execution, and can wait in foreground mode when explicitly requested. Its tier selects a configured fallback list; its optional model and effort fields express a preferred route without exposing separate strictness or tier-justification controls. Foreground execution renders as an inline pulsing agent row and returns the terminal report as the blocking tool result. Background execution returns immediately, displays a vertical pulsing footer stack with each child's agent name, resolved model/effort, and elapsed time, and on terminal settlement injects the report with a built-in instruction that triggers a main-agent response. This direct delegation callback is separate from managed workflow lifecycle advancement. Built-in and trusted `.pi/agents/*.md` definitions use conventional Pi frontmatter plus an optional PiBox capability `tier`; their `tools` field is the sole base allowlist, and any `tools` field in global or repository harness policy is ignored. Reserved selectors such as `pibox:task` and `pibox:evaluation` resolve through a central tool-group registry, and managed launches may add a group at runtime without duplicating its concrete capability names. Optional `mcp:<server>` entries reuse the frontmatter `tools` field: they activate the external adapter proxy when present and constrain child calls to the declared server names, while missing user-managed MCP configuration degrades to no capability rather than invalidating the agent. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those children through the same coordinator and lifecycle registry. Repository exploration is ordinary delegation to the `explorer` definition. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
+`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured agent definition and task prompt, defaults to foreground execution, and uses explicit `mode: background` for asynchronous work. Its tier selects a configured fallback list; its optional model and effort fields express a preferred route without exposing separate strictness or tier-justification controls. Foreground execution renders inline and returns the terminal report as the blocking tool result. Background execution returns immediately, displays bounded footer progress, and delivers one terminal follow-up only to the owning live activation. This activation-local delivery is separate from managed workflow lifecycle advancement. Built-in and trusted `.pi/agents/*.md` definitions use conventional Pi frontmatter plus an optional PiBox capability `tier`; their `tools` field is the sole base allowlist, and any `tools` field in global or repository harness policy is ignored. Reserved selectors such as `pibox:task` and `pibox:evaluation` resolve through a central tool-group registry, and managed launches may add a group at runtime without duplicating its concrete capability names. Optional `mcp:<server>` entries reuse the frontmatter `tools` field: they activate the external adapter proxy when present and constrain child calls to the declared server names, while missing user-managed MCP configuration degrades to no capability rather than invalidating the agent. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those attempts through the standalone service. Repository exploration is ordinary delegation to the `explorer` definition. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
 
 ### 16.3 Worker capabilities
 
@@ -1123,29 +1112,24 @@ Capacity and infrastructure failures do not consume the protocol nudge or semant
 ### 17.1 Layout
 
 ```text
-~/.pi/agent/harness/
-├── repositories/
-│   └── <repo-id>/
-│       ├── repository.yaml
-│       ├── locks/
-│       └── work-items/
-│           └── <work-item-id>/
-│               ├── state.yaml
-│               └── runs/
-│                   └── <run-id>/
-│                       ├── run.yaml
-│                       ├── events.jsonl
-│                       ├── transcript.jsonl
-│                       ├── handoff.json
-│                       ├── checkpoint.json
-│                       └── commands/
+<canonical-repository>/.pibox/
+├── events.jsonl
+├── sessions/<workflow-session>/agents.yaml
+├── locks/
+└── work-items/<work-item-id>/
+    ├── runs/<run-id>/
+    │   ├── run.yaml
+    │   ├── handoff.json | evaluation-handoff.json
+    │   └── checkpoint.json
+    ├── verification/
+    └── control/
 ```
 
-Repository-owned task checkouts live separately at `<canonical-repository>/.worktree/pibox/<work-item-id>/<task-id>/`. Children interact through capabilities and do not choose operational paths.
+Repository-owned task checkouts live at `<canonical-repository>/.worktree/pibox/<work-item-id>/<task-id>/`. Generic subagent transcripts and normalized event rings belong to the standalone service's activation-local storage and are not a durable reattachment index. Children interact through scoped capabilities and do not choose operational paths.
 
 ### 17.2 Event log
 
-Each run records append-only sequenced events. Mutable state files are projections. When projections disagree, the harness replays events and reconciles them with Git.
+The repository workflow event store records typed sequenced workflow facts. Durable run, work-item, control, and agent snapshots remain the corresponding authorities; generic child lifecycle is not journaled or replayed from disk.
 
 ### 17.3 Locks
 
@@ -1153,28 +1137,13 @@ Locks protect repository integration, worktree allocation, canonical artifact mu
 
 ### 17.4 Retention
 
-Operational history is retained by default. The harness does not automatically delete transcripts, command output, branches, or worktrees. `/harness worktrees` inventories PiBox-owned worktrees without recursively measuring disk usage; exact sizes are an explicit slower operation. `cleanupAll` performs one lightweight inventory, serially revalidates and removes only clean inactive worktrees, remains cancellable, and retains every branch. A dirty worktree requires an explicit named `--force` removal. Export and redaction commands remain deferred.
+Workflow evidence and recovery state are retained according to their stores. Settled standalone transcripts are released after their generic or managed logical loop ends; bounded failure diagnostics do not become permanent stdout/result/process-exit duplicates. The harness does not automatically delete branches or dirty worktrees. `/harness worktrees` inventories PiBox-owned worktrees without recursively measuring disk usage; exact sizes are an explicit slower operation. `cleanupAll` performs one lightweight inventory, serially revalidates and removes only clean inactive worktrees, remains cancellable, and retains every branch. A dirty worktree requires an explicit named `--force` removal. Export and redaction commands remain deferred.
 
 ## 18. Lifecycle and recovery
 
-### 18.1 Pi lifecycle hooks
+### 18.1 Activation and process lifecycle
 
-The extension builds durable state from:
-
-```text
-session_start
-before_agent_start
-agent_start
-message_start / message_update / message_end
-turn_start / turn_end
-tool_execution_start / update / end
-after_provider_response
-agent_end
-agent_settled
-session_shutdown
-```
-
-`agent_settled` is the terminal classification point because Pi may still retry, compact, or process queued continuations after `agent_end`.
+`session_start` acquires a new activation except for `/reload`, which may rebind to the exact in-process manager. `session_shutdown` tears down the service and stops its process groups except during that reload handoff. Child lifecycle comes from the bounded JSON stdout stream plus OS process exit and stdout drain; normalized attempt-local events end with `process_exited`, `output_drained`, and `terminal`. The service never reconstructs ownership from Pi transcript entries or disk.
 
 ### 18.2 Failure classes
 
@@ -1243,12 +1212,12 @@ Natural-language resume also works when the main provider is available.
 
 On startup or session resume, the harness:
 
-1. Loads work-item and run projections.
-2. Replays incomplete event logs.
-3. Inspects branches and worktrees.
-4. Detects dead child sessions.
-5. Classifies runs as recoverable, interrupted, conflicting, or corrupt.
-6. Presents recovery actions to the orchestrator.
+1. Loads durable work-item, attempt, handoff, checkpoint, and control projections.
+2. Inspects branches, worktrees, and stale-writer generations.
+3. Classifies any nonterminal attempt without a matching current-activation service process as interrupted.
+4. Presents safe fresh-attempt recovery actions to the orchestrator.
+
+It does not scan old dynamic session entries, replay generic child journals, inspect PIDs, or adopt old processes.
 
 It never resets branches, deletes worktrees, or discards uncommitted worker changes automatically. A dirty canonical feature branch always requires user resolution.
 
@@ -1257,11 +1226,11 @@ It never resets branches, deletes worktrees, or discards uncommitted worker chan
 ```text
 workflow_control(pause | resume | stop)
 subagent_status
-subagent_control(pause | stop)
-subagent_respond
+subagent_control(stop)
+subagent_continue
 ```
 
-Workflow pause stops new scheduling while allowing current children to settle. Workflow stop terminates active children while preserving filesystem and private run state. Subagent pause or stop targets a positively identified logical child. Resume launches a fresh model session against the retained branch and durable response context when the adapter marks that step ready.
+Workflow pause is scheduler-only and allows current attempts to settle. Workflow stop calls the standalone service, waits for confirmed process exit and supervisor settlement, and preserves workflow/Git state. Generic subagent stop is likewise service-owned. Resume launches fresh attempts from durable workflow state; `subagent_continue` is limited to a settled same-activation generic logical handle.
 
 ## 19. User experience
 
@@ -1503,7 +1472,7 @@ The design is successfully implemented when:
 13. Binding acceptance criteria receive proportionate final evidence, while meaningless task-level E2E is not required.
 14. Integration occurs through controlled task/unit candidates and leaves the canonical branch clean.
 15. Provider/subscription interruptions become recoverable waiting states and can be resumed manually.
-16. Session restart reconstructs runs, locks, worktrees, and pending recovery actions from private state.
+16. Session restart reconstructs durable workflow, Git, and pending recovery actions but never adopts old child processes or generic events.
 17. Raw operational history remains outside Git and is retained by default.
 18. Small direct work remains possible without mandatory harness artifacts or workflow ceremony.
 
@@ -1511,7 +1480,7 @@ The design is successfully implemented when:
 
 PiBox's harness is a hybrid between a flexible skill-driven agent and a deterministic workflow engine:
 
-- The main Pi session remains the persistent, user-facing authority.
+- The current main-session activation remains the user-facing authority; durable workflow state survives without transferring child ownership.
 - Specialized agent definitions are independent, configurable contributors with explicit contracts.
 - Canonical files preserve semantic truth.
 - Private event logs preserve operational truth.

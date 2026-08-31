@@ -14,6 +14,7 @@ export type WorkflowDomainEventType =
 	| "step.started"
 	| "step.settled"
 	| "step.failed"
+	| "stage.completed"
 	| "agent.reserved"
 	| "agent.attempt_started"
 	| "agent.running"
@@ -39,6 +40,9 @@ export interface WorkflowDomainEventInput {
 	correlationId: string;
 	causationId?: string;
 	stepRef?: string;
+	stageId?: string;
+	stageIndex?: number;
+	stepKind?: string;
 	runId?: string;
 	agentId?: string;
 	activity?: { kind: "review" | "repair"; generation: number };
@@ -70,6 +74,9 @@ function project(repositoryId: string, event: HarnessEvent<PersistedWorkflowDoma
 		correlationId: event.data.correlationId,
 		...(event.data.causationId ? { causationId: event.data.causationId } : {}),
 		...(event.data.stepRef ? { stepRef: event.data.stepRef } : {}),
+		...(event.data.stageId ? { stageId: event.data.stageId } : {}),
+		...(event.data.stageIndex !== undefined ? { stageIndex: event.data.stageIndex } : {}),
+		...(event.data.stepKind ? { stepKind: event.data.stepKind } : {}),
 		...(event.data.runId ? { runId: event.data.runId } : {}),
 		...(event.data.agentId ? { agentId: event.data.agentId } : {}),
 		...(event.data.activity ? { activity: event.data.activity } : {}),
@@ -84,7 +91,7 @@ function boundedEventText(value: string | undefined): string | undefined {
 }
 
 function isPersistedWorkflowEvent(event: HarnessEvent): event is HarnessEvent<PersistedWorkflowDomainEvent> {
-	if (!event.type.startsWith("workflow.") && !event.type.startsWith("step.") && !event.type.startsWith("agent.") && !event.type.startsWith("checkpoint.")) return false;
+	if (!event.type.startsWith("workflow.") && !event.type.startsWith("step.") && !event.type.startsWith("stage.") && !event.type.startsWith("agent.") && !event.type.startsWith("checkpoint.")) return false;
 	if (!event.data || typeof event.data !== "object") return false;
 	const data = event.data as Partial<PersistedWorkflowDomainEvent>;
 	return data.schemaVersion === 1 && typeof data.repositoryId === "string" && typeof data.workItemId === "string" && Number.isInteger(data.ownerGeneration) && typeof data.correlationId === "string";

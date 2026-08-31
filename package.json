@@ -42,6 +42,7 @@
       "./extensions/model-tier-list-profiles/index.ts",
       "./extensions/provider-fallback/index.ts",
       "./extensions/profile/index.ts",
+      "./extensions/subagent/index.ts",
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
       "./extensions/rule/index.ts",

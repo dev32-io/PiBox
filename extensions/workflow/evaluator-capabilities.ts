@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Type } from "typebox";
+import { SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { validateManagedEvaluationReport } from "./evaluation-integrity.js";
 import { discoverRepository } from "./repository.js";
@@ -15,15 +16,23 @@ function evaluatorEnvironment() {
 	const workItemId = process.env.PIBOX_HARNESS_WORK_ITEM;
 	const evaluationId = process.env.PIBOX_HARNESS_EVALUATION;
 	const credential = process.env.PIBOX_HARNESS_CREDENTIAL;
-	if (!runId || !workItemId || !evaluationId || !credential) throw new HarnessError("CAPABILITY_DENIED", "Evaluator capability requires a supervised evaluation run");
-	return { runId, workItemId, evaluationId, credential };
+	const agentAttemptId = process.env.PIBOX_HARNESS_AGENT_ATTEMPT_ID;
+	const agentGeneration = Number(process.env.PIBOX_HARNESS_AGENT_GENERATION);
+	if (!runId || !workItemId || !evaluationId || !credential || !agentAttemptId || !Number.isInteger(agentGeneration) || agentGeneration < 1) throw new HarnessError("CAPABILITY_DENIED", "Evaluator capability requires a current supervised evaluation attempt");
+	return { runId, workItemId, evaluationId, credential, agentAttemptId, agentGeneration };
 }
 
 async function authorized(ctx: ExtensionContext) {
 	const scope = evaluatorEnvironment();
 	const identity = await discoverRepository(ctx.cwd);
 	const runs = new HarnessRunStore(identity, scope.workItemId);
-	const run = await runs.authorize(scope.runId, scope.credential);
+	const run = await runs.authorizeMutation(scope.runId, scope.credential, scope.agentAttemptId, scope.agentGeneration);
+	const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
+	const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
+	const agentId = process.env.PIBOX_SUBAGENT_ID;
+	if (!privateRoot || !sessionId || !agentId) throw new HarnessError("CAPABILITY_DENIED", "Evaluator attempt is missing its current logical-agent fence");
+	const agent = await new SessionAgentRegistry(privateRoot, sessionId).get(agentId);
+	if (agent.currentAttemptId !== scope.agentAttemptId || agent.state !== "running") throw new HarnessError("CAPABILITY_DENIED", `Evaluator logical agent is no longer current (${agent.state})`);
 	if (run.evaluationId !== scope.evaluationId || run.workspace !== ctx.cwd) throw new HarnessError("CAPABILITY_DENIED", "Evaluator run scope mismatch");
 	return { scope, identity, runs, run, workItems: new WorkItemStore(identity.root) };
 }
@@ -121,8 +130,8 @@ export function registerEvaluatorCapabilities(pi: ExtensionAPI): void {
 					findings: params.findings ?? [],
 					completedAt: new Date().toISOString(),
 				};
-				await auth.runs.writeEvaluationHandoff(auth.scope.runId, handoff);
-				await auth.runs.update(auth.scope.runId, { state: "submitted" }, "run.submitted");
+				await auth.runs.writeAuthorizedEvaluationHandoff(auth.scope.runId, auth.scope.credential, auth.scope.agentAttemptId, auth.scope.agentGeneration, handoff);
+				await auth.runs.updateAuthorized(auth.scope.runId, auth.scope.credential, auth.scope.agentAttemptId, auth.scope.agentGeneration, { state: "submitted" }, "run.submitted");
 				return response("Terminal evaluation handoff accepted.", handoff);
 			} catch (error) {
 				throw new Error(describeHarnessError(error));

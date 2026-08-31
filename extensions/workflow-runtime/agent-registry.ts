@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { watch } from "node:fs";
-import { mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { atomicWriteFile, readTextIfExists, WorkflowMutex, WorkflowRuntimeError } from "./storage.js";
-import type { AgentProgress } from "./agent-progress.js";
+import type { PromptContextHashes } from "../subagent/api.js";
+import type { AgentProgress } from "../subagent/agent-progress.js";
 
 export type AgentState =
 	| "reserved"
@@ -25,10 +26,6 @@ export type AgentState =
 
 export const TERMINAL_AGENT_STATES = new Set<AgentState>(["completed", "failed", "protocol_failed", "cancelled"]);
 const RETRYABLE_AGENT_STATES = new Set<AgentState>(["failed", "protocol_failed", "reported", "recovery_required"]);
-
-/** Detached-worker liveness is recovery fencing, not live telemetry. */
-export const AGENT_HEARTBEAT_INTERVAL_MS = 30_000;
-export const AGENT_HEARTBEAT_FRESH_MS = 90_000;
 
 export function isAgentProcessActive(agent: SessionAgentRecord): boolean {
 	if (agent.state === "reserved") return true;
@@ -91,13 +88,15 @@ export interface ProcessAttempt {
 	/** Effective Fast-mode request policy for this resolved process route. */
 	fast?: boolean;
 	sequence: number;
+	/** Content-only stable-prefix and attempt-turn diagnostics. */
+	contextHashes?: PromptContextHashes;
 	activity?: WorkflowActivityDescriptor;
-	state: "launching" | "running" | "exited" | "failed";
-	pid?: number;
+	state: "launching" | "running" | "exited" | "failed" | "interrupted" | "cancelled";
 	startedAt: string;
 	updatedAt: string;
 	exitedAt?: string;
 	exitCode?: number;
+	terminalReason?: "completed" | "failure" | "explicit_stop" | "owner_lost";
 	/** One bounded terminal summary; live tool/turn activity is not durably sampled. */
 	progress?: AgentProgress;
 	/** Detailed lifecycle boundaries persisted with attempt settlement. */
@@ -112,8 +111,6 @@ export interface SessionAgentRecord extends AgentScope {
 	depth: number;
 	role: string;
 	state: AgentState;
-	/** Original dynamic-spawn presentation. Managed workflow agents omit this. */
-	presentation?: "foreground" | "background";
 	provider: string;
 	model: string;
 	effort: string;
@@ -173,7 +170,6 @@ export interface ReserveAgentInput extends AgentScope {
 	parentAgentId: string;
 	parentDepth: number;
 	role: string;
-	presentation?: "foreground" | "background";
 	provider: string;
 	model: string;
 	effort: string;
@@ -183,8 +179,6 @@ export interface ReserveAgentInput extends AgentScope {
 export class SessionAgentRegistry {
 	readonly root: string;
 	readonly snapshotPath: string;
-	/** Legacy journal location retained only for migration/tests; new sessions do not create it. */
-	readonly eventsPath: string;
 	readonly mutex: WorkflowMutex;
 	private readonly listeners = new Set<AgentRegistryListener>();
 
@@ -197,7 +191,6 @@ export class SessionAgentRegistry {
 		if (!sessionId || /[\\/\0]/.test(sessionId)) throw new WorkflowRuntimeError("CAPABILITY_DENIED", "Invalid main session identity");
 		this.root = join(repositoryPrivateRoot, "sessions", sessionId);
 		this.snapshotPath = join(this.root, "agents.yaml");
-		this.eventsPath = join(this.root, "agent-events.jsonl");
 		this.mutex = new WorkflowMutex(this.root);
 	}
 
@@ -269,7 +262,6 @@ export class SessionAgentRegistry {
 						maxSubagentDepth: snapshot.maxSubagentDepth,
 					});
 				}
-				await rm(this.eventsPath, { force: true }).catch(() => undefined);
 				return;
 			}
 			const snapshot: RegistrySnapshot = {
@@ -283,7 +275,6 @@ export class SessionAgentRegistry {
 				agents: [],
 			};
 			await this.write(snapshot);
-			await rm(this.eventsPath, { force: true }).catch(() => undefined);
 		});
 	}
 
@@ -313,7 +304,6 @@ export class SessionAgentRegistry {
 				depth,
 				role: input.role,
 				state: "reserved",
-				...(input.presentation ? { presentation: input.presentation } : {}),
 				operationId: input.operationId,
 				assignmentDigest,
 				provider: input.provider,
@@ -347,14 +337,14 @@ export class SessionAgentRegistry {
 		})).agent;
 	}
 
-	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }, activity?: WorkflowActivityDescriptor, fast?: boolean): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
+	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }, activity?: WorkflowActivityDescriptor, fast?: boolean, contextHashes?: PromptContextHashes): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");
 			const now = new Date().toISOString();
 			const attempt: ProcessAttempt = {
 				id: randomUUID(), sequence: agent.attempts.length + 1, state: "launching", startedAt: now, updatedAt: now,
 				timing: { reservedAt: agent.updatedAt, attemptStartedAt: now },
-				...(route ?? {}), ...(activity ? { activity } : {}), ...(fast !== undefined ? { fast } : {}),
+				...(route ?? {}), ...(activity ? { activity } : {}), ...(fast !== undefined ? { fast } : {}), ...(contextHashes ? { contextHashes: structuredClone(contextHashes) } : {}),
 			};
 			if (route) { agent.provider = route.provider; agent.model = route.model; agent.effort = route.effort; }
 			agent.state = "launching";
@@ -364,12 +354,11 @@ export class SessionAgentRegistry {
 		}).then(({ agent, value }) => ({ agent, attempt: value }));
 	}
 
-	async markRunning(agentId: string, attemptId: string, pid: number, observedAt = new Date().toISOString()): Promise<SessionAgentRecord> {
+	async markRunning(agentId: string, attemptId: string, observedAt = new Date().toISOString()): Promise<SessionAgentRecord> {
 		return (await this.mutate(agentId, "agent.running", (agent) => {
 			if (agent.state !== "launching") throw this.invalidTransition(agent.state, "running");
 			const attempt = this.attempt(agent, attemptId);
 			attempt.state = "running";
-			attempt.pid = pid;
 			attempt.updatedAt = observedAt;
 			attempt.timing = { ...(attempt.timing ?? { attemptStartedAt: attempt.startedAt }), processSpawnedAt: observedAt };
 			agent.state = "running";
@@ -393,38 +382,57 @@ export class SessionAgentRegistry {
 			if (update.error !== undefined) agent.error = update.error;
 			if (TERMINAL_AGENT_STATES.has(state)) agent.completedAt = new Date().toISOString();
 		})).agent;
-		if (state === "completed") await this.cleanupSuccessfulAttemptTransport(result);
 		return result;
 	}
 
-	/** Compatibility checkpoint for explicit callers. LaunchCoordinator persists one
-	 * terminal summary instead; progress checkpoints never append journal events. */
-	async updateProgress(agentId: string, attemptId: string, progress: AgentProgress): Promise<SessionAgentRecord> {
-		return (await this.mutate(agentId, "agent.progress", (agent) => {
-			const attempt = this.attempt(agent, attemptId);
-			attempt.progress = structuredClone(progress);
-			attempt.updatedAt = progress.lastEventAt;
-		}, false)).agent;
-	}
-
-	async recordExit(
+	/**
+	 * Atomically claims and projects one service attempt settlement. A reload may
+	 * leave multiple coordinators waiting on the same service result; exactly one
+	 * mutates durable state and every stale callback observes the winner.
+	 */
+	async settleAttempt(
 		agentId: string,
 		attemptId: string,
-		exitCode: number,
-		summary?: { progress?: AgentProgress; timing?: ProcessAttemptTiming },
-	): Promise<SessionAgentRecord> {
-		const result = (await this.mutate(agentId, "agent.process_exited", (agent) => {
-			const attempt = this.attempt(agent, attemptId);
+		input: {
+			exitCode: number;
+			reason: "completed" | "failure" | "explicit_stop" | "owner_lost";
+			targetState: "waiting_capacity" | "reported" | "completed" | "failed" | "cancelled" | "interrupted";
+			summary?: string;
+			error?: string;
+			progress?: AgentProgress;
+			timing?: ProcessAttemptTiming;
+			contextHashes?: PromptContextHashes;
+		},
+	): Promise<{ claimed: boolean; agent: SessionAgentRecord }> {
+		const settled = await this.mutex.run(`agent-settlement:${agentId}:${attemptId}`, async () => {
+			const snapshot = await this.read();
+			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
+			if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
+			const attempt = agent.attempts.find((candidate) => candidate.id === attemptId);
+			if (!attempt || agent.currentAttemptId !== attemptId || (attempt.state !== "launching" && attempt.state !== "running")) {
+				return { claimed: false, agent: structuredClone(agent) };
+			}
 			const now = new Date().toISOString();
-			attempt.state = exitCode === 0 ? "exited" : "failed";
-			attempt.exitCode = exitCode;
-			attempt.exitedAt = summary?.timing?.processExitedAt ?? now;
-			attempt.updatedAt = summary?.timing?.settledAt ?? now;
-			if (summary?.progress) attempt.progress = structuredClone(summary.progress);
-			if (summary?.timing) attempt.timing = structuredClone(summary.timing);
-		})).agent;
-		if (exitCode !== 0) await this.boundFailedAttemptTransport(result, attemptId);
-		return result;
+			const preservedState = new Set<AgentState>(["waiting_decision", "blocked", "paused", "interrupted", "recovery_required", "cancelled"]).has(agent.state)
+				? agent.state
+				: input.targetState;
+			attempt.state = preservedState === "interrupted" ? "interrupted" : preservedState === "cancelled" ? "cancelled" : input.exitCode === 0 ? "exited" : "failed";
+			attempt.exitCode = input.exitCode;
+			attempt.terminalReason = input.reason;
+			attempt.exitedAt = input.timing?.processExitedAt ?? now;
+			attempt.updatedAt = input.timing?.settledAt ?? now;
+			if (input.progress) attempt.progress = structuredClone(input.progress);
+			if (input.timing) attempt.timing = structuredClone(input.timing);
+			if (input.contextHashes) attempt.contextHashes = structuredClone(input.contextHashes);
+			agent.state = preservedState;
+			if (input.summary !== undefined) agent.summary = input.summary;
+			if (input.error !== undefined) agent.error = input.error;
+			if (TERMINAL_AGENT_STATES.has(preservedState)) agent.completedAt = now;
+			agent.updatedAt = now;
+			await this.commit(snapshot, "agent.attempt_settled", { agentId, attemptId, state: preservedState, reason: input.reason });
+			return { claimed: true, agent: structuredClone(agent) };
+		});
+		return settled;
 	}
 
 	async recordMessage(agentId: string, input: Omit<AgentMessageRecord, "schemaVersion" | "id" | "payloadDigest" | "agentId" | "status" | "createdAt" | "updatedAt">): Promise<AgentMessageRecord> {
@@ -509,26 +517,14 @@ export class SessionAgentRegistry {
 		return (await this.read()).agents.filter((agent) => !TERMINAL_AGENT_STATES.has(agent.state)).length;
 	}
 
-	/** Remove raw process transport after the workflow has a durable final outcome.
-	 * Pi sessions, handoffs, attempt summaries, and deterministic evidence remain. */
-	async cleanupWorkItemTransport(workItemId: string): Promise<void> {
-		const agents = (await this.read()).agents.filter((agent) => agent.workItemId === workItemId && TERMINAL_AGENT_STATES.has(agent.state));
-		for (const agent of agents) for (const attempt of agent.attempts) {
-			if (attempt.state !== "exited" && attempt.state !== "failed") continue;
-			const root = this.attemptRoot(agent.id, attempt.id);
-			await Promise.all(["stdout.jsonl", "stderr.log"].map((name) => rm(join(root, name), { force: true }).catch(() => undefined)));
-		}
-	}
-
-	private async mutate<T>(agentId: string, event: string, mutation: (agent: SessionAgentRecord) => T, journal = true): Promise<{ agent: SessionAgentRecord; value: T }> {
+	private async mutate<T>(agentId: string, event: string, mutation: (agent: SessionAgentRecord) => T): Promise<{ agent: SessionAgentRecord; value: T }> {
 		return this.mutex.run(`${event}:${agentId}`, async () => {
 			const snapshot = await this.read();
 			const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
 			if (!agent) throw new WorkflowRuntimeError("CAPABILITY_DENIED", `Unknown session agent: ${agentId}`);
 			const value = mutation(agent);
 			agent.updatedAt = new Date().toISOString();
-			if (journal) await this.commit(snapshot, event, { agentId, state: agent.state });
-			else { snapshot.revision += 1; await this.write(snapshot); }
+			await this.commit(snapshot, event, { agentId, state: agent.state });
 			return { agent: structuredClone(agent), value };
 		});
 	}
@@ -541,33 +537,6 @@ export class SessionAgentRegistry {
 
 	private invalidTransition(from: AgentState, to: AgentState): WorkflowRuntimeError {
 		return new WorkflowRuntimeError("CAPABILITY_DENIED", `Invalid agent transition: ${from} -> ${to}`);
-	}
-
-	private attemptRoot(agentId: string, attemptId: string): string {
-		return join(this.root, "agents", agentId, "attempts", attemptId);
-	}
-
-	private async cleanupSuccessfulAttemptTransport(agent: SessionAgentRecord): Promise<void> {
-		for (const attempt of agent.attempts) {
-			if (attempt.exitCode !== 0) continue;
-			const root = this.attemptRoot(agent.id, attempt.id);
-			await Promise.all(["stdout.jsonl", "stderr.log"].map((name) => rm(join(root, name), { force: true }).catch(() => undefined)));
-		}
-	}
-
-	private async boundFailedAttemptTransport(agent: SessionAgentRecord, attemptId: string): Promise<void> {
-		const maximum = 64 * 1024;
-		for (const name of ["stdout.jsonl", "stderr.log"]) {
-			const path = join(this.attemptRoot(agent.id, attemptId), name);
-			const size = (await stat(path).catch(() => undefined))?.size ?? 0;
-			if (size <= maximum) continue;
-			const file = await open(path, "r");
-			try {
-				const buffer = Buffer.alloc(maximum);
-				await file.read(buffer, 0, maximum, size - maximum);
-				await writeFile(path, buffer, { mode: 0o600 });
-			} finally { await file.close(); }
-		}
 	}
 
 	private async read(): Promise<RegistrySnapshot> {

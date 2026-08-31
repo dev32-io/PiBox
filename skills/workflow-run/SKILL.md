@@ -23,14 +23,14 @@ A clear user request to execute the reviewed workflow is the sole execution gate
 
 ## Management Protocol
 
-When a worker opens a blocking message, inspect it with `subagent_status` and preserve the exact agent and message IDs. Classify the decision before acting:
+When a worker opens a blocking message, inspect the canonical message and workflow evidence once and preserve the exact agent and message IDs. The requesting process attempt is terminal; any safe continuation is a fresh bounded attempt against the same activation-owned logical transcript. Classify the decision before acting:
 
 1. **Settled by canonical authority.** A reviewed intent, specification, design, or decision unambiguously resolves a contradictory subordinate task clause. If the correction is narrow, reversible, limited to undelivered work, and introduces no new product, policy, privacy/security, destructive, or irreversible choice, amend rather than escalating.
-2. **Answerable without amendment.** The task remains valid and the worker only needs a focused factual answer. Respond with `subagent_respond` and let the same logical worker resume.
+2. **Answerable without amendment.** The task remains valid and the worker only needs a focused factual answer. Use one atomic `workflow_apply_change` with no canonical operations, `executionDisposition: resume-requesting-agent`, and `response` carrying the exact IDs and answer. The scheduler starts the fresh attempt; there is no live respond surface.
 3. **Genuinely user-owned.** Canonical sources conflict or leave a material outcome, scope, policy, privacy/security, destructive, irreversible, or consequential trade-off unresolved. Preserve the blocked state and ask the user one precise question with the conflicting evidence and viable options.
-4. **Insufficient evidence.** Ask the same worker for the smallest targeted clarification; do not guess, launch a replacement worker, or broaden scope.
+4. **Insufficient evidence.** Use the same response path to give the smallest targeted investigation request to a fresh attempt of the same logical worker; do not guess, launch a replacement identity, or broaden scope.
 
-For a settled task-contract defect, use one atomic `workflow_apply_change` call: patch only the contradictory task fields; cite the authoritative artifact in `authority.sources`; explain why the amendment restores the reviewed outcome; set `executionDisposition` to `resume-requesting-agent` when retained work remains valid or `pause-affected` when it does not; and include `response` with the exact `agentId`, `messageId`, and `text`. Do not also call `subagent_respond`, count safe clarification as a repair iteration, manually resume the workflow, or disturb unrelated ready work.
+For a settled task-contract defect, use one atomic `workflow_apply_change` call: patch only the contradictory task fields; cite the authoritative artifact in `authority.sources`; explain why the amendment restores the reviewed outcome; set `executionDisposition` to `resume-requesting-agent` when retained work remains valid or `pause-affected` when it does not; and include `response` with the exact `agentId`, `messageId`, and `text`. Do not try to answer a settled process live, count safe clarification as a repair iteration, manually resume the workflow, or disturb unrelated ready work.
 
 Escalate if the proposed change weakens reviewed acceptance rather than reconciling it, changes user-visible scope, affects delivered work without a safe restart boundary, repeats after amendment, or cannot establish a single authoritative answer. Record the amendment and source trail; never silently reinterpret the task or implement an impossible compromise.
 

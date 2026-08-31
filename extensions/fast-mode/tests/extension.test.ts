@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Model } from "@earendil-works/pi-ai";
 import { initTheme, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import fastMode, { applyFastModeSetting, restoreFastModePolicy } from "../index.js";
+import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../../subagent/tool-policy.js";
 import {
 	DEFAULT_FAST_MODE_POLICY,
 	FAST_MODE_CHILD_ENV,
@@ -35,9 +36,11 @@ test("restores the last valid branch entry and isolates explicit child launch st
 		{ type: "custom", customType: FAST_MODE_ENTRY_TYPE, data: { main: false, subagents: "high" } },
 	];
 	assert.deepEqual(restoreFastModePolicy(context(entries), {}), { main: false, subagents: "high" });
-	assert.deepEqual(restoreFastModePolicy(context(entries), { PIBOX_SUBAGENT_ID: "agent-1", [FAST_MODE_CHILD_ENV]: "1" }), { main: true, subagents: "off" });
-	assert.deepEqual(restoreFastModePolicy(context(entries), { PIBOX_SUBAGENT_ID: "agent-1", [FAST_MODE_CHILD_ENV]: "0" }), { main: false, subagents: "off" });
-	assert.deepEqual(restoreFastModePolicy(context(entries), { [FAST_MODE_CHILD_ENV]: "1" }), { main: true, subagents: "off" });
+	assert.deepEqual(restoreFastModePolicy(context(entries), { PIBOX_SUBAGENT_ID: "agent-1", [FAST_MODE_CHILD_ENV]: "1" }), { main: false, subagents: "high" }, "managed identity cannot select child behavior");
+	assert.deepEqual(restoreFastModePolicy(context(entries), { [FAST_MODE_CHILD_ENV]: "1" }), { main: false, subagents: "high" }, "child launch metadata cannot replace the runtime role");
+	assert.deepEqual(restoreFastModePolicy(context(entries), { [PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE, [FAST_MODE_CHILD_ENV]: "1" }), { main: true, subagents: "off" });
+	assert.deepEqual(restoreFastModePolicy(context(entries), { [PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE, [FAST_MODE_CHILD_ENV]: "0" }), { main: false, subagents: "off" });
+	assert.deepEqual(restoreFastModePolicy(context(entries), { [PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE }), { main: false, subagents: "off" });
 	assert.deepEqual(restoreFastModePolicy(context([]), {}), { main: false, subagents: "off" });
 	assert.deepEqual(restoreFastModePolicy(context([]), {}, { main: false, subagents: "medium" }), { main: false, subagents: "medium" });
 	assert.deepEqual(

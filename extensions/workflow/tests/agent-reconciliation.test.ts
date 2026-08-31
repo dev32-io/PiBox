@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { SessionAgentRegistry } from "../../workflow-runtime/agent-registry.js";
-import { reconcileReportedAgents } from "../agent-reconciliation.js";
+import { interruptUnmatchedActivationAttempts, reconcileReportedAgents } from "../agent-reconciliation.js";
+import { LaunchCoordinator } from "../../workflow-runtime/launch-coordinator.js";
+import { FakeSubagentService, fakeOwner } from "../../workflow-runtime/tests/fixtures/fake-subagent-service.js";
 import { finalizeReviewerAfterSettlement, reusableReviewerAgentId, settleManagedEvaluation } from "../evaluation-settlement.js";
 import { RepositoryMutex } from "../idempotency.js";
 import { HarnessRunStore } from "../run-store.js";
 import { discoverRepository } from "../repository.js";
 import { WorkItemStore } from "../work-items.js";
+import { WorkflowControlStore } from "../../workflow-runtime/control-store.js";
+import { settleManagedTaskHandoff } from "../task-settlement.js";
 
 const exec = promisify(execFile);
 async function git(cwd: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd, encoding: "utf8" })).stdout.trim(); }
@@ -69,6 +73,45 @@ test("failed canonical evaluation settlement stops projecting the exited run as 
 	assert.match(String((run as any).error), /Evaluation settlement failed/);
 });
 
+test("recovery settlement preserves stop cancellation for a prewritten evaluator handoff", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-stopped-evaluation-settlement-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const controls = new WorkflowControlStore(root);
+	const started = await controls.apply({ workflowRef: "work-item:review", command: "start", ...owner, operationId: "start" });
+	const runs = new HarnessRunStore({ id: "repo", root, privateRoot: root }, "review");
+	const created = await runs.create({ repositoryId: "repo", workItemId: "review", evaluationId: "evaluation", role: "reviewer", attempt: 1, state: "running", workspace: root, baseCommit: "a".repeat(40), workflowGeneration: started.generation, workflowOwnerProcessInstanceId: owner.processInstanceId, workflowOwnerActivationId: owner.activationId });
+	await controls.apply({ workflowRef: "work-item:review", command: "stop", ...owner, operationId: "stop" });
+	await assert.rejects(settleManagedEvaluation({
+		workItems: { privateRoot: root, coordinator: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } } } as any,
+		runs, workItemId: "review", evaluationId: "evaluation", runId: created.record.id,
+		handoff: { schemaVersion: 1, type: "evaluation_complete", runId: created.record.id, evaluationId: "evaluation", verdict: "pass", report: "MERGE: YES\n\nlate", evidence: [], findings: [], completedAt: new Date().toISOString() },
+		reviewerAgentId: "reviewer", reviewedCommit: "a".repeat(40), exitCode: 0, completionEvent: "run.reconciled_completed",
+	}), /stopped or replaced workflow activation/);
+	const run = await runs.read(created.record.id);
+	assert.equal(run.state, "cancelled");
+	assert.doesNotMatch(run.error ?? "", /settlement failed/i);
+});
+
+test("task settlement cannot revive an awaiting-CI run after stop and resume", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-stopped-task-settlement-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const controls = new WorkflowControlStore(root);
+	const started = await controls.apply({ workflowRef: "work-item:review", command: "start", ...owner, operationId: "start" });
+	const runs = new HarnessRunStore({ id: "repo", root, privateRoot: root }, "review");
+	const created = await runs.create({ repositoryId: "repo", workItemId: "review", taskId: "task", role: "implementer", attempt: 1, state: "awaiting_ci", workspace: root, baseCommit: "a".repeat(40), workflowGeneration: started.generation, workflowExecutionFence: started.executionFence, workflowOwnerProcessInstanceId: owner.processInstanceId, workflowOwnerActivationId: owner.activationId });
+	await controls.apply({ workflowRef: "work-item:review", command: "stop", ...owner, operationId: "stop" });
+	await controls.apply({ workflowRef: "work-item:review", command: "resume", ...owner, operationId: "resume" });
+	await assert.rejects(settleManagedTaskHandoff({
+		workItems: { privateRoot: root, coordinator: { async run(_key: string, operation: () => Promise<unknown>) { return operation(); } }, async readTask() { throw new Error("stale settlement read canonical task"); } } as any,
+		runs, workItemId: "review", taskId: "task", runId: created.record.id,
+		handoff: { schemaVersion: 1, type: "task_complete", runId: created.record.id, taskId: "task", summary: "late", commits: ["b".repeat(40)], checks: [], expectedFailures: [], risks: [], completedAt: new Date().toISOString() },
+		completedCommit: "b".repeat(40), exitCode: 0, completionEvent: "run.reconciled_completed",
+	}), /stopped or replaced workflow activation/);
+	assert.equal((await runs.read(created.record.id)).state, "cancelled");
+});
+
 test("reviewer lifecycle follows verdict and replaces terminal legacy identities", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-reviewer-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
@@ -77,9 +120,8 @@ test("reviewer lifecycle follows verdict and replaces terminal legacy identities
 	const reportedReviewer = async (operationId: string) => {
 		const agent = await registry.reserve({ operationId, parentAgentId: "main:reviewer-lifecycle", parentDepth: 0, role: "code-reviewer", provider: "test", model: "fake", effort: "low", assignment: {} });
 		const { attempt } = await registry.startAttempt(agent.id);
-		await registry.markRunning(agent.id, attempt.id, process.pid);
-		await registry.recordExit(agent.id, attempt.id, 0);
-		await registry.transition(agent.id, "reported");
+		await registry.markRunning(agent.id, attempt.id);
+		await registry.settleAttempt(agent.id, attempt.id, { exitCode: 0, reason: "completed", targetState: "reported" });
 		return agent.id;
 	};
 	const failed = await reportedReviewer("failed-reviewer");
@@ -138,9 +180,8 @@ test("live settlement and reconciliation remain idempotent across every review/f
 		await registry.initialize(`main:${scenario.id}`);
 		const reserved = await registry.reserve({ operationId: created.record.id, parentAgentId: `main:${scenario.id}`, parentDepth: 0, role: created.record.role, provider: "test", model: "fake", effort: "low", assignment: {}, workItemId: scenario.id, evaluationId: "evaluation", runId: created.record.id, workspace: root });
 		const firstAttempt = await registry.startAttempt(reserved.id, { provider: "test", model: "fake", effort: "low" }, { kind: "review", generation: 0 });
-		await registry.markRunning(reserved.id, firstAttempt.attempt.id, process.pid);
-		await registry.recordExit(reserved.id, firstAttempt.attempt.id, 0);
-		await registry.transition(reserved.id, "reported", { summary: "review failed" });
+		await registry.markRunning(reserved.id, firstAttempt.attempt.id);
+		await registry.settleAttempt(reserved.id, firstAttempt.attempt.id, { exitCode: 0, reason: "completed", targetState: "reported", summary: "review failed" });
 		const reconciliation = () => reconcileReportedAgents({ identity, registry, workItems: store, mutex: new RepositoryMutex(identity.commonDir ?? identity.root) });
 		const liveSettlement = () => settleManagedEvaluation({ workItems: store, runs, workItemId: scenario.id, evaluationId: "evaluation", runId: created.record.id, handoff, reviewerAgentId: reserved.id, reviewedCommit: baseCommit, exitCode: 0, completionEvent: "run.completed" });
 		if (scenario.reconciliationFirst) await Promise.all([reconciliation(), liveSettlement()]);
@@ -168,3 +209,27 @@ test("live settlement and reconciliation remain idempotent across every review/f
 	});
 });
 
+
+test("a new activation interrupts unmatched attempts and explicit resume starts a fresh service transcript", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-activation-reconcile-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const registry = new SessionAgentRegistry(root, fakeOwner.sessionId);
+	await registry.initialize(`main:${fakeOwner.sessionId}`);
+	const reserved = await registry.reserve({ operationId: "durable-task", parentAgentId: `main:${fakeOwner.sessionId}`, parentDepth: 0, role: "implementer", provider: "test", model: "fake", effort: "low", assignment: { checkpoint: "durable" } });
+	const active = await registry.startAttempt(reserved.id);
+	await registry.markRunning(reserved.id, active.attempt.id);
+	const replacementService = new FakeSubagentService();
+	assert.deepEqual(replacementService.replay(replacementService.owner).events, [], "the replacement activation receives no old child events");
+	assert.equal(replacementService.inspect(replacementService.owner).length, 0);
+	const interrupted = await interruptUnmatchedActivationAttempts({
+		identity: { id: "repo", root, privateRoot: root }, registry, workItems: {} as WorkItemStore, service: replacementService,
+	});
+	assert.deepEqual(interrupted, [reserved.id]);
+	assert.equal((await registry.get(reserved.id)).state, "interrupted");
+	const resumed = await new LaunchCoordinator(registry, `main:${fakeOwner.sessionId}`, replacementService).launch({
+		operationId: "durable-task:resume", existingAgentId: reserved.id, role: "implementer", task: "Resume from durable checkpoint", assignment: { checkpoint: "durable" }, cwd: root,
+		provider: "test", model: "fake", effort: "low", tools: [], agentPrompt: "stable contract",
+	});
+	assert.equal(resumed.agent.state, "completed");
+	assert.equal(replacementService.requests[0]?.kind, "launch", "a replacement activation never continues the prior service transcript");
+});

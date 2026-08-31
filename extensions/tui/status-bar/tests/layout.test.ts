@@ -193,19 +193,6 @@ test("service targets remain stable when selection markers are applied at a fit 
 	assert.deepEqual(selected.interactiveRows.at(-1), ["service:mem0"]);
 });
 
-test("subagent dashboard stacks below the compact service row", () => {
-	const lines = renderStatusBar(120, {
-		...data,
-		serviceStatuses: ["● Mem0", "● SearXNG", "○ Visual companion"],
-		subagentStatuses: ["• general-purpose running · background · openai-codex/gpt-5.6-luna#max · 12s", "• explorer running · background · medium tier · 4s"],
-	});
-	assert.equal(lines.length, 7);
-	assert.match(lines[4] ?? "", /Mem0 │ ● SearXNG │ ○ Visual companion/);
-	assert.match(lines[5] ?? "", /general-purpose running/);
-	assert.match(lines[6] ?? "", /explorer running/);
-	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
-});
-
 test("medium layout preserves the higher-priority context segment", () => {
 	const longModelContext = {
 		...ctx,
@@ -214,4 +201,32 @@ test("medium layout preserves the higher-priority context segment", () => {
 	const firstLine = renderStatusBar(72, { ...data, ctx: longModelContext })[1] ?? "";
 	assert.match(firstLine, /42\.0%/);
 	assert.ok(visibleWidth(firstLine) <= 72);
+});
+
+test("structured subagent projection renders bounded semantic rows and overflow width-safely", () => {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const startedAt = "2026-01-01T00:00:00.000Z";
+	const agents = ["alpha", "beta", "gamma"].map((agent, index) => ({
+		agentId: `agent-${index}`,
+		agent,
+		state: "running" as const,
+		presentation: "background" as const,
+		provider: "openai-codex",
+		model: "gpt-5.6-sol-with-a-very-long-route-name",
+		effort: "high",
+		tier: "medium",
+		fast: index === 0,
+		startedAt,
+		updatedAt: startedAt,
+		progress: { startedAt, processStartedAt: startedAt, lastEventAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1200, reasoningTokens: 0, cacheReadTokens: 400, cacheWriteTokens: 20 },
+	}));
+	for (const width of [24, 60, 120]) {
+		const lines = renderStatusBar(width, { ...data, subagents: { owner, agents, overflow: 2 } });
+		assert.equal(lines.length, 8);
+		assert.match(lines.at(-1) ?? "", /\+2 more active/);
+		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
+	}
+	const text = renderStatusBar(160, { ...data, subagents: { owner, agents, overflow: 2 } }).join("\n");
+	assert.match(text, /alpha · Medium \(openai-codex\/gpt-5\.6-sol-with-a-very-long-route-name#high\) · Fast/);
+	assert.match(text, /2 turns · 3 tools · ↓ 1\.2k · R 400 · W 20 · active/);
 });

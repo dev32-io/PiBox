@@ -69,6 +69,27 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	assert.match(settled[1] ?? "", /Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\)$/);
 });
 
+test("renders continuation foreground progress and prose like spawn", () => {
+	const rendered = lines(renderHarnessToolCall("subagent_continue", {
+		agentId: "agent-1", task: "Inspect the follow-up",
+	}, theme, true, false, {
+		tier: "high",
+		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
+		progress: {
+			startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z",
+			lastEventAt: "2026-01-01T00:00:02.000Z", turns: 1, toolCalls: 2, toolErrors: 0,
+			outputTokens: 200, reasoningTokens: 0,
+		},
+	}, () => Date.parse("2026-01-01T00:00:03.000Z")));
+	assert.match(rendered[0] ?? "", /^[·•●] Continue subagent agent-1/);
+	assert.match(rendered[1] ?? "", /1 turn · 2 tools.*High \(openai-codex\/gpt-5\.6-sol#high\)/);
+
+	const report = Array.from({ length: 11 }, (_, index) => `line ${index + 1}`).join("\n");
+	const result = lines(renderHarnessToolResult("subagent_continue", { content: [{ type: "text", text: report }] }, false, theme, false));
+	assert.match(result.join("\n"), /line 10/);
+	assert.doesNotMatch(result.join("\n"), /line 11/);
+});
+
 test("renders distillation calls with scope-specific titles", () => {
 	assert.equal(isHarnessTool("distill_prepare"), true);
 	assert.deepEqual(lines(renderHarnessToolCall("distill_prepare", {

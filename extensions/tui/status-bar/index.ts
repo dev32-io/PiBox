@@ -10,18 +10,22 @@ import { MODEL_TIER_PROFILE_STATUS_KEY, parseModelTierProfileStatus } from "../.
 import { PROFILE_STATUS_KEY } from "../../profile/registry.js";
 import { attachInteractiveFooter } from "../interactive-footer/controller.js";
 import { getInteractiveFooterItem } from "../interactive-footer/registry.js";
+import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 
 export default function statusBar(pi: ExtensionAPI): void {
 	const config = normalizeStatusBarConfig(DEFAULT_STATUS_BAR_CONFIG);
 	let poller: GitPoller | undefined;
 	let activeTui: TUI | undefined;
 	let clockTimer: ReturnType<typeof setInterval> | undefined;
+	let unsubscribeSubagents: (() => void) | undefined;
 
 	const stop = () => {
 		poller?.stop();
 		poller = undefined;
 		if (clockTimer) clearInterval(clockTimer);
 		clockTimer = undefined;
+		unsubscribeSubagents?.();
+		unsubscribeSubagents = undefined;
 		activeTui = undefined;
 	};
 
@@ -32,6 +36,8 @@ export default function statusBar(pi: ExtensionAPI): void {
 		poller = new GitPoller(pi, ctx.cwd, config.git, () => activeTui?.requestRender());
 		poller.start();
 		clockTimer = setInterval(() => activeTui?.requestRender(), 30_000);
+		const subagentUi = getSubagentUiProjectionRegistry();
+		unsubscribeSubagents = subagentUi.subscribe(() => activeTui?.requestRender());
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			activeTui = tui;
@@ -52,7 +58,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 					const fastMode = parseFastModeStatus(extensionStatuses.get(FAST_MODE_STATUS_KEY));
 					const provider = ctx.model?.provider;
 					const usage = provider ? readUsageStatus(extensionStatuses.get(`${USAGE_STATUS_PREFIX}${provider}`)) : undefined;
-					const subagentStatuses = extensionStatuses.get("subagent-dashboard")?.split("\n").filter(Boolean);
+					const subagents = subagentUi.project();
 					const layout = renderStatusBarLayout(width, {
 						ctx,
 						...(usage ? { usage } : {}),
@@ -73,7 +79,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						},
 						config,
 						...(serviceStatuses.length ? { serviceStatuses } : {}),
-						...(subagentStatuses?.length ? { subagentStatuses } : {}),
+						...(subagents && (subagents.agents.length > 0 || subagents.overflow > 0) ? { subagents } : {}),
 						...(controller.selectedId ? { selectedInteractiveId: controller.selectedId } : {}),
 					});
 					navigationRows = layout.interactiveRows

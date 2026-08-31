@@ -150,7 +150,7 @@ export async function observeRoutineModelScenario(fixture: RoutineModelFixture):
 		for (const line of content.split("\n").filter(Boolean)) {
 			let event: any; try { event = JSON.parse(line); } catch { continue; }
 			for (const part of event.message?.content ?? []) {
-				if (part?.type === "toolCall" && ["workflow_apply_change", "subagent_respond"].includes(part.name)) orchestratorInterventions++;
+				if (part?.type === "toolCall" && part.name === "workflow_apply_change") orchestratorInterventions++;
 				if (part?.type === "text" && /please choose|awaits clarification|need(?:s)? your decision/i.test(part.text ?? "")) userEscalations = 1;
 			}
 		}

@@ -14,6 +14,8 @@ interface WorkerScope {
 	workItemId: string;
 	taskId: string;
 	credential: string;
+	agentAttemptId: string;
+	agentGeneration: number;
 }
 
 function scopeFromEnvironment(): WorkerScope {
@@ -21,15 +23,23 @@ function scopeFromEnvironment(): WorkerScope {
 	const workItemId = process.env.PIBOX_HARNESS_WORK_ITEM;
 	const taskId = process.env.PIBOX_HARNESS_TASK;
 	const credential = process.env.PIBOX_HARNESS_CREDENTIAL;
-	if (!runId || !workItemId || !taskId || !credential) throw new HarnessError("CAPABILITY_DENIED", "Worker capability requires a supervised harness run");
-	return { runId, workItemId, taskId, credential };
+	const agentAttemptId = process.env.PIBOX_HARNESS_AGENT_ATTEMPT_ID;
+	const agentGeneration = Number(process.env.PIBOX_HARNESS_AGENT_GENERATION);
+	if (!runId || !workItemId || !taskId || !credential || !agentAttemptId || !Number.isInteger(agentGeneration) || agentGeneration < 1) throw new HarnessError("CAPABILITY_DENIED", "Worker capability requires a current supervised harness attempt");
+	return { runId, workItemId, taskId, credential, agentAttemptId, agentGeneration };
 }
 
 async function authorized(ctx: ExtensionContext) {
 	const scope = scopeFromEnvironment();
 	const identity = await discoverRepository(ctx.cwd);
 	const runs = new HarnessRunStore(identity, scope.workItemId);
-	const run = await runs.authorize(scope.runId, scope.credential);
+	const run = await runs.authorizeMutation(scope.runId, scope.credential, scope.agentAttemptId, scope.agentGeneration);
+	const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
+	const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
+	const agentId = process.env.PIBOX_SUBAGENT_ID;
+	if (!privateRoot || !sessionId || !agentId) throw new HarnessError("CAPABILITY_DENIED", "Worker attempt is missing its current logical-agent fence");
+	const agent = await new SessionAgentRegistry(privateRoot, sessionId).get(agentId);
+	if (agent.currentAttemptId !== scope.agentAttemptId || agent.state !== "running") throw new HarnessError("CAPABILITY_DENIED", `Worker logical agent is no longer current (${agent.state})`);
 	if (run.taskId !== scope.taskId || run.workItemId !== scope.workItemId || run.workspace !== ctx.cwd) {
 		throw new HarnessError("CAPABILITY_DENIED", "Run scope does not match this task workspace");
 	}
@@ -203,7 +213,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 					risks: params.risks ?? [],
 					completedAt: new Date().toISOString(),
 				};
-				await auth.runs.writeHandoff(auth.scope.runId, handoff);
+				await auth.runs.writeAuthorizedHandoff(auth.scope.runId, auth.scope.credential, auth.scope.agentAttemptId, auth.scope.agentGeneration, handoff);
 				return result("Task submission accepted for harness CI.", handoff);
 			} catch (error) {
 				throw new Error(describeHarnessError(error));

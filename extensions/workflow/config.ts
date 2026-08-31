@@ -5,38 +5,31 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { HarnessError } from "./errors.js";
 import type {
-	CapabilityTier,
 	ConfigDiagnostic,
 	HarnessConfig,
 	LoadedHarnessConfig,
-	AgentConfig,
 } from "./types.js";
 import {
-	CAPABILITY_TIERS,
 	DEFAULT_MODEL_TIER_LIST_PROFILES,
 	normalizeLegacyModelTiers,
 	validateModelTierListProfiles,
 } from "../model-tier-list-profiles/profiles.js";
-import { discoverAgentDefinitions, discoverProjectAgents } from "./agent-definitions.js";
-import { BUILT_IN_AGENT_ROOT } from "./prompt-loader.js";
+import { discoverProjectAgents } from "../subagent/agent-definitions.js";
+import { DEFAULT_SUBAGENT_CATALOG_CONFIG, resolveAgentConfigs } from "../subagent/catalog.js";
 import { validateToolSelectors } from "./tool-groups.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 
 const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTierListProfiles", "agents", "roles", "orchestrator", "limits"]);
-const AGENT_KEYS = new Set(["extends", "description", "prompt", "skills", "tools", "model", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]); // deliberation is accepted only for legacy policy compatibility
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
-
-const builtInAgentDefinitions = discoverAgentDefinitions(BUILT_IN_AGENT_ROOT);
-if (builtInAgentDefinitions.diagnostics.length > 0) throw new Error(`Invalid built-in agent definitions:\n${builtInAgentDefinitions.diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n")}`);
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	schemaVersion: 2,
 	modelTierListProfiles: structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES),
 	modelTierProfile: DEFAULT_MODEL_TIER_LIST_PROFILES.defaultProfile,
 	agents: {
-		...builtInAgentDefinitions.agents,
-		implementer: { ...builtInAgentDefinitions.agents.implementer!, completionSchema: "implementer-v1" },
+		...structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG.agents),
+		implementer: { ...DEFAULT_SUBAGENT_CATALOG_CONFIG.agents.implementer!, completionSchema: "implementer-v1" },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
 	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: DEFAULT_REVIEW_FIX_ITERATIONS },
@@ -78,42 +71,6 @@ function ignoreHarnessAgentTools(value: UnknownRecord): void {
 	}
 }
 
-function parseAgent(value: unknown, path: string): AgentConfig {
-	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must be a mapping`);
-	rejectUnknownKeys(value, AGENT_KEYS, path);
-	const agent: AgentConfig = {};
-	if (value.extends !== undefined) agent.extends = expectString(value.extends, `${path}.extends`);
-	if (value.description !== undefined) agent.description = expectString(value.description, `${path}.description`);
-	if (value.prompt !== undefined) agent.prompt = expectString(value.prompt, `${path}.prompt`);
-	if (value.skills !== undefined) {
-		if (!Array.isArray(value.skills)) throw new HarnessError("CONFIG_INVALID", `${path}.skills must be an array`);
-		agent.skills = value.skills.map((item, index) => expectString(item, `${path}.skills[${index}]`));
-	}
-	if (value.tools !== undefined) {
-		if (!Array.isArray(value.tools)) throw new HarnessError("CONFIG_INVALID", `${path}.tools must be an array`);
-		agent.tools = value.tools.map((item, index) => expectString(item, `${path}.tools[${index}]`));
-		try { validateToolSelectors(agent.tools); } catch (error) { throw new HarnessError("CONFIG_INVALID", `${path}.tools: ${error instanceof Error ? error.message : String(error)}`); }
-	}
-	if (value.model !== undefined) agent.model = expectString(value.model, `${path}.model`);
-	if (value.workspace !== undefined) {
-		const workspace = expectString(value.workspace, `${path}.workspace`);
-		if (workspace !== "repository" && workspace !== "worktree" && workspace !== "none") throw new HarnessError("CONFIG_INVALID", `${path}.workspace is unsupported`);
-		agent.workspace = workspace;
-	}
-	if (value.canDelegate !== undefined) {
-		if (typeof value.canDelegate !== "boolean") throw new HarnessError("CONFIG_INVALID", `${path}.canDelegate must be boolean`);
-		agent.canDelegate = value.canDelegate;
-	}
-	if (value.completionSchema !== undefined) agent.completionSchema = expectString(value.completionSchema, `${path}.completionSchema`);
-	if (value.tier !== undefined) {
-		const tier = expectString(value.tier, `${path}.tier`) as CapabilityTier;
-		if (!CAPABILITY_TIERS.includes(tier)) throw new HarnessError("CONFIG_INVALID", `${path}.tier is unsupported`);
-		agent.tier = tier;
-	}
-	if (value.deliberation !== undefined && !["standard", "deep"].includes(expectString(value.deliberation, `${path}.deliberation`))) throw new HarnessError("CONFIG_INVALID", `${path}.deliberation is unsupported`);
-	return agent;
-}
-
 export function validateHarnessConfig(value: unknown, requestedModelTierProfile?: string): HarnessConfig {
 	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", "Workflow configuration must be a mapping");
 	const normalized = structuredClone(value);
@@ -130,22 +87,9 @@ export function validateHarnessConfig(value: unknown, requestedModelTierProfile?
 		? requestedModelTierProfile
 		: modelTierListProfiles.defaultProfile;
 
-	const parsedAgents: Record<string, AgentConfig> = {};
-	for (const [name, raw] of Object.entries(rawAgents)) parsedAgents[name] = parseAgent(raw, `agents.${name}`);
-	const agents: Record<string, AgentConfig> = {};
-	const resolveAgent = (name: string, stack: string[] = []): AgentConfig => {
-		if (agents[name]) return agents[name];
-		const agent = parsedAgents[name];
-		if (!agent) throw new HarnessError("CONFIG_INVALID", `Unknown extended agent: ${name}`);
-		if (stack.includes(name)) throw new HarnessError("CONFIG_INVALID", `Agent inheritance cycle: ${[...stack, name].join(" -> ")}`);
-		const parent = agent.extends ? resolveAgent(agent.extends, [...stack, name]) : {};
-		const resolved = mergeConfigValues(parent, agent) as AgentConfig;
-		delete resolved.extends;
-		if (!resolved.tier) throw new HarnessError("CONFIG_INVALID", `Agent ${name} must resolve a tier default`);
-		agents[name] = resolved;
-		return resolved;
-	};
-	for (const name of Object.keys(parsedAgents)) resolveAgent(name);
+	let agents;
+	try { agents = resolveAgentConfigs(rawAgents, { validateTools: validateToolSelectors }); }
+	catch (error) { throw new HarnessError("CONFIG_INVALID", error instanceof Error ? error.message : String(error)); }
 
 	rejectUnknownKeys(normalized.orchestrator, ORCHESTRATOR_KEYS, "orchestrator");
 	rejectUnknownKeys(normalized.limits, LIMIT_KEYS, "limits");
@@ -203,7 +147,7 @@ export function loadHarnessConfig(
 
 	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new HarnessError("CONFIG_INVALID", diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"), { diagnostics });
 	const config = validateHarnessConfig(merged, options.modelTierProfile);
-	const projectAgents = discoverProjectAgents(repositoryRoot);
+	const projectAgents = discoverProjectAgents(repositoryRoot, { validateTools: validateToolSelectors });
 	for (const [name, definition] of Object.entries(projectAgents.agents)) config.agents[name] = definition;
 	diagnostics.push(...projectAgents.diagnostics);
 	if (Object.keys(projectAgents.agents).length > 0) sources.push(join(repositoryRoot, ".pi", "agents"));

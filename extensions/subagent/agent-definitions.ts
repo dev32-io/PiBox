@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, CapabilityTier, ConfigDiagnostic } from "./types.js";
-import { validateToolSelectors } from "./tool-groups.js";
+import { validateSubagentToolSelectors } from "./tool-policy.js";
 
 const TIERS = new Set<CapabilityTier>(["low", "medium", "high", "max"]);
 
@@ -14,19 +14,24 @@ type AgentFrontmatter = {
 	tier?: unknown;
 };
 
-function toolList(value: unknown): string[] | undefined {
+export interface AgentDiscoveryOptions {
+	defaultTier?: CapabilityTier;
+	validateTools?: (selectors: readonly string[]) => void;
+}
+
+function toolList(value: unknown, validateTools: (selectors: readonly string[]) => void): string[] | undefined {
 	if (value === undefined) return undefined;
 	const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : undefined;
 	if (!raw || raw.some((tool) => typeof tool !== "string")) throw new Error("tools must be a comma-separated string or string array");
 	const tools = raw.map((tool) => tool.trim()).filter(Boolean);
 	if (tools.length === 0) throw new Error("tools must contain at least one tool");
-	validateToolSelectors(tools);
+	validateTools(tools);
 	return tools;
 }
 
 export function discoverAgentDefinitions(
 	directory: string,
-	options: { defaultTier?: CapabilityTier } = {},
+	options: AgentDiscoveryOptions = {},
 ): { agents: Record<string, AgentConfig>; diagnostics: ConfigDiagnostic[] } {
 	const agents: Record<string, AgentConfig> = {};
 	const diagnostics: ConfigDiagnostic[] = [];
@@ -44,7 +49,7 @@ export function discoverAgentDefinitions(
 			if (!body.trim()) throw new Error("agent prompt body must not be empty");
 			if (frontmatter.model !== undefined && (typeof frontmatter.model !== "string" || !frontmatter.model.trim())) throw new Error("model must be a non-empty string");
 			if (frontmatter.tier !== undefined && (typeof frontmatter.tier !== "string" || !TIERS.has(frontmatter.tier as CapabilityTier))) throw new Error("tier must be one of low, medium, high, or max");
-			const tools = toolList(frontmatter.tools);
+			const tools = toolList(frontmatter.tools, options.validateTools ?? validateSubagentToolSelectors);
 			if (agents[frontmatter.name]) throw new Error(`duplicate agent name: ${frontmatter.name}`);
 			agents[frontmatter.name] = {
 				description: frontmatter.description.trim().replace(/\s+/g, " "),
@@ -63,6 +68,6 @@ export function discoverAgentDefinitions(
 }
 
 /** Discover trusted repository-local Pi agents. */
-export function discoverProjectAgents(repositoryRoot: string): { agents: Record<string, AgentConfig>; diagnostics: ConfigDiagnostic[] } {
-	return discoverAgentDefinitions(join(repositoryRoot, ".pi", "agents"));
+export function discoverProjectAgents(repositoryRoot: string, options: AgentDiscoveryOptions = {}): { agents: Record<string, AgentConfig>; diagnostics: ConfigDiagnostic[] } {
+	return discoverAgentDefinitions(join(repositoryRoot, ".pi", "agents"), options);
 }

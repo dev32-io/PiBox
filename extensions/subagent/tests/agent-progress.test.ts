@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { formatAgentProgress, initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress } from "../agent-progress.js";
-import { observeJsonl } from "../direct-agent.js";
 
 test("projects only concise semantic progress from child events", () => {
 	let progress = initialAgentProgress("2026-01-01T00:00:00.000Z");
@@ -49,22 +45,4 @@ test("tracks startup and activity from the child Pi process instead of event rec
 	assert.match(formatAgentProgress(agentSettled, Date.parse("2026-01-01T00:10:01.000Z")), /active$/, "agent events do not replace process status");
 	const exited = markAgentProcessExited(agentSettled, "2026-01-01T00:10:01.000Z");
 	assert.doesNotMatch(formatAgentProgress(exited, Date.parse("2026-01-01T00:11:00.000Z")), /starting|active|idle/);
-});
-
-test("incremental JSONL observation handles partial lines and duplicate drains exactly once", async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pibox-jsonl-observer-"));
-	t.after(() => rm(root, { recursive: true, force: true }));
-	const path = join(root, "stdout.jsonl");
-	await writeFile(path, "");
-	const events: unknown[] = [];
-	const malformed: string[] = [];
-	const observer = await observeJsonl(path, (event) => events.push(event), (line) => malformed.push(line));
-	await appendFile(path, '{"type":"turn_');
-	await observer.drain();
-	assert.equal(events.length, 0);
-	await appendFile(path, 'start"}\n{"type":"agent_settled"}\n');
-	await Promise.all([observer.drain(), observer.drain()]);
-	await observer.close();
-	assert.deepEqual(events, [{ type: "turn_start" }, { type: "agent_settled" }]);
-	assert.deepEqual(malformed, []);
 });

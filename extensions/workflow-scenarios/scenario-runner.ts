@@ -15,7 +15,7 @@ export async function runWorkflowScenario(scenario: WorkflowScenarioDefinition):
 		const deadline = Date.now() + (scenario.timeoutMs ?? 2_000);
 		let steeringIndex = 0;
 		while (Date.now() < deadline) {
-			const state = [...harness.entries].reverse().find((entry) => entry.customType === "pibox-workflow" && entry.data.ref === adapter.workflowRef)?.data.state;
+			const state = adapter.mode;
 			const completed = harness.messages.some((entry) => entry.message?.customType === "pibox-workflow-complete");
 			if (completed) { terminal = "complete"; break; }
 			if (state === "paused") {

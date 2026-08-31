@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { SubagentUiProjectionRegistry, type SubagentUiAgentProjection } from "../ui-projection.js";
+
+const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+
+function agent(agentId: string, startedAt: string, presentation: "foreground" | "background" = "background", state: SubagentUiAgentProjection["state"] = "running"): SubagentUiAgentProjection {
+	return { agentId, agent: agentId, state, presentation, provider: "provider", model: "model", effort: "medium", fast: false, startedAt, updatedAt: startedAt };
+}
+
+test("process-global projection bindings sort stably, bound rows, report overflow, and notify on events", () => {
+	const registry = new SubagentUiProjectionRegistry();
+	let renders = 0;
+	const unsubscribe = registry.subscribe(() => { renders++; });
+	const binding = registry.bind(owner, "binding");
+	binding.publish([
+		agent("later", "2026-01-01T00:00:02Z"),
+		agent("same-b", "2026-01-01T00:00:01Z"),
+		agent("same-a", "2026-01-01T00:00:01Z"),
+		agent("foreground", "2026-01-01T00:00:00Z", "foreground"),
+		agent("settled", "2026-01-01T00:00:00Z", "background", "completed"),
+	]);
+	assert.deepEqual(registry.project(2)?.agents.map((value) => value.agentId), ["same-a", "same-b"]);
+	assert.equal(registry.project(2)?.overflow, 1);
+	assert.equal(renders, 2, "binding and semantic event publication each request a render");
+	unsubscribe();
+	binding.release();
+});
+
+test("a replacement binding fences stale projection publication and release", () => {
+	const registry = new SubagentUiProjectionRegistry();
+	const old = registry.bind(owner, "old");
+	old.publish([agent("old-agent", "2026-01-01T00:00:00Z")]);
+	const replacement = registry.bind(owner, "replacement");
+	assert.equal(old.publish([agent("stale", "2026-01-01T00:00:00Z")]), false);
+	assert.equal(old.release(), false);
+	replacement.publish([agent("current", "2026-01-01T00:00:00Z")]);
+	assert.deepEqual(registry.project()?.agents.map((value) => value.agentId), ["current"]);
+});

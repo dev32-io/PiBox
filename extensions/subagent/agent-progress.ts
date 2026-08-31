@@ -12,6 +12,8 @@ export interface AgentProgress {
 	inputTokens?: number;
 	outputTokens: number;
 	reasoningTokens: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
 	contextTokens?: number;
 	activeTool?: string;
 	settledAt?: string;
@@ -43,6 +45,8 @@ export function projectAgentProgress(current: AgentProgress, event: unknown, obs
 	if (value.type === "turn_end") {
 		const usage = value.message?.usage ?? {};
 		const contextTokens = nonNegativeInteger(usage.totalTokens);
+		const cacheReadTokens = (current.cacheReadTokens ?? 0) + nonNegativeInteger(usage.cacheRead);
+		const cacheWriteTokens = (current.cacheWriteTokens ?? 0) + nonNegativeInteger(usage.cacheWrite);
 		return {
 			...current,
 			lastEventAt: observedAt,
@@ -50,6 +54,8 @@ export function projectAgentProgress(current: AgentProgress, event: unknown, obs
 			inputTokens: (current.inputTokens ?? 0) + nonNegativeInteger(usage.input),
 			outputTokens: current.outputTokens + nonNegativeInteger(usage.output),
 			reasoningTokens: current.reasoningTokens + nonNegativeInteger(usage.reasoning),
+			...(cacheReadTokens > 0 ? { cacheReadTokens } : {}),
+			...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
 			...(contextTokens > 0 ? { contextTokens } : {}),
 		};
 	}
@@ -134,11 +140,15 @@ export function formatAgentProgress(progress: AgentProgress | undefined, now = D
 	const turns = displayCount(progress?.turns);
 	const toolCalls = displayCount(progress?.toolCalls);
 	const outputTokens = displayCount(progress?.outputTokens);
+	const cacheReadTokens = displayCount(progress?.cacheReadTokens);
+	const cacheWriteTokens = displayCount(progress?.cacheWriteTokens);
 	if (turns > 0) parts.push(`${turns} turn${turns === 1 ? "" : "s"}`);
 	if (toolCalls > 0) parts.push(`${toolCalls} tool${toolCalls === 1 ? "" : "s"}`);
 	const activeTool = safeToolName(progress?.activeTool);
 	if (activeTool) parts.push(activeTool);
 	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
+	if (cacheReadTokens > 0) parts.push(`R ${compactNumber(cacheReadTokens)}`);
+	if (cacheWriteTokens > 0) parts.push(`W ${compactNumber(cacheWriteTokens)}`);
 	const processStatus = options.processStatus ?? formatAgentProcessStatus(progress);
 	if (processStatus && (processStatus !== "active" || options.showActive !== false)) parts.push(processStatus);
 	return parts.join(" · ");

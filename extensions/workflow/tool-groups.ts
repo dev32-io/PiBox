@@ -1,16 +1,18 @@
-import { ALL_TOOLS_SELECTOR, parseMcpToolSelector } from "./mcp-capabilities.js";
+import {
+	resolveSubagentToolSelectors,
+	validateSubagentToolSelectors,
+} from "../subagent/tool-policy.js";
 
-export { ALL_TOOLS_SELECTOR } from "./mcp-capabilities.js";
+export {
+	ALL_TOOLS_SELECTOR,
+	ALL_TOOLS_SUBAGENT_ENV,
+	DEFAULT_SUBAGENT_TOOLS,
+	RECURSIVE_SUBAGENT_CONTROL_EXCLUSIONS,
+	SUBAGENT_CONTROL_TOOLS,
+	usesAllTools,
+} from "../subagent/tool-policy.js";
 
-/**
- * Namespaced tool selectors keep harness capabilities out of launch-site lists.
- * Agent definitions may use these selectors directly; managed workflows may add
- * a selector at runtime before the concrete Pi tool list is resolved.
- */
-export const DEFAULT_SUBAGENT_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
-export const ALL_TOOLS_SUBAGENT_ENV = "PIBOX_SUBAGENT_ALL_TOOLS";
-export const SUBAGENT_CONTROL_TOOLS = ["subagent_spawn", "subagent_status", "subagent_control", "subagent_respond"] as const;
-
+/** Workflow-only capability groups appended to generic agent tool policy. */
 export const PIBOX_TOOL_GROUPS = {
 	"pibox:task": ["task_clarify", "task_checkpoint", "task_request_change", "task_report_decision", "task_blocked", "task_complete"],
 	"pibox:evaluation": ["evaluation_context", "evidence_record", "finding_report", "evaluation_checkpoint", "evaluation_complete"],
@@ -23,10 +25,9 @@ export const PIBOX_EVALUATION_TOOL_GROUP: PiBoxToolGroup = "pibox:evaluation";
 export const PIBOX_LEDGER_TOOL_GROUP: PiBoxToolGroup = "pibox:ledger";
 
 export function validateToolSelectors(selectors: readonly string[]): void {
+	validateSubagentToolSelectors(selectors);
 	for (const selector of selectors) {
-		if (!selector.trim()) throw new Error("tool selectors must be non-empty strings");
 		if (selector.startsWith("pibox:") && !(selector in PIBOX_TOOL_GROUPS)) throw new Error(`Unknown PiBox tool group: ${selector}`);
-		parseMcpToolSelector(selector);
 	}
 }
 
@@ -35,8 +36,9 @@ export function resolveToolSelectors(selectors: readonly string[], runtimeGroups
 	validateToolSelectors(combined);
 	const resolved: string[] = [];
 	for (const selector of combined) {
-		const mcpServer = parseMcpToolSelector(selector);
-		const tools = mcpServer ? ["mcp"] : selector in PIBOX_TOOL_GROUPS ? PIBOX_TOOL_GROUPS[selector as PiBoxToolGroup] : [selector];
+		const tools = selector in PIBOX_TOOL_GROUPS
+			? PIBOX_TOOL_GROUPS[selector as PiBoxToolGroup]
+			: resolveSubagentToolSelectors([selector]);
 		for (const tool of tools) if (!resolved.includes(tool)) resolved.push(tool);
 	}
 	return resolved;

@@ -1,6 +1,6 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { currentSubagentPulseDot, formatInlineSubagentStatus } from "../../../workflow-runtime/subagent-display.js";
+import { currentSubagentPulseDot, formatInlineSubagentStatus } from "../../../subagent/display.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
 	"evidence_record", "finding_report", "memory_adapter", "work_item_complete", "task_integrate",
@@ -64,7 +64,7 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 		case "subagent_spawn": return { action: args.agent ?? "Subagent", target: compact(args.task, 78) };
 		case "subagent_status": return { action: "Inspect subagents" };
 		case "subagent_control": return { action: `${words(args.action ?? "control")} subagent`, target: args.agentId };
-		case "subagent_respond": return { action: "Respond to subagent", target: args.agentId };
+		case "subagent_continue": return { action: "Continue subagent", target: args.agentId };
 		case "task_clarify": return { action: "Clarify task", target: args.ref ?? args.taskId };
 		case "task_checkpoint": return { action: "Checkpoint task", target: args.summary };
 		case "task_complete": return { action: "Complete task", target: args.summary };
@@ -95,7 +95,7 @@ class HarnessCallComponent implements Component {
 			? this.theme.fg("warning", currentSubagentPulseDot())
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
 		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
-		const showSubagentStatus = this.name === "subagent_spawn" && (this.partial || Boolean(this.details?.resolved));
+		const showSubagentStatus = (this.name === "subagent_spawn" || this.name === "subagent_continue") && (this.partial || Boolean(this.details?.resolved));
 		if (!this.partial && !showSubagentStatus) return [truncateToWidth(headline, width, "…")];
 		const state = showSubagentStatus
 			? formatInlineSubagentStatus({
@@ -264,7 +264,8 @@ export function renderHarnessToolResult(name: string, result: any, expanded: boo
 	// A returned subagent report is prose and often contains code, file excerpts,
 	// or nested command output. Never reinterpret an embedded JSON example as the
 	// tool payload, and retain every line's original indentation.
-	const payload = name === "subagent_spawn" ? undefined : parsePayload(text);
+	const subagentForeground = name === "subagent_spawn" || name === "subagent_continue";
+	const payload = subagentForeground ? undefined : parsePayload(text);
 	const items = structuredItems(payload);
 	const fields = summaryFields(payload, result?.details);
 	const status = error ? theme.fg("error", "Error") : theme.fg("success", "Done");
@@ -294,6 +295,6 @@ export function renderHarnessToolResult(name: string, result: any, expanded: boo
 		appendTreeRows(component, fields.map(([key, value]) => `${key}: ${compact(value, 100)}`), theme, expanded);
 		return component;
 	}
-	appendOutputBlock(component, text, theme, expanded, name === "subagent_spawn" ? 10 : 4);
+	appendOutputBlock(component, text, theme, expanded, subagentForeground ? 10 : 4);
 	return component;
 }

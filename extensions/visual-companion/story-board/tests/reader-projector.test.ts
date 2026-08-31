@@ -43,8 +43,8 @@ test("workspace isolates malformed children and links task-scoped reports", asyn
 	await put(root, `agent-artifacts/${story}/tasks/healthy-task/brief.md`, "# Brief\n\nExact brief.\n");
 	await put(root, `agent-artifacts/${story}/tasks/healthy-task/acceptance.md`, "# Acceptance\n\nExact acceptance.\n");
 	await put(root, `agent-artifacts/${story}/tasks/broken-task/task.yaml`, "status: [not yaml\n");
-	await put(root, `agent-artifacts/${story}/evaluations/task-review/evaluation.yaml`, stringify({ schemaVersion: 1, id: "task-review", type: "combined-review", scope: { task: "healthy-task" }, status: "passed", required: true, attempt: 2, methods: [], findings: [{ id: "F-1", severity: "low", status: "accepted", summary: "Known issue" }], result: { verdict: "pass", report: "report.md", riskAcceptance: "risk-acceptance.md" } }));
-	await put(root, `agent-artifacts/${story}/evaluations/task-review/report.md`, "# Report\n\nPassed.\n");
+	await put(root, `agent-artifacts/${story}/evaluations/task-review/evaluation.yaml`, stringify({ schemaVersion: 1, id: "task-review", type: "combined-review", scope: { task: "healthy-task" }, status: "passed", required: true, attempt: 2, methods: [], findings: [{ id: "F-1", severity: "low", status: "accepted", summary: "Known issue" }], result: { verdict: "pass", report: "attempts/002-report.md", riskAcceptance: "risk-acceptance.md" } }));
+	await put(root, `agent-artifacts/${story}/evaluations/task-review/attempts/002-report.md`, "# Report\n\nPassed.\n");
 	await put(root, `agent-artifacts/${story}/evaluations/task-review/risk-acceptance.md`, "# Accepted risk\n");
 	const reader = new StoryBoardReader(root); const workspace = await reader.readWorkspace(story);
 	assert.equal(workspace?.tasks.length, 2);
@@ -59,6 +59,7 @@ test("workspace isolates malformed children and links task-scoped reports", asyn
 	assert.doesNotMatch(JSON.stringify(detail), /private\/worktrees|private-run-id|private\/worker|baseCommit|lastRunId|"worktree":/);
 	const report = await reader.readReportDetail(story, "task-review");
 	assert.equal(report?.findings[0]?.status, "accepted");
+	assert.match(report?.body ?? "", /Passed/);
 	assert.match(report?.riskAcceptance ?? "", /Accepted risk/);
 });
 

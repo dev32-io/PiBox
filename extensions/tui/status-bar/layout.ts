@@ -8,6 +8,8 @@ import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
 import type { ModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
+import { formatSubagentFooterProjection } from "../../subagent/display.js";
+import type { SubagentUiProjection } from "../../subagent/ui-projection.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
 
@@ -29,7 +31,7 @@ export interface StatusRenderData {
 	git: GitSnapshot;
 	config: StatusBarConfig;
 	serviceStatuses?: Array<string | ServiceStatusSegment>;
-	subagentStatuses?: string[];
+	subagents?: SubagentUiProjection;
 	selectedInteractiveId?: string;
 }
 
@@ -309,7 +311,13 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 		lines.push(buildRow([visibleServices.map((service) => decorateInteractiveSegment(service, data)).join(` ${divider} `)], [], width));
 		interactiveRows.push(visibleServices.map((service) => service.id));
 	}
-	for (const status of data.subagentStatuses ?? []) lines.push(buildRow([status], [], width));
+	if (data.subagents) {
+		for (const agent of data.subagents.agents) {
+			const icon = agent.state === "stopping" ? data.theme.fg("warning", "◐") : data.theme.fg("warning", "•");
+			lines.push(buildRow([`${icon} ${data.theme.fg("text", formatSubagentFooterProjection(agent))}`], [], width));
+		}
+		if (data.subagents.overflow > 0) lines.push(buildRow([data.theme.fg("dim", `… +${data.subagents.overflow} more active subagent${data.subagents.overflow === 1 ? "" : "s"}`)], [], width));
+	}
 	return { lines, interactiveRows };
 }
 

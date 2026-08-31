@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { buildReviewPersistentContext, buildTaskPersistentContext } from "../implementation-context.js";
+import { REVIEW_CONTEXT_BUDGET_BYTES, TASK_CONTEXT_BUDGET_BYTES, buildReviewAttemptContext, buildReviewPersistentContext, buildTaskPersistentContext } from "../implementation-context.js";
 import { OrchestratorResourceService } from "../orchestrator-resources.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
 import { WorkItemStore } from "../work-items.js";
+import { WorkflowLedgerStore } from "../workflow-ledger.js";
 
 const exec = promisify(execFile);
 async function git(root: string, ...args: string[]): Promise<string> { return (await exec("git", args, { cwd: root, encoding: "utf8" })).stdout.trim(); }
@@ -93,7 +94,18 @@ test("builds a focused persistent implementation packet", async (t) => {
 	assert.doesNotMatch(packet, /deletes every record|Broad design details/);
 	assert.match(packet, /task_clarify.*broader design/i);
 	assert.match(packet, /test -f app\.txt/);
-	assert.doesNotMatch(packet, /Broad intent|planning revision|sha256|assignment rationale/i);
+	assert.doesNotMatch(packet, /Broad intent|planning revision|assignment rationale/i);
+	assert.match(packet, new RegExp(`budgetBytes: ${TASK_CONTEXT_BUDGET_BYTES}`));
+	assert.match(packet, /Context Source Manifest[\s\S]+digest: sha256:/);
+	assert.ok(Buffer.byteLength(packet, "utf8") <= TASK_CONTEXT_BUDGET_BYTES);
+});
+
+test("fails closed when complete task requirements exceed the explicit context budget", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "budgeted-task", title: "Budgeted task", kind: "change", intent: "Budget context." });
+	const manifest = task("oversized"); delete manifest.references;
+	await store.defineTask({ workItemId: "budgeted-task", manifest, brief: `Required ${"x".repeat(400)}`, acceptance: "Must remain complete." });
+	await assert.rejects(buildTaskPersistentContext(store, "budgeted-task", manifest, { maxBytes: 256 }), /exceeding its explicit 256-byte budget; requirements were not truncated/);
 });
 
 test("uses a self-contained task contract without eagerly loading story artifacts", async (t) => {
@@ -125,6 +137,11 @@ test("includes the exact E2E matrix for E2E and whole-branch reviewer context", 
 	assert.match(await buildReviewPersistentContext(store, "matrix-context", e2e), /exact approved content/);
 	assert.match(await buildReviewPersistentContext(store, "matrix-context", review), /exact approved content/);
 	assert.doesNotMatch(await buildReviewPersistentContext(store, "matrix-context", scopedReview), /exact approved content/);
+	await assert.rejects(
+		buildReviewPersistentContext(store, "matrix-context", { ...e2e, context: { taskIds: [], artifactRefs: [{ workItemId: "matrix-context", artifactId: "intent" }] } }),
+		/context artifact selection must exactly match its canonical review scope/,
+		"an explicit E2E scope cannot omit the required matrix",
+	);
 });
 
 test("idempotently generates one required review per execution stage before final gates", async (t) => {
@@ -138,6 +155,7 @@ test("idempotently generates one required review per execution stage before fina
 	await store.ensureFinalEvaluations("generated-reviews", 2);
 	const item = await store.read("generated-reviews");
 	assert.deepEqual(item.evaluations.map(({ id }) => id), ["stage-delivery-review", "final-branch-review", "final-e2e"]);
+	await assert.rejects(readFile(join(root, "agent-artifacts", "generated-reviews", "evaluations", "final-branch-review", "report.md")), /ENOENT/, "generated checkpoints do not create pending reports");
 	const stageReview = await store.readEvaluation("generated-reviews", "stage-delivery-review");
 	assert.equal(stageReview.required, true);
 	assert.equal(stageReview.checkpoint, "stage-review");
@@ -181,9 +199,11 @@ test("gives whole-branch review the exact execution diff and complete matrix", a
 	const item = await store.read("whole-branch");
 	const head = await git(root, "rev-parse", "HEAD");
 	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: "whole-branch" }, status: "planned", required: true, attempt: 0, methods: [] };
-	const packet = await buildReviewPersistentContext(store, "whole-branch", evaluation, head);
-	assert.match(packet, new RegExp(`${item.delivery!.executionStartCommit}\\.\\.${head}`));
-	assert.match(packet, /one integrated change|cross-stage interactions|Integrated behavior/);
+	const packet = await buildReviewPersistentContext(store, "whole-branch", evaluation);
+	const attempt = await buildReviewAttemptContext(store, "whole-branch", evaluation, head);
+	assert.doesNotMatch(packet, new RegExp(`${item.delivery!.executionStartCommit}\\.\\.${head}`));
+	assert.match(attempt, new RegExp(`${item.delivery!.executionStartCommit}\\.\\.${head}`));
+	assert.match(`${packet}\n${attempt}`, /one integrated change|Integrated behavior/);
 });
 
 test("bounds stage review context to its tasks, story artifacts, checks, focus, and reviewed commit", async (t) => {
@@ -196,10 +216,71 @@ test("bounds stage review context to its tasks, story artifacts, checks, focus, 
 	await store.defineTask({ workItemId: "stage-context", manifest: second, brief: "Second brief must be excluded", acceptance: "Second acceptance" });
 	await store.putExecutionStage("stage-context", { id: "first", tasks: ["first-task"], checks: ["npm test -- first"], review: { tier: "medium", focus: ["First-stage state transition correctness"] } }, mutation);
 	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "stage-first-review", type: "combined-review", checkpoint: "stage-review", stageId: "first", scope: { workItem: "stage-context" }, status: "planned", required: true, attempt: 0, methods: [] };
-	const packet = await buildReviewPersistentContext(store, "stage-context", evaluation, "a".repeat(40));
+	const packet = await buildReviewPersistentContext(store, "stage-context", evaluation);
+	const attempt = await buildReviewAttemptContext(store, "stage-context", evaluation, "a".repeat(40));
 	assert.match(packet, /first-task|First brief|Story intent|Required story behavior|npm test -- first|First-stage state transition correctness/);
-	assert.match(packet, new RegExp("a{40}"));
+	assert.match(packet, new RegExp(`budgetBytes: ${REVIEW_CONTEXT_BUDGET_BYTES}`));
+	assert.ok(Buffer.byteLength(packet, "utf8") <= REVIEW_CONTEXT_BUDGET_BYTES);
+	assert.doesNotMatch(packet, new RegExp("a{40}"));
+	assert.match(attempt, new RegExp("a{40}"));
 	assert.doesNotMatch(packet, /second-task|Second brief/);
+});
+
+test("generated stage scope selects assigned contracts and directly relevant artifacts while legacy manifests remain readable", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "scoped-context", title: "Scoped context", kind: "story", intent: "Relevant intent." });
+	await store.putArtifact({ workItemId: "scoped-context", id: "relevant-spec", type: "spec", content: "# Relevant\n\nRelevant requirement.", operation: "create" });
+	await store.putArtifact({ workItemId: "scoped-context", id: "unrelated-design", type: "design", content: "# Unrelated\n\nMust not be injected.", operation: "create" });
+	await store.putArtifact({ workItemId: "scoped-context", id: "journeys", type: "e2e-matrix", narrativeSchemaVersion: 2, title: "Journeys", sections: { cases: [{ id: "E2E-001", classification: "golden-path", journey: "Run", setup: ["Setup"], actions: ["Act"], expectedOutcomes: ["Pass"], evidence: ["Observe"] }] }, operation: "create" });
+	const assigned = task("assigned"); assigned.assembly.stageId = "delivery"; assigned.references = { specs: ["relevant-spec"], designs: [], decisions: [] };
+	const unrelated = task("unrelated"); unrelated.assembly.stageId = "later"; unrelated.references = { specs: [], designs: ["unrelated-design"], decisions: [] };
+	await store.defineTask({ workItemId: "scoped-context", manifest: assigned, brief: "Assigned brief", acceptance: "Assigned acceptance" });
+	await store.defineTask({ workItemId: "scoped-context", manifest: unrelated, brief: "Unrelated brief", acceptance: "Unrelated acceptance" });
+	await store.putExecutionStage("scoped-context", { id: "delivery", tasks: ["assigned"], review: { tier: "medium" } }, mutation);
+	await store.putExecutionStage("scoped-context", { id: "later", tasks: ["unrelated"], review: { mode: "skip", rationale: "The later fixture is outside this focused review boundary." } }, mutation);
+	await store.ensureFinalEvaluations("scoped-context");
+	const generated = await store.readEvaluation("scoped-context", "stage-delivery-review");
+	assert.deepEqual(generated.context?.taskIds, ["assigned"]);
+	assert.deepEqual(generated.context?.artifactRefs.map((ref) => ref.artifactId), ["intent", "relevant-spec"]);
+	const scoped = await buildReviewPersistentContext(store, "scoped-context", generated);
+	assert.match(scoped, /Assigned brief|Relevant requirement|Relevant intent/);
+	assert.doesNotMatch(scoped, /Unrelated brief|Must not be injected/);
+	await assert.rejects(
+		buildReviewPersistentContext(store, "scoped-context", { ...generated, context: { ...generated.context!, taskIds: ["assigned", "unrelated"] } }),
+		/context task selection must exactly match its assigned contracts/,
+	);
+	await assert.rejects(
+		buildReviewPersistentContext(store, "scoped-context", { ...generated, context: { ...generated.context!, artifactRefs: [{ workItemId: "scoped-context", artifactId: "relevant-spec" }] } }),
+		/context artifact selection must exactly match its canonical review scope/,
+		"the current intent is mandatory",
+	);
+	await assert.rejects(
+		buildReviewPersistentContext(store, "scoped-context", { ...generated, context: { ...generated.context!, artifactRefs: [{ workItemId: "scoped-context", artifactId: "intent" }] } }),
+		/context artifact selection must exactly match its canonical review scope/,
+		"scoped task references are mandatory",
+	);
+	await assert.rejects(
+		buildReviewPersistentContext(store, "scoped-context", { ...generated, context: { ...generated.context!, artifactRefs: [...generated.context!.artifactRefs, { workItemId: "scoped-context", artifactId: "unrelated-design" }] } }),
+		/context artifact selection must exactly match its canonical review scope/,
+		"an explicit scope cannot broaden itself with unrelated artifacts",
+	);
+	const { context: _context, ...legacyBase } = generated;
+	const legacy: EvaluationManifest = { ...legacyBase, id: "legacy" };
+	const compatible = await buildReviewPersistentContext(store, "scoped-context", legacy);
+	assert.match(compatible, /Must not be injected/, "stored manifests without context retain the bounded compatibility reader");
+});
+
+test("review context fails closed instead of silently truncating requirements and never injects the on-demand ledger", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "review-budget", title: "Review budget", kind: "story", intent: `Required ${"z".repeat(500)}` });
+	const manifest = task("reviewed");
+	await store.defineTask({ workItemId: "review-budget", manifest, brief: "Review brief", acceptance: "Review acceptance" });
+	const evaluation: EvaluationManifest = { schemaVersion: 1, id: "review", type: "combined-review", scope: { task: manifest.id }, status: "planned", required: true, attempt: 0, methods: [] };
+	await assert.rejects(buildReviewPersistentContext(store, "review-budget", evaluation, { maxBytes: 300 }), /requirements were not truncated/);
+	const ledgerMarker = "LEDGER-MARKER-MUST-BE-ON-DEMAND";
+	await new WorkflowLedgerStore({ id: "repo", root, privateRoot: store.privateRoot }, "review-budget").append({ schemaVersion: 1, id: "entry", at: new Date(0).toISOString(), role: "implementer", text: ledgerMarker });
+	const packet = await buildReviewPersistentContext(store, "review-budget", evaluation);
+	assert.doesNotMatch(packet, new RegExp(ledgerMarker));
 });
 
 test("lists compact resource summaries without embedding complete task contracts", async (t) => {

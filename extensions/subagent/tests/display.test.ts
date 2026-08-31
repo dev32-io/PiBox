@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { formatAgentProgress, type AgentProgress } from "../agent-progress.js";
-import { formatBackgroundSubagentStatus, formatInlineSubagentStatus } from "../subagent-display.js";
+import { formatBackgroundSubagentStatus, formatInlineSubagentStatus } from "../display.js";
 
 const now = Date.parse("2026-01-01T00:01:05.000Z");
 const progress: AgentProgress = {

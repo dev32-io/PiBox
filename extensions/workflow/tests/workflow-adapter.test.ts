@@ -12,6 +12,7 @@ import { RepositoryEventStore } from "../event-store.js";
 import { discoverRepository } from "../repository.js";
 import { WorkflowEventJournal } from "../workflow-events.js";
 import { RepairRecoveryStore } from "../repair-recovery.js";
+import { HarnessRunStore } from "../run-store.js";
 
 const exec = promisify(execFile);
 
@@ -25,18 +26,6 @@ async function evaluationStep(evaluation: any, agents: any[]) {
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), launchRepair: async () => ({ content: [] }) });
 	return (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
 }
-
-test("exposes dynamic agent delegation through the workflow adapter", async () => {
-	let captured: any;
-	const expected: any = { ref: "agent:critic", state: "completed", summary: "ready", agentId: "critic" };
-	const adapter = createHarnessWorkflowAdapter({
-		runtimeFor: async () => ({} as any), launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }),
-		spawnSubagent: async (request) => { captured = request; return expected; },
-	});
-	const request: any = { operationId: "spawn-1", agent: "plan-critic", task: "Review" };
-	assert.equal(await adapter.spawnSubagent?.(request, {} as any), expected);
-	assert.deepEqual(captured, request);
-});
 
 test("lifecycle subscription wakes across registry instances after session replacement", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-lifecycle-"));
@@ -74,6 +63,26 @@ test("replays durable verification events into lifecycle notices", async (t) => 
 	if (typeof dispose === "function") dispose();
 });
 
+test("reload lists only controls owned by the live activation and explicit resume claims stale controls", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-activation-control-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let owner = { sessionId: "session", processInstanceId: "process-a", activationId: "activation-a" };
+	const runtime: any = {
+		identity: { id: "repo", root, privateRoot: root },
+		coordinator: { service: { get owner() { return owner; } } },
+		workItems: {},
+	};
+	const ctx: any = { sessionManager: { getSessionId: () => "session" } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	await adapter.controlExecution!("work-item:example", "start", "start", ctx);
+	assert.equal((await adapter.listExecutionControls!(ctx)).length, 1);
+	owner = { sessionId: "session", processInstanceId: "process-b", activationId: "activation-b" };
+	assert.deepEqual(await adapter.listExecutionControls!(ctx), [], "a replacement process never auto-adopts the persisted session control");
+	const resumed = await adapter.controlExecution!("work-item:example", "resume", "explicit-resume", ctx);
+	assert.equal(resumed.ownerActivationId, "activation-b");
+	assert.equal((await adapter.listExecutionControls!(ctx)).length, 1);
+});
+
 test("workflow preparation serializes branch setup, execution state, and task activation", async () => {
 	const calls: string[] = [];
 	let insideMutex = false;
@@ -91,6 +100,99 @@ test("workflow preparation serializes branch setup, execution state, and task ac
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }), validateWorkingBranch: async () => { calls.push(`branch:${insideMutex}`); } });
 	await adapter.prepareWorkflow?.("work-item:example", {} as any);
 	assert.deepEqual(calls, ["submit:true", "branch:true", "begin:true", "final:true", "activate:true"]);
+});
+
+test("runStep forwards the runner abort signal to managed task and evaluation launches", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-run-signal-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const controller = new AbortController();
+	const seen: AbortSignal[] = [];
+	const item: any = { id: "example", planning: { revision: 1 }, tasks: [{ id: "task" }], evaluations: [{ id: "review" }] };
+	const runtime: any = {
+		identity: { id: "repo", root, privateRoot: root },
+		workItems: {
+			async read() { return item; },
+			async readTask() { return { ...task("task", "ready"), status: "ready" }; },
+			async readEvaluation() { return { id: "review", status: "ready", scope: "stage" }; },
+		},
+	};
+	const adapter = createHarnessWorkflowAdapter({
+		runtimeFor: async () => runtime,
+		launchTask: async (_ctx, _workItemId, _taskId, signal) => { seen.push(signal!); return { content: [] }; },
+		launchEvaluation: async (_ctx, _workItemId, _evaluationId, signal) => { seen.push(signal!); return { content: [] }; },
+	});
+	await adapter.runStep("work-item:example/task:task", {} as any, controller.signal);
+	await adapter.runStep("work-item:example/evaluation:review", {} as any, controller.signal);
+	assert.equal(seen.length, 2);
+	assert.ok(seen.every((signal) => !signal.aborted));
+	controller.abort(new DOMException("runner stopped", "AbortError"));
+	assert.ok(seen.every((signal) => signal.aborted), "the operation-registry signal preserves runner abort propagation");
+});
+
+test("reload then stop fences a repair before spawn and canonical mutation", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-reload-stop-repair-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await exec("git", ["init", "--quiet"], { cwd: root });
+	await exec("git", ["config", "user.name", "Harness Test"], { cwd: root });
+	await exec("git", ["config", "user.email", "harness@example.test"], { cwd: root });
+	await writeFile(join(root, "README.md"), "# Canonical baseline\n");
+	await writeFile(join(root, ".gitignore"), "/workflow-control/\n/work-items/\n");
+	await exec("git", ["add", "README.md", ".gitignore"], { cwd: root });
+	await exec("git", ["commit", "--quiet", "-m", "baseline"], { cwd: root });
+	const canonicalHead = (await exec("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" })).stdout.trim();
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const controls = new WorkflowControlStore(root);
+	const started = await controls.apply({ workflowRef: "work-item:reload-stop", command: "start", ...owner, operationId: "start" });
+	const expected = { workflowRef: started.workflowRef, mode: started.mode, generation: started.generation, executionFence: started.executionFence, ownerProcessInstanceId: owner.processInstanceId, ownerActivationId: owner.activationId };
+	const item: any = { id: "reload-stop", planning: { revision: 1 }, tasks: [], evaluations: [{ id: "review" }] };
+	const evaluation: any = { id: "review", status: "failed", loop: { state: "fixing", iteration: 0, managerPrompt: "Repair accepted finding" } };
+	let childLaunches = 0;
+	let canonicalCommits = 0;
+	let enterRepair!: () => void;
+	let releasePrelaunch!: () => void;
+	const entered = new Promise<void>((resolve) => { enterRepair = resolve; });
+	const prelaunch = new Promise<void>((resolve) => { releasePrelaunch = resolve; });
+	const runtime: any = {
+		identity: { id: "repo", root, privateRoot: root },
+		workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } },
+		agents: { async list() { return []; } },
+		coordinator: { async stop() { return false; } },
+	};
+	const options: any = {
+		runtimeFor: async () => runtime,
+		launchTask: async () => ({ content: [] }),
+		launchEvaluation: async () => ({ content: [] }),
+		launchRepair: async (_ctx: unknown, _workItemId: string, _evaluationId: string, signal: AbortSignal, execution: typeof expected) => {
+			enterRepair();
+			await prelaunch;
+			if (signal.aborted) throw signal.reason;
+			await controls.assertFence({ workflowRef: execution.workflowRef, generation: execution.generation, executionFence: execution.executionFence, ownerProcessInstanceId: execution.ownerProcessInstanceId, ownerActivationId: execution.ownerActivationId });
+			childLaunches += 1;
+			await controls.runIfCurrent({ workflowRef: execution.workflowRef, generation: execution.generation, executionFence: execution.executionFence, ownerProcessInstanceId: execution.ownerProcessInstanceId, ownerActivationId: execution.ownerActivationId }, async () => {
+				await writeFile(join(root, "repair-commit.txt"), "stale repair mutation\n");
+				await exec("git", ["add", "repair-commit.txt"], { cwd: root });
+				await exec("git", ["commit", "--quiet", "-m", "stale repair"], { cwd: root });
+				canonicalCommits += 1;
+			});
+			return { content: [] };
+		},
+	};
+	const beforeReload = createHarnessWorkflowAdapter(options);
+	const staleRepair = beforeReload.runStep("work-item:reload-stop/evaluation:review", {} as any, undefined, expected).then(() => undefined, (error) => error);
+	await entered;
+	await controls.apply({ workflowRef: "work-item:reload-stop", command: "attach", ...owner, operationId: "reload" });
+	await controls.apply({ workflowRef: "work-item:reload-stop", command: "stop", ...owner, operationId: "stop" });
+	const replacement = createHarnessWorkflowAdapter(options);
+	const stopping = replacement.controlWorkflow!("work-item:reload-stop", "stop", {} as any);
+	await new Promise((resolve) => setImmediate(resolve));
+	releasePrelaunch();
+	await stopping;
+	const failure = await staleRepair;
+	assert.match(failure instanceof Error ? failure.name : String(failure), /AbortError/);
+	assert.equal(childLaunches, 0, "the stale prelaunch repair never reaches the child service");
+	assert.equal(canonicalCommits, 0, "the stale prelaunch repair never reaches canonical mutation");
+	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" })).stdout.trim(), canonicalHead, "canonical HEAD remains byte-for-byte at the pre-reload commit");
+	await assert.rejects(readFile(join(root, "repair-commit.txt")), /ENOENT/);
 });
 
 test("resume prepares stopped tasks from current dependency state", async () => {
@@ -440,6 +542,19 @@ test("request_changes cannot rewind a re-review or exceed the repair limit", asy
 	assert.equal(evaluation.loop.state, "awaiting_manager");
 });
 
+test("stop cancels an unfinished reported evaluator run left by a replaced supervisor", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-stop-reported-run-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const identity: any = { id: "repo", root, privateRoot: root };
+	const runs = new HarnessRunStore(identity, "example");
+	const created = await runs.create({ repositoryId: "repo", workItemId: "example", evaluationId: "review", role: "reviewer", attempt: 1, state: "launching", workspace: root, baseCommit: "a".repeat(40) });
+	const reported = { id: "reviewer", workItemId: "example", runId: created.record.id, state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited" }] };
+	const runtime: any = { identity, agents: { async list() { return [reported]; } }, coordinator: { async stop() { throw new Error("reported agents must not be signalled"); } } };
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	await adapter.controlWorkflow("work-item:example", "stop", {} as any);
+	assert.equal((await runs.read(created.record.id)).state, "cancelled");
+});
+
 test("stop ignores reported agents whose process already exited", async () => {
 	const reported = { id: "reviewer", workItemId: "example", state: "reported", currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "exited" }] };
 	let reads = 0;
@@ -451,8 +566,6 @@ test("stop ignores reported agents whose process already exited", async () => {
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	await adapter.controlWorkflow("work-item:example", "stop", {} as any);
 	assert.equal(reads, 0, "settled agents are not sent through process signaling");
-	const result = await adapter.controlSubagent(reported.id, "stop", {} as any) as any;
-	assert.equal(result.signaled, false);
 });
 
 test("the default loop permits iteration eight and rejects a ninth repair", async () => {
@@ -566,6 +679,34 @@ test("snapshot is a pure projection and reported-agent reconciliation is explici
 	assert.equal(reconciliations, 0, "projection reads never settle canonical state");
 	await adapter.reconcileWorkflow!("work-item:example", {} as any);
 	assert.equal(reconciliations, 1, "the supervisor owns explicit reconciliation");
+});
+
+test("explicit reconciliation appends and publishes one durable semantic stage completion", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-adapter-stage-lifecycle-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const identity: any = { id: "repo", root, privateRoot: root };
+	const events = new RepositoryEventStore(identity); await events.initialize();
+	await new WorkflowControlStore(root).apply({ workflowRef: "work-item:example", command: "start", sessionId: "session", operationId: "start" });
+	const agents = new SessionAgentRegistry(root, "session"); await agents.initialize();
+	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [{ id: "task" }], executionStages: [{ id: "delivery", tasks: ["task"] }], integrationUnits: [{ id: "delivery", tasks: ["task"] }], evaluations: [{ id: "review" }] };
+	const taskManifest: any = { id: "task", status: "merged" };
+	const evaluation: any = { id: "review", checkpoint: "stage-review", stageId: "delivery", status: "passed", scope: { workItem: "example" } };
+	const runtime: any = {
+		identity, events, agents,
+		mutex: { async run(_owner: string, operation: () => Promise<unknown>) { return operation(); } },
+		workItems: { async read() { return item; }, async readTask() { return taskManifest; }, async readEvaluation() { return evaluation; } },
+	};
+	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
+	let resolveLifecycle!: (value: any) => void;
+	const lifecycle = new Promise<any>((resolve) => { resolveLifecycle = resolve; });
+	const dispose = await adapter.subscribeLifecycle!("work-item:example", {} as any, (update) => { if (update?.lifecycle) resolveLifecycle(update.lifecycle); });
+	await adapter.reconcileWorkflow!("work-item:example", {} as any);
+	assert.deepEqual(await Promise.race([lifecycle, new Promise((_, reject) => setTimeout(() => reject(new Error("semantic lifecycle timed out")), 1_000))]), {
+		type: "stage-completed", workflowRef: "work-item:example", stepRef: "work-item:example/evaluation:review", kind: "evaluation", stageId: "delivery", stageIndex: 0, title: "Stage 1 · delivery", toStatus: "done", cause: "stage-settled", correlationId: "work-item:example:delivery",
+	});
+	await adapter.reconcileWorkflow!("work-item:example", {} as any);
+	assert.equal((await new WorkflowEventJournal(events).readSince(0, "example")).filter((event) => event.type === "stage.completed").length, 1);
+	if (typeof dispose === "function") dispose();
 });
 
 test("derives task, integration, and evaluation steps without mutating canonical state", async () => {

@@ -8,7 +8,6 @@ import { SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 
 const OUTPUT_TAIL_BYTES = 16 * 1024;
 const SETTLED_AGENT_STATES = new Set(["completed", "cancelled"]);
-const SETTLED_ATTEMPT_STATES = new Set(["exited", "failed"]);
 const TERMINAL_RUN_STATES = new Set(["completed", "failed", "protocol_failed", "cancelled"]);
 const TERMINAL_VERIFICATION_STATES = new Set(["passed", "failed", "interrupted"]);
 const ATTEMPT_FILES_SAFE_TO_COMPACT = new Set(["attempt.yaml", "result.yaml", "stdout.log", "stderr.log"]);
@@ -46,12 +45,6 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function safeSegment(value: string): boolean {
 	return Boolean(value) && !value.includes("/") && !value.includes("\\") && !value.includes("\0") && value !== "." && value !== "..";
-}
-
-function processAlive(pid: unknown): boolean {
-	if (typeof pid !== "number" || !Number.isInteger(pid) || pid < 1) return false;
-	try { process.kill(pid, 0); return true; }
-	catch { return false; }
 }
 
 async function yaml(path: string): Promise<Record<string, unknown> | undefined> {
@@ -257,20 +250,7 @@ async function cleanupSessions(
 		for (const value of snapshot.agents) {
 			const agent = object(value);
 			if (!agent || agent.workItemId !== workItemId || agent.state !== "reported" || typeof agent.id !== "string" || !safeSegment(agent.id)) continue;
-			const transitionCleanup: Array<{ path: string; bytes: number }> = [];
-			for (const attemptValue of Array.isArray(agent.attempts) ? agent.attempts : []) {
-				const attempt = object(attemptValue);
-				if (!attempt || attempt.exitCode !== 0 || typeof attempt.id !== "string" || !safeSegment(attempt.id)) continue;
-				for (const name of ["stdout.jsonl", "stderr.log"]) {
-					const path = join(root, "agents", agent.id, "attempts", attempt.id, name);
-					const info = await lstat(path).catch(() => undefined);
-					if (info?.isFile()) transitionCleanup.push({ path, bytes: info.size });
-				}
-			}
-			const transitioned = await registry.transition(agent.id, "completed").then(() => true, () => false);
-			if (transitioned) for (const entry of transitionCleanup) {
-				if (!await lstat(entry.path).then(() => true, () => false)) removed.push({ path: relative(identity.privateRoot, entry.path), bytes: entry.bytes });
-			}
+			await registry.transition(agent.id, "completed").catch(() => undefined);
 		}
 		snapshot = await yaml(join(root, "agents.yaml"));
 		if (!snapshot || !Array.isArray(snapshot.agents)) continue;
@@ -279,24 +259,8 @@ async function cleanupSessions(
 			if (!agent || agent.workItemId !== workItemId || typeof agent.id !== "string" || !safeSegment(agent.id)) continue;
 			if (!SETTLED_AGENT_STATES.has(String(agent.state))) {
 				skipped.push({ path: relative(identity.privateRoot, join(root, "agents", agent.id)), reason: `agent remains ${String(agent.state)}` });
-				continue;
-			}
-			if (!Array.isArray(agent.attempts)) continue;
-			for (const attemptValue of agent.attempts) {
-				const attempt = object(attemptValue);
-				if (!attempt || typeof attempt.id !== "string" || !safeSegment(attempt.id)) continue;
-				const attemptRoot = join(root, "agents", agent.id, "attempts", attempt.id);
-				if (!SETTLED_ATTEMPT_STATES.has(String(attempt.state)) || processAlive(attempt.pid)) {
-					skipped.push({ path: relative(identity.privateRoot, attemptRoot), reason: "process attempt is not safely settled" });
-					continue;
-				}
-				for (const name of ["stdout.jsonl", "stderr.log", "heartbeat.json", "process-exit.json"]) {
-					await removeKnownFile(identity, join(attemptRoot, name), removed);
-				}
 			}
 		}
-		// agents.yaml is authoritative in current runtimes; this journal is a legacy duplicate.
-		await removeKnownFile(identity, join(root, "agent-events.jsonl"), removed);
 	}
 }
 
@@ -314,8 +278,8 @@ async function cleanupRuns(identity: RepositoryIdentity, workItemId: string, rem
 }
 
 /**
- * Remove only completion-time ephemera. Canonical artifacts, Pi sessions,
- * assignments, handoffs, findings, terminal summaries, and bounded evidence
+ * Remove only completion-time ephemera. Canonical artifacts, workflow agent
+ * summaries, assignments, handoffs, findings, and bounded verification evidence
  * remain available for analysis.
  */
 export async function cleanupCompletedWorkItem(identity: RepositoryIdentity, workItemId: string): Promise<WorkItemCleanupManifest> {
@@ -338,7 +302,7 @@ export async function cleanupCompletedWorkItem(identity: RepositoryIdentity, wor
 		compactedVerificationAttempts,
 		preserved: [
 			"canonical work-item artifacts and outcome",
-			"agent registries, assignments, Pi sessions, terminal summaries, and messages",
+			"workflow agent registries, assignments, terminal summaries, and messages",
 			"run handoffs, checkpoints, findings, and evaluation evidence",
 			"verification metadata, checksums, and bounded output tails",
 			"repository semantic event history",

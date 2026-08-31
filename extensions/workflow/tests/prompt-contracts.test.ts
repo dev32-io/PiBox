@@ -164,7 +164,7 @@ test("collaboration phases have focused boundaries and natural handoffs", async 
 	assert.match(run, /one atomic `workflow_apply_change` call/i);
 	assert.match(run, /`resume-requesting-agent`[\s\S]+`pause-affected`/i);
 	assert.match(run, /include `response` with the exact `agentId`, `messageId`, and `text`/i);
-	assert.match(run, /Do not also call `subagent_respond`/i);
+	assert.match(run, /requesting process attempt is terminal[\s\S]+fresh bounded attempt[\s\S]+there is no live respond surface/i);
 	assert.match(run, /call `work_item_complete` with the bare work-item ID/i);
 	assert.match(run, /Do not report[\s\S]+pre-gate absence of `outcome\.md` as a deviation/i);
 	assert.match(critic, /Upstream premises/i);

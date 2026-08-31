@@ -1,11 +1,20 @@
 import type {
+	AgentConfig,
 	CapabilityTier,
+	ConfigDiagnostic,
 	HarnessEffort,
 	ModelTier,
 	ModelTierListProfilesConfig,
-} from "../model-tier-list-profiles/profiles.js";
+} from "../subagent/types.js";
 
-export type { CapabilityTier, HarnessEffort, ModelTier, TierModelRouteConfig } from "../model-tier-list-profiles/profiles.js";
+export type {
+	AgentConfig,
+	CapabilityTier,
+	ConfigDiagnostic,
+	HarnessEffort,
+	ModelTier,
+	TierModelRouteConfig,
+} from "../subagent/types.js";
 
 export type WorkItemKind = "change" | "story";
 export type WorkingBranchKind = "feature" | "fix";
@@ -29,19 +38,6 @@ export interface MutationAuthority {
 }
 export type Complexity = "low" | "medium" | "high" | "critical";
 
-export interface AgentConfig {
-	extends?: string;
-	description?: string;
-	prompt?: string;
-	skills?: string[];
-	tools?: string[];
-	model?: string;
-	workspace?: "repository" | "worktree" | "none";
-	canDelegate?: boolean;
-	completionSchema?: string;
-	tier?: CapabilityTier;
-}
-
 export interface HarnessConfig {
 	schemaVersion: 2;
 	modelTierListProfiles: ModelTierListProfilesConfig;
@@ -59,13 +55,6 @@ export interface HarnessConfig {
 		protocolNudges: number;
 		repairRounds: number;
 	};
-}
-
-export interface ConfigDiagnostic {
-	level: "warning" | "error";
-	source: string;
-	path?: string;
-	message: string;
 }
 
 export interface LoadedHarnessConfig {
@@ -124,7 +113,25 @@ export interface DeterministicFailureEvidence {
 	recordedAt: string;
 }
 
-export interface TaskManifest {
+export interface TaskPrivateRuntimeState {
+	/** Persisted once execution starts so recovery preserves the original allocation. */
+	executionMode?: "repository" | "worktree";
+	branch?: string;
+	worktree?: string;
+	baseCommit?: string;
+	completedCommit?: string;
+	mergedCommit?: string;
+	/** Latest deterministic CI failure routed back to this task's logical owner. */
+	deterministicFailure?: DeterministicFailureEvidence | undefined;
+	/** Bounded repair generation for the current deterministic failure signature. */
+	ciRepairGeneration?: number | undefined;
+	/** Set by harness when a stage merge is left conflicted for managed repair. */
+	integrationConflict?: { stageId: string; taskIds: string[]; evidencePath: string; recordedAt: string };
+	lastRunId?: string;
+}
+
+/** Authored and lifecycle-visible task manifest. Private execution coordinates are stored separately. */
+export interface TaskAuthoredManifest {
 	schemaVersion: 1;
 	id: string;
 	title: string;
@@ -182,22 +189,11 @@ export interface TaskManifest {
 		taskChecks: string[];
 		rationale: string;
 	};
-	runtime?: {
-		/** Persisted once execution starts so recovery preserves the original allocation. */
-		executionMode?: "repository" | "worktree";
-		branch?: string;
-		worktree?: string;
-		baseCommit?: string;
-		completedCommit?: string;
-		mergedCommit?: string;
-		/** Latest deterministic CI failure routed back to this task's logical owner. */
-		deterministicFailure?: DeterministicFailureEvidence | undefined;
-		/** Bounded repair generation for the current deterministic failure signature. */
-		ciRepairGeneration?: number | undefined;
-		/** Set by harness when a stage merge is left conflicted for managed repair. */
-		integrationConflict?: { stageId: string; taskIds: string[]; evidencePath: string; recordedAt: string };
-		lastRunId?: string;
-	};
+}
+
+/** Runtime-facing compatibility projection returned by WorkItemStore.readTask(). */
+export interface TaskManifest extends TaskAuthoredManifest {
+	runtime?: TaskPrivateRuntimeState;
 }
 
 export function isTierTaskAssignment(
@@ -268,6 +264,13 @@ export interface ExecutionStageContract {
 	review?: StageReviewPolicy;
 }
 
+export interface EvaluationContextScope {
+	/** Snapshot of the task contracts assigned to this boundary. Builders still enforce canonical evaluation scope. */
+	taskIds: string[];
+	/** Explicit canonical artifact selection. Work-item identity disambiguates amendment generations. */
+	artifactRefs: Array<{ workItemId: string; artifactId: string }>;
+}
+
 export interface EvaluationManifest {
 	schemaVersion: 1;
 	id: string;
@@ -276,6 +279,8 @@ export interface EvaluationManifest {
 	stageId?: string;
 	dependsOn?: string[];
 	scope: { task?: string; integrationUnit?: string; workItem?: string };
+	/** Explicit context boundary for current manifests. Absence selects the legacy compatibility reader. */
+	context?: EvaluationContextScope;
 	/** Every checkpoint is harness-owned. */
 	checkpoint?: "stage-review" | "final-e2e" | "final-review";
 	status: "planned" | "running" | "passed" | "failed" | "blocked" | "not_applicable";

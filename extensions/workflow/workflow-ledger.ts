@@ -91,10 +91,17 @@ async function ledgerScope(ctx: ExtensionContext): Promise<LedgerScope> {
 	const taskId = process.env.PIBOX_HARNESS_TASK;
 	const credential = process.env.PIBOX_HARNESS_CREDENTIAL;
 	if (runId && workItemId && taskId && credential) {
-		const run = await new HarnessRunStore(identity, workItemId).authorize(runId, credential);
+		const attemptId = process.env.PIBOX_HARNESS_AGENT_ATTEMPT_ID;
+		const generation = Number(process.env.PIBOX_HARNESS_AGENT_GENERATION);
+		if (!attemptId || !Number.isInteger(generation) || generation < 1) throw new HarnessError("CAPABILITY_DENIED", "Workflow ledger task access requires a current process-attempt identity");
+		const run = await new HarnessRunStore(identity, workItemId).authorizeMutation(runId, credential, attemptId, generation);
+		const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
+		const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
+		const agentId = process.env.PIBOX_SUBAGENT_ID;
+		if (!privateRoot || !sessionId || !agentId) throw new HarnessError("CAPABILITY_DENIED", "Workflow ledger attempt is missing its logical-agent fence");
+		const agent = await new SessionAgentRegistry(privateRoot, sessionId).get(agentId);
+		if (agent.currentAttemptId !== attemptId || agent.state !== "running") throw new HarnessError("CAPABILITY_DENIED", `Workflow ledger agent is no longer current (${agent.state})`);
 		if (run.workItemId !== workItemId || run.taskId !== taskId || run.workspace !== ctx.cwd) throw new HarnessError("CAPABILITY_DENIED", "Workflow ledger scope does not match this task run");
-		const attemptId = process.env.PIBOX_SUBAGENT_ATTEMPT_ID ?? process.env.PIBOX_WORKFLOW_LEDGER_ATTEMPT;
-		if (!attemptId) throw new HarnessError("CAPABILITY_DENIED", "Workflow ledger task access requires a process-attempt identity");
 		return { identity, workItemId, id: `task:${runId}:${attemptId}`, role: run.role, taskId };
 	}
 

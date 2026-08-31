@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { showInteractiveFooterDialog } from "../tui/interactive-footer/dialog.js";
+import { isSubagentRuntime } from "../subagent/tool-policy.js";
 import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
 import type { InteractiveFooterDialogSpec, InteractiveFooterRegistration } from "../tui/interactive-footer/types.js";
 import {
@@ -36,7 +37,7 @@ const SUBAGENT_LABELS: Record<SubagentFastLimit, string> = {
 const SUBAGENT_VALUES = Object.values(SUBAGENT_LABELS);
 
 function isChildProcess(env: NodeJS.ProcessEnv = process.env): boolean {
-	return Boolean(env.PIBOX_SUBAGENT_ID) || env[FAST_MODE_CHILD_ENV] === "1" || env[FAST_MODE_CHILD_ENV] === "0";
+	return isSubagentRuntime(env);
 }
 
 export function loadGlobalFastModePolicy(cwd: string): FastModePolicy {

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { parse, stringify } from "yaml";
 import { HarnessError } from "../errors.js";
 import { validateExecutionTopology } from "../execution-topology.js";
 import type { EvaluationManifest, TaskManifest } from "../types.js";
@@ -23,7 +24,8 @@ async function repository(t: test.TestContext): Promise<string> {
 	await git(root, "config", "user.name", "Harness Test");
 	await git(root, "config", "user.email", "harness@example.test");
 	await writeFile(join(root, "README.md"), "# Fixture\n");
-	await git(root, "add", "README.md");
+	await writeFile(join(root, ".gitignore"), "/.pibox/\n");
+	await git(root, "add", "README.md", ".gitignore");
 	await git(root, "commit", "--quiet", "-m", "initial");
 	await git(root, "branch", "-M", "develop");
 	return root;
@@ -183,7 +185,10 @@ test("final E2E cannot pass or be risk-accepted with incomplete matrix results",
 	const passed = await store.recordEvaluation({ workItemId: "e2e-integrity", evaluationId: "final-e2e", verdict: "pass", report: "Every journey passed", evidence: [], caseResults: [result("E2E-001", "pass"), result("E2E-002", "pass")], findings: [{ id: "E2E-BLOCKED", severity: "high", status: "resolved", summary: "Recovery now passes", blocking: false }] });
 	assert.equal(passed.status, "passed");
 	assert.equal(passed.result?.caseResults?.length, 2);
-	assert.match(await readFile(join(root, "agent-artifacts", "e2e-integrity", "evaluations", "final-e2e", "report.md"), "utf8"), /## E2E Case Results[\s\S]+E2E-002.*pass/);
+	const evaluationRoot = join(root, "agent-artifacts", "e2e-integrity", "evaluations", "final-e2e");
+	assert.match(await readFile(join(evaluationRoot, "attempts", "002-report.md"), "utf8"), /## E2E Case Results[\s\S]+E2E-002.*pass/);
+	await assert.rejects(readFile(join(evaluationRoot, "report.md")), /ENOENT/, "latest report is not duplicated byte-for-byte");
+	assert.equal(passed.result?.report, "attempts/002-report.md");
 });
 
 test("renders schema-v2 intent, artifacts, and task contracts from semantic values", async (t) => {
@@ -292,8 +297,147 @@ test("duplicate task completion settlement is an idempotent no-op", async (t) =>
 	const task = await firstStore.readTask("duplicate-settlement", "task");
 	assert.equal(task.status, "contribution_complete");
 	assert.equal(task.runtime?.completedCommit, "a".repeat(40));
+	const authored = await readFile(join(root, "agent-artifacts", "duplicate-settlement", "tasks", "task", "task.yaml"), "utf8");
+	assert.doesNotMatch(authored, /runtime:|lastRunId|completedCommit/);
+	const privateRuntime = await readFile(join(firstStore.privateRoot, "work-items", "duplicate-settlement", "tasks", "task", "runtime.yaml"), "utf8");
+	assert.match(privateRuntime, /completedCommit/);
+	assert.equal("runtime" in (await firstStore.readTaskContract("duplicate-settlement", "task")).manifest, false);
 	assert.equal(Number(await git(root, "rev-list", "--count", "HEAD")), before + 1);
 	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("stage and resource edits scrub every tracked task YAML of private runtime coordinates", async (t) => {
+	const root = await repository(t);
+	const store = new WorkItemStore(root);
+	await store.create({ id: "authored-privacy", title: "Authored privacy", kind: "change", intent: "Keep execution coordinates private." });
+	const manifest = (id: string): TaskManifest => ({
+		schemaVersion: 1,
+		id,
+		title: id,
+		status: "draft",
+		dependsOn: [],
+		references: { specs: [], designs: [], decisions: [] },
+		execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "privacy fixture" } },
+		assembly: { stageId: `${id}-stage`, intermediateState: "complete" },
+		verification: { timing: "task", methods: [], taskChecks: [], rationale: "privacy fixture" },
+	});
+	for (const id of ["first", "second"]) await store.defineTask({ workItemId: "authored-privacy", manifest: manifest(id), brief: `${id} brief`, acceptance: `${id} accepted` });
+	const runId = "11111111-2222-4333-8444-555555555555";
+	const privateMarker = join(store.privateRoot, "private-runtime-marker");
+	for (const id of ["first", "second"]) {
+		await store.updateTask("authored-privacy", id, { runtime: {
+			executionMode: "worktree",
+			branch: `private/${id}/${runId}`,
+			worktree: `${privateMarker}/${id}`,
+			baseCommit: "a".repeat(40),
+			completedCommit: "b".repeat(40),
+			lastRunId: runId,
+			deterministicFailure: { schemaVersion: 1, kind: "task_check", generation: 1, baseCommit: "a".repeat(40), candidateCommit: "b".repeat(40), contributionCommits: [], attemptPath: `${privateMarker}/${id}/attempt.yaml`, summary: "private failure", signature: `signature-${id}`, recordedAt: new Date().toISOString() },
+		} });
+	}
+	// Simulate one stored pre-split task so the stage write must both scrub its
+	// authored YAML and migrate the recovery coordinates instead of dropping them.
+	const legacyPath = join(root, "agent-artifacts", "authored-privacy", "tasks", "second", "task.yaml");
+	const legacyRuntimePath = join(store.privateRoot, "work-items", "authored-privacy", "tasks", "second", "runtime.yaml");
+	const legacyAuthored = parse(await readFile(legacyPath, "utf8"));
+	legacyAuthored.runtime = parse(await readFile(legacyRuntimePath, "utf8")).runtime;
+	await writeFile(legacyPath, stringify(legacyAuthored));
+	await rm(legacyRuntimePath);
+	await git(root, "add", legacyPath);
+	await git(root, "commit", "--quiet", "-m", "legacy inline task runtime fixture");
+	// putExecutionStage reads runtime-enriched manifests. Resource revision then
+	// rewrites another task contract; both paths must serialize only authored data.
+	await store.putExecutionStage("authored-privacy", { id: "combined", mode: "sequential", tasks: ["first", "second"] }, { rationale: "privacy stage edit" });
+	const contract = await store.readTaskContract("authored-privacy", "first");
+	contract.manifest.title = "First resource revision";
+	await store.reviseTask({ workItemId: "authored-privacy", manifest: contract.manifest, brief: contract.brief, acceptance: contract.acceptance, authority: { rationale: "privacy resource edit" } });
+
+	const tracked = (await git(root, "ls-files", "agent-artifacts/**/tasks/**/task.yaml")).split("\n").filter(Boolean);
+	assert.equal(tracked.length, 2, "the privacy scan covers every tracked task manifest in the fixture");
+	const forbidden = "runtime:|lastRunId|baseCommit|completedCommit|deterministicFailure|attemptPath|(^|[[:space:]])worktree:|private-runtime-marker|11111111-2222-4333-8444-555555555555";
+	await assert.rejects(
+		exec("git", ["grep", "-nE", forbidden, "--", ...tracked], { cwd: root, encoding: "utf8" }),
+		(error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === 1,
+		"git grep must find no private runtime field, path, or run id in any authored task YAML",
+	);
+	for (const id of ["first", "second"]) {
+		const privateRuntime = await readFile(join(store.privateRoot, "work-items", "authored-privacy", "tasks", id, "runtime.yaml"), "utf8");
+		assert.match(privateRuntime, /private-runtime-marker/);
+		assert.match(privateRuntime, new RegExp(runId));
+	}
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("task status and private runtime update transactionally when the runtime write fails", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "task-transaction", title: "Task transaction", kind: "change", intent: "Keep task state coherent." });
+	await store.defineTask({
+		workItemId: "task-transaction",
+		manifest: { schemaVersion: 1, id: "task", title: "Task", status: "ready", dependsOn: [], execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "fixture" } }, assembly: { stageId: "delivery", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } },
+		brief: "Run it", acceptance: "State is coherent",
+	});
+	const writable = store as unknown as { writeTaskMutationSide(path: string, content: string | null, mode?: number): Promise<void> };
+	const writeSide = writable.writeTaskMutationSide.bind(store);
+	let failed = false;
+	writable.writeTaskMutationSide = async (path, content, mode) => {
+		if (!failed && path.endsWith("runtime.yaml")) { failed = true; throw new Error("injected runtime write failure"); }
+		return writeSide(path, content, mode);
+	};
+	await assert.rejects(store.updateTask("task-transaction", "task", { status: "running", runtime: { lastRunId: "run-new" } }), /injected runtime write failure/);
+	const task = await store.readTask("task-transaction", "task");
+	assert.equal(task.status, "ready");
+	assert.equal(task.runtime, undefined);
+	assert.equal(await git(root, "status", "--porcelain"), "");
+});
+
+test("task mutation journal rolls back a pre-commit crash and rolls forward a committed crash", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	for (const id of ["precommit", "committed"]) {
+		await store.create({ id, title: id, kind: "change", intent: "Recover a task transaction." });
+		await store.defineTask({
+			workItemId: id,
+			manifest: { schemaVersion: 1, id: "task", title: "Task", status: "ready", dependsOn: [], execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "fixture" } }, assembly: { stageId: "delivery", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" } },
+			brief: "Run it", acceptance: "State is recovered",
+		});
+		const authoredPath = join(root, "agent-artifacts", id, "tasks", "task", "task.yaml");
+		const runtimePath = join(store.privateRoot, "work-items", id, "tasks", "task", "runtime.yaml");
+		const journalPath = join(store.privateRoot, "transactions", "task-mutations", id, "task.json");
+		const before = await readFile(authoredPath, "utf8");
+		const authored = parse(before); authored.status = "running";
+		const after = stringify(authored);
+		const runtime = stringify({ schemaVersion: 1, runtime: { lastRunId: `run-${id}` } });
+		await mkdir(join(store.privateRoot, "transactions", "task-mutations", id), { recursive: true });
+		await mkdir(join(store.privateRoot, "work-items", id, "tasks", "task"), { recursive: true });
+		await writeFile(journalPath, `${JSON.stringify({ schemaVersion: 1, workItemId: id, taskId: "task", state: "prepared", before: { authored: before, runtime: null }, after: { authored: after, runtime }, createdAt: new Date().toISOString() }, null, 2)}\n`);
+		await writeFile(runtimePath, runtime);
+		await writeFile(authoredPath, after);
+		if (id === "committed") {
+			await git(root, "add", authoredPath);
+			await git(root, "commit", "--quiet", "-m", "harness(committed): update task task");
+		}
+		const recovered = await store.readTask(id, "task");
+		assert.equal(recovered.status, id === "committed" ? "running" : "ready");
+		assert.equal(recovered.runtime?.lastRunId, id === "committed" ? "run-committed" : undefined);
+		await assert.rejects(readFile(journalPath), /ENOENT/);
+		assert.equal(await git(root, "status", "--porcelain"), "");
+	}
+});
+
+test("reads legacy inline task runtime without exposing it through the author-facing contract", async (t) => {
+	const root = await repository(t); const store = new WorkItemStore(root);
+	await store.create({ id: "legacy-runtime", title: "Legacy runtime", kind: "change", intent: "Read stored layout." });
+	await store.defineTask({
+		workItemId: "legacy-runtime",
+		manifest: { schemaVersion: 1, id: "task", title: "Task", status: "ready", dependsOn: [], execution: { resourceClaims: [], assignment: { agent: "implementer", tier: "low", rationale: "fixture" } }, assembly: { stageId: "delivery", intermediateState: "complete" }, verification: { timing: "task", methods: [], taskChecks: [], rationale: "fixture" }, runtime: { lastRunId: "legacy-run" } },
+		brief: "Legacy brief", acceptance: "Legacy acceptance",
+	});
+	// Simulate a stored pre-split manifest.
+	const path = join(root, "agent-artifacts", "legacy-runtime", "tasks", "task", "task.yaml");
+	const persisted = parse(await readFile(path, "utf8")); persisted.runtime = { lastRunId: "legacy-run" };
+	await writeFile(path, stringify(persisted)); await git(root, "add", path); await git(root, "commit", "--quiet", "-m", "legacy layout");
+	await rm(join(store.privateRoot, "work-items", "legacy-runtime", "tasks", "task", "runtime.yaml"), { force: true });
+	assert.equal((await store.readTask("legacy-runtime", "task")).runtime?.lastRunId, "legacy-run");
+	assert.equal("runtime" in (await store.readTaskContract("legacy-runtime", "task")).manifest, false);
 });
 
 test("removeTask and removeEvaluation report original and rollback failures with owned paths", async (t) => {
@@ -371,14 +515,15 @@ test("failed later evaluation recording preserves prior attempt evidence", async
 	const evidenceRoot = join(root, "agent-artifacts", "evaluation-rollback", "evidence", "review");
 	const before = {
 		evaluation: await readFile(join(evaluationRoot, "evaluation.yaml"), "utf8"),
-		report: await readFile(join(evaluationRoot, "report.md"), "utf8"),
+		report: await readFile(join(evaluationRoot, "attempts", "001-report.md"), "utf8"),
 		evidence: await readFile(join(evidenceRoot, "manifest.yaml"), "utf8"),
 	};
 	const failing = store as unknown as { commit: () => Promise<void> };
 	failing.commit = async () => { throw new Error("second evaluation commit failure"); };
 	await assert.rejects(store.recordEvaluation({ workItemId: "evaluation-rollback", evaluationId: "review", verdict: "pass", report: "second report", evidence: [{ command: "second-check", result: "passed", path: "README.md" }], findings: [] }), /second evaluation commit failure/);
 	assert.equal(await readFile(join(evaluationRoot, "evaluation.yaml"), "utf8"), before.evaluation);
-	assert.equal(await readFile(join(evaluationRoot, "report.md"), "utf8"), before.report);
+	assert.equal(await readFile(join(evaluationRoot, "attempts", "001-report.md"), "utf8"), before.report);
+	await assert.rejects(readFile(join(evaluationRoot, "report.md")), /ENOENT/);
 	assert.equal(await readFile(join(evidenceRoot, "manifest.yaml"), "utf8"), before.evidence);
 	await assert.rejects(readFile(join(evidenceRoot, "files", "002-1-README.md")), /ENOENT/);
 	await assert.rejects(readFile(join(evaluationRoot, "attempts", "002-report.md")), /ENOENT/);

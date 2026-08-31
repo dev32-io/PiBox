@@ -1,16 +1,17 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { join } from "node:path";
-import type { DynamicSubagentRequest, DynamicSubagentStarted, SpawnableAgentDefinition, WorkflowAdapter, WorkflowMetricCategory, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
-import type { AgentProgress } from "../workflow-runtime/agent-progress.js";
-import { AgentLiveProjectionManager } from "../workflow-runtime/agent-live-projection.js";
-import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
-import { AGENT_HEARTBEAT_FRESH_MS, isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import type { WorkflowAdapter, WorkflowExecutionControl, WorkflowMetricCategory, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
+import type { AgentProgress } from "../subagent/agent-progress.js";
+import { WorkflowControlStore, type WorkflowControlFence } from "../workflow-runtime/control-store.js";
+import { getManagedWorkflowOperationRegistry } from "../workflow-runtime/operation-registry.js";
+import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import type { LaunchCoordinator } from "../workflow-runtime/launch-coordinator.js";
 import type { RepositoryIdentity } from "./repository.js";
-import { assertCleanRepository, readTextIfExists } from "./repository.js";
+import { assertCleanRepository } from "./repository.js";
 import type { WorkItemStore } from "./work-items.js";
 import { orderedExecutionStages, preflightTaskChecks, resolveStageMode, taskExecutionTopology } from "./execution-topology.js";
 import { WorktreeManager } from "./worktrees.js";
 import { HarnessError } from "./errors.js";
+import { HarnessRunStore } from "./run-store.js";
 import type { RepositoryMutex } from "./idempotency.js";
 import { readBuiltInPrompt, renderBuiltInPrompt } from "./prompt-loader.js";
 import { confirmCriticalRisk } from "../permissions/runtime.js";
@@ -27,6 +28,7 @@ export interface HarnessWorkflowRuntime {
 	workItems: WorkItemStore;
 	mutex: RepositoryMutex;
 	agents: SessionAgentRegistry;
+	coordinator: LaunchCoordinator;
 	sessionId?: string;
 	events?: RepositoryEventStore;
 	config?: { limits: { repairRounds: number } };
@@ -34,21 +36,34 @@ export interface HarnessWorkflowRuntime {
 
 export interface HarnessWorkflowAdapterOptions {
 	runtimeFor(ctx: ExtensionContext): Promise<HarnessWorkflowRuntime>;
-	launchTask(ctx: ExtensionContext, workItemId: string, taskId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
-	launchEvaluation(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
-	launchRepair?(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
+	launchTask(ctx: ExtensionContext, workItemId: string, taskId: string, signal?: AbortSignal, expectedExecution?: WorkflowExecutionControl): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
+	launchEvaluation(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal, expectedExecution?: WorkflowExecutionControl): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
+	launchRepair?(ctx: ExtensionContext, workItemId: string, evaluationId: string, signal?: AbortSignal, expectedExecution?: WorkflowExecutionControl): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	/** Harness-owned repair assignment for a preserved stage merge conflict. */
-	launchIntegrationRepair?(ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
-	spawnSubagent?(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void): Promise<WorkflowRunResult>;
-	listSpawnableAgents?(ctx: ExtensionContext): Promise<SpawnableAgentDefinition[]>;
+	launchIntegrationRepair?(ctx: ExtensionContext, workItemId: string, stageId: string, taskIds: string[], evidencePath: string, signal?: AbortSignal, expectedExecution?: WorkflowExecutionControl): Promise<{ content: Array<{ type: string; text?: string }>; details?: any }>;
 	validateWorkingBranch?(runtime: HarnessWorkflowRuntime, workItemId: string, options?: { allowDirty?: boolean }): Promise<void>;
 	reconcileReported?(runtime: HarnessWorkflowRuntime): Promise<void>;
+	/** Stop activation-local managed attempts, including pre-service startup races. */
+	stopManagedRuns?(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void>;
 }
 
 const WORK_ITEM = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const STEP = /^work-item:([a-z0-9]+(?:-[a-z0-9]+)*)\/(task|evaluation):([a-z0-9]+(?:-[a-z0-9]+)*)$/;
 const settledAgent = new Set(["completed", "cancelled"]);
 const taskDone = new Set(["merged", "integrated"]);
+
+function expectedControlFence(workflowRef: string, expected: WorkflowExecutionControl | undefined): WorkflowControlFence | undefined {
+	if (!expected) return undefined;
+	if (expected.workflowRef !== workflowRef || expected.executionFence === undefined) throw new HarnessError("CAPABILITY_DENIED", `Incomplete workflow execution fence for ${workflowRef}`);
+	return {
+		workflowRef,
+		generation: expected.generation,
+		executionFence: expected.executionFence,
+		...(expected.ownerProcessInstanceId ? { ownerProcessInstanceId: expected.ownerProcessInstanceId } : {}),
+		...(expected.ownerActivationId ? { ownerActivationId: expected.ownerActivationId } : {}),
+	};
+}
+
 function agentAttention(agent: SessionAgentRecord): string | undefined {
 	if (isAgentProcessActive(agent) || settledAgent.has(agent.state)) return undefined;
 	if (agent.state === "reported") return "result pending reconciliation";
@@ -142,24 +157,90 @@ function taskStatus(status: string, dependenciesDone: boolean): { status: Workfl
 	return { status: "pending" };
 }
 
+async function reconcileStageLifecycle(runtime: HarnessWorkflowRuntime, workItemId: string): Promise<void> {
+	if (!runtime.events) return;
+	await runtime.mutex.run(`stage-lifecycle:${workItemId}`, async () => {
+		const item = await runtime.workItems.read(workItemId);
+		const tasks = await Promise.all(item.tasks.map((entry) => runtime.workItems.readTask(workItemId, entry.id)));
+		const evaluations = await Promise.all(item.evaluations.map((entry) => runtime.workItems.readEvaluation(workItemId, entry.id)));
+		const taskById = new Map(tasks.map((task) => [task.id, task]));
+		const stageReviews = new Map(evaluations.filter((evaluation) => evaluation.checkpoint === "stage-review" && evaluation.stageId).map((evaluation) => [evaluation.stageId!, evaluation]));
+		const planner = orderedExecutionStages(item).map((stage, index) => {
+			const review = stageReviews.get(stage.id);
+			return {
+				id: stage.id,
+				index,
+				done: stage.tasks.every((taskId) => taskDone.has(taskById.get(taskId)?.status ?? "")) && (!review || ["passed", "not_applicable"].includes(review.status)),
+				stepRef: `work-item:${item.id}/${review ? `evaluation:${review.id}` : `task:${stage.tasks.at(-1) ?? ""}`}`,
+				kind: review ? "evaluation" : "task",
+			};
+		});
+		const runtimeEvaluations = evaluations
+			.filter((evaluation) => ["final-e2e", "final-review"].includes(evaluation.checkpoint ?? "") || (evaluation.type === "e2e" && evaluation.scope.workItem === item.id))
+			.sort((left, right) => left.checkpoint === "final-review" && right.checkpoint !== "final-review" ? -1 : right.checkpoint === "final-review" && left.checkpoint !== "final-review" ? 1 : left.id.localeCompare(right.id));
+		const stages = [...planner, ...(runtimeEvaluations.length ? [{
+			id: "runtime-verification",
+			index: planner.length,
+			done: runtimeEvaluations.every((evaluation) => ["passed", "not_applicable"].includes(evaluation.status)),
+			stepRef: `work-item:${item.id}/evaluation:${runtimeEvaluations.at(-1)!.id}`,
+			kind: "evaluation",
+		}] : [])];
+		const journal = new WorkflowEventJournal(runtime.events!);
+		const completed = new Set((await journal.readSince(0, item.id)).filter((event) => event.type === "stage.completed").map((event) => event.stageId));
+		const control = await new WorkflowControlStore(runtime.identity.privateRoot).get(`work-item:${item.id}`);
+		if (!control) return;
+		for (const stage of stages) {
+			if (!stage.done || completed.has(stage.id)) continue;
+			await journal.append({
+				type: "stage.completed",
+				workItemId: item.id,
+				ownerGeneration: control.generation,
+				correlationId: `work-item:${item.id}:${stage.id}`,
+				stepRef: stage.stepRef,
+				stageId: stage.id,
+				stageIndex: stage.index,
+				stepKind: stage.kind,
+				transition: { to: "done", cause: "stage-settled" },
+			});
+			completed.add(stage.id);
+		}
+	});
+}
+
 export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOptions): WorkflowAdapter {
 	return {
 		id: "workflow",
 		canHandle(ref) { return WORK_ITEM.test(ref) || STEP.test(ref); },
-		async listAgentLive(ctx) {
-			const runtime = await options.runtimeFor(ctx);
-			return new AgentLiveProjectionManager(runtime.agents).list();
-		},
-		async subscribeAgentLive(ctx, listener, signal) {
-			const runtime = await options.runtimeFor(ctx);
-			return new AgentLiveProjectionManager(runtime.agents).watch(listener, signal);
-		},
 		async controlExecution(ref, command, operationId, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
 			const runtime = await options.runtimeFor(ctx);
 			const sessionId = runtime.sessionId ?? ctx.sessionManager.getSessionId();
-			const prior = await new WorkflowControlStore(runtime.identity.privateRoot).get(ref);
-			const record = await new WorkflowControlStore(runtime.identity.privateRoot).apply({ workflowRef: ref, command, sessionId, operationId });
+			const owner = runtime.coordinator.service.owner;
+			const controlStore = new WorkflowControlStore(runtime.identity.privateRoot);
+			const prior = await controlStore.get(ref);
+			const staleActivation = Boolean(prior && (prior.ownerActivationId !== owner.activationId || prior.ownerProcessInstanceId !== owner.processInstanceId));
+			const takeover = command === "resume" && (staleActivation || Boolean(prior?.ownerSessionId && prior.ownerSessionId !== sessionId));
+			const record = await controlStore.apply({ workflowRef: ref, command, sessionId, processInstanceId: owner.processInstanceId, activationId: owner.activationId, operationId });
+			if (takeover) {
+				// Explicit resume first advances the durable ownership generation. Only the
+				// winning activation may then stop old in-memory obligations, revoke crashed
+				// credentials, and recover tasks; no scheduler tick is exposed until done.
+				try {
+					await Promise.all([
+						getManagedWorkflowOperationRegistry().stopWorkItem(match[1]!, new DOMException("Workflow ownership was replaced", "AbortError")),
+						options.stopManagedRuns?.(runtime, match[1]!),
+					]);
+					const recovered = await new HarnessRunStore(runtime.identity, match[1]!).recoverInterrupted();
+					for (const run of recovered) {
+						if (!run.taskId) continue;
+						const task = await runtime.workItems.readTask(match[1]!, run.taskId).catch(() => undefined);
+						if (task?.status === "running") await runtime.workItems.updateTask(match[1]!, run.taskId, { status: "paused" });
+					}
+				} catch (error) {
+					await controlStore.apply({ workflowRef: ref, command: "pause", sessionId, processInstanceId: owner.processInstanceId, activationId: owner.activationId, operationId: `${operationId}:recovery-failed` }).catch(() => undefined);
+					throw error;
+				}
+			}
 			if (runtime.events && prior?.lastOperationId !== operationId) {
 				const eventType: WorkflowDomainEventType = command === "start" ? "workflow.started"
 					: command === "pause" ? "workflow.paused"
@@ -173,7 +254,13 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 		},
 		async listExecutionControls(ctx) {
 			const runtime = await options.runtimeFor(ctx);
-			return new WorkflowControlStore(runtime.identity.privateRoot).list();
+			const owner = runtime.coordinator.service.owner;
+			const records = await new WorkflowControlStore(runtime.identity.privateRoot).list();
+			// Reload may rebind only the same live process activation. Historical or
+			// legacy records remain visible to explicit workflow_control resume, but are
+			// never adopted merely because a persisted Pi session id matches.
+			return records.filter((record) => record.ownerProcessInstanceId === owner.processInstanceId
+				&& record.ownerActivationId === owner.activationId);
 		},
 		async assertExecutionCurrent(ref, generation, ctx) {
 			const runtime = await options.runtimeFor(ctx);
@@ -182,8 +269,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 		},
 		async reconcileWorkflow(ref, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
-			if (!options.reconcileReported) return;
-			await options.reconcileReported(await options.runtimeFor(ctx));
+			const runtime = await options.runtimeFor(ctx);
+			if (options.reconcileReported) await options.reconcileReported(runtime);
+			await reconcileStageLifecycle(runtime, match[1]!);
 		},
 		async preflightWorkflow(ref, ctx) {
 			const match = WORK_ITEM.exec(ref); if (!match) throw new Error(`A workflow must reference a work item: ${ref}`);
@@ -255,7 +343,24 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 							for (const event of await runtime.events!.readSince(cursor)) {
 								cursor = Math.max(cursor, event.sequence);
 								const data = event.data && typeof event.data === "object" ? event.data as Record<string, unknown> : undefined;
-								if (event.type.startsWith("verification.attempt.") && data && data.workItemId === match[1]) {
+								if (event.type === "stage.completed" && data && data.workItemId === match[1] && typeof data.stageId === "string" && Number.isInteger(data.stageIndex)) {
+									const transition = data.transition && typeof data.transition === "object" ? data.transition as Record<string, unknown> : undefined;
+									const title = `Stage ${Number(data.stageIndex) + 1} · ${data.stageId}`;
+									const lifecycle = {
+										type: "stage-completed" as const,
+										workflowRef: ref,
+										...(typeof data.stepRef === "string" ? { stepRef: data.stepRef } : {}),
+										...(typeof data.stepKind === "string" ? { kind: data.stepKind } : {}),
+										stageId: data.stageId,
+										stageIndex: Number(data.stageIndex),
+										title,
+										...(typeof transition?.summary === "string" ? { detail: transition.summary } : {}),
+										toStatus: "done",
+										cause: typeof transition?.cause === "string" ? transition.cause : "stage-settled",
+										correlationId: typeof data.correlationId === "string" ? data.correlationId : `work-item:${match[1]}:${data.stageId}`,
+									};
+									listener({ workflowRef: ref, title, attention: false, kind: "stage", toStatus: "done", cause: lifecycle.cause, lifecycle });
+								} else if (event.type.startsWith("verification.attempt.") && data && data.workItemId === match[1]) {
 									const stageId = String(data.stageId ?? "stage");
 									const checkId = String(data.checkId ?? "check");
 									const attemptId = String(data.attemptId ?? "?");
@@ -431,74 +536,92 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			} : undefined;
 			return { ref, title: item.title || item.id, status, steps, stages: [...plannerStages, ...(runtimeNodes.length ? [{ id: "runtime-verification", index: plannerStages.length, nodes: runtimeNodes, parallel: false, group: "runtime" as const }] : [])], ...(metrics ? { metrics } : {}), ...(repairLoop ? { repairLoop } : {}) };
 		},
-		async runStep(ref, ctx, _signal): Promise<WorkflowRunResult> {
+		async runStep(ref, ctx, _signal, expectedExecution): Promise<WorkflowRunResult> {
 			const match = STEP.exec(ref); if (!match) throw new Error(`Invalid workflow step: ${ref}`);
 			const [, workItemId, kind, id] = match;
-			const runtime = await options.runtimeFor(ctx);
-			let metricCategory: Exclude<WorkflowMetricCategory, "orchestration">;
-			let execute: () => Promise<WorkflowRunResult>;
-			if (kind === "task") {
-				// Conflict evidence is private runtime state because the canonical branch is
-				// intentionally left dirty and cannot safely accept a task-manifest write.
-				const conflict = await new WorktreeManager(runtime.identity).activeConflict(workItemId!);
-				const task = conflict ? undefined : await runtime.workItems.readTask(workItemId!, id!);
-				const integrating = Boolean(conflict || (task && ["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)));
-				metricCategory = integrating ? "integration" : "implementation";
-				execute = async () => {
-					if (conflict) {
-						if (!options.launchIntegrationRepair) throw new Error(`Stage ${conflict.stageId} has a preserved integration conflict at ${conflict.evidencePath}; harness repair assignment is required (no generic agent may be spawned).`);
-						const repaired = await options.launchIntegrationRepair(ctx, workItemId!, conflict.stageId, conflict.taskIds, conflict.evidencePath, _signal);
-						return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${conflict.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
-					}
-					if (integrating) {
-						try {
-							const merged = await runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
-							return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the working branch as ${merged.commit.slice(0, 12)}.` };
-						} catch (error) {
-							const failure = await new WorktreeManager(runtime.identity).activeConflict(workItemId!);
-							if (!failure || !options.launchIntegrationRepair) throw error;
-							const repaired = await options.launchIntegrationRepair(ctx, workItemId!, failure.stageId, failure.taskIds, failure.evidencePath, _signal);
-							return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${failure.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
-						}
-					}
-					const launched = await options.launchTask(ctx, workItemId!, id!);
-					const run = launched.details?.run;
-					// A deterministic CI rejection settles this scheduler attempt without
-					// escalating: the task projection is changes_requested and immediately
-					// routes the next process attempt to the same logical implementer.
-					const state = run?.state === "completed" || run?.state === "changes_requested" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
-					return { ref, state, summary: launched.content[0]?.text ?? `Task ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: state === "blocked" || state === "failed" };
-				};
-			} else {
-				const evaluation = await runtime.workItems.readEvaluation(workItemId!, id!);
-				metricCategory = evaluation.loop?.state === "fixing" ? "integration" : evaluation.checkpoint === "final-e2e" || evaluation.type === "e2e" ? "e2e" : "review";
-				execute = async () => {
-					if (evaluation.loop?.state === "fixing") {
-						if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${id}`);
-						const repaired = await options.launchRepair(ctx, workItemId!, id!, _signal);
-						return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Repair for ${id} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
-					}
-					const launched = await options.launchEvaluation(ctx, workItemId!, id!);
-					const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
-					return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
-				};
-			}
-
-			const control = runtime.events ? await new WorkflowControlStore(runtime.identity.privateRoot).get(`work-item:${workItemId}`) : undefined;
-			const journal = runtime.events && control ? new WorkflowEventJournal(runtime.events) : undefined;
-			const correlationId = `step:${ref}:${control?.generation ?? 0}:${Date.now()}`;
-			await journal?.append({ type: "step.started", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory }).catch(() => undefined);
+			const operation = getManagedWorkflowOperationRegistry().begin(workItemId!, _signal);
+			const signal = operation.signal;
 			try {
-				const result = await execute();
-				await journal?.append({ type: result.state === "failed" || result.state === "blocked" ? "step.failed" : "step.settled", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory, transition: { to: result.state, summary: result.summary, ...(result.attention !== undefined ? { attention: result.attention } : {}) } }).catch(() => undefined);
-				return result;
-			} catch (error) {
-				await journal?.append({ type: "step.failed", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory, transition: { to: "failed", summary: error instanceof Error ? error.message : String(error), attention: true } }).catch(() => undefined);
-				throw error;
+				const runtime = await options.runtimeFor(ctx);
+				const workflowRef = `work-item:${workItemId}`;
+				const launchFence = expectedControlFence(workflowRef, expectedExecution);
+				const controlStore = new WorkflowControlStore(runtime.identity.privateRoot);
+				const assertPrelaunchCurrent = async () => {
+					if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException("Workflow operation was stopped", "AbortError");
+					if (launchFence) await controlStore.assertFence(launchFence);
+				};
+				await assertPrelaunchCurrent();
+				let metricCategory: Exclude<WorkflowMetricCategory, "orchestration">;
+				let execute: () => Promise<WorkflowRunResult>;
+				if (kind === "task") {
+					// Conflict evidence is private runtime state because the canonical branch is
+					// intentionally left dirty and cannot safely accept a task-manifest write.
+					const conflict = await new WorktreeManager(runtime.identity).activeConflict(workItemId!);
+					const task = conflict ? undefined : await runtime.workItems.readTask(workItemId!, id!);
+					const integrating = Boolean(conflict || (task && ["contribution_complete", "accepted", "merge_queued", "merging", "staged", "integrating"].includes(task.status)));
+					metricCategory = integrating ? "integration" : "implementation";
+					execute = async () => {
+						if (conflict) {
+							if (!options.launchIntegrationRepair) throw new Error(`Stage ${conflict.stageId} has a preserved integration conflict at ${conflict.evidencePath}; harness repair assignment is required (no generic agent may be spawned).`);
+							await assertPrelaunchCurrent();
+							const repaired = await options.launchIntegrationRepair(ctx, workItemId!, conflict.stageId, conflict.taskIds, conflict.evidencePath, signal, expectedExecution);
+							return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${conflict.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+						}
+						if (integrating) {
+							try {
+								await assertPrelaunchCurrent();
+								const merge = () => runtime.mutex.run(`merge-task:${workItemId}:${id}`, () => new WorktreeManager(runtime.identity).mergeTask(workItemId!, id!));
+								const merged = launchFence ? await controlStore.runIfCurrent(launchFence, merge) : await merge();
+								return { ref, state: "completed", summary: `Merged stage ${merged.stageId} (${merged.taskIds.join(", ")}) into the working branch as ${merged.commit.slice(0, 12)}.` };
+							} catch (error) {
+								const failure = await new WorktreeManager(runtime.identity).activeConflict(workItemId!);
+								if (!failure || !options.launchIntegrationRepair) throw error;
+								await assertPrelaunchCurrent();
+								const repaired = await options.launchIntegrationRepair(ctx, workItemId!, failure.stageId, failure.taskIds, failure.evidencePath, signal, expectedExecution);
+								return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Managed integration repair for ${failure.stageId} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+							}
+						}
+						await assertPrelaunchCurrent();
+						const launched = await options.launchTask(ctx, workItemId!, id!, signal, expectedExecution);
+						const run = launched.details?.run;
+						// A deterministic CI rejection settles this scheduler attempt without
+						// escalating: the task projection is changes_requested and immediately
+						// routes the next process attempt to the same logical implementer.
+						const state = run?.state === "completed" || run?.state === "changes_requested" ? "completed" : run?.state === "cancelled" ? "cancelled" : ["interrupted", "waiting_capacity"].includes(run?.state) ? "blocked" : "failed";
+						return { ref, state, summary: launched.content[0]?.text ?? `Task ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: state === "blocked" || state === "failed" };
+					};
+				} else {
+					const evaluation = await runtime.workItems.readEvaluation(workItemId!, id!);
+					metricCategory = evaluation.loop?.state === "fixing" ? "integration" : evaluation.checkpoint === "final-e2e" || evaluation.type === "e2e" ? "e2e" : "review";
+					execute = async () => {
+						await assertPrelaunchCurrent();
+						if (evaluation.loop?.state === "fixing") {
+							if (!options.launchRepair) throw new Error(`Workflow adapter cannot repair evaluation ${id}`);
+							const repaired = await options.launchRepair(ctx, workItemId!, id!, signal, expectedExecution);
+							return { ref, state: "completed", summary: repaired.content[0]?.text ?? `Repair for ${id} settled.`, ...(repaired.details?.agentId ? { agentId: repaired.details.agentId } : {}) };
+						}
+						const launched = await options.launchEvaluation(ctx, workItemId!, id!, signal, expectedExecution);
+						const verdict = launched.details?.handoff?.verdict ?? launched.details?.evaluation?.status;
+						return { ref, state: verdict === "pass" || verdict === "passed" || verdict === "not_applicable" ? "completed" : "failed", summary: launched.content[0]?.text ?? `Evaluation ${id} settled.`, ...(launched.details?.agentId ? { agentId: launched.details.agentId } : {}), attention: verdict !== "pass" && verdict !== "passed" && verdict !== "not_applicable" };
+					};
+				}
+
+				const control = runtime.events ? await controlStore.get(workflowRef) : undefined;
+				const journal = runtime.events && control ? new WorkflowEventJournal(runtime.events) : undefined;
+				const correlationId = `step:${ref}:${control?.generation ?? 0}:${Date.now()}`;
+				await journal?.append({ type: "step.started", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory }).catch(() => undefined);
+				try {
+					const result = await execute();
+					await journal?.append({ type: result.state === "failed" || result.state === "blocked" ? "step.failed" : "step.settled", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory, transition: { to: result.state, summary: result.summary, ...(result.attention !== undefined ? { attention: result.attention } : {}) } }).catch(() => undefined);
+					return result;
+				} catch (error) {
+					await journal?.append({ type: "step.failed", workItemId: workItemId!, ownerGeneration: control!.generation, correlationId, stepRef: ref, metricCategory, transition: { to: "failed", summary: error instanceof Error ? error.message : String(error), attention: true } }).catch(() => undefined);
+					throw error;
+				}
+			} finally {
+				operation.finish();
 			}
 		},
-		...(options.spawnSubagent ? { async spawnSubagent(request: DynamicSubagentRequest, ctx: ExtensionContext, signal?: AbortSignal, onText?: (text: string) => void, onStarted?: (status: DynamicSubagentStarted) => void, onProgress?: (progress: AgentProgress) => void) { return options.spawnSubagent!(request, ctx, signal, onText, onStarted, onProgress); } } : {}),
-		...(options.listSpawnableAgents ? { async listSpawnableAgents(ctx: ExtensionContext) { return options.listSpawnableAgents!(ctx); } } : {}),
 		async controlCheckpoint(ref, action, checkpointOptions, ctx) {
 			const match = STEP.exec(ref);
 			if (!match || match[2] !== "evaluation") throw new Error(`Checkpoint decision requires an evaluation step ref: ${ref}`);
@@ -619,25 +742,23 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				await runtime.workItems.transitionWorkItem(workItemId, "pause", "Workflow paused by user; safe amendment boundary.");
 				return;
 			}
-			for (const agent of await runtime.agents.list()) if (agent.workItemId === workItemId && isAgentProcessActive(agent)) await this.controlSubagent(agent.id, "stop", ctx);
-		},
-		async listSubagents(ctx) { return (await options.runtimeFor(ctx)).agents.list(); },
-		async listMessages(ctx) { return (await options.runtimeFor(ctx)).agents.listMessages().then((messages) => messages.filter((message) => message.status === "open")); },
-		async controlSubagent(agentId, action, ctx) {
-			const runtime = await options.runtimeFor(ctx); const agent = await runtime.agents.get(agentId); const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
-			if (!isAgentProcessActive(agent)) return { agent, signaled: false, reason: "Agent has no active process." };
-			if (!attempt) throw new Error(`Agent ${agent.id} has no current process attempt.`);
-			const heartbeatText = await readTextIfExists(join(runtime.agents.root, "agents", agent.id, "attempts", attempt.id, "heartbeat.json"));
-			const heartbeat = heartbeatText ? JSON.parse(heartbeatText) as { attemptId?: string; pid?: number; at?: string } : undefined;
-			const fresh = heartbeat?.attemptId === attempt.id && heartbeat.at && Date.now() - Date.parse(heartbeat.at) < AGENT_HEARTBEAT_FRESH_MS;
-			if (!fresh || !heartbeat?.pid) throw new Error("Refusing to signal a process without a fresh matching heartbeat.");
-			try { process.kill(-heartbeat.pid, "SIGTERM"); } catch { process.kill(heartbeat.pid, "SIGTERM"); }
-			return runtime.agents.transition(agent.id, action === "pause" ? "paused" : "cancelled", { summary: `${action} requested by orchestrator` });
-		},
-		async respondSubagent(agentId, messageId, response, ctx) {
-			const runtime = await options.runtimeFor(ctx); const message = await runtime.agents.respondMessage(agentId, messageId, response); const agent = await runtime.agents.get(agentId);
-			if (agent.workItemId && agent.taskId) { const task = await runtime.workItems.readTask(agent.workItemId, agent.taskId); if (task.status === "blocked") await runtime.mutex.run(`agent-response:${messageId}`, () => runtime.workItems.updateTask(agent.workItemId!, agent.taskId!, { status: "ready" })); }
-			return { message, ...(agent.workItemId ? { workflowRef: `work-item:${agent.workItemId}` } : {}) };
+			await Promise.all([
+				getManagedWorkflowOperationRegistry().stopWorkItem(workItemId, new DOMException("Workflow stop requested", "AbortError")),
+				options.stopManagedRuns?.(runtime, workItemId),
+			]);
+			// A hot-reload replacement may not own the original in-memory supervisor.
+			// Fence every unfinished durable run before inspecting service handles so a
+			// reported evaluator handoff cannot be adopted after stop.
+			if (runtime.identity.privateRoot) await new HarnessRunStore(runtime.identity, workItemId).cancelUnfinished();
+			for (const agent of await runtime.agents.list()) {
+				if (agent.workItemId !== workItemId || !isAgentProcessActive(agent)) continue;
+				if (agent.runId && agent.currentAttemptId) {
+					const runs = new HarnessRunStore(runtime.identity, workItemId);
+					const run = await runs.read(agent.runId).catch(() => undefined);
+					if (run?.currentAgentAttemptId === agent.currentAttemptId) await runs.revokeAgentAttempt(run.id, agent.currentAttemptId, { state: "cancelled", error: "Workflow stop requested" }, "run.stop_requested");
+				}
+				await runtime.coordinator.stop(agent.id);
+			}
 		},
 	};
 }

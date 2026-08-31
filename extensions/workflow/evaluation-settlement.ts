@@ -4,6 +4,7 @@ import { validateManagedEvaluationReport } from "./evaluation-integrity.js";
 import { HarnessRunStore, type EvaluationHandoff } from "./run-store.js";
 import type { EvaluationManifest } from "./types.js";
 import { WorkItemStore } from "./work-items.js";
+import { WorkflowControlStore } from "../workflow-runtime/control-store.js";
 
 export interface ManagedEvaluationSettlementInput {
 	workItems: WorkItemStore;
@@ -16,6 +17,8 @@ export interface ManagedEvaluationSettlementInput {
 	reviewedCommit: string;
 	exitCode: number;
 	completionEvent: "run.completed" | "run.reconciled_completed";
+	/** Live-attempt stop fence. Recovery settlement intentionally omits it. */
+	assertActive?: () => void | Promise<void>;
 }
 
 export interface ManagedEvaluationSettlement {
@@ -62,10 +65,22 @@ export async function settleManagedEvaluation(input: ManagedEvaluationSettlement
 	validateManagedEvaluationReport(input.handoff.report, input.handoff.verdict);
 	try {
 		return await input.workItems.coordinator.run(`managed-evaluation-settlement:${input.runId}`, async () => {
+			await input.assertActive?.();
 			const run = await input.runs.read(input.runId);
 			if (run.workItemId !== input.workItemId || run.evaluationId !== input.evaluationId) {
 				throw new HarnessError("INVALID_HANDOFF", `Evaluation run ${input.runId} has a mismatched canonical scope`);
 			}
+			if (["cancelled", "interrupted"].includes(run.state)) throw new HarnessError("CAPABILITY_DENIED", `Evaluation run ${input.runId} is ${run.state}`);
+			if (run.workflowOwnerActivationId || run.workflowOwnerProcessInstanceId) {
+				const control = await new WorkflowControlStore(input.workItems.privateRoot).get(`work-item:${input.workItemId}`);
+				if (!control || control.mode === "stopped" || control.mode === "completed"
+					|| (run.workflowExecutionFence !== undefined && control.executionFence !== run.workflowExecutionFence)
+					|| control.ownerActivationId !== run.workflowOwnerActivationId
+					|| control.ownerProcessInstanceId !== run.workflowOwnerProcessInstanceId) {
+					throw new HarnessError("CAPABILITY_DENIED", `Evaluation run ${input.runId} belongs to a stopped or replaced workflow activation`);
+				}
+			}
+			if (run.workflowExecutionFence !== undefined) await input.runs.assertCanonicalMutationAllowed(input.runId);
 			let evaluation = await input.workItems.readEvaluation(input.workItemId, input.evaluationId);
 			if (evaluation.attempt > run.attempt) {
 				throw new HarnessError("INVALID_HANDOFF", `Evaluation ${input.evaluationId} advanced past stale run attempt ${run.attempt}`);
@@ -76,6 +91,7 @@ export async function settleManagedEvaluation(input: ManagedEvaluationSettlement
 
 			let recorded = false;
 			if (evaluation.attempt < run.attempt) {
+				await input.assertActive?.();
 				evaluation = await input.workItems.recordEvaluation({
 					workItemId: input.workItemId,
 					evaluationId: input.evaluationId,
@@ -111,6 +127,10 @@ export async function settleManagedEvaluation(input: ManagedEvaluationSettlement
 				}
 			}
 
+			// Recording the canonical result is the settlement linearization point. For
+			// idempotent replays with no new result, re-check immediately before the run
+			// projection instead.
+			if (!recorded) await input.assertActive?.();
 			const freshRun = await input.runs.read(input.runId);
 			const runSettled = freshRun.state !== "completed";
 			if (runSettled) {
@@ -119,17 +139,44 @@ export async function settleManagedEvaluation(input: ManagedEvaluationSettlement
 			return { evaluation, recorded, runSettled };
 		});
 	} catch (error) {
+		// A durable workflow stop/replacement owns cancellation or interruption even
+		// when recovery settlement runs in another extension activation and therefore
+		// has no in-memory assertActive callback.
+		const failedRun = await input.runs.read(input.runId).catch(() => undefined);
+		let fencedState: "cancelled" | "interrupted" | undefined = failedRun?.state === "cancelled" || failedRun?.state === "interrupted" ? failedRun.state : undefined;
+		let schedulerPaused = false;
+		if (!fencedState && failedRun && (failedRun.workflowOwnerActivationId || failedRun.workflowOwnerProcessInstanceId)) {
+			const control = await new WorkflowControlStore(input.workItems.privateRoot).get(`work-item:${input.workItemId}`).catch(() => undefined);
+			if (control && (control.ownerActivationId !== failedRun.workflowOwnerActivationId || control.ownerProcessInstanceId !== failedRun.workflowOwnerProcessInstanceId)) fencedState = "interrupted";
+			else if (!control || control.mode === "stopped" || control.mode === "completed" || (failedRun.workflowExecutionFence !== undefined && control.executionFence !== failedRun.workflowExecutionFence)) fencedState = "cancelled";
+			else schedulerPaused = control.mode === "paused";
+		}
+		if (fencedState) {
+			if (failedRun && !["completed", "cancelled", "interrupted"].includes(failedRun.state)) {
+				await input.runs.update(input.runId, {
+					state: fencedState,
+					currentAgentAttemptId: undefined,
+					currentAgentGeneration: undefined,
+					credentialRevokedAt: new Date().toISOString(),
+					error: fencedState === "cancelled" ? "Evaluation cancelled by workflow stop" : "Evaluation owner activation was replaced",
+				}, `run.${fencedState}`).catch(() => undefined);
+			}
+			throw error;
+		}
+		if (schedulerPaused) throw error;
+		let stopped = false;
+		try { await input.assertActive?.(); } catch { stopped = true; }
+		if (stopped) throw error;
 		// The evaluator process is already settled and its handoff remains durable for
 		// reconciliation. Do not project this run as actively executing while canonical
 		// settlement is blocked or rejected.
-		await input.runs.read(input.runId).then(async (run) => {
-			if (run.state === "completed") return;
+		if (failedRun && !["completed", "cancelled", "interrupted"].includes(failedRun.state)) {
 			await input.runs.update(input.runId, {
 				state: "failed",
 				exitCode: input.exitCode,
 				error: `Evaluation settlement failed: ${error instanceof Error ? error.message : String(error)}`,
-			}, "run.settlement_failed");
-		}).catch(() => undefined);
+			}, "run.settlement_failed").catch(() => undefined);
+		}
 		throw error;
 	}
 }

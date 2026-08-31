@@ -1,4 +1,5 @@
 import { formatAgentProgress, type AgentProgress } from "./agent-progress.js";
+import type { SubagentUiAgentProjection } from "./ui-projection.js";
 
 export const SUBAGENT_PULSE_FRAMES = ["·", "•", "●", "•"] as const;
 // Match the working-row animation cadence so footer and inline activity
@@ -51,4 +52,16 @@ export function formatInlineSubagentStatus(status: SubagentLiveStatus, now = Dat
 /** Footer rows lead with route metadata and retain explicit process activity. */
 export function formatBackgroundSubagentStatus(status: SubagentLiveStatus, now = Date.now()): string {
 	return [formatSubagentRoute(status.tier, status.resolved), fastLabel(status), formatSubagentProgress(status, now)].filter(Boolean).join(" · ");
+}
+
+/** Width-independent semantic footer text; the status bar owns final truncation. */
+export function formatSubagentFooterProjection(agent: SubagentUiAgentProjection, now = Date.now()): string {
+	const lifecycle = agent.state === "stopping" ? "stopping" : agent.state === "launching" ? "starting" : "active";
+	return [
+		agent.agent,
+		formatSubagentRoute(agent.tier, { provider: agent.provider, model: agent.model, effort: agent.effort }),
+		agent.fast ? "Fast" : "",
+		formatAgentProgress(agent.progress, now, { fallbackStartedAt: agent.startedAt, processStatus: lifecycle === "starting" ? "starting" : "active", showStarting: true }),
+		lifecycle === "stopping" ? lifecycle : "",
+	].filter(Boolean).join(" · ");
 }

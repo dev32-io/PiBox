@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../workflow-runtime/index.js";
-import { WORKFLOW_ADAPTER_DISCOVERY_EVENT, type WorkflowAdapter } from "../workflow-runtime/api.js";
+import type { WorkflowAdapter } from "../workflow-runtime/api.js";
+import { registerWorkflowAdapter, type WorkflowAdapterRegistration } from "../workflow-runtime/capability-registry.js";
 import { installPermissionRuntime } from "../permissions/runtime.js";
 
 export interface WorkflowBenchHarness {
@@ -37,6 +38,7 @@ export function createWorkflowBenchHarness(): WorkflowBenchHarness {
 		setActiveTools(names: string[]) { activeTools = names; },
 	} as unknown as ExtensionAPI;
 	workflows(pi);
+	const registrations: WorkflowAdapterRegistration[] = [];
 	let permissionMode: "enforce" | "bypass" = "enforce";
 	installPermissionRuntime({
 		getMode: () => permissionMode,
@@ -49,12 +51,12 @@ export function createWorkflowBenchHarness(): WorkflowBenchHarness {
 			theme: { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text },
 			setWidget() {},
 		},
-		sessionManager: { getEntries: () => entries },
+		sessionManager: { getEntries: () => entries, getSessionId: () => "workflow-benchmark" },
 	};
 	return {
 		pi, tools, handlers, messages, entries, ctx,
-		registerAdapter(adapter) { pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter)); },
+		registerAdapter(adapter) { registrations.push(registerWorkflowAdapter(adapter, { replace: true })); },
 		async startSession() { await handlers.get("session_start")?.({}, ctx); },
-		async shutdownSession() { await handlers.get("session_shutdown")?.({}, ctx); },
+		async shutdownSession() { await handlers.get("session_shutdown")?.({}, ctx); for (const registration of registrations.splice(0)) registration.unregister(); },
 	};
 }

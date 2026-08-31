@@ -249,7 +249,9 @@ export class StoryBoardReader {
 		const { summary, raw, evaluationRoot } = await this.readReportSummary(storyId, root, entry); if (!evaluationRoot) return undefined;
 		const evaluationManifest = join(root, entry.path); if (await invalidExistingFile(evaluationManifest, evaluationRoot, this.repositoryRoot)) return undefined;
 		const result = record(raw.result);
-		const reportName = safePath(result?.report) && !result.report.includes("/") ? result.report : "report.md"; const reportDisplay = `agent-artifacts/${storyId}/evaluations/${reportId}/${reportName}`;
+		// Current evaluations point directly at attempts/NNN-report.md. report.md
+		// remains the compatibility fallback for stored repositories.
+		const reportName = safePath(result?.report) ? result.report : "report.md"; const reportDisplay = `agent-artifacts/${storyId}/evaluations/${reportId}/${reportName}`;
 		const reportPath = join(evaluationRoot, reportName); if (await invalidExistingFile(reportPath, evaluationRoot, this.repositoryRoot)) return undefined;
 		const body = await regularFile(reportPath, evaluationRoot, this.repositoryRoot) ? await readFile(reportPath, "utf8").catch(() => undefined) : undefined;
 		const riskName = safePath(result?.riskAcceptance) && !result.riskAcceptance.includes("/") ? result.riskAcceptance : undefined;

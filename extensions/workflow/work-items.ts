@@ -6,9 +6,9 @@ import { parse, stringify } from "yaml";
 import { acceptanceCriterionIds, renderArtifact, renderEvaluationReport, renderOutcome, type SemanticSections } from "./artifact-contracts.js";
 import { HarnessError } from "./errors.js";
 import { executionTopologyIssues, validateExecutionTopology, type ExecutionTopologyIssue } from "./execution-topology.js";
-import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit } from "./repository.js";
+import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, readTextIfExists, runGit } from "./repository.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
-import { isTierTaskAssignment, type E2ECaseResult, type EvaluationManifest, type MutationAuthority, type TaskManifest, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
+import { isTierTaskAssignment, type E2ECaseResult, type EvaluationManifest, type MutationAuthority, type TaskAuthoredManifest, type TaskManifest, type TaskPrivateRuntimeState, type TaskStatus, type WorkingBranchKind, type WorkItemDelivery, type WorkItemIndex, type WorkItemKind } from "./types.js";
 import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 import { stageReviewRequired, validateStageReviewPolicy } from "./stage-review-policy.js";
 import { normalizeChecks, verificationCommand } from "./verification-checks.js";
@@ -196,6 +196,34 @@ export function canTransitionTask(from: TaskStatus, to: TaskStatus): boolean {
 	return from === to || TASK_TRANSITIONS[from].includes(to);
 }
 
+function authoredTaskManifest(task: TaskManifest): TaskAuthoredManifest {
+	const { runtime: _runtime, ...authored } = task;
+	return authored;
+}
+
+function mergedTaskRuntime(current: TaskPrivateRuntimeState | undefined, update: TaskPrivateRuntimeState): TaskPrivateRuntimeState | undefined {
+	const merged: Record<string, unknown> = { ...(current ?? {}) };
+	for (const [key, value] of Object.entries(update)) {
+		if (value === undefined) delete merged[key];
+		else merged[key] = value;
+	}
+	return Object.keys(merged).length ? merged as TaskPrivateRuntimeState : undefined;
+}
+
+interface TaskMutationJournal {
+	schemaVersion: 1;
+	workItemId: string;
+	taskId: string;
+	state: "prepared" | "committed";
+	before: { authored: string; runtime: string | null };
+	after: { authored: string; runtime: string | null };
+	createdAt: string;
+}
+
+function sameCanonicalText(left: string, right: string): boolean {
+	return left.trimEnd() === right.trimEnd();
+}
+
 export function parseTaskManifest(content: string, source = "task.yaml"): TaskManifest {
 	const value = parse(content) as unknown;
 	if (typeof value !== "object" || value === null || Array.isArray(value)) throw new HarnessError("INVALID_ARTIFACT", `${source} must contain a mapping`);
@@ -235,16 +263,96 @@ export function parseTaskManifest(content: string, source = "task.yaml"): TaskMa
 export class WorkItemStore {
 	readonly repositoryRoot: string;
 	readonly artifactRoot: string;
+	readonly privateRoot: string;
 	readonly coordinator: CanonicalMutationCoordinator;
 
 	constructor(repositoryRoot: string, coordinator?: CanonicalMutationCoordinator) {
 		this.repositoryRoot = resolve(repositoryRoot);
 		this.artifactRoot = join(this.repositoryRoot, "agent-artifacts");
+		const commonDir = discoverCommonDirSync(this.repositoryRoot);
+		const canonicalRoot = commonDir && basename(commonDir) === ".git" ? dirname(commonDir) : this.repositoryRoot;
+		this.privateRoot = join(canonicalRoot, ".pibox");
 		if (coordinator) this.coordinator = coordinator;
 		else {
-			const commonDir = discoverCommonDirSync(this.repositoryRoot);
 			this.coordinator = new CanonicalMutationCoordinator(this.repositoryRoot, commonDir ?? this.repositoryRoot);
 		}
+	}
+
+	private taskRuntimePath(workItemId: string, taskId: string): string {
+		validateId(workItemId, "Work-item id");
+		validateId(taskId, "Task id");
+		return join(this.privateRoot, "work-items", workItemId, "tasks", taskId, "runtime.yaml");
+	}
+
+	private async readTaskRuntime(workItemId: string, taskId: string): Promise<TaskPrivateRuntimeState | undefined> {
+		const content = await readTextIfExists(this.taskRuntimePath(workItemId, taskId));
+		if (!content) return undefined;
+		const value = parse(content) as { schemaVersion?: number; runtime?: TaskPrivateRuntimeState };
+		if (value.schemaVersion !== 1 || !value.runtime || typeof value.runtime !== "object" || Array.isArray(value.runtime)) throw new HarnessError("INVALID_ARTIFACT", `Invalid private runtime state for task ${taskId}`);
+		return value.runtime;
+	}
+
+	private async writeTaskRuntime(workItemId: string, taskId: string, runtime: TaskPrivateRuntimeState | undefined): Promise<void> {
+		const path = this.taskRuntimePath(workItemId, taskId);
+		if (!runtime) { await rm(path, { force: true }); return; }
+		await atomicWriteFile(path, stringify({ schemaVersion: 1, runtime }), 0o600);
+	}
+
+	private taskMutationJournalPath(workItemId: string, taskId: string): string {
+		validateId(workItemId, "Work-item id");
+		validateId(taskId, "Task id");
+		return join(this.privateRoot, "transactions", "task-mutations", workItemId, `${taskId}.json`);
+	}
+
+	private async writeTaskMutationSide(path: string, content: string | null, mode?: number): Promise<void> {
+		if (content === null) {
+			await rm(path, { force: true });
+			return;
+		}
+		await atomicWriteFile(path, content, mode);
+	}
+
+	private async writeTaskMutationJournal(path: string, journal: TaskMutationJournal): Promise<void> {
+		await atomicWriteFile(path, `${JSON.stringify(journal, null, 2)}\n`, 0o600);
+	}
+
+	private async recoverTaskMutation(workItemId: string, taskId: string, authoredPath: string): Promise<void> {
+		const journalPath = this.taskMutationJournalPath(workItemId, taskId);
+		const encoded = await readTextIfExists(journalPath);
+		if (!encoded) return;
+		let journal: TaskMutationJournal;
+		try {
+			journal = JSON.parse(encoded) as TaskMutationJournal;
+		} catch {
+			throw new HarnessError("GIT_OPERATION_FAILED", `Task mutation journal is corrupt for ${workItemId}/${taskId}; blocking recovery is required`);
+		}
+		if (journal.schemaVersion !== 1 || journal.workItemId !== workItemId || journal.taskId !== taskId || !["prepared", "committed"].includes(journal.state)
+			|| typeof journal.before?.authored !== "string" || !["string", "object"].includes(typeof journal.before.runtime)
+			|| typeof journal.after?.authored !== "string" || !["string", "object"].includes(typeof journal.after.runtime)) {
+			throw new HarnessError("GIT_OPERATION_FAILED", `Task mutation journal has invalid scope for ${workItemId}/${taskId}; blocking recovery is required`);
+		}
+		const before = journal.before.runtime === null || typeof journal.before.runtime === "string";
+		const after = journal.after.runtime === null || typeof journal.after.runtime === "string";
+		if (!before || !after) throw new HarnessError("GIT_OPERATION_FAILED", `Task mutation journal has invalid content for ${workItemId}/${taskId}; blocking recovery is required`);
+
+		let target = journal.state === "committed" ? journal.after : journal.before;
+		if (journal.state === "prepared" && !sameCanonicalText(journal.before.authored, journal.after.authored)) {
+			const relativePath = relative(this.repositoryRoot, authoredPath).replaceAll("\\", "/");
+			const head = await runGit(this.repositoryRoot, ["show", `HEAD:${relativePath}`]).catch(() => undefined);
+			if (head !== undefined && sameCanonicalText(head, journal.after.authored)) target = journal.after;
+			else if (head === undefined || !sameCanonicalText(head, journal.before.authored)) {
+				throw new HarnessError("GIT_OPERATION_FAILED", `Cannot determine the committed side of task mutation ${workItemId}/${taskId}; blocking recovery is required`);
+			}
+		}
+		const relativePath = relative(this.repositoryRoot, authoredPath).replaceAll("\\", "/");
+		const head = await runGit(this.repositoryRoot, ["show", `HEAD:${relativePath}`]).catch(() => undefined);
+		if (head === undefined || !sameCanonicalText(head, target.authored)) {
+			throw new HarnessError("GIT_OPERATION_FAILED", `Task mutation ${workItemId}/${taskId} conflicts with canonical Git history; blocking recovery is required`);
+		}
+		await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relativePath]);
+		await atomicWriteFile(authoredPath, target.authored);
+		await this.writeTaskMutationSide(this.taskRuntimePath(workItemId, taskId), target.runtime, 0o600);
+		await rm(journalPath, { force: true });
 	}
 
 	workItemRoot(id: string): string {
@@ -672,7 +780,8 @@ export class WorkItemStore {
 		const indexPath = join(root, "index.yaml");
 		const priorIndex = await readFile(indexPath, "utf8");
 		try {
-			await atomicWriteFile(manifestPath, stringify(input.manifest));
+			await atomicWriteFile(manifestPath, stringify(authoredTaskManifest(input.manifest)));
+			if (input.manifest.runtime) await this.writeTaskRuntime(input.workItemId, input.manifest.id, input.manifest.runtime);
 			await atomicWriteFile(briefPath, `${brief.trim()}\n`);
 			await atomicWriteFile(acceptancePath, `${acceptance.trim()}\n`);
 			await atomicWriteFile(indexPath, stringify(index));
@@ -680,6 +789,7 @@ export class WorkItemStore {
 			return index;
 		} catch (error) {
 			await rm(taskRoot, { recursive: true, force: true });
+			await this.writeTaskRuntime(input.workItemId, input.manifest.id, undefined).catch(() => undefined);
 			await this.restore([{ path: indexPath, content: priorIndex }]);
 			throw error;
 		}
@@ -715,7 +825,9 @@ export class WorkItemStore {
 		const acceptancePath = join(taskRoot, "acceptance.md");
 		const indexPath = join(root, "index.yaml");
 		const previous = await Promise.all([manifestPath, briefPath, acceptancePath, indexPath].map((path) => readFile(path, "utf8")));
-		const current = parseTaskManifest(previous[0]!, manifestPath);
+		const runtimePath = this.taskRuntimePath(input.workItemId, input.manifest.id);
+		const previousRuntime = await readTextIfExists(runtimePath);
+		const current = await this.readTask(input.workItemId, input.manifest.id);
 		const revised: TaskManifest = { ...input.manifest, status: current.status, ...(current.runtime ? { runtime: current.runtime } : {}) };
 		const stageId = revised.assembly.stageId ?? revised.assembly.integrationUnit!;
 		// Build and validate the complete candidate graph before changing the in-memory
@@ -740,7 +852,8 @@ export class WorkItemStore {
 		index.executionStages = candidateStages;
 		advanceContractRevision(index, input.authority);
 		try {
-			await atomicWriteFile(manifestPath, stringify(revised));
+			await atomicWriteFile(manifestPath, stringify(authoredTaskManifest(revised)));
+			await this.writeTaskRuntime(input.workItemId, revised.id, revised.runtime);
 			await atomicWriteFile(briefPath, `${brief.trim()}\n`);
 			await atomicWriteFile(acceptancePath, `${acceptance.trim()}\n`);
 			await atomicWriteFile(indexPath, stringify(index));
@@ -748,6 +861,8 @@ export class WorkItemStore {
 			return index;
 		} catch (error) {
 			await this.restore([manifestPath, briefPath, acceptancePath, indexPath].map((path, i) => ({ path, content: previous[i] })));
+			if (previousRuntime === undefined) await rm(runtimePath, { force: true });
+			else await atomicWriteFile(runtimePath, previousRuntime, 0o600);
 			throw error;
 		}
 	}
@@ -806,33 +921,51 @@ export class WorkItemStore {
 		}
 	}
 
-	async readTaskContract(workItemId: string, taskId: string): Promise<{ manifest: TaskManifest; brief: string; acceptance: string; workItemRevision: number }> {
+	async readTaskContract(workItemId: string, taskId: string): Promise<{ manifest: TaskAuthoredManifest; brief: string; acceptance: string; workItemRevision: number }> {
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
 		await this.assertWorkingBranch(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		const taskRoot = dirname(join(root, catalog.path));
-		return { manifest: await this.readTask(workItemId, taskId), brief: await readFile(join(taskRoot, "brief.md"), "utf8"), acceptance: await readFile(join(taskRoot, "acceptance.md"), "utf8"), workItemRevision: index.planning.revision };
+		return { manifest: authoredTaskManifest(await this.readTask(workItemId, taskId)), brief: await readFile(join(taskRoot, "brief.md"), "utf8"), acceptance: await readFile(join(taskRoot, "acceptance.md"), "utf8"), workItemRevision: index.planning.revision };
 	}
 
 	async readTask(workItemId: string, taskId: string): Promise<TaskManifest> {
+		return this.coordinator.run(`task-read:${workItemId}:${taskId}`, () => this.readTaskUnlocked(workItemId, taskId));
+	}
+
+	private async readTaskUnlocked(workItemId: string, taskId: string): Promise<TaskManifest> {
 		validateId(taskId, "Task id");
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
 		await this.assertWorkingBranch(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
-		return parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path);
+		const path = join(root, catalog.path);
+		await this.recoverTaskMutation(workItemId, taskId, path);
+		const manifest = parseTaskManifest(await readFile(path, "utf8"), catalog.path);
+		const runtime = await this.readTaskRuntime(workItemId, taskId);
+		// Compatibility: old repositories kept runtime inline. Private state wins once present.
+		return runtime ? { ...authoredTaskManifest(manifest), runtime } : manifest;
 	}
 
-	/** Read every task from one validated work-item snapshot without repeating index and branch checks per task. */
+	/** Read every task from one transactionally recovered work-item snapshot. */
 	async readTasks(workItemId: string): Promise<TaskManifest[]> {
-		const root = this.workItemRoot(workItemId);
-		const index = await this.read(workItemId);
-		await this.assertWorkingBranch(index);
-		return Promise.all(index.tasks.map(async (catalog) =>
-			parseTaskManifest(await readFile(join(root, catalog.path), "utf8"), catalog.path)));
+		return this.coordinator.run(`tasks-read:${workItemId}`, async () => {
+			const root = this.workItemRoot(workItemId);
+			const index = await this.read(workItemId);
+			await this.assertWorkingBranch(index);
+			const tasks: TaskManifest[] = [];
+			for (const catalog of index.tasks) {
+				const path = join(root, catalog.path);
+				await this.recoverTaskMutation(workItemId, catalog.id, path);
+				const manifest = parseTaskManifest(await readFile(path, "utf8"), catalog.path);
+				const runtime = await this.readTaskRuntime(workItemId, catalog.id);
+				tasks.push(runtime ? { ...authoredTaskManifest(manifest), runtime } : manifest);
+			}
+			return tasks;
+		});
 	}
 
 	/** Return advisory compiler diagnostics while the plan remains editable source. */
@@ -855,34 +988,73 @@ export class WorkItemStore {
 		taskId: string,
 		update: { status?: TaskStatus; runtime?: TaskManifest["runtime"] },
 	): Promise<TaskManifest> {
-		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
 		const index = await this.read(workItemId);
 		await this.assertWorkingBranch(index);
 		const catalog = index.tasks.find((task) => task.id === taskId);
 		if (!catalog) throw new HarnessError("INVALID_ARTIFACT", `Unknown task: ${taskId}`);
 		const path = join(root, catalog.path);
+		await this.recoverTaskMutation(workItemId, taskId, path);
+		await assertCleanRepository(this.repositoryRoot);
+		const runtimePath = this.taskRuntimePath(workItemId, taskId);
 		const previous = await readFile(path, "utf8");
-		const manifest = parseTaskManifest(previous, path);
+		const previousRuntime = await readTextIfExists(runtimePath);
+		const manifest = await this.readTaskUnlocked(workItemId, taskId);
 		if (update.status) {
 			if (!canTransitionTask(manifest.status, update.status)) throw new HarnessError("INVALID_HANDOFF", `Invalid task transition: ${manifest.status} -> ${update.status}`);
 			manifest.status = update.status;
 		}
-		if (update.runtime) manifest.runtime = { ...manifest.runtime, ...update.runtime };
-		const next = stringify(manifest);
-		// Normal supervision and reported-agent reconciliation can race to settle the
-		// same completed run. The canonical lock makes the second writer observe the
-		// first writer's state; treat that identical settlement as success instead of
-		// invoking `git commit` with an empty index and pausing the workflow.
-		if (next === previous) return manifest;
+		if (update.runtime) {
+			const runtime = mergedTaskRuntime(manifest.runtime, update.runtime);
+			if (runtime) manifest.runtime = runtime;
+			else delete manifest.runtime;
+		}
+		const next = stringify(authoredTaskManifest(manifest));
+		const nextRuntime = manifest.runtime ? stringify({ schemaVersion: 1, runtime: manifest.runtime }) : null;
+		if (next === previous && nextRuntime === (previousRuntime ?? null)) return manifest;
+
+		const journalPath = this.taskMutationJournalPath(workItemId, taskId);
+		const journal: TaskMutationJournal = {
+			schemaVersion: 1,
+			workItemId,
+			taskId,
+			state: "prepared",
+			before: { authored: previous, runtime: previousRuntime ?? null },
+			after: { authored: next, runtime: nextRuntime },
+			createdAt: new Date().toISOString(),
+		};
+		await this.writeTaskMutationJournal(journalPath, journal);
+		let gitCommitted = false;
 		try {
-			await atomicWriteFile(path, next);
-			await this.commit([path], `harness(${workItemId}): update task ${taskId}`);
-			return manifest;
+			// The private side is written first. Until Git commits the authored side (or
+			// the private-only commit marker is durable), every crash recovers `before`.
+			await this.writeTaskMutationSide(runtimePath, nextRuntime, 0o600);
+			if (next !== previous) {
+				await atomicWriteFile(path, next);
+				await this.commit([path], `harness(${workItemId}): update task ${taskId}`);
+				gitCommitted = true;
+			}
+			await this.writeTaskMutationJournal(journalPath, { ...journal, state: "committed" });
 		} catch (error) {
-			await this.restore([{ path, content: previous }]);
+			if (gitCommitted) {
+				// Git is the authored commit point. A prepared journal is sufficient for
+				// deterministic roll-forward if the marker cleanup itself failed.
+				return manifest;
+			}
+			try {
+				await runGit(this.repositoryRoot, ["reset", "--quiet", "HEAD", "--", relative(this.repositoryRoot, path)]);
+				await atomicWriteFile(path, previous);
+				await this.writeTaskMutationSide(runtimePath, previousRuntime ?? null, 0o600);
+				await rm(journalPath, { force: true });
+			} catch (rollbackError) {
+				throw new AggregateError([error, rollbackError], `Task mutation ${workItemId}/${taskId} failed and could not be rolled back`, { cause: error });
+			}
 			throw error;
 		}
+		// A committed journal is itself a complete recovery record, so cleanup failure
+		// cannot expose a split state and is safe to retry on the next read.
+		await rm(journalPath, { force: true }).catch(() => undefined);
+		return manifest;
 	}
 
 	async activateDraftTasks(workItemId: string): Promise<TaskManifest[]> {
@@ -897,10 +1069,13 @@ export class WorkItemStore {
 		if (drafts.length === 0) return [];
 		const files = drafts.map((task) => ({
 			path: join(this.workItemRoot(workItemId), "tasks", task.id, "task.yaml"),
-			content: stringify({ ...task, status: task.dependsOn.length === 0 ? "ready" : "blocked" }),
+			content: stringify({ ...authoredTaskManifest(task), status: task.dependsOn.length === 0 ? "ready" : "blocked" }),
 		}));
 		const previous = await Promise.all(files.map(async (file) => ({ path: file.path, content: await readFile(file.path, "utf8") })));
 		try {
+			// A legacy inline runtime is migrated before its authored projection is
+			// rewritten; stripping private coordinates must never discard recovery state.
+			for (const task of drafts) if (task.runtime) await this.writeTaskRuntime(workItemId, task.id, task.runtime);
 			for (const file of files) await atomicWriteFile(file.path, file.content);
 			await this.commit(files.map((file) => file.path), `harness(${workItemId}): activate workflow tasks`);
 			return Promise.all(drafts.map((task) => this.readTask(workItemId, task.id)));
@@ -926,11 +1101,11 @@ export class WorkItemStore {
 		return changed;
 	}
 
-	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n", authority?: MutationAuthority): Promise<WorkItemIndex> {
+	async defineEvaluation(workItemId: string, manifest: EvaluationManifest, report?: string, authority?: MutationAuthority): Promise<WorkItemIndex> {
 		return await this.coordinator.run(`evaluation-define:${workItemId}:${manifest.id}`, () => this.defineEvaluationUnlocked(workItemId, manifest, report, authority));
 	}
 
-	private async defineEvaluationUnlocked(workItemId: string, manifest: EvaluationManifest, report = "# Evaluation\n\nPending.\n", authority?: MutationAuthority): Promise<WorkItemIndex> {
+	private async defineEvaluationUnlocked(workItemId: string, manifest: EvaluationManifest, report?: string, authority?: MutationAuthority): Promise<WorkItemIndex> {
 		validateId(manifest.id, "Evaluation id");
 		await assertCleanRepository(this.repositoryRoot);
 		const root = this.workItemRoot(workItemId);
@@ -960,7 +1135,7 @@ export class WorkItemStore {
 		try {
 			await mkdir(evaluationRoot, { recursive: true });
 			await atomicWriteFile(manifestPath, stringify(evaluation));
-			await atomicWriteFile(join(evaluationRoot, "report.md"), report);
+			if (report?.trim() && !/^# Evaluation\s+Pending\.\s*$/s.test(report.trim())) await atomicWriteFile(join(evaluationRoot, "report.md"), report);
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): define evaluation ${manifest.id}`);
 			return index;
@@ -1120,7 +1295,12 @@ export class WorkItemStore {
 		const previous = [{ path: indexPath, content: await readFile(indexPath, "utf8") }, ...await Promise.all(tasks.map(async (task) => ({ path: taskPaths.get(task.id)!, content: await readFile(taskPaths.get(task.id)!, "utf8") })))];
 		try {
 			await atomicWriteFile(indexPath, stringify(index));
-			for (const task of tasks) await atomicWriteFile(taskPaths.get(task.id)!, stringify(task));
+			// Stage edits read runtime-enriched manifests. Preserve legacy inline
+			// coordinates privately before writing only their authored projection.
+			for (const task of tasks) {
+				if (task.runtime) await this.writeTaskRuntime(workItemId, task.id, task.runtime);
+				await atomicWriteFile(taskPaths.get(task.id)!, stringify(authoredTaskManifest(task)));
+			}
 			await this.commit([indexPath, ...taskPaths.values()], `harness(${workItemId}): update execution stage ${stage.id}`);
 			return index;
 		} catch (error) {
@@ -1225,6 +1405,53 @@ export class WorkItemStore {
 		if (verdict === "pass" && incomplete.length) throw new HarnessError("INVALID_HANDOFF", `E2E evaluation ${evaluation.id} cannot pass with incomplete cases: ${incomplete.map((result) => `${result.caseId}:${result.status}`).join(", ")}`);
 	}
 
+	private async evaluationContextScope(workItemId: string, taskIds: string[], mode: "stage" | "review" | "final-review" | "e2e"): Promise<NonNullable<EvaluationManifest["context"]>> {
+		const current = await this.read(workItemId);
+		const chain: WorkItemIndex[] = [current];
+		const seen = new Set([current.id]);
+		let cursor = current;
+		while (cursor.amendment) {
+			const baselineId = cursor.amendment.baselineWorkItemId;
+			if (seen.has(baselineId)) throw new HarnessError("INVALID_ARTIFACT", `Amendment baseline cycle detected at ${baselineId}`);
+			seen.add(baselineId);
+			cursor = await this.read(baselineId);
+			chain.unshift(cursor);
+		}
+		const artifactRefs: Array<{ workItemId: string; artifactId: string }> = [];
+		const add = (item: WorkItemIndex, artifactId: string) => {
+			if (!artifactRefs.some((ref) => ref.workItemId === item.id && ref.artifactId === artifactId)) artifactRefs.push({ workItemId: item.id, artifactId });
+		};
+		if (mode === "stage") {
+			const intent = current.artifacts.find((artifact) => artifact.type === "intent");
+			if (intent) add(current, intent.id);
+			for (const taskId of taskIds) {
+				const task = await this.readTask(workItemId, taskId);
+				for (const id of task.references ? [...task.references.specs, ...task.references.designs, ...task.references.decisions] : []) add(current, id);
+			}
+		} else {
+			for (const item of chain) for (const artifact of item.artifacts) {
+				const selected = mode === "e2e"
+					? artifact.type === "intent" || artifact.type === "e2e-matrix"
+					: ["intent", "spec", "design", "decision"].includes(artifact.type) || (mode === "final-review" && artifact.type === "e2e-matrix");
+				if (selected) add(item, artifact.id);
+			}
+		}
+		return { taskIds: [...taskIds], artifactRefs };
+	}
+
+	/** Canonical scope for current explicit evaluation-context manifests. */
+	async canonicalEvaluationContext(workItemId: string, evaluation: EvaluationManifest): Promise<NonNullable<EvaluationManifest["context"]>> {
+		const item = await this.read(workItemId);
+		if (evaluation.scope.workItem && evaluation.scope.workItem !== workItemId) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${evaluation.id} is scoped to a different work item: ${evaluation.scope.workItem}`);
+		const stage = evaluation.checkpoint === "stage-review" ? item.executionStages?.find((candidate) => candidate.id === evaluation.stageId) : undefined;
+		if (evaluation.checkpoint === "stage-review" && !stage) throw new HarnessError("INVALID_ARTIFACT", `Evaluation ${evaluation.id} references unknown stage ${evaluation.stageId ?? "(missing)"}`);
+		const taskIds = stage?.tasks ?? (evaluation.scope.task ? [evaluation.scope.task] : item.tasks.map((task) => task.id));
+		const mode = evaluation.checkpoint === "stage-review" ? "stage"
+			: evaluation.type === "e2e" || evaluation.checkpoint === "final-e2e" ? "e2e"
+				: evaluation.checkpoint === "final-review" ? "final-review" : "review";
+		return this.evaluationContextScope(workItemId, taskIds, mode);
+	}
+
 	async ensureFinalEvaluations(workItemId: string, maxIterations = DEFAULT_REVIEW_FIX_ITERATIONS): Promise<EvaluationManifest[]> {
 		return await this.coordinator.run(`ensure-final-evaluations:${workItemId}`, () => this.ensureFinalEvaluationsUnlocked(workItemId, maxIterations));
 	}
@@ -1242,17 +1469,18 @@ export class WorkItemStore {
 				continue;
 			}
 			const policy = stage.review?.mode === "skip" ? undefined : stage.review;
-			await this.defineRuntimeEvaluation(workItemId, { schemaVersion: 1, id, type: "combined-review", checkpoint: "stage-review", stageId: stage.id, scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: (stage.checks ?? []).map(verificationCommand), ...(policy?.focus ? { criteria: policy.focus } : {}), loop: { state: "planned", iteration: 0, maxIterations } });
+			const context = await this.evaluationContextScope(workItemId, stage.tasks, "stage");
+			await this.defineRuntimeEvaluation(workItemId, { schemaVersion: 1, id, type: "combined-review", checkpoint: "stage-review", stageId: stage.id, scope: { workItem: workItemId }, context, status: "planned", required: true, attempt: 0, methods: (stage.checks ?? []).map(verificationCommand), ...(policy?.focus ? { criteria: policy.focus } : {}), loop: { state: "planned", iteration: 0, maxIterations } });
 			existing = [...existing, await this.readEvaluation(workItemId, id)];
 		}
 		let finalReview = existing.find((evaluation) => evaluation.checkpoint === "final-review");
 		if (!finalReview) {
-			finalReview = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Review the complete executionStartCommit..reviewedCommit feature diff as one integrated change for specification fit, cross-stage correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } };
+			finalReview = { schemaVersion: 1, id: "final-branch-review", type: "combined-review", checkpoint: "final-review", scope: { workItem: workItemId }, context: await this.evaluationContextScope(workItemId, item.tasks.map((task) => task.id), "final-review"), status: "planned", required: true, attempt: 0, methods: ["Review the complete executionStartCommit..reviewedCommit feature diff as one integrated change for specification fit, cross-stage correctness, regressions, maintainability, and test coverage."], loop: { state: "planned", iteration: 0, maxIterations } };
 			await this.defineRuntimeEvaluation(workItemId, finalReview);
 		}
 		let finalJourney = existing.find((evaluation) => evaluation.checkpoint === "final-e2e");
 		if (!finalJourney) {
-			finalJourney = { schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, status: "planned", required: true, attempt: 0, methods: ["Execute every case in the approved E2E matrix exactly after whole-branch review passes."], loop: { state: "planned", iteration: 0, maxIterations } };
+			finalJourney = { schemaVersion: 1, id: "final-e2e", type: "e2e", checkpoint: "final-e2e", scope: { workItem: workItemId }, context: await this.evaluationContextScope(workItemId, item.tasks.map((task) => task.id), "e2e"), status: "planned", required: true, attempt: 0, methods: ["Execute every case in the approved E2E matrix exactly after whole-branch review passes."], loop: { state: "planned", iteration: 0, maxIterations } };
 			await this.defineRuntimeEvaluation(workItemId, finalJourney);
 		}
 		return Promise.all((await this.read(workItemId)).evaluations.map((entry) => this.readEvaluation(workItemId, entry.id)));
@@ -1263,15 +1491,13 @@ export class WorkItemStore {
 		const index = await this.read(workItemId);
 		const evaluationRoot = join(root, "evaluations", manifest.id);
 		const manifestPath = join(evaluationRoot, "evaluation.yaml");
-		const reportPath = join(evaluationRoot, "report.md");
 		const indexPath = join(root, "index.yaml");
 		if (index.evaluations.some((entry) => entry.id === manifest.id)) return;
-		const previous = await Promise.all([manifestPath, reportPath, indexPath].map(async (path) => ({ path, content: await readFile(path, "utf8").catch(() => undefined) })));
+		const previous = await Promise.all([manifestPath, indexPath].map(async (path) => ({ path, content: await readFile(path, "utf8").catch(() => undefined) })));
 		index.evaluations.push({ id: manifest.id, path: relative(root, manifestPath) });
 		try {
 			await mkdir(evaluationRoot, { recursive: true });
 			await atomicWriteFile(manifestPath, stringify(manifest));
-			await atomicWriteFile(reportPath, "# Evaluation\n\nPending.\n");
 			await atomicWriteFile(indexPath, stringify(index));
 			await this.commit([evaluationRoot, indexPath], `harness(${workItemId}): add final review checkpoint ${manifest.id}`);
 		} catch (error) {
@@ -1411,7 +1637,7 @@ export class WorkItemStore {
 			if (input.findings) evaluation.findings = input.findings;
 			evaluation.result = {
 				verdict: input.verdict,
-				report: "report.md",
+				report: `attempts/${String(attemptNumber).padStart(3, "0")}-report.md`,
 				evidence: `../../evidence/${input.evaluationId}/manifest.yaml`,
 				...(input.caseResults ? { caseResults: input.caseResults } : {}),
 			};
@@ -1426,8 +1652,10 @@ export class WorkItemStore {
 				verdict: input.verdict,
 				...(input.residualRisks ? { residualRisks: input.residualRisks } : {}),
 			});
-			await atomicWriteFile(reportPath, renderedReport);
 			await atomicWriteFile(attemptReportPath, renderedReport);
+			// Current manifests point directly at the retained attempt. Remove the old
+			// byte-identical latest copy while preserving compatibility reads for stored repos.
+			await rm(reportPath, { force: true });
 			await atomicWriteFile(evaluationPath, stringify(evaluation));
 			index.phase = "evaluation";
 			await atomicWriteFile(indexPath, stringify(index));

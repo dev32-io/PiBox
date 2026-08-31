@@ -1,20 +1,24 @@
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse } from "yaml";
+import type {
+	CapabilityTier,
+	HarnessEffort,
+	ModelTier,
+	ModelTierListProfilesConfig,
+	ModelTierLists,
+	TierModelRouteConfig,
+} from "../subagent/types.js";
 
-export type HarnessEffort = ModelThinkingLevel;
-export type CapabilityTier = "low" | "medium" | "high" | "max";
-/** Dynamic launches may explicitly select the provider-isolated local route group. */
-export type ModelTier = CapabilityTier | "local";
-export type TierModelRouteConfig = string;
-export type ModelTierLists = Record<ModelTier, TierModelRouteConfig[]>;
-
-export interface ModelTierListProfilesConfig {
-	defaultProfile: string;
-	profiles: Record<string, ModelTierLists>;
-}
+export type {
+	CapabilityTier,
+	HarnessEffort,
+	ModelTier,
+	ModelTierListProfilesConfig,
+	ModelTierLists,
+	TierModelRouteConfig,
+} from "../subagent/types.js";
 
 export const DEFAULT_MODEL_TIER_PROFILE = "performance";
 export const CAPABILITY_TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];

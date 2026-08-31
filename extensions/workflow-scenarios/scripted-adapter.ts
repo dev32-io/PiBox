@@ -17,7 +17,9 @@ export class ScriptedWorkflowAdapter implements WorkflowAdapter {
 	readonly violations: string[] = [];
 	readonly starts = new Map<string, number>();
 	peakConcurrency = 0;
+	mode: "running" | "paused" | "stopped" | "completed" = "stopped";
 	private sequence = 0;
+	private generation = 0;
 	private readonly states: Map<string, StepState>;
 	private readonly active = new Set<string>();
 
@@ -33,6 +35,11 @@ export class ScriptedWorkflowAdapter implements WorkflowAdapter {
 	canHandle(ref: string): boolean { return ref === this.workflowRef || ref.startsWith(`${this.workflowRef}/step:`) || ref.startsWith(`${this.workflowRef}/evaluation:`); }
 
 	async prepareWorkflow(): Promise<void> { this.record({ type: "workflow_prepared", detail: this.workflowRef }); }
+
+	async controlExecution(ref: string, command: "start" | "pause" | "resume" | "stop" | "complete" | "detach" | "attach") {
+		this.mode = command === "pause" ? "paused" : command === "stop" ? "stopped" : command === "complete" ? "completed" : command === "detach" || command === "attach" ? this.mode : "running";
+		return { workflowRef: ref, mode: this.mode, generation: ++this.generation, ...(command === "detach" ? {} : { ownerSessionId: "workflow-benchmark" }) };
+	}
 
 	async snapshot(ref: string): Promise<WorkflowSnapshot> {
 		if (ref !== this.workflowRef) throw new Error(`Unknown scripted workflow ${ref}`);
@@ -107,11 +114,6 @@ export class ScriptedWorkflowAdapter implements WorkflowAdapter {
 		if (action === "resume") for (const state of this.states.values()) if (state.status === "attention" || state.status === "cancelled") state.status = "pending";
 		if (action === "stop") for (const state of this.states.values()) if (state.status === "running") state.status = "cancelled";
 	}
-
-	async listSubagents(): Promise<unknown[]> { return []; }
-	async listMessages(): Promise<unknown[]> { return []; }
-	async controlSubagent(): Promise<unknown> { return {}; }
-	async respondSubagent(): Promise<unknown> { return {}; }
 
 	statuses(): Record<string, WorkflowStepStatus> {
 		return Object.fromEntries([...this.states].map(([id, state]) => [id, state.status]));

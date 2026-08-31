@@ -2,23 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflows from "../index.js";
-import { inferDynamicSubagentTier, WORKFLOW_ADAPTER_DISCOVERY_EVENT, WORKFLOW_LIFECYCLE_EVENT, type WorkflowAdapter, type WorkflowLifecycleEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
-import type { AgentLiveProjection } from "../agent-live-projection.js";
+import { WORKFLOW_LIFECYCLE_EVENT, type WorkflowAdapter, type WorkflowLifecycleEvent, type WorkflowRunResult, type WorkflowSnapshot } from "../api.js";
+import { getWorkflowAdapterCapabilityRegistry, registerWorkflowAdapter } from "../capability-registry.js";
 import { installPermissionRuntime } from "../../permissions/runtime.js";
+import { WorkflowRunner, type WorkflowRunnerCommand } from "../runner.js";
+import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../../subagent/tool-policy.js";
 
-function liveProjection(overrides: Partial<AgentLiveProjection> = {}): AgentLiveProjection {
-	const startedAt = new Date().toISOString();
-	return {
-		agentId: "agent", operationId: "operation", role: "implementer", state: "running",
-		provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", startedAt,
-		attemptId: "attempt", attemptSequence: 1, attemptState: "running", active: true,
-		progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
-		...overrides,
-	};
+function registerTestAdapter(adapter: WorkflowAdapter): void {
+	let generation = 0;
+	adapter.controlExecution ??= async (ref, command) => ({
+		workflowRef: ref,
+		mode: command === "pause" || command === "detach" ? "paused" : command === "stop" ? "stopped" : command === "complete" ? "completed" : "running",
+		generation: ++generation,
+		ownerSessionId: "test-session",
+	});
+	registerWorkflowAdapter(adapter, { replace: true });
 }
 
-function fixture(workflowConfirmed = true) {
+function fixture(workflowConfirmed = true, standaloneSubagents = false) {
 	const tools = new Map<string, any>();
+	if (standaloneSubagents) for (const name of ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue"]) tools.set(name, { name, owner: "standalone" });
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const bus = new Map<string, Array<(data: unknown) => void>>();
 	const messages: any[] = [];
@@ -38,7 +41,9 @@ function fixture(workflowConfirmed = true) {
 		appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
 		sendMessage(message: unknown, options: unknown) { messages.push({ message, options }); },
 		getActiveTools() { return activeTools; }, setActiveTools(names: string[]) { activeTools = names; },
+		getAllTools() { return [...tools.values()]; },
 	} as unknown as ExtensionAPI;
+	getWorkflowAdapterCapabilityRegistry().clear();
 	workflows(pi);
 	let permissionMode = "enforce";
 	installPermissionRuntime({
@@ -62,116 +67,54 @@ function fixture(workflowConfirmed = true) {
 	return { pi, tools, handlers, messages, entries, ctx, statuses, statusWrites, widget: () => widget, permissionMode: () => permissionMode };
 }
 
-test("resolves dynamic tiers from call-site, local provider, agent policy, then medium", () => {
-	assert.equal(inferDynamicSubagentTier("high", "local-llm/qwen3.8-27b-uncensored", "low"), "high");
-	assert.equal(inferDynamicSubagentTier(undefined, "local-llm/qwen3.8-27b-uncensored#medium", "low"), "local");
-	assert.equal(inferDynamicSubagentTier(undefined, "openai-codex/gpt-5.6-luna", "low"), "low");
-	assert.equal(inferDynamicSubagentTier(undefined, undefined, "low"), "low");
-	assert.equal(inferDynamicSubagentTier(undefined, undefined), "medium");
+test("explicit standalone child role prevents workflow-runtime registration", { concurrency: false }, () => {
+	const previousRole = process.env[PIBOX_RUNTIME_ROLE_ENV];
+	const previousId = process.env.PIBOX_SUBAGENT_ID;
+	process.env[PIBOX_RUNTIME_ROLE_ENV] = PIBOX_SUBAGENT_RUNTIME_ROLE;
+	delete process.env.PIBOX_SUBAGENT_ID;
+	try {
+		const f = fixture(true, true);
+		assert.deepEqual([...f.tools.keys()], ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue"]);
+		assert.equal(f.handlers.size, 0);
+	} finally {
+		if (previousRole === undefined) delete process.env[PIBOX_RUNTIME_ROLE_ENV]; else process.env[PIBOX_RUNTIME_ROLE_ENV] = previousRole;
+		if (previousId === undefined) delete process.env.PIBOX_SUBAGENT_ID; else process.env.PIBOX_SUBAGENT_ID = previousId;
+	}
 });
 
-test("registers the generalized workflow and subagent surface", async () => {
+test("managed identity metadata alone keeps the workflow runtime on its main surface", { concurrency: false }, async () => {
+	const previousRole = process.env[PIBOX_RUNTIME_ROLE_ENV];
+	const previousId = process.env.PIBOX_SUBAGENT_ID;
+	delete process.env[PIBOX_RUNTIME_ROLE_ENV];
+	process.env.PIBOX_SUBAGENT_ID = "managed-identity-only";
+	try {
+		const f = fixture();
+		assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint"]);
+		await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+		await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+	} finally {
+		if (previousRole === undefined) delete process.env[PIBOX_RUNTIME_ROLE_ENV]; else process.env[PIBOX_RUNTIME_ROLE_ENV] = previousRole;
+		if (previousId === undefined) delete process.env.PIBOX_SUBAGENT_ID; else process.env.PIBOX_SUBAGENT_ID = previousId;
+	}
+});
+
+test("does not override standalone generic subagent tools", async () => {
+	const f = fixture(true, true);
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	for (const name of ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue"]) assert.equal(f.tools.get(name).owner, "standalone");
+	assert.ok(f.tools.has("workflow_start"));
+	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+});
+
+test("registers only the workflow runtime surface", async () => {
 	const f = fixture();
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint", "subagent_status", "subagent_control", "subagent_respond", "subagent_spawn"]);
-	const spawnDescription = f.tools.get("subagent_spawn").description;
-	assert.match(spawnDescription, /subagent.*configured agent definition.*detailed, self-contained assignment/i);
-	assert.match(spawnDescription, /independent topics or dimensions.*multiple narrowly scoped subagents.*one contribution per child/i);
-	assert.match(spawnDescription, /Keep tightly coupled work together.*small directly tractable work yourself/i);
-	assert.match(spawnDescription, /objective.*context.*scope.*evidence or deliverable.*constraints.*stop conditions/i);
-	assert.match(spawnDescription, /Foreground is the default.*background.*independent work.*automatic terminal delivery/i);
-	assert.match(spawnDescription, /workflow_start\/resume/i);
-	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /agent.*task.*background.*foreground/);
-	const spawnSchema = JSON.stringify(f.tools.get("subagent_spawn").parameters);
-	assert.match(spawnSchema, /"default":"foreground"/);
-	assert.match(spawnSchema, /tier.*local.*model.*effort/);
-	assert.doesNotMatch(spawnSchema, /tierJustification|strict/);
-	const statusTool = f.tools.get("subagent_status");
-	assert.match(statusTool.description, /diagnostics and recovery.*not a polling mechanism.*automatic terminal reports/is);
-	assert.match(JSON.stringify(statusTool.parameters), /agentId.*workflowRef.*state.*includeSettled.*limit/);
+	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control", "workflow_checkpoint"]);
 	assert.match(f.tools.get("workflow_start").description, /user explicitly asks to run.*TUI confirmation.*permission bypass mode/i);
 	assert.match(f.tools.get("workflow_control").description, /Stop terminates active attempts.*resume prepares incomplete stopped work/);
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("fresh sessions publish the agent catalog without restoring workflow runtime state", async () => {
-	const f = fixture();
-	let catalogReads = 0;
-	let controlReads = 0;
-	let liveSubscriptions = 0;
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async listSpawnableAgents() { catalogReads++; return []; },
-		async spawnSubagent() { return { ref: "agent:unused", state: "completed", summary: "unused" }; },
-		async listExecutionControls() { controlReads++; return []; },
-		subscribeAgentLive() { liveSubscriptions++; return () => undefined; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-
-	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
-	assert.equal(catalogReads, 1, "lightweight catalog metadata remains available");
-	assert.equal(controlReads, 0, "fresh sessions do not open durable workflow control state");
-	assert.equal(liveSubscriptions, 0, "fresh sessions do not initialize the agent registry");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("refreshes subagent_spawn with the adapter's validated agent catalog and tier defaults", async () => {
-	const f = fixture();
-	const requests: any[] = [];
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(request) { requests.push(request); return { ref: `agent:${request.agent}`, state: "completed", summary: "done" }; },
-		async listSpawnableAgents() { return [{ name: "project-scout", description: "Project-specific reconnaissance", tier: "low", source: "project" }]; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	assert.match(f.tools.get("subagent_spawn").description, /project-scout \(project, low\).*Project-specific reconnaissance/);
-	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /Available agents: project-scout/);
-	assert.match(JSON.stringify(f.tools.get("subagent_spawn").parameters), /selected agent definition's tier, then medium/);
-
-	const spawn = f.tools.get("subagent_spawn");
-	const inherited = await spawn.execute("inherit", { agent: "project-scout", task: "Inspect" }, undefined, undefined, f.ctx);
-	assert.equal(requests.at(-1)?.tier, "low");
-	assert.equal(inherited.details.tier, "low");
-	await spawn.execute("explicit", { agent: "project-scout", task: "Inspect", tier: "high" }, undefined, undefined, f.ctx);
-	assert.equal(requests.at(-1)?.tier, "high");
-	await spawn.execute("local", { agent: "project-scout", task: "Inspect", model: "local-llm/scout" }, undefined, undefined, f.ctx);
-	assert.equal(requests.at(-1)?.tier, "local");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("subagent status applies recovery filters and returns a bounded projection", async () => {
-	const f = fixture();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async controlWorkflow() {},
-		async listSubagents() {
-			return [
-				{ id: "other", role: "implementer", state: "running", workItemId: "other", provider: "other", model: "other", effort: "low", updatedAt: "2025-01-03T00:00:00.000Z" },
-				{ id: "target", role: "reviewer", state: "completed", workItemId: "example", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", summary: "Done", updatedAt: "2025-01-02T00:00:00.000Z" },
-			];
-		},
-		async listMessages() { return [{ id: "message", agentId: "target", status: "open", summary: "Decision needed", updatedAt: "2025-01-04T00:00:00.000Z" }]; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const status = await f.tools.get("subagent_status").execute("call", { workflowRef: "work-item:example", state: "completed", includeSettled: true, limit: 1 }, undefined, undefined, f.ctx);
-	assert.deepEqual(status.details.agents.map((agent: any) => agent.id), ["target"]);
-	assert.deepEqual(status.details.openMessages.map((message: any) => message.id), ["message"]);
-	assert.equal(status.details.page.limit, 1);
-	assert.deepEqual(status.details.agents[0], {
-		id: "target", role: "reviewer", state: "completed", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high",
-		workflowRef: "work-item:example", updatedAt: "2025-01-02T00:00:00.000Z", summary: "Done", attention: true, openMessageCount: 1,
-	});
+	for (const name of ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue"]) {
+		assert.equal(f.tools.has(name), false, `${name} belongs to the standalone subagent extension`);
+	}
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -181,9 +124,8 @@ test("failed workflow start returns an error and leaves no dashboard", async () 
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async snapshot() { throw new Error("Workflow plan example has invalid execution topology."); },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await assert.rejects(f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx), /invalid execution topology/);
 	assert.equal(f.widget(), undefined);
@@ -199,9 +141,8 @@ test("workflow start requires extension-owned bypass confirmation before adapter
 		async prepareWorkflow() { prepared = true; },
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const outcome = await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	assert.equal(prepared, false);
@@ -210,42 +151,307 @@ test("workflow start requires extension-owned bypass confirmation before adapter
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("session restore establishes durable ownership before ticking a legacy running workflow", async () => {
+test("a fresh activation ignores historical Pi workflow entries and receives no old runtime events", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:workflow", state: "running" } });
+	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:old", state: "running" } });
+	let controls = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return []; },
+		async snapshot(ref) { return { ref, title: "Old", status: "running", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
+	};
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(controls, 0);
+	assert.equal(f.widget(), undefined);
+	assert.equal(f.messages.length, 0);
+	await f.handlers.get("session_shutdown")?.({ reason: "shutdown" }, f.ctx);
+});
+
+test("reload restore establishes durable ownership from execution controls before ticking", async () => {
+	const f = fixture();
 	const controls: string[] = [];
 	let owned = false;
 	let snapshots = 0;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async controlExecution(_ref, command) { controls.push(command); owned = true; return { workflowRef: "test:workflow", mode: "running", generation: 1, ownerSessionId: "session" }; },
+		async controlExecution(_ref, command) { controls.push(command); owned = true; return { workflowRef: "test:workflow", mode: "running", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: "test:workflow", mode: "running", generation: 1 }]; },
 		async snapshot(ref) { assert.equal(owned, true, "restore must establish a fence before its first snapshot/tick"); snapshots++; return { ref, title: "Restored", status: "ready", steps: [] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	assert.deepEqual(controls, ["resume"]);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
+	assert.deepEqual(controls, ["attach"]);
 	assert.ok(snapshots > 0);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("failed resume preparation does not publish running control intent", async () => {
+test("late capability registration restores through the same durable runner attach path", async () => {
 	const f = fixture();
-	let controls = 0;
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
+	let restored!: () => void;
+	const attached = new Promise<void>((resolve) => { restored = resolve; });
+	const adapter: WorkflowAdapter = {
+		id: "late", canHandle: (ref) => ref.startsWith("late:"),
+		async controlExecution(ref, command) { if (command === "attach") restored(); return { workflowRef: ref, mode: "running", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: "late:workflow", mode: "running", generation: 1 }]; },
+		async snapshot(ref) { return { ref, title: "Late", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		async controlWorkflow() {},
+	};
+	registerTestAdapter(adapter);
+	await attached;
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.ok(f.widget(), "late registration rebinds the pending dashboard without history-based adapter discovery");
+	await f.handlers.get("session_shutdown")?.({ reason: "reload" }, f.ctx);
+});
+
+test("resume domain preparation occurs only after a successful durable ownership fence", async () => {
+	const f = fixture();
+	const order: string[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running", generation: 2, ownerSessionId: "test-session" }; },
-		async controlWorkflow(_ref, action) { if (action === "resume") throw new Error("preserved repair workspace changed"); },
+		async controlExecution() { order.push("fence"); throw new Error("ownership rejected"); },
+		async controlWorkflow(_ref, action) { order.push(`domain:${action}`); },
 		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
-	await assert.rejects(f.tools.get("workflow_control").execute("call", { ref: "test:workflow", action: "resume" }, undefined, undefined, f.ctx), /preserved repair workspace changed/);
-	assert.equal(controls, 0);
+	await assert.rejects(f.tools.get("workflow_control").execute("call", { ref: "test:workflow", action: "resume" }, undefined, undefined, f.ctx), /ownership rejected/);
+	assert.deepEqual(order, ["fence"]);
 	assert.equal(f.entries.some((entry) => entry.data?.state === "running"), false);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("checkpoint mutation occurs only after a successful durable ownership fence", async () => {
+	const f = fixture();
+	const order: string[] = [];
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution() { order.push("fence"); throw new Error("ownership rejected"); },
+		async controlCheckpoint() { order.push("domain:checkpoint"); return { status: "passed" }; },
+		async controlWorkflow() {},
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+	};
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await assert.rejects(f.tools.get("workflow_checkpoint").execute("call", { ref: "test:workflow/evaluation:review", action: "approve" }, undefined, undefined, f.ctx), /ownership rejected/);
+	assert.deepEqual(order, ["fence"]);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
+test("rejected runner commands do not mutate domain or local workflow state", async () => {
+	for (const command of ["start", "pause", "resume", "stop", "attach"] as WorkflowRunnerCommand[]) {
+		const order: string[] = [];
+		const projections: unknown[] = [];
+		const adapter: WorkflowAdapter = {
+			id: "test", canHandle: () => true,
+			async controlExecution() { order.push(`fence:${command}`); throw new Error(`rejected ${command}`); },
+			async prepareWorkflow() { order.push("domain:start"); },
+			async controlWorkflow(_ref, action) { order.push(`domain:${action}`); },
+			async snapshot(ref) { order.push("snapshot"); return { ref, title: "Test", status: "ready", steps: [] }; },
+			async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+		};
+		const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+			onProjection(projection) { projections.push(projection); }, onNotice() {}, onLifecycle() {}, onComplete() {},
+		});
+		await assert.rejects(runner.command(command, `test:${command}`, { async mutateDomain() { order.push("domain:custom"); } }), new RegExp(`rejected ${command}`));
+		assert.deepEqual(order, [`fence:${command}`], `${command} must not reach domain mutation or refresh`);
+		assert.equal(runner.mode, "stopped");
+		assert.equal(runner.generation, undefined);
+		assert.deepEqual(projections, []);
+		await runner.dispose();
+	}
+});
+
+test("successful runner commands serialize the fence before domain mutation", async () => {
+	const order: string[] = [];
+	let generation = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => true,
+		async controlExecution(ref, command) { order.push(`fence:${command}`); return { workflowRef: ref, mode: command === "pause" ? "paused" : command === "stop" ? "stopped" : "running", generation: ++generation }; },
+		async prepareWorkflow() { order.push("domain:start"); },
+		async controlWorkflow(_ref, action) { order.push(`domain:${action}`); },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
+	};
+	const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+		onProjection() {}, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	await runner.command("start", "start");
+	await runner.command("pause", "pause");
+	await runner.command("resume", "resume");
+	await runner.command("stop", "stop");
+	assert.deepEqual(order, ["fence:start", "domain:start", "fence:pause", "domain:pause", "fence:resume", "domain:resume", "fence:stop", "domain:stop"]);
+	await runner.dispose();
+});
+
+test("failed start preparation compensates durably to stopped without launching ready work", async () => {
+	const failure = new Error("prepare failed");
+	const operations: Array<{ command: string; operationId: string }> = [];
+	const projections: Array<{ mode: string }> = [];
+	let durableMode = "stopped";
+	let generation = 0;
+	let runs = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => true,
+		async controlExecution(ref, command, operationId) {
+			operations.push({ command, operationId });
+			durableMode = command === "stop" ? "stopped" : command === "pause" ? "paused" : "running";
+			return { workflowRef: ref, mode: durableMode as "running" | "paused" | "stopped", generation: ++generation };
+		},
+		async prepareWorkflow() { throw failure; },
+		async controlWorkflow() {},
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [{ ref: `${ref}/step`, title: "Ready", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { runs++; return { ref, state: "completed", summary: "unexpected" }; },
+	};
+	const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+		onProjection(projection) { projections.push(projection); }, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	await assert.rejects(runner.command("start", "start-op"), (error) => error === failure);
+	await runner.advance();
+	assert.deepEqual(operations, [
+		{ command: "start", operationId: "start-op" },
+		{ command: "stop", operationId: "start-op:compensate:stop" },
+	]);
+	assert.equal(durableMode, "stopped");
+	assert.equal(runner.mode, "stopped");
+	assert.equal(runner.generation, 2);
+	assert.equal(runs, 0);
+	assert.ok(projections.length > 0 && projections.every((projection) => projection.mode === "stopped"));
+	await runner.dispose();
+});
+
+test("failed resume domain control compensates durably to paused without launching ready work", async () => {
+	const failure = new Error("resume failed");
+	const operations: Array<{ command: string; operationId: string }> = [];
+	const projections: Array<{ mode: string }> = [];
+	let durableMode = "paused";
+	let generation = 0;
+	let runs = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => true,
+		async controlExecution(ref, command, operationId) {
+			operations.push({ command, operationId });
+			durableMode = command === "pause" ? "paused" : "running";
+			return { workflowRef: ref, mode: durableMode as "running" | "paused", generation: ++generation };
+		},
+		async controlWorkflow(_ref, action) { if (action === "resume") throw failure; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [{ ref: `${ref}/step`, title: "Ready", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { runs++; return { ref, state: "completed", summary: "unexpected" }; },
+	};
+	const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+		onProjection(projection) { projections.push(projection); }, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	await assert.rejects(runner.command("resume", "resume-op"), (error) => error === failure);
+	await runner.advance();
+	assert.deepEqual(operations, [
+		{ command: "resume", operationId: "resume-op" },
+		{ command: "pause", operationId: "resume-op:compensate:pause" },
+	]);
+	assert.equal(durableMode, "paused");
+	assert.equal(runner.mode, "paused");
+	assert.equal(runner.generation, 2);
+	assert.equal(runs, 0);
+	assert.ok(projections.length > 0 && projections.every((projection) => projection.mode === "paused"));
+	await runner.dispose();
+});
+
+test("failed checkpoint mutation compensates durably to paused without launching ready work", async () => {
+	const failure = new Error("checkpoint mutation failed");
+	const operations: Array<{ command: string; operationId: string }> = [];
+	const domainActions: string[] = [];
+	let durableMode = "paused";
+	let generation = 0;
+	let runs = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => true,
+		async controlExecution(ref, command, operationId) {
+			operations.push({ command, operationId });
+			durableMode = command === "pause" ? "paused" : "running";
+			return { workflowRef: ref, mode: durableMode as "running" | "paused", generation: ++generation };
+		},
+		async controlWorkflow(_ref, action) { domainActions.push(action); },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [{ ref: `${ref}/step`, title: "Ready", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { runs++; return { ref, state: "completed", summary: "unexpected" }; },
+	};
+	const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+		onProjection(projection) { assert.equal(projection.mode, "paused"); }, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	await assert.rejects(runner.command("resume", "checkpoint-op", {
+		invokeDomainControl: false,
+		async mutateDomain() { throw failure; },
+	}), (error) => error === failure);
+	await runner.advance();
+	assert.deepEqual(operations, [
+		{ command: "resume", operationId: "checkpoint-op" },
+		{ command: "pause", operationId: "checkpoint-op:compensate:pause" },
+	]);
+	assert.deepEqual(domainActions, []);
+	assert.equal(durableMode, "paused");
+	assert.equal(runner.mode, "paused");
+	assert.equal(runner.generation, 2);
+	assert.equal(runs, 0);
+	await runner.dispose();
+});
+
+test("activation compensation reports its own failure without hiding the domain error", async () => {
+	const domainFailure = new Error("resume failed");
+	const compensationFailure = new Error("pause fence failed");
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => true,
+		async controlExecution(ref, command) {
+			if (command === "pause") throw compensationFailure;
+			return { workflowRef: ref, mode: "running", generation: 1 };
+		},
+		async controlWorkflow() { throw domainFailure; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
+		async runStep(ref) { return { ref, state: "completed", summary: "unexpected" }; },
+	};
+	const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+		onProjection(projection) { assert.equal(projection.mode, "paused"); }, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	await assert.rejects(runner.command("resume", "resume-op"), (error) => {
+		assert.ok(error instanceof AggregateError);
+		assert.deepEqual(error.errors, [domainFailure, compensationFailure]);
+		assert.equal(error.cause, domainFailure);
+		assert.match(error.message, /resume failed.*pause fence failed/);
+		return true;
+	});
+	assert.equal(runner.mode, "paused");
+	await runner.dispose();
+});
+
+test("failed stop domain teardown remains durably and locally stopped", async () => {
+	const failure = new Error("stop teardown failed");
+	const operations: string[] = [];
+	let durableMode = "running";
+	let runs = 0;
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: () => true,
+		async controlExecution(ref, command) {
+			operations.push(command);
+			durableMode = command === "stop" ? "stopped" : "running";
+			return { workflowRef: ref, mode: durableMode as "running" | "stopped", generation: 1 };
+		},
+		async controlWorkflow(_ref, action) { if (action === "stop") throw failure; },
+		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [{ ref: `${ref}/step`, title: "Ready", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
+		async runStep(ref) { runs++; return { ref, state: "completed", summary: "unexpected" }; },
+	};
+	const runner = new WorkflowRunner("test:workflow", adapter, {} as any, {
+		onProjection(projection) { assert.equal(projection.mode, "stopped"); }, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	await assert.rejects(runner.command("stop", "stop-op"), (error) => error === failure);
+	await runner.advance();
+	assert.deepEqual(operations, ["stop"]);
+	assert.equal(durableMode, "stopped");
+	assert.equal(runner.mode, "stopped");
+	assert.equal(runs, 0);
+	await runner.dispose();
 });
 
 test("late failed settlement after stop is inert", async () => {
@@ -255,9 +461,9 @@ test("late failed settlement after stop is inert", async () => {
 	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
-		async runStep() { runs++; return new Promise<never>((_resolve, reject) => { rejectRun = reject; }); }, async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async runStep() { runs++; return new Promise<never>((_resolve, reject) => { rejectRun = reject; }); }, async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 15));
@@ -278,9 +484,9 @@ test("late successful settlement after stop is inert", async () => {
 	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
-		async runStep() { runs++; return new Promise((resolve) => { resolveRun = () => resolve({ ref: "test:step", state: "completed", summary: "late success" }); }); }, async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async runStep() { runs++; return new Promise((resolve) => { resolveRun = () => resolve({ ref: "test:step", state: "completed", summary: "late success" }); }); }, async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 15));
@@ -294,21 +500,55 @@ test("late successful settlement after stop is inert", async () => {
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
+test("stopping one workflow does not invalidate another workflow settlement", async () => {
+	const f = fixture();
+	const done = new Map([["test:a", false], ["test:b", false]]);
+	const settles = new Map<string, () => void>();
+	const adapter: WorkflowAdapter = {
+		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async snapshot(ref) {
+			const workflowRef = ref.split("/step")[0]!;
+			const settled = done.get(workflowRef) === true;
+			return { ref: workflowRef, title: workflowRef, status: settled ? "done" : "ready", steps: [{ ref: `${workflowRef}/step`, title: `${workflowRef} step`, kind: "task", status: settled ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
+		},
+		async runStep(ref) {
+			const workflowRef = ref.split("/step")[0]!;
+			await new Promise<void>((resolve) => settles.set(workflowRef, resolve));
+			done.set(workflowRef, true);
+			return { ref, state: "completed", summary: `${workflowRef} settled` };
+		},
+		async controlWorkflow() {},
+	};
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({}, f.ctx);
+	await f.tools.get("workflow_start").execute("start-a", { ref: "test:a" }, undefined, undefined, f.ctx);
+	await f.tools.get("workflow_start").execute("start-b", { ref: "test:b" }, undefined, undefined, f.ctx);
+	await f.tools.get("workflow_control").execute("stop-a", { ref: "test:a", action: "stop" }, undefined, undefined, f.ctx);
+	settles.get("test:b")!();
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(done.get("test:b"), true);
+	assert.ok(f.messages.some(({ message }) => message.customType === "pibox-workflow-complete"), "workflow B completes after workflow A is stopped");
+	assert.equal(f.entries.some((entry) => entry.data?.ref === "test:b" && entry.data?.state === "paused"), false);
+	await f.handlers.get("session_shutdown")?.({}, f.ctx);
+});
+
 test("background step failure pauses instead of retrying unchanged state", async () => {
 	const f = fixture();
 	let runs = 0;
+	const controls: string[] = [];
 	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
-		async runStep() { runs++; throw new Error("broken"); }, async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlExecution(ref, command) { controls.push(command); return { workflowRef: ref, mode: command === "pause" ? "paused" : "running", generation: controls.length, ownerSessionId: "test-session" }; },
+		async runStep() { runs++; throw new Error("broken"); }, async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	assert.equal(f.permissionMode(), "bypass");
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(runs, 1);
-	assert.ok(f.entries.some((entry) => (entry.data as any).state === "paused"));
+	assert.ok(controls.includes("pause"));
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -321,10 +561,12 @@ test("a tick crossing a concurrent pause cannot launch a stale ready step", asyn
 	let blockSnapshot = false;
 	let releaseSnapshot!: () => void;
 	let snapshotBlocked!: () => void;
+	const controls: string[] = [];
 	const blocked = new Promise<void>((resolve) => { snapshotBlocked = resolve; });
 	const projection = (): WorkflowSnapshot => ({ ref: "test:workflow", title: "Test", status: done ? "done" : "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] });
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		async controlExecution(ref, command) { controls.push(command); return { workflowRef: ref, mode: command === "pause" ? "paused" : "running", generation: controls.length, ownerSessionId: "test-session" }; },
 		async subscribeLifecycle(_ref, _ctx, listener) { lifecycle = () => listener(); },
 		async snapshot() {
 			if (!blockSnapshot) return projection();
@@ -338,9 +580,9 @@ test("a tick crossing a concurrent pause cannot launch a stale ready step", asyn
 			done = true;
 			return { ref: "test:step", state: "completed", summary: "stale retry" };
 		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("start", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 20));
@@ -350,59 +592,10 @@ test("a tick crossing a concurrent pause cannot launch a stale ready step", asyn
 	await blocked;
 	rejectFirst(new Error("post-repair check failed"));
 	await new Promise((resolve) => setTimeout(resolve, 20));
-	assert.equal((f.entries.at(-1)?.data as any).state, "paused");
+	assert.equal(controls.at(-1), "pause");
 	releaseSnapshot();
 	await new Promise((resolve) => setTimeout(resolve, 30));
 	assert.equal(runs, 1, "a tick that began before pause cannot launch after the pause fence advances");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("answering a non-blocking decision report does not resume a failed workflow", async () => {
-	const f = fixture();
-	let runs = 0;
-	const snapshot: WorkflowSnapshot = { ref: "test:workflow", title: "Test", status: "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
-		async runStep() { runs++; throw new Error("post-repair check failed"); }, async controlWorkflow() {},
-		async listSubagents() { return [{ id: "worker" }]; }, async listMessages() { return []; }, async controlSubagent() {},
-		async respondSubagent() { return { workflowRef: "test:workflow", message: { blocking: false } }; },
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("workflow_start").execute("start", { ref: "test:workflow" }, undefined, undefined, f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.equal(runs, 1);
-	await f.tools.get("subagent_respond").execute("respond", { agentId: "worker", messageId: "decision", response: "Continue." }, undefined, undefined, f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.equal(runs, 1, "non-blocking evidence cannot reactivate unchanged failed work");
-	assert.equal((f.entries.at(-1)?.data as any).state, "paused");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("answering a blocking subagent request resumes through the durable control fence", async () => {
-	const f = fixture();
-	let runs = 0;
-	let done = false;
-	let generation = 0;
-	const controls: string[] = [];
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async snapshot() {
-			return { ref: "test:workflow", title: "Test", status: done ? "done" : "ready", steps: [{ ref: "test:step", title: "Step", kind: "test", status: done ? "done" : "ready", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
-		},
-		async runStep() { runs++; if (runs === 1) throw new Error("blocked"); done = true; return { ref: "test:step", state: "completed", summary: "recovered" }; },
-		async controlExecution(ref, command) { controls.push(command); generation++; return { workflowRef: ref, mode: command === "complete" ? "completed" : command === "pause" ? "paused" : "running", generation }; },
-		async controlWorkflow() {}, async listSubagents() { return [{ id: "worker" }]; }, async listMessages() { return []; }, async controlSubagent() {},
-		async respondSubagent() { return { workflowRef: "test:workflow", message: { blocking: true } }; },
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("workflow_start").execute("start", { ref: "test:workflow" }, undefined, undefined, f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	await f.tools.get("subagent_respond").execute("respond", { agentId: "worker", messageId: "blocker", response: "Proceed." }, undefined, undefined, f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.equal(runs, 2);
-	assert.deepEqual(controls.slice(0, 3), ["start", "pause", "resume"]);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -416,10 +609,10 @@ test("does not emit completion feedback when a task contribution completes befor
 			return { ref: "test:workflow", title: "Feedback", status: done ? "done" : "ready", steps: [{ ref: "test:task", title: "Implement feedback", kind: "task", status: done ? "done" : "ready", dependsOn: [], parallelism: "allowed", resourceClaims: [] }] };
 		},
 		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Contribution completed." }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
 	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => feedback.push(event as WorkflowLifecycleEvent));
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
@@ -444,10 +637,10 @@ test("an individual merge does not emit completion before its stage review finis
 			};
 		},
 		async runStep(ref) { merged = true; return { ref, state: "completed", summary: "Merged." }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
 	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => lifecycle.push(event as WorkflowLifecycleEvent));
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
@@ -455,12 +648,23 @@ test("an individual merge does not emit completion before its stage review finis
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("a fully finished stage emits one lifecycle completion and wakes the main session", async () => {
+test("an adapter-owned semantic stage event emits one lifecycle completion and wakes the main session", async () => {
 	const f = fixture();
 	let done = false;
+	let emitted = false;
+	let semantic: ((update?: any) => void) | undefined;
 	const lifecycle: WorkflowLifecycleEvent[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		subscribeLifecycle(_ref, _ctx, listener) { semantic = listener; },
+		async reconcileWorkflow() {
+			if (!done || emitted) return;
+			emitted = true;
+			semantic?.({ workflowRef: "test:workflow", title: "Stage 1 · delivery", attention: false, kind: "stage", toStatus: "done", lifecycle: {
+				type: "stage-completed", workflowRef: "test:workflow", stepRef: "test:workflow/evaluation:stage-review", kind: "evaluation",
+				stageId: "delivery", stageIndex: 0, title: "Stage 1 · delivery", toStatus: "done", cause: "stage-settled", correlationId: "test:workflow:delivery",
+			} });
+		},
 		async snapshot() {
 			return {
 				ref: "test:workflow", title: "Review boundary", status: done ? "done" : "ready",
@@ -469,10 +673,10 @@ test("a fully finished stage emits one lifecycle completion and wakes the main s
 			};
 		},
 		async runStep(ref) { done = true; return { ref, state: "completed", summary: "Review passed." }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
 	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => lifecycle.push(event as WorkflowLifecycleEvent));
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
@@ -486,12 +690,20 @@ test("a fully finished stage emits one lifecycle completion and wakes the main s
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("checkpoint approval publishes stage completion from the workflow projection", async () => {
+test("checkpoint approval publishes adapter-owned semantic stage completion", async () => {
 	const f = fixture();
 	let approved = false;
+	let emitted = false;
+	let semantic: ((update?: any) => void) | undefined;
 	const lifecycle: WorkflowLifecycleEvent[] = [];
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
+		subscribeLifecycle(_ref, _ctx, listener) { semantic = listener; },
+		async reconcileWorkflow() {
+			if (!approved || emitted) return;
+			emitted = true;
+			semantic?.({ workflowRef: "test:workflow", title: "Stage 1 · delivery", attention: false, kind: "stage", toStatus: "done", lifecycle: { type: "stage-completed", workflowRef: "test:workflow", stepRef: "test:workflow/evaluation:stage-review", kind: "evaluation", stageId: "delivery", stageIndex: 0, title: "Stage 1 · delivery", toStatus: "done", cause: "stage-settled", correlationId: "test:workflow:delivery" } });
+		},
 		async snapshot() {
 			return {
 				ref: "test:workflow", title: "Approval boundary", status: approved ? "done" : "attention",
@@ -502,10 +714,9 @@ test("checkpoint approval publishes stage completion from the workflow projectio
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
 		async controlExecution(ref, command) { return { workflowRef: ref, generation: 1, mode: command === "pause" || command === "detach" ? "paused" : command === "complete" ? "completed" : command === "stop" ? "stopped" : "running" }; }, async controlWorkflow() {},
 		async controlCheckpoint() { approved = true; return { status: "passed" }; },
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
 	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => lifecycle.push(event as WorkflowLifecycleEvent));
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 20));
@@ -521,10 +732,10 @@ test("emits workflow error feedback when a step pauses for attention", async () 
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
 		async runStep(ref) { return { ref, state: "blocked", summary: "Needs user attention.", attention: true }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
 	f.pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (event: unknown) => feedback.push(event as WorkflowLifecycleEvent));
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 30));
@@ -554,9 +765,9 @@ test("transient snapshot attention does not pause an in-flight step or block rou
 			if (ref === "test:first") { firstRunning = true; await firstGate; firstDone = true; return { ref, state: "completed", summary: "First settled." }; }
 			secondDone = true; return { ref, state: "completed", summary: "Second settled." };
 		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 550));
@@ -598,9 +809,9 @@ test("schedules an explicit sequential stage one serial repository task at a tim
 				return { ref, state: "completed", summary: `${id} settled.` };
 			} finally { active--; }
 		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 40));
@@ -609,388 +820,6 @@ test("schedules an explicit sequential stage one serial repository task at a tim
 	await new Promise((resolve) => setTimeout(resolve, 80));
 	assert.deepEqual(calls, ["first", "second", "third", "review", "next"]);
 	assert.equal(maximumActive, 1, "serial scheduling never overlaps stage work or review");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("a running task keeps a starting row while the authoritative feed lacks its projection", async () => {
-	const f = fixture();
-	const snapshot: WorkflowSnapshot = {
-		ref: "work-item:example", title: "Projection gap", status: "running",
-		steps: [{ ref: "work-item:example/task:second", title: "Second worker", kind: "task", status: "running", fast: true, dependsOn: [], parallelism: "serial", resourceClaims: [] }],
-		stages: [{ id: "delivery", index: 0, nodes: ["task:second"], parallel: false, group: "planner" }],
-	};
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
-		subscribeAgentLive() { return () => undefined; },
-		async snapshot() { return snapshot; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("workflow_start").execute("call", { ref: "work-item:example" }, undefined, undefined, f.ctx);
-	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	const secondLine = rendered.findIndex((line) => line.includes("Implementing · Second worker"));
-	assert.ok(secondLine > 0);
-	assert.match(rendered[secondLine + 1]!.trim(), /^Fast · starting$/, "the temporary projection gap stays visible instead of rendering a blank continuation row");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("a sequential replacement worker falls back to snapshot status until its live projection arrives", async () => {
-	const f = fixture();
-	const statuses = new Map<"first" | "second", "pending" | "ready" | "done">([["first", "ready"], ["second", "pending"]]);
-	let publish!: (projection: AgentLiveProjection) => void;
-	let releaseFirst!: () => void;
-	const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
-	let firstStarted!: () => void;
-	const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
-	let secondStarted!: () => void;
-	const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve; });
-	const secondGate = new Promise<WorkflowRunResult>(() => undefined);
-	const snapshotStartedAt = new Date(Date.now() - 65_000).toISOString();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async snapshot(ref) {
-			return {
-				ref, title: "Sequential replacement", status: "ready",
-				steps: [
-					{ ref: `${ref}/task:first`, title: "First worker", kind: "task", status: statuses.get("first")!, dependsOn: [], parallelism: "serial", resourceClaims: [] },
-					{ ref: `${ref}/task:second`, title: "Second worker", kind: "task", status: statuses.get("second")!, fast: true, progress: { startedAt: snapshotStartedAt, lastEventAt: snapshotStartedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1200, reasoningTokens: 0 }, dependsOn: [`${ref}/task:first`], parallelism: "serial", resourceClaims: [] },
-				],
-				stages: [{ id: "delivery", index: 0, nodes: ["task:first", "task:second"], parallel: false, group: "planner" as const }],
-			};
-		},
-		async runStep(ref) {
-			if (ref.endsWith("task:first")) {
-				const startedAt = new Date().toISOString();
-				publish(liveProjection({ agentId: "first", operationId: "first", workItemId: "example", taskId: "first", startedAt }));
-				firstStarted();
-				await firstGate;
-				statuses.set("first", "done");
-				statuses.set("second", "ready");
-				publish(liveProjection({ agentId: "first", operationId: "first", workItemId: "example", taskId: "first", state: "completed", attemptState: "exited", active: false, startedAt }));
-				return { ref, state: "completed", summary: "First settled." };
-			}
-			secondStarted();
-			return secondGate;
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("workflow_start").execute("call", { ref: "work-item:example" }, undefined, undefined, f.ctx);
-	await firstStartedPromise;
-	releaseFirst();
-	await secondStartedPromise;
-
-	let rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	let secondLine = rendered.findIndex((line) => line.includes("Implementing · Second worker"));
-	assert.ok(secondLine > 0);
-	assert.match(rendered[secondLine + 1]!.trimStart(), /^Fast · .*2 turns · 3 tools · ↓ 1\.2k · active/, "snapshot status remains visible during the authoritative feed gap");
-
-	const liveStartedAt = new Date(Date.now() - 120_000).toISOString();
-	publish(liveProjection({ agentId: "second", operationId: "second", workItemId: "example", taskId: "second", fast: true, startedAt: liveStartedAt, progress: { startedAt: liveStartedAt, lastEventAt: new Date().toISOString(), processStartedAt: liveStartedAt, turns: 7, toolCalls: 11, toolErrors: 0, outputTokens: 4400, reasoningTokens: 0 } }));
-	rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	secondLine = rendered.findIndex((line) => line.includes("Implementing · Second worker"));
-	assert.match(rendered[secondLine + 1]!.trimStart(), /^Fast · .*7 turns · 11 tools · ↓ 4\.4k · active/, "matching live metrics replace the bounded snapshot fallback");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("explicit background spawning returns its report to the main agent and shows running status", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	let request: any;
-	let publish!: (projection: AgentLiveProjection) => void;
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("test:"),
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async spawnSubagent(input) {
-			request = input;
-			const startedAt = new Date().toISOString();
-			publish(liveProjection({ agentId: "one", operationId: input.operationId, role: "plan-critic", presentation: "background", fast: true, startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1234, reasoningTokens: 50 } }));
-			await gate;
-			publish(liveProjection({ agentId: "one", operationId: input.operationId, role: "plan-critic", presentation: "background", state: "completed", attemptState: "exited", active: false, startedAt }));
-			return { ref: "agent:one", agentId: "one", state: "completed", summary: "Background critic completed." };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review it", mode: "background", tier: "high", model: "gpt-5.6-sol", effort: "high" }, undefined, undefined, f.ctx);
-	assert.match(spawned.content[0].text, /Spawned plan-critic in background/);
-	assert.deepEqual({ operationId: request.operationId, agent: request.agent, task: request.task, model: request.model, effort: request.effort, presentation: request.presentation }, { operationId: "call", agent: "plan-critic", task: "Review it", model: "gpt-5.6-sol", effort: "high", presentation: "background" });
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /plan-critic High \(openai-codex\/gpt-5\.6-sol#high\) · Fast · \d+s · 2 turns · 3 tools · ↓ 1\.2k · active/);
-	assert.doesNotMatch(f.statuses.get("subagent-dashboard") ?? "", /background/);
-	assert.equal(f.messages.some((entry) => String(entry.message.content).includes("Background critic completed")), false);
-	release();
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	const completion = f.messages.find((entry) => String(entry.message.content).includes("Background critic completed"));
-	assert.equal(completion?.message.customType, "pibox-subagent-result");
-	assert.equal(completion?.message.display, false);
-	assert.equal(completion?.options.deliverAs, "followUp");
-	assert.equal(completion?.options.triggerTurn, true);
-	assert.match(completion?.message.content ?? "", /Respond to the user now/);
-	assert.equal(f.statuses.has("subagent-dashboard"), false);
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("identical background projections do not rewrite TUI status", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	let publish!: (projection: AgentLiveProjection) => void;
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent() { await gate; return { ref: "agent:one", agentId: "one", state: "completed", summary: "done" }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("subagent_spawn").execute("call", { agent: "explorer", task: "Inspect", mode: "background" }, undefined, undefined, f.ctx);
-	const startedAt = new Date().toISOString();
-	const projection = liveProjection({ agentId: "one", operationId: "call", role: "explorer", presentation: "background", startedAt });
-	publish(projection);
-	const writes = f.statusWrites.length;
-	publish(structuredClone(projection));
-	assert.equal(f.statusWrites.length, writes, "an unchanged projection cannot request another status render");
-	release();
-	await new Promise((resolve) => setImmediate(resolve));
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("omitted mode waits in foreground without using the background footer", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	let request: any;
-	let publish!: (projection: AgentLiveProjection) => void;
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async spawnSubagent(input) {
-			request = input;
-			const startedAt = new Date().toISOString();
-			publish(liveProjection({ agentId: "critic", operationId: input.operationId, role: "plan-critic", presentation: "foreground", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 } }));
-			await gate;
-			publish(liveProjection({ agentId: "critic", operationId: input.operationId, role: "plan-critic", presentation: "foreground", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, state: "completed", attemptState: "exited", active: false, startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, processExitedAt: new Date().toISOString(), turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 } }));
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 70));
-	assert.equal(f.statuses.has("subagent-dashboard"), false);
-	assert.equal(request.tier, "medium");
-	assert.deepEqual(
-		{ agent: updates.at(-1)?.details.agent, tier: updates.at(-1)?.details.tier, provider: updates.at(-1)?.details.resolved?.provider, model: updates.at(-1)?.details.resolved?.model, effort: updates.at(-1)?.details.resolved?.effort, fast: updates.at(-1)?.details.resolved?.fast },
-		{ agent: "plan-critic", tier: "medium", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true },
-	);
-	assert.equal(updates.at(-1)?.details.progress.outputTokens, 800);
-	release();
-	const settled = await pending;
-	assert.equal(settled.content[0].text, "plan-critic: ready");
-	assert.equal(settled.details.agentId, "critic");
-	assert.deepEqual(
-		{ agent: settled.details.agent, tier: settled.details.tier, fast: settled.details.resolved?.fast, outputTokens: settled.details.progress?.outputTokens },
-		{ agent: "plan-critic", tier: "medium", fast: true, outputTokens: 800 },
-		"settled foreground results retain the resolved Fast request evidence",
-	);
-	assert.equal(f.statuses.has("subagent-dashboard"), false);
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("foreground launch callbacks advance starting to active when the shared live monitor is stale", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const startedAt = new Date().toISOString();
-	let publish!: (projection: AgentLiveProjection) => void;
-	const staleStarting = liveProjection({
-		agentId: "critic", operationId: "call", role: "plan-critic", presentation: "foreground",
-		provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, state: "launching", attemptState: "launching", startedAt,
-		progress: { startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
-	});
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(input, _ctx, _signal, onText, onStarted, onProgress) {
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "max", fast: true, startedAt });
-			publish({ ...staleStarting, operationId: input.operationId });
-			onProgress?.({ startedAt, lastEventAt: startedAt, turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 });
-			onProgress?.({ startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 2, toolErrors: 0, outputTokens: 800, reasoningTokens: 10 });
-			publish({ ...staleStarting, operationId: input.operationId });
-			onText?.("Working");
-			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(
-		{
-			state: updates.at(-1)?.details.state,
-			processStatus: updates.at(-1)?.details.processStatus,
-			agentId: updates.at(-1)?.details.resolved?.agentId,
-			model: updates.at(-1)?.details.resolved?.model,
-			turns: updates.at(-1)?.details.progress?.turns,
-			toolCalls: updates.at(-1)?.details.progress?.toolCalls,
-		},
-		{ state: "running", processStatus: "active", agentId: "critic", model: "gpt-5.6-luna", turns: 1, toolCalls: 2 },
-		"stale shared projections and text callbacks cannot downgrade authoritative launch progress",
-	);
-	release();
-	const settled = await pending;
-	assert.equal(settled.details.state, "completed", "stale shared state cannot overwrite terminal settlement");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("foreground progress bursts render only the latest update at a bounded cadence", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const startedAt = new Date().toISOString();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(_input, _ctx, _signal, _onText, onStarted, onProgress) {
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "high", fast: false, startedAt });
-			for (let turns = 1; turns <= 40; turns += 1) {
-				onProgress?.({ startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns, toolCalls: turns, toolErrors: 0, outputTokens: turns * 10, reasoningTokens: 0 });
-			}
-			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: "ready" };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	let resolveLatest!: () => void;
-	const latest = new Promise<void>((resolve) => { resolveLatest = resolve; });
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => {
-		updates.push(update);
-		if (update.details?.progress?.turns === 40) resolveLatest();
-	}, f.ctx);
-	await Promise.race([latest, new Promise((_, reject) => setTimeout(() => reject(new Error("latest foreground progress was not rendered")), 1_000))]);
-	assert.equal(updates.length, 2, "one launch update plus one latest-wins progress update are rendered");
-	assert.equal(updates.at(-1)?.details.progress?.turns, 40);
-	release();
-	await pending;
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("session shutdown cancels a queued foreground progress render", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const startedAt = new Date().toISOString();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(_input, _ctx, _signal, _onText, onStarted, onProgress) {
-			onStarted?.({ agentId: "critic", provider: "openai-codex", model: "gpt-5.6-luna", effort: "high", fast: false, startedAt });
-			onProgress?.({ startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 10, reasoningTokens: 0 });
-			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: "ready" };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.equal(updates.length, 1, "launch state is immediate while progress remains queued");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-	await new Promise((resolve) => setTimeout(resolve, 70));
-	assert.equal(updates.length, 1, "the old session cannot publish its queued progress update");
-	release();
-	await pending;
-});
-
-test("foreground provider fallback resets direct status before the next process attempt", async () => {
-	const f = fixture();
-	let release!: () => void;
-	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const firstStartedAt = new Date().toISOString();
-	const secondStartedAt = new Date(Date.now() + 1).toISOString();
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		subscribeAgentLive() { return () => undefined; },
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent(input, _ctx, _signal, _onText, onStarted, onProgress) {
-			onStarted?.({ agentId: "critic", provider: "first", model: "primary", effort: "high", fast: false, startedAt: firstStartedAt });
-			onProgress?.({ startedAt: firstStartedAt, lastEventAt: firstStartedAt, processStartedAt: firstStartedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 400, reasoningTokens: 10 });
-			onStarted?.({ agentId: "critic", provider: "second", model: "fallback", effort: "max", fast: false, startedAt: secondStartedAt });
-			await gate;
-			return { ref: "agent:critic", agentId: "critic", state: "completed", summary: `${input.agent}: ready` };
-		},
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "plan-critic", task: "Review" }, undefined, (update: any) => updates.push(update), f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	assert.deepEqual(
-		{
-			state: updates.at(-1)?.details.state,
-			processStatus: updates.at(-1)?.details.processStatus,
-			provider: updates.at(-1)?.details.resolved?.provider,
-			model: updates.at(-1)?.details.resolved?.model,
-			progress: updates.at(-1)?.details.progress,
-		},
-		{ state: "starting", processStatus: "starting", provider: "second", model: "fallback", progress: undefined },
-	);
-	release();
-	await pending;
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("a foreground dynamic subagent recovered without its inline renderer moves to the footer", async () => {
-	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-subagent-runtime", data: { operationId: "prior-tool-call", status: "active" } });
-	const startedAt = new Date(Date.now() - 5_000).toISOString();
-	const recovered = liveProjection({
-		agentId: "recovered", operationId: "prior-tool-call", role: "explorer", presentation: "foreground",
-		startedAt, progress: { startedAt, lastEventAt: new Date().toISOString(), processStartedAt: startedAt, turns: 3, toolCalls: 4, toolErrors: 0, outputTokens: 900, reasoningTokens: 20 },
-	});
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: () => false,
-		subscribeAgentLive(_ctx, listener) { listener(recovered); return () => undefined; },
-		async snapshot(ref) { return { ref, title: "Test", status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; },
-		async spawnSubagent() { return { ref: "agent:unused", state: "completed", summary: "unused" }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	assert.match(f.statuses.get("subagent-dashboard") ?? "", /explorer Configured \(openai-codex\/gpt-5\.6-sol#high\).*3 turns.*4 tools.*active/);
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -1008,9 +837,9 @@ test("request_changes returns immediately while the runner starts Fix #2 in back
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:example"), async snapshot() { return snapshot(); },
 		async runStep() { repairStarts++; return neverSettles; },
 		async controlCheckpoint() { fixing = true; return { loop: { state: "fixing", iteration: 1 } }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
+		async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const result = await f.tools.get("workflow_checkpoint").execute("call", { ref: "work-item:example/evaluation:review", action: "request_changes", prompt: "Fix it" }, undefined, undefined, f.ctx);
 	assert.match(result.content[0].text, /running in the background/i);
@@ -1038,9 +867,8 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setTimeout(resolve, 10));
@@ -1075,9 +903,8 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async snapshot() { return snapshot; },
 		async runStep() { return neverSettles; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
@@ -1101,7 +928,6 @@ test("an in-flight ready step animates immediately before the adapter reports ru
 
 test("wide metrics render role, deterministic, scheduling, and total clocks with a narrow fallback", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:metrics", state: "paused" } });
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:metrics", title: "Metrics", status: "paused",
 		steps: [{ ref: "test:metrics/task:one", title: "Durable projection", kind: "task", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
@@ -1112,11 +938,11 @@ test("wide metrics render role, deterministic, scheduling, and total clocks with
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: snapshot.ref, mode: "paused" as const, generation: 1 }]; },
 		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
 	const component = (f.widget() as any)?.({}, f.ctx.ui.theme);
 	const wide = component.render(100) as string[];
 	const rows = [["Total time", "1h 6m 40s"], ["Implementer", "54m 0s"], ["Reviewer", "8m 20s"], ["Fixer", "10m 0s"], ["E2E", "5m 0s"], ["Deterministic steps", "12m 20s"], ["Orchestrator", "1m 0s"], ["Harness scheduling", "1m 30s"], ["Stage 4 fix loop", "1 / 3"]] as const;
@@ -1137,7 +963,6 @@ test("wide metrics render role, deterministic, scheduling, and total clocks with
 
 test("open metric intervals advance locally without refreshing the durable snapshot", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "test:live-metrics", state: "paused" } });
 	let snapshotReads = 0;
 	const sampledAtMs = Date.now();
 	const snapshot: WorkflowSnapshot = {
@@ -1153,11 +978,11 @@ test("open metric intervals advance locally without refreshing the durable snaps
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("test:"),
 		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: snapshot.ref, mode: "paused" as const, generation: 1 }]; },
 		async snapshot() { snapshotReads++; return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
 	let redraws = 0;
 	const component = (f.widget() as any)?.({ requestRender: () => { redraws++; } }, f.ctx.ui.theme);
 	const initial = component.render(100) as string[];
@@ -1177,130 +1002,8 @@ test("open metric intervals advance locally without refreshing the durable snaps
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("an in-flight fixer shows starting progress before its Pi process reports", async () => {
-	const f = fixture();
-	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
-	const snapshot: WorkflowSnapshot = {
-		ref: "work-item:calendar", title: "Calendar", status: "ready",
-		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fix requested", kind: "evaluation", status: "ready", detail: "Fix requested · findings 2 (blocking 2); iteration 0/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
-		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
-	};
-	let publish!: (projection: AgentLiveProjection) => void;
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("work-item:"), async snapshot() { return snapshot; },
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async runStep() {
-			const starting = liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "launching", state: "launching" });
-			delete starting.progress;
-			publish(starting);
-			return neverSettles;
-		}, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await f.tools.get("workflow_start").execute("call", { ref: "work-item:calendar" }, undefined, undefined, f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	const fixer = rendered.findIndex((line) => line.includes("Fix #2"));
-	assert.ok(fixer > 0);
-	assert.match(rendered[fixer + 1]!.trimStart(), /^\d+s · starting/, "scheduled fixer renders starting status on its continuation row");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("manager progress replaces reused fixer startup while workflow reconciliation remains blocked", async () => {
-	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "running" } });
-	let publish!: (projection: AgentLiveProjection) => void;
-	const neverSettles = new Promise<WorkflowRunResult>(() => undefined);
-	const staleSnapshot: WorkflowSnapshot = {
-		ref: "work-item:calendar", title: "Calendar", status: "ready",
-		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fix requested", kind: "evaluation", status: "ready", detail: "Fix requested · findings 2 (blocking 2); iteration 1/8", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
-		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
-	};
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
-		async controlExecution(ref) { return { workflowRef: ref, mode: "running", generation: 2, ownerSessionId: "test-session" }; },
-		subscribeLifecycle() { return neverSettles.then(() => () => undefined); },
-		subscribeAgentLive(_ctx, listener) {
-			publish = listener;
-			const starting = liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", state: "launching", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "launching" });
-			delete starting.progress;
-			listener(starting);
-			return () => undefined;
-		},
-		async snapshot() { return staleSnapshot; },
-		async runStep() { return neverSettles; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	let rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	let fixerIndex = rendered.findIndex((line) => line.includes("Fix #2"));
-	assert.ok(fixerIndex > 0);
-	assert.match(rendered[fixerIndex + 1]!.trimStart(), /^\d+s · starting/);
-
-	const startedAt = new Date(Date.now() - 120_000).toISOString();
-	publish(liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "running", startedAt, progress: { startedAt, lastEventAt: new Date().toISOString(), processStartedAt: new Date(Date.now() - 119_000).toISOString(), turns: 12, toolCalls: 27, toolErrors: 1, outputTokens: 8441, reasoningTokens: 4681 } }));
-	rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
-	fixerIndex = rendered.findIndex((line) => line.includes("Fix #2"));
-	assert.ok(fixerIndex > 0);
-	const fixerStatus = rendered[fixerIndex + 1]!;
-	assert.match(fixerStatus, /active/);
-	assert.doesNotMatch(fixerStatus, /starting/);
-	assert.match(fixerStatus, /↓ 8\.4k/);
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
-test("managed lifecycle keeps agent rows and right-widget metric rates in one state", async () => {
-	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "running" } });
-	let publish!: (projection: AgentLiveProjection) => void;
-	let snapshotReads = 0;
-	const snapshot = (): WorkflowSnapshot => ({
-		ref: "work-item:calendar", title: "Calendar", status: "running",
-		steps: [{ ref: "work-item:calendar/evaluation:stage-review", title: "Review loop stage-review · Fixing #2", kind: "evaluation", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }],
-		stages: [{ id: "mobile", index: 0, nodes: ["evaluation:stage-review"], parallel: false, group: "planner" }],
-		metrics: {
-			elapsedMs: 0, runningMs: 0, agentActiveMs: 0, implementerMs: 0, reviewerMs: 0, fixerMs: 0, e2eAgentMs: 0, deterministicMs: 0, harnessSchedulingMs: 0,
-			implementationMs: 0, integrationMs: 0, verificationMs: 0, reviewMs: 0, e2eMs: 0, orchestrationMs: 0, fixes: 1, retries: 0,
-			agentCount: 1, verificationAttempts: 0, inputTokens: 0, outputTokens: 0, toolErrors: 0,
-			// Deliberately stale rates reproduce a delayed/missed snapshot boundary.
-			// The lifecycle projection that renders the agent row is authoritative for
-			// the concurrent local clock rates until the next durable total arrives.
-			live: { sampledAtMs: Date.now(), elapsed: true, running: true, activeCategory: "orchestration", activeAgents: 0, activeVerifications: 0, activeImplementers: 0, activeReviewers: 0, activeFixers: 0, activeE2e: 0, activeScheduling: 0, orchestrator: true },
-		},
-		repairLoop: { label: "Stage 1 fix loop", iteration: 1, maxIterations: 6, evaluationRef: "work-item:calendar/evaluation:stage-review" },
-	});
-	const adapter: WorkflowAdapter = {
-		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
-		async controlExecution(ref) { return { workflowRef: ref, mode: "running", generation: 1, ownerSessionId: "test-session" }; },
-		subscribeAgentLive(_ctx, listener) { publish = listener; return () => undefined; },
-		async snapshot() { snapshotReads++; return snapshot(); }, async runStep() { return new Promise<WorkflowRunResult>(() => undefined); }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
-	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	const readsBeforeStart = snapshotReads;
-	const startedAt = new Date().toISOString();
-	publish(liveProjection({ agentId: "fixer", operationId: "repair-2", role: "repair-implementer", workItemId: "calendar", evaluationId: "stage-review", attemptId: "attempt-2", attemptSequence: 2, attemptState: "running", startedAt, progress: { startedAt, lastEventAt: startedAt, processStartedAt: startedAt, turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 10, reasoningTokens: 0 } }));
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	assert.ok(snapshotReads > readsBeforeStart, "process start refreshes the workflow metric-rate snapshot");
-	const component = (f.widget() as any)?.({}, f.ctx.ui.theme);
-	const before = component.render(130) as string[];
-	await new Promise((resolve) => setTimeout(resolve, 1_100));
-	const after = component.render(130) as string[];
-	const value = (lines: string[], label: string) => Number(new RegExp(`${label}\\s+(\\d+)s`).exec(lines.find((line) => line.includes(label)) ?? "")?.[1]);
-	assert.ok(value(after, "Fixer") > value(before, "Fixer"), "fixer time advances while its process is active");
-	assert.equal(value(after, "Orchestrator"), value(before, "Orchestrator"), "orchestrator time stops while the fixer owns the interval");
-	await f.handlers.get("session_shutdown")?.({}, f.ctx);
-});
-
 test("renders final validation as distinct E2E and whole-branch fix loops", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
 	const progress = { startedAt: new Date().toISOString(), lastEventAt: new Date().toISOString(), turns: 4, toolCalls: 13, toolErrors: 0, outputTokens: 2285, reasoningTokens: 1082, processStartedAt: new Date().toISOString() };
 	const snapshot: WorkflowSnapshot = {
 		ref: "work-item:calendar", title: "Calendar", status: "running",
@@ -1313,11 +1016,11 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
 		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: snapshot.ref, mode: "paused" as const, generation: 1 }]; },
 		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(140) as string[];
 	assert.ok(rendered.some((line) => line.includes("Final validation · Whole-branch review/fix loop · 2 gates")));
 	const review = rendered.findIndex((line) => line.includes("Whole-branch review/fix loop · Reviewing whole branch"));
@@ -1330,7 +1033,6 @@ test("renders final validation as distinct E2E and whole-branch fix loops", asyn
 
 test("renders durable integration and verification phases instead of generic ready-to-merge labels", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
 	const snapshot: WorkflowSnapshot = {
 		ref: "work-item:calendar", title: "Calendar", status: "ready",
 		steps: [
@@ -1342,11 +1044,11 @@ test("renders durable integration and verification phases instead of generic rea
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
 		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: snapshot.ref, mode: "paused" as const, generation: 1 }]; },
 		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
 	assert.ok(rendered.some((line) => line.includes("Verification failed") && line.includes("2 tasks")));
 	assert.ok(rendered.some((line) => line.includes("⚠ Verification failed · Android calendar")));
@@ -1357,7 +1059,6 @@ test("renders durable integration and verification phases instead of generic rea
 
 test("communicates every contribution participating in an active concurrent merge barrier", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:calendar", state: "paused" } });
 	const snapshot: WorkflowSnapshot = {
 		ref: "work-item:calendar", title: "Calendar", status: "running",
 		steps: [
@@ -1369,11 +1070,11 @@ test("communicates every contribution participating in an active concurrent merg
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
 		async controlExecution(ref) { return { workflowRef: ref, mode: "paused", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: snapshot.ref, mode: "paused" as const, generation: 1 }]; },
 		async snapshot() { return snapshot; }, async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
 	const rendered = (f.widget() as any)?.({}, f.ctx.ui.theme).render(120) as string[];
 	const owner = rendered.find((line) => line.includes("Assembling candidate · Android calendar"));
 	const sibling = rendered.find((line) => line.includes("Waiting for shared merge barrier · iOS calendar"));
@@ -1394,11 +1095,9 @@ test("animates candidate verification from the semantic verification phase", asy
 	};
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
-		subscribeAgentLive() { return () => undefined; },
 		async snapshot() { return snapshot; }, async runStep() { return neverSettles; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "work-item:calendar" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
@@ -1412,11 +1111,12 @@ test("animates candidate verification from the semantic verification phase", asy
 
 test("a recovered reviewer settlement wakes the main session at the canonical manager checkpoint", async () => {
 	const f = fixture();
-	f.entries.push({ type: "custom", customType: "pibox-workflow", data: { ref: "work-item:review", state: "running" } });
 	let phase: "running" | "awaiting-manager" = "running";
 	let lifecycle!: () => void;
 	const adapter: WorkflowAdapter = {
 		id: "test", canHandle: (ref) => ref.startsWith("work-item:"),
+		async controlExecution(ref) { return { workflowRef: ref, mode: "running", generation: 1, ownerSessionId: "test-session" }; },
+		async listExecutionControls() { return [{ workflowRef: "work-item:review", mode: "running", generation: 1 }]; },
 		subscribeLifecycle(_ref, _ctx, listener) { lifecycle = listener; return () => undefined; },
 		async snapshot(ref) {
 			const attention = phase === "awaiting-manager";
@@ -1430,10 +1130,9 @@ test("a recovered reviewer settlement wakes the main session at the canonical ma
 			};
 		},
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
-	await f.handlers.get("session_start")?.({}, f.ctx);
+	registerTestAdapter(adapter);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
 	phase = "awaiting-manager";
 	lifecycle();
@@ -1459,9 +1158,8 @@ test("lifecycle callbacks refresh a queued review into its active dashboard stat
 			return { ref, title: "Review lifecycle", status: "ready", steps: [{ ref: `${ref}/evaluation:review`, title: phase === "running" ? "Review · Re-reviewing #1" : "Review · Re-review requested", kind: "evaluation", status: phase === "running" ? "running" : "pending", detail: phase, dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
 		},
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "work-item:review" }, undefined, undefined, f.ctx);
 	phase = "running";
@@ -1498,9 +1196,8 @@ test("duplicate lifecycle callbacks coalesce behind one in-flight refresh", asyn
 			return { ref, title: "Coalesced", status: "ready", steps: [{ ref: `${ref}/step`, title: "Active", kind: "task", status: "running", dependsOn: [], parallelism: "serial", resourceClaims: [] }] };
 		},
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:coalesced" }, undefined, undefined, f.ctx);
 	refreshing = true;
@@ -1509,7 +1206,7 @@ test("duplicate lifecycle callbacks coalesce behind one in-flight refresh", asyn
 	lifecycle!(); lifecycle!();
 	release();
 	await completedFollowUp;
-	assert.equal(snapshots, 3, "initial snapshot and exactly one coalesced refresh after the in-flight startup tick");
+	assert.equal(snapshots, 4, "start validation, initial runner snapshot, and exactly one coalesced lifecycle refresh");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
@@ -1529,9 +1226,8 @@ test("stopping during asynchronous lifecycle setup prevents late listener instal
 		},
 		async snapshot(ref) { return { ref, title: "Cancellation", status: "ready", steps: [{ ref: `${ref}/step`, title: "Queued", kind: "task", status: "pending", dependsOn: [], parallelism: "serial", resourceClaims: [] }] }; },
 		async runStep(ref) { return { ref, state: "completed", summary: "unused" }; }, async controlWorkflow() {},
-		async listSubagents() { return []; }, async listMessages() { return []; }, async controlSubagent() {}, async respondSubagent() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	await f.tools.get("workflow_start").execute("call", { ref: "test:cancel" }, undefined, undefined, f.ctx);
 	await f.tools.get("workflow_control").execute("stop", { ref: "test:cancel", action: "stop" }, undefined, undefined, f.ctx);
@@ -1563,10 +1259,9 @@ test("workflow runner refreshes and freezes terminal metrics before rendering co
 		id: "test", canHandle: (ref) => ref.startsWith("test:"), async completionPrompt() { return "Read outcome.md and brief the user."; }, async snapshot() { snapshotReads++; return snapshots(); },
 		async controlExecution(ref, command) { if (command === "complete") completedAt = Date.now(); return { workflowRef: ref, mode: command === "complete" ? "completed" : "running", generation: 1, ownerSessionId: "test-session" }; },
 		async runStep(ref) { taskDone = true; return { ref, state: "completed", summary: "Implementation done." }; },
-		async controlWorkflow() {}, async listSubagents() { return []; }, async listMessages() { return []; },
-		async controlSubagent() { return {}; }, async respondSubagent() { return {}; },
+		async controlWorkflow() {},
 	};
-	f.pi.events.on(WORKFLOW_ADAPTER_DISCOVERY_EVENT, (event: any) => event.register(adapter));
+	registerTestAdapter(adapter);
 	await f.handlers.get("session_start")?.({}, f.ctx);
 	const started = await f.tools.get("workflow_start").execute("call", { ref: "test:workflow" }, undefined, undefined, f.ctx);
 	assert.match(started.content[0].text, /Started workflow/);
@@ -1575,7 +1270,7 @@ test("workflow runner refreshes and freezes terminal metrics before rendering co
 	assert.ok(completedAt, "the runtime records its terminal control boundary");
 	assert.ok(snapshotReads >= 3, "completion refreshes the snapshot after recording the terminal boundary");
 	assert.ok(f.widget());
-	assert.equal(f.entries.some((entry) => entry.data.ref === "test:workflow"), true);
+	assert.equal(f.entries.length, 0, "workflow lifecycle is not duplicated into Pi session history");
 	const completion = f.messages.find((entry) => entry.message.customType === "pibox-workflow-complete");
 	assert.equal(completion?.message.display, false);
 	assert.equal(completion?.options.triggerTurn, true);

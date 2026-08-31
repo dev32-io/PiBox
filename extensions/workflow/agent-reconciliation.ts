@@ -1,4 +1,6 @@
-import { SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import { initialAgentProgress, markAgentProcessExited, projectAgentProgress } from "../subagent/agent-progress.js";
+import { isAgentProcessActive, SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
+import type { SubagentService } from "../subagent/api.js";
 import { finalizeReviewerAfterSettlement, settleManagedEvaluation } from "./evaluation-settlement.js";
 import { RepositoryMutex } from "./idempotency.js";
 import type { RepositoryIdentity } from "./repository.js";
@@ -6,6 +8,57 @@ import { runGit } from "./repository.js";
 import { HarnessRunStore } from "./run-store.js";
 import { WorkItemStore } from "./work-items.js";
 import { finalizeTaskAgentAfterSettlement, settleManagedTaskHandoff } from "./task-settlement.js";
+
+const ACTIVE_SERVICE_STATES = new Set(["launching", "running", "stopping"]);
+
+/** Fence durable attempts to the one live service activation. Reload preserves an
+ * exact in-memory process match; pi-r/new/fork has no match and interrupts it. */
+export async function interruptUnmatchedActivationAttempts(input: {
+	identity: RepositoryIdentity;
+	registry: SessionAgentRegistry;
+	workItems: WorkItemStore;
+	service: SubagentService;
+}): Promise<string[]> {
+	const interrupted: string[] = [];
+	const snapshots = input.service.inspect(input.service.owner, { workflowMetadata: { PIBOX_WORKFLOW_SESSION_ID: input.registry.sessionId } });
+	for (const agent of (await input.registry.list()).filter(isAgentProcessActive)) {
+		const attempt = agent.attempts.find((candidate) => candidate.id === agent.currentAttemptId);
+		if (!attempt) continue;
+		const matching = snapshots.some((snapshot) =>
+			ACTIVE_SERVICE_STATES.has(snapshot.state)
+			&& snapshot.workflowMetadata?.PIBOX_WORKFLOW_LOGICAL_AGENT_ID === agent.id
+			&& snapshot.attemptMetadata?.PIBOX_WORKFLOW_ATTEMPT_ID === attempt.id
+		);
+		if (matching) continue;
+		const now = new Date().toISOString();
+		let progress = attempt.progress ?? initialAgentProgress(attempt.startedAt);
+		progress = markAgentProcessExited(progress, now);
+		if (!progress.settledAt) progress = projectAgentProgress(progress, { type: "agent_settled" }, now);
+		const settlement = await input.registry.settleAttempt(agent.id, attempt.id, {
+			exitCode: 1,
+			reason: "owner_lost",
+			targetState: "interrupted",
+			error: "No matching process exists in the current subagent service activation",
+			progress,
+			timing: { ...(attempt.timing ?? { attemptStartedAt: attempt.startedAt }), processExitedAt: now, outputDrainedAt: now, settledAt: progress.settledAt ?? now },
+		});
+		if (!settlement.claimed) continue;
+		interrupted.push(agent.id);
+		if (agent.workItemId && agent.runId) {
+			const runs = new HarnessRunStore(input.identity, agent.workItemId);
+			const run = await runs.read(agent.runId).catch(() => undefined);
+			if (run && !["completed", "failed", "protocol_failed", "cancelled"].includes(run.state)) {
+				if (run.currentAgentAttemptId) await runs.revokeAgentAttempt(run.id, run.currentAgentAttemptId, { state: "interrupted", error: "Owner activation was lost" }, "run.activation_interrupted");
+				else await runs.update(run.id, { state: "interrupted", credentialRevokedAt: now }, "run.activation_interrupted");
+			}
+			if (agent.taskId) {
+				const task = await input.workItems.readTask(agent.workItemId, agent.taskId).catch(() => undefined);
+				if (task?.status === "running") await input.workItems.updateTask(agent.workItemId, agent.taskId, { status: "paused" });
+			}
+		}
+	}
+	return interrupted;
+}
 
 export interface ReconciliationResult {
 	completed: string[];
