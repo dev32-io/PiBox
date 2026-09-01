@@ -32,6 +32,14 @@ function deferred<T>(): Deferred<T> {
 	return { promise: new Promise<T>((done) => { resolve = done; }), resolve };
 }
 
+async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
+	const deadline = Date.now() + 1_000;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error(message);
+		await new Promise((resolve) => setTimeout(resolve, 2));
+	}
+}
+
 class FakeService implements SubagentService {
 	readonly protocolVersion = 1;
 	readonly snapshots = new Map<string, LogicalAgentSnapshot>();
@@ -213,7 +221,7 @@ function harness(options: {
 		env: options.env ?? {},
 		registry: options.registry ?? new SubagentCapabilityRegistry(),
 		uiRegistry: options.uiRegistry ?? new SubagentUiProjectionRegistry(),
-		pendingDeliveries: options.pendingDeliveries ?? new PendingSubagentDeliveryRegistry(),
+		pendingDeliveries: options.pendingDeliveries ?? new PendingSubagentDeliveryRegistry(0),
 		processInstanceId: options.processInstanceId ?? "process-1",
 		idFactory: () => randomUUID(),
 		loadCatalog: options.loadCatalog ?? ((_root, loadOptions) => { catalogOptions.push(loadOptions); return catalog(); }),
@@ -270,17 +278,120 @@ test("loads trusted catalog policy, resolves the active tier profile, prompt, ro
 	assert.equal(service.launches[0]?.extensionPaths.some((path) => /workflow\/index\.ts$/.test(path)), false);
 });
 
-test("background returns immediately and delivers one terminal follow-up to the same binding", async () => {
+test("background returns immediately and steers one terminal batch to the same binding", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "general-purpose", task: "Background work", mode: "background" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /background as agent-1/);
+	assert.match(spawned.content[0].text, /Do not sleep or poll/);
 	assert.deepEqual(spawned.details.uiRef, { owner: f.services[0]!.owner, agentId: "agent-1" }, "the immutable launch receipt carries an owner-fenced UI correlation, not mutable lifecycle state");
 	f.services[0]!.finish("agent-1", "completed", "background report");
-	await new Promise((resolve) => setImmediate(resolve));
+	await waitUntil(() => f.sent.length === 1, "background completion was not delivered");
 	assert.equal(f.sent.length, 1);
 	assert.match(f.sent[0].message.content, /background report/);
-	assert.deepEqual(f.sent[0].delivery, { deliverAs: "followUp", triggerTurn: true });
+	assert.deepEqual(f.sent[0].delivery, { deliverAs: "steer", triggerTurn: true });
+});
+
+test("near-simultaneous background settlements are steered in one message", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("one", { agent: "general-purpose", task: "One", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("two", { agent: "general-purpose", task: "Two", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish("agent-1", "completed", "first report");
+	f.services[0]!.finish("agent-2", "completed", "second report");
+	await waitUntil(() => f.sent.length === 1, "background completion batch was not delivered");
+	assert.equal(f.sent.length, 1);
+	assert.match(f.sent[0].message.content, /first report/);
+	assert.match(f.sent[0].message.content, /second report/);
+	assert.equal(f.sent[0].message.details.settlements.length, 2);
+});
+
+test("large completion sets are chunked without consuming model-invisible settlements", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	for (let index = 1; index <= 10; index++) {
+		await f.tools.get("subagent_spawn").execute(`spawn-${index}`, { agent: "general-purpose", task: `Task ${index}`, mode: "background" }, undefined, undefined, f.ctx);
+	}
+	for (let index = 1; index <= 10; index++) {
+		f.services[0]!.finish(`agent-${index}`, "completed", `report-${index}-${"x".repeat(2_000)}`);
+	}
+	await waitUntil(() => f.sent.length === 2, "chunked background completions were not delivered");
+	assert.equal(f.sent.length, 2);
+	const delivered = f.sent.map((entry) => entry.message.content).join("\n");
+	for (let index = 1; index <= 10; index++) assert.match(delivered, new RegExp(`report-${index}-`));
+	assert.ok(f.sent.every((entry) => Buffer.byteLength(entry.message.content, "utf8") < 48 * 1024));
+});
+
+test("wait supports elapsed time and abort without shell sleep", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	const elapsed = await f.tools.get("wait").execute("time", { durationMs: 1 }, undefined, undefined, f.ctx);
+	assert.equal(elapsed.content[0].text, "Waited 1 ms.");
+	assert.deepEqual(elapsed.details, { kind: "time", durationMs: 1 });
+
+	const controller = new AbortController();
+	const waiting = f.tools.get("wait").execute("abort", { durationMs: 60_000 }, controller.signal, undefined, f.ctx);
+	controller.abort(new Error("cancel wait"));
+	await assert.rejects(waiting, /cancel wait/);
+});
+
+test("wait subscribes once to background settlement and consumes automatic delivery", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish("agent-1", "completed", "dependency report");
+	const settled = await waiting;
+	assert.match(settled.content[0].text, /dependency report/);
+	assert.deepEqual(settled.details, {
+		kind: "event",
+		event: "subagent_settled",
+		settlements: [{ agent: "general-purpose", agentId: "agent-1", status: "completed", summary: "dependency report" }],
+	});
+	assert.equal(f.sent.length, 0, "the wait result is the sole model-visible delivery");
+});
+
+test("an aborted event wait consumes nothing and automatic steering remains armed", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+	const controller = new AbortController();
+	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, controller.signal, undefined, f.ctx);
+	controller.abort(new Error("stop waiting"));
+	await assert.rejects(waiting, /stop waiting/);
+	f.services[0]!.finish("agent-1", "completed", "later report");
+	await waitUntil(() => f.sent.length === 1, "completion was not delivered after the event wait aborted");
+	assert.equal(f.sent.length, 1);
+	assert.match(f.sent[0].message.content, /later report/);
+});
+
+test("a pre-batch process-global registry falls back to exact-once steering", async () => {
+	const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
+	Object.defineProperty(pendingDeliveries, "bindBatched", { value: undefined });
+	const f = harness({ pendingDeliveries });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Legacy", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish("agent-1", "completed", "legacy report");
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(f.sent.length, 1);
+	assert.match(f.sent[0].message.content, /legacy report/);
+	assert.deepEqual(f.sent[0].delivery, { deliverAs: "steer", triggerTurn: true });
+	assert.equal(pendingDeliveries.count(), 0);
+});
+
+test("wait rejects ambiguous calls and event waits without a pending source", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	await assert.rejects(f.tools.get("wait").execute("none", {}, undefined, undefined, f.ctx), /exactly one/);
+	await assert.rejects(f.tools.get("wait").execute("both", { durationMs: 1, event: "subagent_settled" }, undefined, undefined, f.ctx), /exactly one/);
+	await assert.rejects(f.tools.get("wait").execute("event", { event: "subagent_settled" }, undefined, undefined, f.ctx), /No background subagent settlement is pending/);
+});
+
+test("subagent tools give explicit no-sleep and no-poll guidance", () => {
+	const f = harness();
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn")), /Never use bash sleep/);
+	assert.match(JSON.stringify(f.tools.get("subagent_status")), /Never call repeatedly/);
+	assert.match(JSON.stringify(f.tools.get("wait")), /never as a polling loop/);
 });
 
 test("continues only a settled same-activation transcript and rotates its internal handle", async () => {
@@ -311,7 +422,7 @@ test("subagent_control exposes stop only and confirms terminal cancellation", as
 test("reload rebinds the same manager and adopts one pending terminal delivery", async () => {
 	const registry = new SubagentCapabilityRegistry();
 	const uiRegistry = new SubagentUiProjectionRegistry();
-	const pendingDeliveries = new PendingSubagentDeliveryRegistry();
+	const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
 	const first = harness({ registry, uiRegistry, pendingDeliveries, processInstanceId: "process" });
 	await first.fire("session_start", { reason: "startup" });
 	await first.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Wait", mode: "background" }, undefined, undefined, first.ctx);
@@ -325,6 +436,7 @@ test("reload rebinds the same manager and adopts one pending terminal delivery",
 
 	const second = harness({ registry, uiRegistry, pendingDeliveries, processInstanceId: "process" });
 	await second.fire("session_start", { reason: "reload" });
+	await waitUntil(() => second.sent.length === 1, "reload did not adopt the pending completion");
 	assert.equal(second.services.length, 0, "reload does not construct a replacement manager");
 	assert.deepEqual(registry.resolve(owner), service);
 	assert.deepEqual(uiRegistry.project()?.owner, owner, "reload reconstructs the structured projection binding");

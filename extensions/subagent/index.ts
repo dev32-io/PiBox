@@ -27,6 +27,7 @@ import {
 	getPendingSubagentDeliveryRegistry,
 	type PendingBackgroundDelivery,
 	type PendingBackgroundOutcome,
+	type PendingBackgroundSettlement,
 	type PendingDeliveryBinding,
 	type PendingSubagentDeliveryRegistry,
 } from "./pending-deliveries.js";
@@ -64,6 +65,11 @@ export interface SubagentExtensionDependencies {
 	readonly createService?: (owner: RuntimeOwner, ctx: ExtensionContext) => SubagentService | Promise<SubagentService>;
 }
 
+interface WaitSubscription {
+	resolve(settlements: readonly PendingBackgroundSettlement[]): void;
+	reject(error: Error): void;
+}
+
 interface SessionBinding {
 	readonly owner: RuntimeOwner;
 	readonly registration: SubagentRegistration;
@@ -75,12 +81,13 @@ interface SessionBinding {
 	readonly tiers: Map<string, string>;
 	readonly ui: SubagentUiProjectionBinding;
 	delivery: PendingDeliveryBinding;
+	waiter?: WaitSubscription;
 	unsubscribe: () => void;
 	active: boolean;
 }
 
 /** Complete standalone generic subagent tool surface. */
-export const STANDALONE_SUBAGENT_TOOL_NAMES = ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue"] as const;
+export const STANDALONE_SUBAGENT_TOOL_NAMES = ["subagent_spawn", "wait", "subagent_status", "subagent_control", "subagent_continue"] as const;
 
 export default function subagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
 	const env = dependencies.env ?? process.env;
@@ -183,29 +190,83 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		return result(text, toolDetails(current, agentId, terminal));
 	};
 
-	const deliverBackground = (current: SessionBinding, delivery: PendingBackgroundDelivery, outcome: PendingBackgroundOutcome): boolean => {
-		if (!current.active || binding !== current) return false;
-		const status = "terminal" in outcome ? outcome.terminal.status : "failed";
-		const summary = boundedUtf8("terminal" in outcome
-			? outcome.terminal.text || outcome.terminal.stderr || `Subagent ${status}.`
-			: outcome.error, 1_200);
+	const formatSettlements = (settlements: readonly PendingBackgroundSettlement[]) => {
+		const details = settlements.map(({ delivery, outcome }) => {
+			const status = "terminal" in outcome ? outcome.terminal.status : "failed";
+			const summary = boundedUtf8("terminal" in outcome
+				? outcome.terminal.text || outcome.terminal.stderr || `Subagent ${status}.`
+				: outcome.error, 1_200);
+			return {
+				agent: boundedUtf8(delivery.agent, 256),
+				agentId: boundedUtf8(delivery.agentId, 256),
+				status,
+				summary,
+			};
+		});
+		const text = boundedUtf8(details.map((item) =>
+			`[Subagent ${item.status}]\n${item.agent} (${item.agentId})\n${item.summary}`,
+		).join("\n\n"), MAX_TOOL_OUTPUT_BYTES);
+		return { text, details };
+	};
+
+	const deliverBackgroundBatch = (current: SessionBinding, settlements: readonly PendingBackgroundSettlement[]): boolean => {
+		if (!current.active || binding !== current || settlements.length === 0) return false;
+		const waiter = current.waiter;
+		if (waiter) {
+			delete current.waiter;
+			waiter.resolve(settlements);
+			return true;
+		}
+		const formatted = formatSettlements(settlements);
 		try {
 			pi.sendMessage({
 				customType: "pibox-subagent-result",
-				content: `[Subagent ${status}]\n${delivery.agent} (${delivery.agentId})\n${summary}`,
+				content: formatted.text,
 				display: false,
-				details: { agent: delivery.agent, agentId: delivery.agentId, status, summary },
-			}, { deliverAs: "followUp", triggerTurn: true });
+				details: { settlements: formatted.details },
+			}, { deliverAs: "steer", triggerTurn: true });
 			return true;
 		} catch {
 			return false;
 		}
 	};
 
+	const waitForSettlements = (current: SessionBinding, signal: AbortSignal | undefined): Promise<readonly PendingBackgroundSettlement[]> => {
+		if (signal?.aborted) return Promise.reject(abortError(signal));
+		if (current.waiter) return Promise.reject(new Error("Another event wait is already active"));
+		if (pendingDeliveries.count(current.owner) === 0) return Promise.reject(new Error("No background subagent settlement is pending"));
+		return new Promise((resolve, reject) => {
+			let active = true;
+			const cleanup = () => signal?.removeEventListener("abort", onAbort);
+			const waiter: WaitSubscription = {
+				resolve: (settlements) => {
+					if (!active) return;
+					active = false;
+					cleanup();
+					resolve(settlements);
+				},
+				reject: (error) => {
+					if (!active) return;
+					active = false;
+					cleanup();
+					if (current.waiter === waiter) delete current.waiter;
+					reject(error);
+				},
+			};
+			const onAbort = () => waiter.reject(abortError(signal!));
+			current.waiter = waiter;
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
+	};
+
 	pi.registerTool({
 		name: "subagent_spawn",
 		label: "Spawn Subagent",
-		description: "Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress; background returns immediately and sends one terminal follow-up only to the same live session activation.",
+		description: "Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress. Background is for independent work: it returns immediately, steers terminal results into ongoing work, and wakes an idle parent.",
+		promptGuidelines: [
+			"After subagent_spawn starts background work, continue meaningful non-overlapping work or end the turn; its terminal result is delivered automatically and wakes the session when idle.",
+			"Never use bash sleep, polling loops, or repeated subagent_status calls to wait for background subagents; use wait with event subagent_settled once only when further progress is genuinely blocked.",
+		],
 		parameters: Type.Object({
 			agent: Type.String({ description: "Exact configured agent name" }),
 			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions" }),
@@ -226,7 +287,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			publishProjection(current);
 			if (mode === "background") {
 				pendingDeliveries.track({ owner: current.owner, agent: params.agent, agentId }, launched.result);
-				return result(`Spawned ${params.agent} in background as ${agentId}. Its terminal report will be delivered automatically to this activation.`, toolDetails(current, agentId));
+				return result(`Spawned ${params.agent} in background as ${agentId}. Its terminal report will be steered into this activation and will wake it when idle. Do not sleep or poll for progress; continue non-overlapping work, end the turn, or call wait once with event subagent_settled only when blocked.`, toolDetails(current, agentId));
 			}
 			const unsubscribe = subscribeToolUpdates(current, agentId, onUpdate);
 			const removeAbort = stopOnAbort(signal, current, launched.handle);
@@ -240,9 +301,37 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	});
 
 	pi.registerTool({
+		name: "wait",
+		label: "Wait",
+		description: "Wait once for elapsed time or for the next supported event, then resume with a tool-result message. Event waiting is a simple subscribe-and-wake mechanism; currently only background subagent settlement is supported.",
+		promptSnippet: "Wait once for elapsed time or a supported event without shell sleep or polling",
+		promptGuidelines: [
+			"Use wait durationMs only when elapsed time itself is required, never as a polling loop.",
+			"Use wait with event subagent_settled only at a genuine dependency barrier; background subagent results otherwise arrive automatically.",
+		],
+		parameters: Type.Object({
+			durationMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 3_600_000, description: "Elapsed time to wait in milliseconds" })),
+			event: Type.Optional(StringEnum(["subagent_settled"] as const, { description: "Event to subscribe to; currently only background subagent settlement is supported" })),
+		}, { additionalProperties: false }),
+		async execute(_id, params, signal) {
+			const current = requireBinding();
+			const hasDuration = params.durationMs !== undefined;
+			const hasEvent = params.event !== undefined;
+			if (hasDuration === hasEvent) throw new Error("Provide exactly one of durationMs or event");
+			if (params.durationMs !== undefined) {
+				await waitForDuration(params.durationMs, signal);
+				return result(`Waited ${params.durationMs} ms.`, { kind: "time", durationMs: params.durationMs });
+			}
+			const settlements = await waitForSettlements(current, signal);
+			const formatted = formatSettlements(settlements);
+			return result(formatted.text, { kind: "event", event: "subagent_settled", settlements: formatted.details });
+		},
+	});
+
+	pi.registerTool({
 		name: "subagent_status",
 		label: "Subagent Status",
-		description: "Inspect this activation's bounded standalone subagent snapshot. This is a point-in-time diagnostic, not a polling mechanism.",
+		description: "Inspect this activation's bounded standalone subagent snapshot once for diagnosis. Never call repeatedly or combine with sleep to wait for completion; background results arrive automatically and wait supports a true dependency barrier.",
 		parameters: Type.Object({
 			agentId: Type.Optional(Type.String()),
 			includeSettled: Type.Optional(Type.Boolean({ default: false })),
@@ -389,13 +478,17 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		const subscription = current.service.subscribe(current.owner, current.service.replay(current.owner).snapshot.cursor, () => publishProjection(current));
 		current.unsubscribe = () => subscription.unsubscribe();
 		binding = current;
-		current.delivery = pendingDeliveries.bind(current.owner, idFactory(), (delivery, outcome) => deliverBackground(current, delivery, outcome));
+		const deliveryId = idFactory();
+		current.delivery = typeof (pendingDeliveries as PendingSubagentDeliveryRegistry & { bindBatched?: unknown }).bindBatched === "function"
+			? pendingDeliveries.bindBatched(current.owner, deliveryId, (settlements) => deliverBackgroundBatch(current, settlements))
+			: pendingDeliveries.bind(current.owner, deliveryId, (delivery, outcome) => deliverBackgroundBatch(current, [{ delivery, outcome }]));
 		publishProjection(current, subscription.initial.snapshot);
 	});
 
 	pi.on("session_shutdown", async (event) => {
 		const current = binding;
 		if (!current) return;
+		current.waiter?.reject(new Error("Wait ended because the session activation shut down"));
 		current.active = false;
 		if (binding === current) binding = undefined;
 		current.unsubscribe();
@@ -479,7 +572,24 @@ function findRepositoryRoot(cwd: string): string {
 }
 
 function abortError(signal: AbortSignal): Error {
-	return signal.reason instanceof Error ? signal.reason : new Error("Subagent continuation was aborted");
+	return signal.reason instanceof Error ? signal.reason : new Error("Operation was aborted");
+}
+
+function waitForDuration(durationMs: number, signal: AbortSignal | undefined): Promise<void> {
+	if (signal?.aborted) return Promise.reject(abortError(signal));
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			cleanup();
+			resolve();
+		}, durationMs);
+		const onAbort = () => {
+			clearTimeout(timer);
+			cleanup();
+			reject(abortError(signal!));
+		};
+		const cleanup = () => signal?.removeEventListener("abort", onAbort);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 function boundedUtf8(value: string, maximumBytes: number): string {

@@ -6,16 +6,16 @@ function owner(overrides: Partial<RuntimeOwner> = {}): RuntimeOwner {
 	return { sessionId: "session", processInstanceId: "process", activationId: "activation", ...overrides };
 }
 
-function terminal(resultOwner: RuntimeOwner = owner()): TerminalResult {
+function terminal(resultOwner: RuntimeOwner = owner(), agentId = "agent", text = "done"): TerminalResult {
 	return {
 		owner: resultOwner,
-		handle: { owner: resultOwner, agentId: "agent", continuationCapability: "capability" },
+		handle: { owner: resultOwner, agentId, continuationCapability: "capability" },
 		attemptId: "attempt",
 		contextHashes: { stableSystemContextHash: "sha256:stable", attemptUserTurnHash: "sha256:attempt" },
 		status: "completed",
 		reason: "completed",
 		exitCode: 0,
-		text: "done",
+		text,
 	};
 }
 
@@ -45,6 +45,43 @@ test("pending delivery results remain owner-fenced and are accepted exactly once
 	});
 	assert.equal(delivered.join(","), "agent:done");
 	stale.release();
+});
+
+test("batched bindings coalesce settlements and preserve insertion order", async () => {
+	const registry = new PendingSubagentDeliveryRegistry(0);
+	const first = Promise.resolve(terminal(owner(), "agent-1", "one"));
+	const second = Promise.resolve(terminal(owner(), "agent-2", "two"));
+	let resolveBatch!: (value: string[]) => void;
+	const batch = new Promise<string[]>((resolve) => { resolveBatch = resolve; });
+	registry.bindBatched(owner(), "batch", (settlements) => {
+		resolveBatch(settlements.map(({ delivery, outcome }) => `${delivery.agentId}:${"terminal" in outcome ? outcome.terminal.text : outcome.error}`));
+		return true;
+	});
+	registry.track({ owner: owner(), agent: "generic", agentId: "agent-1" }, first);
+	registry.track({ owner: owner(), agent: "generic", agentId: "agent-2" }, second);
+	assert.deepEqual(await batch, ["agent-1:one", "agent-2:two"]);
+	assert.equal(registry.count(owner()), 0);
+});
+
+test("a rejected terminal batch remains available to a replacement binding", async () => {
+	const registry = new PendingSubagentDeliveryRegistry(0);
+	let rejected!: () => void;
+	const rejection = new Promise<void>((resolve) => { rejected = resolve; });
+	registry.bindBatched(owner(), "reject", () => {
+		rejected();
+		return false;
+	});
+	registry.track({ owner: owner(), agent: "generic", agentId: "agent" }, Promise.resolve(terminal()));
+	await rejection;
+	assert.equal(registry.count(owner()), 1);
+	let accepted!: (agentId: string) => void;
+	const delivery = new Promise<string>((resolve) => { accepted = resolve; });
+	registry.bindBatched(owner(), "accept", (settlements) => {
+		accepted(settlements[0]!.delivery.agentId);
+		return true;
+	});
+	assert.equal(await delivery, "agent");
+	assert.equal(registry.count(owner()), 0);
 });
 
 test("discard removes an obligation before a replacement owner can observe settlement", async () => {
