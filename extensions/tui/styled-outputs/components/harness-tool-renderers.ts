@@ -140,7 +140,8 @@ class HarnessCallComponent implements Component {
 		if (!this.partial && !showSubagentStatus) return [truncateToWidth(headline, width, "…")];
 		const state = showSubagentStatus
 			? renderSubagentLiveStatus({
-				agent: details?.agent ?? this.args.agent,
+				// The headline already identifies the agent; keep only route and progress
+				// in this inline continuation row. Footer projections retain identity.
 				tier: details?.tier ?? this.args.tier,
 				resolved: details?.resolved,
 				fast: details?.fast,
