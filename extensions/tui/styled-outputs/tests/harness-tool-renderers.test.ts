@@ -22,7 +22,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		tier: "medium",
 		task: "Verify one browser flow like a real user",
 	}, theme, true, false));
-	assert.equal(starting[1], "└─ starting · Medium");
+	assert.equal(starting[1], "└─ e2e-tester · Medium");
 	assert.doesNotMatch(starting.join("\n"), /resolving model|foreground/);
 	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester",
@@ -33,8 +33,8 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		tier: "medium",
 		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
 	}));
-	assert.match(rendered[0] ?? "", /^[·•●] e2e-tester Verify one browser flow like a real user/);
-	assert.equal(rendered[1], "└─ starting · Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] e2e-tester Verify one browser flow like a real user/);
+	assert.equal(rendered[1], "└─ e2e-tester · Medium (openai-codex/gpt-5.6-sol#medium)");
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
 	const activeComponent = renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester", mode: "foreground", tier: "medium", task: "Verify one browser flow like a real user",
@@ -48,7 +48,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
 	const active = lines(activeComponent);
-	assert.equal(active[1], "└─ 1m 05s · 2 turns · 3 tools · bash · ↓ 1.2k · Fast · Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.equal(active[1], "└─ e2e-tester · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash");
 	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
 	assert.equal(narrow.length, 2, "volatile status stays on one detail row");
 	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
@@ -66,7 +66,50 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:02:00.000Z")));
 	assert.equal(settled.length, 2, "settled foreground rows retain their resolved request metadata");
-	assert.match(settled[1] ?? "", /Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\)$/);
+	assert.match(settled[1] ?? "", /e2e-tester · Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\).*1m 05s$/);
+
+});
+
+test("background transcript rows follow the owner-fenced event projection through terminal settlement", () => {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const uiRef = { owner, agentId: "agent-1" };
+	let now = Date.parse("2026-01-01T00:00:10.000Z");
+	let projection: any = {
+		agentId: "agent-1", agent: "general-purpose", state: "running", presentation: "background",
+		provider: "openai-codex", model: "gpt-5.6-sol", effort: "low", tier: "low", fast: true,
+		startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:10.000Z",
+		progress: { startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z", lastEventAt: "2026-01-01T00:00:10.000Z", turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 100, reasoningTokens: 0 },
+	};
+	const lookup = (ref: any) => {
+		assert.deepEqual(ref, uiRef);
+		return projection;
+	};
+	const details = {
+		agentId: "agent-1", uiRef, state: "running",
+		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "low", startedAt: "2026-01-01T00:00:00.000Z" },
+		progress: { startedAt: "2026-01-01T00:00:00.000Z", lastEventAt: "2026-01-01T00:00:00.000Z", turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
+	};
+	const call = renderHarnessToolCall("subagent_spawn", { agent: "general-purpose", mode: "background", tier: "low", task: "Inspect" }, theme, false, false, details, () => now, lookup);
+	const result = renderHarnessToolResult("subagent_spawn", { content: [{ type: "text", text: "Spawned in background." }], details }, true, theme, false, lookup);
+	assert.match(lines(call)[1] ?? "", /Low \(openai-codex\/gpt-5\.6-sol#low\) · 1 turn · 1 tool · ↓ 100 · 10s$/);
+	assert.match(lines(result).join("\n"), /State: running/);
+
+	projection = {
+		...projection,
+		state: "completed",
+		updatedAt: "2026-01-01T00:00:12.000Z",
+		progress: { ...projection.progress, processExitedAt: "2026-01-01T00:00:12.000Z", settledAt: "2026-01-01T00:00:11.000Z", lastEventAt: "2026-01-01T00:00:12.000Z" },
+	};
+	now = Date.parse("2026-01-01T00:01:00.000Z");
+	const terminalAtOneMinute = lines(call);
+	now = Date.parse("2026-01-01T00:02:00.000Z");
+	assert.deepEqual(lines(call), terminalAtOneMinute, "authoritative processExitedAt freezes the terminal duration across later renders");
+	assert.match(terminalAtOneMinute[1] ?? "", /12s$/);
+	assert.match(lines(result).join("\n"), /State: completed/);
+
+	projection = undefined;
+	assert.equal(lines(call).length, 1, "a detached historical launch is a static receipt, never a live clock");
+	assert.match(lines(result).join("\n"), /State: launched/);
 });
 
 test("renders continuation foreground progress and prose like spawn", () => {
@@ -82,7 +125,7 @@ test("renders continuation foreground progress and prose like spawn", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:00:03.000Z")));
 	assert.match(rendered[0] ?? "", /^[·•●] Continue subagent agent-1/);
-	assert.match(rendered[1] ?? "", /1 turn · 2 tools.*High \(openai-codex\/gpt-5\.6-sol#high\)/);
+	assert.match(rendered[1] ?? "", /High \(openai-codex\/gpt-5\.6-sol#high\) · 1 turn · 2 tools · ↓ 200 · 3s/);
 
 	const report = Array.from({ length: 11 }, (_, index) => `line ${index + 1}`).join("\n");
 	const result = lines(renderHarnessToolResult("subagent_continue", { content: [{ type: "text", text: report }] }, false, theme, false));

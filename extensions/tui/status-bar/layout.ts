@@ -8,7 +8,7 @@ import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
 import type { ModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
-import { formatSubagentFooterProjection } from "../../subagent/display.js";
+import { currentSubagentIndicator, renderSubagentFooterProjection } from "../../subagent/display.js";
 import type { SubagentUiProjection } from "../../subagent/ui-projection.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
@@ -33,6 +33,8 @@ export interface StatusRenderData {
 	serviceStatuses?: Array<string | ServiceStatusSegment>;
 	subagents?: SubagentUiProjection;
 	selectedInteractiveId?: string;
+	/** Deterministic render clock for animation and elapsed live-agent time. */
+	now?: number;
 }
 
 export interface StatusBarLayout {
@@ -313,10 +315,13 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	}
 	if (data.subagents) {
 		for (const agent of data.subagents.agents) {
-			const icon = agent.state === "stopping" ? data.theme.fg("warning", "◐") : data.theme.fg("warning", "•");
-			lines.push(buildRow([`${icon} ${data.theme.fg("text", formatSubagentFooterProjection(agent))}`], [], width));
+			const lifecycle = agent.state === "launching" ? "starting" : agent.state === "stopping" ? "stopping" : "running";
+			const tone = lifecycle === "starting" ? "muted" : lifecycle === "stopping" ? "warning" : "accent";
+			const now = data.now ?? Date.now();
+			const icon = data.theme.fg(tone, currentSubagentIndicator(lifecycle, now));
+			lines.push(buildRow([`${icon} ${renderSubagentFooterProjection(agent, data.theme, now)}`], [], width));
 		}
-		if (data.subagents.overflow > 0) lines.push(buildRow([data.theme.fg("dim", `… +${data.subagents.overflow} more active subagent${data.subagents.overflow === 1 ? "" : "s"}`)], [], width));
+		if (data.subagents.overflow > 0) lines.push(buildRow([data.theme.fg("dim", `… +${data.subagents.overflow} more subagent${data.subagents.overflow === 1 ? "" : "s"}`)], [], width));
 	}
 	return { lines, interactiveRows };
 }

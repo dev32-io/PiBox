@@ -9,7 +9,7 @@ import {
 	type ProviderCooldowns,
 	type ProviderRoute,
 } from "../provider-fallback/index.js";
-import type { PromptContextHashes, SubagentEvent, SubagentService, TerminalResult } from "../subagent/api.js";
+import type { LogicalAgentSnapshot, PromptContextHashes, SubagentEvent, SubagentService, TerminalResult } from "../subagent/api.js";
 import { promptContextHashes } from "../subagent/prompt-context.js";
 import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../subagent/tool-policy.js";
 import { isSubagentFastActive } from "../fast-mode/runtime.js";
@@ -97,13 +97,17 @@ export class LaunchCoordinator {
 		return this.launchWithService(input, this.service);
 	}
 
-	async stop(logicalAgentId: string): Promise<boolean> {
-		const [active] = this.service.inspect(this.service.owner, {
+	inspect(logicalAgentId: string): LogicalAgentSnapshot | undefined {
+		return this.service.inspect(this.service.owner, {
 			workflowMetadata: {
 				PIBOX_WORKFLOW_SESSION_ID: this.registry.sessionId,
 				[WORKFLOW_LOGICAL_AGENT_ID]: logicalAgentId,
 			},
-		}).filter((agent) => ACTIVE_SERVICE_STATES.has(agent.state));
+		}).find((agent) => ACTIVE_SERVICE_STATES.has(agent.state));
+	}
+
+	async stop(logicalAgentId: string): Promise<boolean> {
+		const active = this.inspect(logicalAgentId);
 		if (!active) return false;
 		await this.service.stop(this.service.owner, active.handle);
 		// stop() returns only after exit and output drain; wait also gives callers a
@@ -170,7 +174,7 @@ export class LaunchCoordinator {
 				) : undefined;
 				const attempt = durableActiveAttempt && rebound
 					? durableActiveAttempt
-					: (await this.registry.startAttempt(reserved.id, route, input.activity, fast, contextHashes)).attempt;
+					: (await this.registry.startAttempt(reserved.id, { ...route, ...(input.capabilityTier ? { tier: input.capabilityTier } : {}) }, input.activity, fast, contextHashes)).attempt;
 				const attemptAgent = await this.registry.get(reserved.id);
 				input.onStarted?.(attemptAgent);
 				if (durableActiveAttempt && rebound) await input.onRebind?.();

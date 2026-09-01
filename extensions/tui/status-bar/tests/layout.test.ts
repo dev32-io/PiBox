@@ -220,13 +220,15 @@ test("structured subagent projection renders bounded semantic rows and overflow 
 		updatedAt: startedAt,
 		progress: { startedAt, processStartedAt: startedAt, lastEventAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1200, reasoningTokens: 0, cacheReadTokens: 400, cacheWriteTokens: 20 },
 	}));
+	const now = Date.parse("2026-01-01T00:01:05.000Z");
 	for (const width of [24, 60, 120]) {
-		const lines = renderStatusBar(width, { ...data, subagents: { owner, agents, overflow: 2 } });
+		const lines = renderStatusBar(width, { ...data, now, subagents: { owner, agents, overflow: 2 } });
 		assert.equal(lines.length, 8);
-		assert.match(lines.at(-1) ?? "", /\+2 more active/);
+		assert.match(lines.at(-1) ?? "", /\+2 more subagents/);
 		for (const line of lines) assert.ok(visibleWidth(line) <= width, `${visibleWidth(line)} > ${width}`);
 	}
-	const text = renderStatusBar(160, { ...data, subagents: { owner, agents, overflow: 2 } }).join("\n");
-	assert.match(text, /alpha · Medium \(openai-codex\/gpt-5\.6-sol-with-a-very-long-route-name#high\) · Fast/);
-	assert.match(text, /2 turns · 3 tools · ↓ 1\.2k · R 400 · W 20 · active/);
+	const text = renderStatusBar(160, { ...data, now, subagents: { owner, agents, overflow: 2 } }).join("\n");
+	assert.match(text, /alpha · Fast · Medium \(openai-codex\/gpt-5\.6-sol-with-a-very-long-route-name#high\)/);
+	assert.match(text, /2 turns · 3 tools · ↓ 1\.2k · 1m 05s/);
+	assert.doesNotMatch(text, /R 400|W 20| · active/);
 });

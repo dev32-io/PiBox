@@ -420,8 +420,10 @@ export class SubagentProcessManager implements SubagentService {
 		attempt.child.once("exit", () => { exitAt = new Date().toISOString(); });
 		attempt.child.once("close", (code, signal) => {
 			parser.end();
-			if (!finalSeen) diagnose("Child exited without a final assistant message_end");
-			if (!agentSettled) diagnose("Child exited without agent_settled");
+			// Missing Pi terminal evidence is diagnostic for an unexpected exit, not
+			// for an explicit termination that intentionally interrupts the protocol.
+			if (!attempt.terminationReason && !finalSeen) diagnose("Child exited without a final assistant message_end");
+			if (!attempt.terminationReason && !agentSettled) diagnose("Child exited without agent_settled");
 			this.finishAttempt(record, attempt, {
 				code,
 				signal,
@@ -465,7 +467,9 @@ export class SubagentProcessManager implements SubagentService {
 		if (!this.closed) this.append(record, attempt, "output_drained");
 		if (!this.closed && attempt.continuation) record.handle = this.capabilities.issue(this.owner, record.agentId, record);
 		record.state = status;
-		record.summary = boundedText(outcome.finalText || outcome.assistantError || outcome.stderr, 512);
+		const terminationSummary = reason === "explicit_stop" ? "Stopped by user." : reason === "owner_lost" ? "Stopped because the owning activation ended." : undefined;
+		const resultText = terminationSummary ?? outcome.finalText;
+		record.summary = boundedText(resultText || outcome.assistantError || outcome.stderr, 512);
 		const resultStderr = retainUtf8Tail(
 			outcome.stderr,
 			outcome.assistantError ? `${outcome.stderr && !outcome.stderr.endsWith("\n") ? "\n" : ""}${outcome.assistantError}` : "",
@@ -479,7 +483,7 @@ export class SubagentProcessManager implements SubagentService {
 			status,
 			reason,
 			exitCode: outcome.code,
-			text: outcome.finalText,
+			text: resultText,
 			...(resultStderr ? { stderr: resultStderr } : {}),
 			...(record.progress ? { progress: structuredClone(record.progress) } : {}),
 		};

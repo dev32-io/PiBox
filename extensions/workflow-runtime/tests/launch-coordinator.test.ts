@@ -23,13 +23,14 @@ test("launches only through the service and keeps attempt-specific prompts out o
 	await registry.initialize(`main:${fakeOwner.sessionId}`);
 	const coordinator = new LaunchCoordinator(registry, `main:${fakeOwner.sessionId}`, service, ["/workflow.ts"]);
 	const common = {
-		role: "reviewer", assignment: {}, cwd: root, provider: "test", model: "fake", effort: "low", tools: ["read"],
+		role: "reviewer", assignment: {}, cwd: root, provider: "test", model: "fake", effort: "low", capabilityTier: "medium" as const, tools: ["read"],
 		agentPrompt: "Stable agent.", additionalPrompt: "Stable protocol.", persistentContext: "Stable contract.", deferCompletion: true,
 	};
 	const first = await coordinator.launch({ ...common, operationId: "one", task: "Reviewed commit one" });
 	const second = await coordinator.launch({ ...common, operationId: "two", existingAgentId: first.agent.id, task: "Reviewed commit two" });
 	assert.equal(first.agent.state, "reported");
 	assert.equal(second.agent.state, "reported");
+	assert.deepEqual(second.agent.attempts.map((attempt) => attempt.tier), ["medium", "medium"], "the requested tier remains available to workflow live status");
 	assert.deepEqual(service.requests.map((request) => request.kind), ["launch", "continue"]);
 	assert.equal(new Set(service.requests.map((request) => request.agentId)).size, 1);
 	const launch = service.requests[0]!;

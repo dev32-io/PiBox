@@ -854,14 +854,14 @@ test("request_changes returns immediately while the runner starts Fix #2 in back
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 
-test("running step kinds use distinct icons without redundant state labels", async () => {
+test("workflow live agents share stable status ordering and lifecycle-specific animation", async () => {
 	const f = fixture();
 	const snapshot: WorkflowSnapshot = {
 		ref: "test:workflow", title: "Active states", status: "running",
 		steps: [
-			{ ref: "test:task", title: "Implement", kind: "task", status: "running", fast: true, dependsOn: [], parallelism: "allowed", resourceClaims: [], progress: { startedAt: new Date(Date.now() - 61_000).toISOString(), lastEventAt: new Date().toISOString(), turns: 3, toolCalls: 4, toolErrors: 0, outputTokens: 1450, reasoningTokens: 22 } },
+			{ ref: "test:task", title: "Implement", kind: "task", status: "running", fast: true, dependsOn: [], parallelism: "allowed", resourceClaims: [], progress: { startedAt: new Date(Date.now() - 61_000).toISOString(), lastEventAt: new Date().toISOString(), turns: 3, toolCalls: 4, toolErrors: 0, outputTokens: 1450, reasoningTokens: 22, activeTool: "read" }, liveAgent: { agent: "implementer", tier: "medium", resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" }, fast: true, processStatus: "active", lifecycle: "running", startedAt: new Date(Date.now() - 61_000).toISOString(), progress: { startedAt: new Date(Date.now() - 61_000).toISOString(), lastEventAt: new Date().toISOString(), turns: 3, toolCalls: 4, toolErrors: 0, outputTokens: 1450, reasoningTokens: 22, activeTool: "read" } } },
 			{ ref: "test:merge", title: "Merge", kind: "merge", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
-			{ ref: "test:evaluation", title: "Evaluate", kind: "evaluation", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [] },
+			{ ref: "test:evaluation", title: "Evaluate", kind: "evaluation", status: "running", dependsOn: [], parallelism: "allowed", resourceClaims: [], liveAgent: { agent: "reviewer", tier: "high", resolved: { provider: "anthropic", model: "claude-opus-4-6", effort: "high" }, processStatus: "starting", lifecycle: "starting", startedAt: new Date().toISOString() } },
 		],
 	};
 	const adapter: WorkflowAdapter = {
@@ -882,11 +882,11 @@ test("running step kinds use distinct icons without redundant state labels", asy
 	const taskLine = rendered.findIndex((line) => line.includes("Implement"));
 	assert.ok(taskLine > 0);
 	assert.equal(rendered[taskLine]!.includes("Fast"), false, "the task title keeps the full row");
-	assert.match(rendered[taskLine + 1]!.trimStart(), /^Fast ·/, "live subagent status moves to an aligned continuation row");
+	assert.match(rendered[taskLine + 1]!.trim(), /^implementer · Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\) · 3 turns · 4 tools · ↓ 1\.5k · 1m 01s · read$/, "workflow status keeps stable identity and route before volatile progress");
 	assert.equal(rendered.filter((line) => line.includes("Fast")).length, 1, "Fast is omitted for ordinary workflow agents");
 	assert.equal(rendered.some((line) => /\bout\b/i.test(line)), false);
 	const icons = ["Implement", "Merge", "Evaluate"].map((title) => rendered.find((line) => line.includes(title))!.trimStart()[0]);
-	assert.equal(new Set(icons).size, 3, "task, merge, and evaluation activity have distinct animated icon families");
+	assert.equal(new Set(icons).size, 3, "running pulse, merge animation, and startup spinner remain visually distinct");
 	await f.handlers.get("session_shutdown")?.({}, f.ctx);
 });
 

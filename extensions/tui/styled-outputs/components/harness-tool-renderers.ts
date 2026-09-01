@@ -1,6 +1,7 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { currentSubagentPulseDot, formatInlineSubagentStatus } from "../../../subagent/display.js";
+import { currentSubagentIndicator, renderSubagentLiveStatus } from "../../../subagent/display.js";
+import { getSubagentUiProjectionRegistry, type SubagentUiAgentProjection, type SubagentUiAgentRef } from "../../../subagent/ui-projection.js";
 
 const EXACT_HARNESS_TOOLS = new Set([
 	"evidence_record", "finding_report", "memory_adapter", "work_item_complete", "task_integrate",
@@ -75,6 +76,39 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 	}
 }
 
+export type SubagentProjectionLookup = (ref: SubagentUiAgentRef) => SubagentUiAgentProjection | undefined;
+
+const defaultSubagentLookup: SubagentProjectionLookup = (ref) => getSubagentUiProjectionRegistry().lookup(ref);
+
+function subagentUiRef(details: Record<string, any> | undefined): SubagentUiAgentRef | undefined {
+	const ref = details?.uiRef;
+	const owner = ref?.owner;
+	if (!ref || typeof ref.agentId !== "string" || !owner || typeof owner.sessionId !== "string" || typeof owner.processInstanceId !== "string" || typeof owner.activationId !== "string") return undefined;
+	return ref as SubagentUiAgentRef;
+}
+
+function projectionDetails(details: Record<string, any> | undefined, projection: SubagentUiAgentProjection): Record<string, any> {
+	return {
+		...details,
+		agentId: projection.agentId,
+		agent: projection.agent,
+		state: projection.state,
+		...(projection.tier ? { tier: projection.tier } : {}),
+		resolved: {
+			provider: projection.provider,
+			model: projection.model,
+			effort: projection.effort,
+			fast: projection.fast,
+			startedAt: projection.startedAt,
+		},
+		fast: projection.fast,
+		progress: projection.progress,
+		processStatus: ["launching", "running", "stopping"].includes(projection.state)
+			? (projection.progress?.processStartedAt ? "active" : "starting")
+			: undefined,
+	};
+}
+
 class HarnessCallComponent implements Component {
 	constructor(
 		private readonly name: string,
@@ -84,30 +118,38 @@ class HarnessCallComponent implements Component {
 		private readonly error: boolean,
 		private readonly details?: Record<string, any>,
 		private readonly now: () => number = Date.now,
+		private readonly lookup: SubagentProjectionLookup = defaultSubagentLookup,
 	) {}
 
 	render(width: number): string[] {
+		const ref = subagentUiRef(this.details);
+		const projection = ref ? this.lookup(ref) : undefined;
+		const details = projection ? projectionDetails(this.details, projection) : this.details;
 		const rawLabel = callLabel(this.name, this.args);
 		// Harness arguments are model-controlled and may contain newlines. Keep the
 		// transcript row single-line and bounded without changing the tool payload.
 		const label = { action: compact(rawLabel.action, 72), ...(rawLabel.target ? { target: compact(rawLabel.target, 96) } : {}) };
+		const indicatorState = details?.processStatus === "active" || details?.progress?.processStartedAt ? "running" : "starting";
 		const icon = this.partial
-			? this.theme.fg("warning", currentSubagentPulseDot())
+			? this.theme.fg(indicatorState === "starting" ? "muted" : "accent", currentSubagentIndicator(indicatorState, this.now()))
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
 		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
-		const showSubagentStatus = (this.name === "subagent_spawn" || this.name === "subagent_continue") && (this.partial || Boolean(this.details?.resolved));
+		const isSubagent = this.name === "subagent_spawn" || this.name === "subagent_continue";
+		const isDetachedBackgroundReceipt = this.name === "subagent_spawn" && this.args.mode === "background" && !this.partial && Boolean(ref) && !projection;
+		const showSubagentStatus = isSubagent && !isDetachedBackgroundReceipt && (this.partial || Boolean(details?.terminal) || Boolean(projection) || Boolean(details?.resolved));
 		if (!this.partial && !showSubagentStatus) return [truncateToWidth(headline, width, "…")];
 		const state = showSubagentStatus
-			? formatInlineSubagentStatus({
-				tier: this.details?.tier ?? this.args.tier,
-				resolved: this.details?.resolved,
-				fast: this.details?.fast,
-				progress: this.details?.progress,
-				processStatus: this.details?.processStatus,
-				startedAt: this.details?.resolved?.startedAt ?? this.details?.progress?.startedAt,
-			}, this.now())
-			: "running";
-		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", state)}`, width, "…")];
+			? renderSubagentLiveStatus({
+				agent: details?.agent ?? this.args.agent,
+				tier: details?.tier ?? this.args.tier,
+				resolved: details?.resolved,
+				fast: details?.fast,
+				progress: details?.progress,
+				processStatus: details?.processStatus,
+				startedAt: details?.resolved?.startedAt ?? details?.progress?.startedAt,
+			}, this.theme, this.now())
+			: this.theme.fg("muted", "running");
+		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${state}`, width, "…")];
 	}
 
 	invalidate(): void {}
@@ -195,8 +237,8 @@ function appendOutputBlock(container: Container, text: string, theme: Theme, exp
 	}
 }
 
-export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>, now: () => number = Date.now): Component {
-	return new HarnessCallComponent(name, args, theme, partial, error, details, now);
+export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>, now: () => number = Date.now, lookup: SubagentProjectionLookup = defaultSubagentLookup): Component {
+	return new HarnessCallComponent(name, args, theme, partial, error, details, now, lookup);
 }
 
 function memoryRecordLabel(record: any): string {
@@ -257,7 +299,7 @@ function renderMemoryToolResult(result: any, expanded: boolean, theme: Theme, er
 	return component;
 }
 
-export function renderHarnessToolResult(name: string, result: any, expanded: boolean, theme: Theme, error: boolean): Component {
+function renderHarnessToolResultSnapshot(name: string, result: any, expanded: boolean, theme: Theme, error: boolean): Component {
 	if (name === "memory_adapter") return renderMemoryToolResult(result, expanded, theme, error);
 	const component = new Container();
 	const text = firstText(result);
@@ -297,4 +339,36 @@ export function renderHarnessToolResult(name: string, result: any, expanded: boo
 	}
 	appendOutputBlock(component, text, theme, expanded, subagentForeground ? 10 : 4);
 	return component;
+}
+
+class ProjectionAwareHarnessResultComponent implements Component {
+	constructor(
+		private readonly name: string,
+		private readonly result: any,
+		private readonly expanded: boolean,
+		private readonly theme: Theme,
+		private readonly error: boolean,
+		private readonly ref: SubagentUiAgentRef,
+		private readonly lookup: SubagentProjectionLookup,
+	) {}
+
+	render(width: number): string[] {
+		const projection = this.lookup(this.ref);
+		const details = projection
+			? projectionDetails(this.result?.details, projection)
+			: this.name === "subagent_spawn"
+				? { ...this.result?.details, state: "launched" }
+				: this.result?.details;
+		return renderHarnessToolResultSnapshot(this.name, { ...this.result, details }, this.expanded, this.theme, this.error).render(width);
+	}
+
+	invalidate(): void {}
+}
+
+export function renderHarnessToolResult(name: string, result: any, expanded: boolean, theme: Theme, error: boolean, lookup: SubagentProjectionLookup = defaultSubagentLookup): Component {
+	const ref = subagentUiRef(result?.details);
+	if (ref && (name === "subagent_spawn" || name === "subagent_continue")) {
+		return new ProjectionAwareHarnessResultComponent(name, result, expanded, theme, error, ref, lookup);
+	}
+	return renderHarnessToolResultSnapshot(name, result, expanded, theme, error);
 }

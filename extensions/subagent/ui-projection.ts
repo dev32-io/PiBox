@@ -24,6 +24,12 @@ export interface SubagentUiProjection {
 	readonly overflow: number;
 }
 
+/** Immutable correlation carried by a Pi tool result into the transcript UI. */
+export interface SubagentUiAgentRef {
+	readonly owner: RuntimeOwner;
+	readonly agentId: string;
+}
+
 export interface SubagentUiProjectionBinding {
 	readonly id: string;
 	readonly owner: RuntimeOwner;
@@ -63,6 +69,14 @@ export class SubagentUiProjectionRegistry {
 		};
 	}
 
+	/** Owner-fenced lookup for event-driven transcript rows, including terminal agents. */
+	lookup(ref: SubagentUiAgentRef): SubagentUiAgentProjection | undefined {
+		const current = this.binding;
+		if (!current || !ref?.agentId || !sameRuntimeOwner(current.owner, ref.owner)) return undefined;
+		const agent = current.agents.find((candidate) => candidate.agentId === ref.agentId);
+		return agent ? structuredClone(agent) : undefined;
+	}
+
 	project(maxRows = 3): SubagentUiProjection | undefined {
 		if (!Number.isInteger(maxRows) || maxRows < 1) throw new Error("Subagent footer row limit must be a positive integer");
 		const current = this.binding;
@@ -95,7 +109,9 @@ export class SubagentUiProjectionRegistry {
 	}
 }
 
-const UI_REGISTRY_KEY = Symbol.for("pibox:subagent-ui-projection-registry:v1");
+// Versioned so /reload cannot retain a process-global registry without the
+// terminal transcript lookup contract.
+const UI_REGISTRY_KEY = Symbol.for("pibox:subagent-ui-projection-registry:v2");
 type UiRegistryGlobal = typeof globalThis & { [UI_REGISTRY_KEY]?: SubagentUiProjectionRegistry };
 
 export function getSubagentUiProjectionRegistry(): SubagentUiProjectionRegistry {

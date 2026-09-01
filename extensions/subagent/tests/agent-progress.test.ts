@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatAgentProgress, initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress } from "../agent-progress.js";
+import { formatAgentProcessStatus, formatAgentProgress, initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress } from "../agent-progress.js";
 
 test("projects only concise semantic progress from child events", () => {
 	let progress = initialAgentProgress("2026-01-01T00:00:00.000Z");
@@ -16,7 +16,7 @@ test("projects only concise semantic progress from child events", () => {
 		contextTokens: 78508, settledAt: "2026-01-01T00:03:08.000Z",
 	});
 	const rendered = formatAgentProgress(progress, Date.parse("2026-01-01T00:04:00.000Z"));
-	assert.equal(rendered, "3m 08s · 1 turn · 1 tool · ↓ 7.8k");
+	assert.equal(rendered, "1 turn · 1 tool · ↓ 7.8k · 3m 08s");
 	assert.doesNotMatch(rendered, /out|private|secret/i);
 	assert.match(formatAgentProgress({ ...progress, outputTokens: 152_000 }), /↓ 152k/);
 });
@@ -29,20 +29,20 @@ test("accumulates input tokens from historical progress records that predate the
 	assert.equal(historical.inputTokens, undefined);
 });
 
-test("tracks startup and activity from the child Pi process instead of event recency", () => {
+test("tracks process lifecycle separately from stable live-progress text", () => {
 	const startedAt = "2026-01-01T00:00:00.000Z";
 	const starting = initialAgentProgress(startedAt);
-	assert.equal(formatAgentProgress(starting, Date.parse("2026-01-01T00:00:08.000Z")), "8s · starting");
+	assert.equal(formatAgentProgress(starting, Date.parse("2026-01-01T00:00:08.000Z")), "8s");
+	assert.equal(formatAgentProcessStatus(starting), "starting");
 	const spawned = markAgentProcessStarted(starting, "2026-01-01T00:00:09.000Z");
-	assert.equal(formatAgentProgress(spawned, Date.parse("2026-01-01T00:00:11.000Z")), "11s · active");
-	assert.equal(formatAgentProgress(spawned, Date.parse("2026-01-01T00:00:11.000Z"), { showActive: false }), "11s");
-	assert.equal(formatAgentProgress(starting, Date.parse("2026-01-01T00:00:08.000Z"), { showActive: false }), "8s · starting");
+	assert.equal(formatAgentProgress(spawned, Date.parse("2026-01-01T00:00:11.000Z")), "11s");
+	assert.equal(formatAgentProcessStatus(spawned), "active");
 	const active = { ...spawned, turns: 1, outputTokens: 120, lastEventAt: "2026-01-01T00:00:10.000Z" };
-	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:00:29.000Z")), /↓ 120 · active$/);
-	assert.match(formatAgentProgress(active, Date.parse("2026-01-01T00:10:00.000Z")), /↓ 120 · active$/);
-	assert.doesNotMatch(formatAgentProgress(active, Date.parse("2026-01-01T00:10:00.000Z")), /idle/);
+	assert.equal(formatAgentProgress(active, Date.parse("2026-01-01T00:00:29.000Z")), "1 turn · ↓ 120 · 29s");
+	assert.equal(formatAgentProgress(active, Date.parse("2026-01-01T00:10:00.000Z")), "1 turn · ↓ 120 · 10m 00s");
 	const agentSettled = projectAgentProgress(active, { type: "agent_settled" }, "2026-01-01T00:10:00.000Z");
-	assert.match(formatAgentProgress(agentSettled, Date.parse("2026-01-01T00:10:01.000Z")), /active$/, "agent events do not replace process status");
+	assert.equal(formatAgentProcessStatus(agentSettled), "active", "agent events do not replace process status");
 	const exited = markAgentProcessExited(agentSettled, "2026-01-01T00:10:01.000Z");
+	assert.equal(formatAgentProcessStatus(exited), undefined);
 	assert.doesNotMatch(formatAgentProgress(exited, Date.parse("2026-01-01T00:11:00.000Z")), /starting|active|idle/);
 });

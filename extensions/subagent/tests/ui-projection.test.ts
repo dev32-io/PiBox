@@ -22,6 +22,9 @@ test("process-global projection bindings sort stably, bound rows, report overflo
 	]);
 	assert.deepEqual(registry.project(2)?.agents.map((value) => value.agentId), ["same-a", "same-b"]);
 	assert.equal(registry.project(2)?.overflow, 1);
+	assert.equal(registry.lookup({ owner, agentId: "settled" })?.state, "completed", "terminal rows remain available to activation-scoped transcript consumers");
+	assert.equal(registry.lookup({ owner: { ...owner, activationId: "replacement" }, agentId: "settled" }), undefined, "another activation cannot adopt the transcript projection");
+	assert.equal(registry.lookup({ owner, agentId: "missing" }), undefined);
 	assert.equal(renders, 2, "binding and semantic event publication each request a render");
 	unsubscribe();
 	binding.release();

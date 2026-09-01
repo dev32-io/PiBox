@@ -10,6 +10,7 @@ import { MODEL_TIER_PROFILE_STATUS_KEY, parseModelTierProfileStatus } from "../.
 import { PROFILE_STATUS_KEY } from "../../profile/registry.js";
 import { attachInteractiveFooter } from "../interactive-footer/controller.js";
 import { getInteractiveFooterItem } from "../interactive-footer/registry.js";
+import { SUBAGENT_ANIMATION_INTERVAL_MS } from "../../subagent/display.js";
 import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 
 export default function statusBar(pi: ExtensionAPI): void {
@@ -17,6 +18,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 	let poller: GitPoller | undefined;
 	let activeTui: TUI | undefined;
 	let clockTimer: ReturnType<typeof setInterval> | undefined;
+	let subagentAnimationTimer: ReturnType<typeof setInterval> | undefined;
 	let unsubscribeSubagents: (() => void) | undefined;
 
 	const stop = () => {
@@ -24,6 +26,8 @@ export default function statusBar(pi: ExtensionAPI): void {
 		poller = undefined;
 		if (clockTimer) clearInterval(clockTimer);
 		clockTimer = undefined;
+		if (subagentAnimationTimer) clearInterval(subagentAnimationTimer);
+		subagentAnimationTimer = undefined;
 		unsubscribeSubagents?.();
 		unsubscribeSubagents = undefined;
 		activeTui = undefined;
@@ -37,7 +41,19 @@ export default function statusBar(pi: ExtensionAPI): void {
 		poller.start();
 		clockTimer = setInterval(() => activeTui?.requestRender(), 30_000);
 		const subagentUi = getSubagentUiProjectionRegistry();
-		unsubscribeSubagents = subagentUi.subscribe(() => activeTui?.requestRender());
+		const refreshSubagents = () => {
+			const active = Boolean(subagentUi.project()?.agents.length);
+			if (active && !subagentAnimationTimer) {
+				subagentAnimationTimer = setInterval(() => activeTui?.requestRender(), SUBAGENT_ANIMATION_INTERVAL_MS);
+				subagentAnimationTimer.unref?.();
+			} else if (!active && subagentAnimationTimer) {
+				clearInterval(subagentAnimationTimer);
+				subagentAnimationTimer = undefined;
+			}
+			activeTui?.requestRender();
+		};
+		unsubscribeSubagents = subagentUi.subscribe(refreshSubagents);
+		refreshSubagents();
 
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			activeTui = tui;

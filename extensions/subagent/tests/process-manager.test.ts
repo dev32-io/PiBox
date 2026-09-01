@@ -181,11 +181,14 @@ test("stop emits lifecycle events, confirms exit, and escalates an ignored SIGTE
 	assert.deepEqual(await reboundWait, result);
 	assert.equal(result.status, "cancelled");
 	assert.equal(result.reason, "explicit_stop");
+	assert.equal(result.text, "Stopped by user.");
+	assert.doesNotMatch(result.stderr ?? "", /final assistant message_end|agent_settled/);
 	assert.equal(result.exitCode, null);
 	assert.match(await readFile(signalLog, "utf8"), /SIGTERM/);
 	const types = await eventTypes(manager);
 	assert.deepEqual(types.slice(-5), ["stop_requested", "terminating", "process_exited", "output_drained", "terminal"]);
 	assert.equal(manager.replay(owner()).snapshot.agents[0]?.state, "cancelled");
+	assert.equal(manager.replay(owner()).snapshot.agents[0]?.summary, "Stopped by user.");
 });
 
 test("teardown is terminal cancellation, terminates children, and fences later delivery", async (t) => {
@@ -198,6 +201,8 @@ test("teardown is terminal cancellation, terminates children, and fences later d
 	const result = await started.result;
 	assert.equal(result.status, "cancelled");
 	assert.equal(result.reason, "owner_lost");
+	assert.equal(result.text, "Stopped because the owning activation ended.");
+	assert.doesNotMatch(result.stderr ?? "", /final assistant message_end|agent_settled/);
 	assert.deepEqual(delivered, []);
 	await assert.rejects(access(sessionDirectory), /ENOENT/, "activation teardown deletes every retained child transcript");
 	assert.throws(() => manager.replay(owner()), /torn down/);

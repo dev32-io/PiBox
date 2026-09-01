@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { formatAgentProgress } from "../subagent/agent-progress.js";
+import { renderSubagentLiveStatus, subagentIndicatorFrame } from "../subagent/display.js";
 import type { WorkflowMetrics, WorkflowSnapshot, WorkflowStep } from "./api.js";
 
 const RUNNING_FRAMES: Record<string, readonly string[]> = {
@@ -10,12 +10,23 @@ const RUNNING_FRAMES: Record<string, readonly string[]> = {
 	evaluation: ["◐", "◓", "◑", "◒"],
 };
 
-const displayProgress = (step: WorkflowStep, status: WorkflowStep["status"]): string =>
-	status === "running" ? formatAgentProgress(step.progress, Date.now(), { showStarting: step.kind === "task" || step.kind === "evaluation" }) : "";
+const displayProgress = (step: WorkflowStep, ctx: ExtensionContext): string =>
+	step.status === "running" ? renderSubagentLiveStatus(step.liveAgent ?? { ...(step.fast !== undefined ? { fast: step.fast } : {}), ...(step.progress ? { progress: step.progress } : {}) }, ctx.ui.theme) : "";
 const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
-const stateIcon = (status: WorkflowStep["status"], kind: string, frame: number): string => {
-	if (status === "running") { const frames = RUNNING_FRAMES[kind] ?? RUNNING_FRAMES.task!; return frames[frame % frames.length]!; }
+const stateIcon = (status: WorkflowStep["status"], kind: string, frame: number, step?: WorkflowStep): string => {
+	if (status === "running") {
+		if ((kind === "task" || kind === "evaluation") && step) {
+			const lifecycle = step.liveAgent?.lifecycle ?? (step.liveAgent?.processStatus === "active" ? "running" : "starting");
+			return subagentIndicatorFrame(lifecycle, frame);
+		}
+		const frames = RUNNING_FRAMES[kind] ?? RUNNING_FRAMES.task!;
+		return frames[frame % frames.length]!;
+	}
 	return status === "attention" ? "⚠" : status === "ready" ? "◆" : status === "pending" ? "·" : status === "done" ? "✓" : "–";
+};
+const agentRunningTone = (step: WorkflowStep): "muted" | "warning" | "accent" => {
+	const lifecycle = step.liveAgent?.lifecycle ?? (step.liveAgent?.processStatus === "active" ? "running" : "starting");
+	return lifecycle === "starting" ? "muted" : lifecycle === "stopping" ? "warning" : "accent";
 };
 const visualStatus = (step: WorkflowStep): WorkflowStep["status"] =>
 	step.status === "running" ? step.status : ["verification-failed", "candidate-ci-failed", "integration-conflict"].includes(step.phase ?? "") ? "attention" : step.phase === "contribution-ready" ? "ready" : step.status;
@@ -41,11 +52,10 @@ function rawTaskLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, frame: 
 	const done = snapshot.steps.filter((step) => step.status === "done").length;
 	const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
 	for (const step of snapshot.steps) {
-		const color = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" ? "accent" : "muted";
-		const progress = includeProgress ? displayProgress(step, step.status) : "";
-		const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
-		lines.push(`${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind, frame)} `)}${step.title}`);
-		if (liveStatus) lines.push(`  ${ctx.ui.theme.fg("dim", liveStatus)}`);
+		const color = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" ? agentRunningTone(step) : "muted";
+		const liveStatus = includeProgress ? displayProgress(step, ctx) : "";
+		lines.push(`${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind, frame, step)} `)}${step.title}`);
+		if (liveStatus) lines.push(`  ${liveStatus}`);
 	}
 	return lines;
 }
@@ -82,11 +92,10 @@ function stageTaskLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, frame
 			for (const step of stageSteps.filter((candidate) => candidate.kind !== "evaluation")) {
 				const waitingOnActiveBarrier = step.detail === "waiting for stage merge barrier" && Boolean(runningMerge);
 				const shownStatus = waitingOnActiveBarrier ? "running" : visualStatus(step);
-				const color = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
-				const progress = includeProgress ? displayProgress(step, step.status) : "";
-				const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
-				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, step.status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind, frame)} `)}${stepLabel(step)} · ${step.title}`);
-				if (liveStatus) lines.push(`    ${ctx.ui.theme.fg("dim", liveStatus)}`);
+				const color = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" && (step.kind === "task" || step.kind === "evaluation") ? agentRunningTone(step) : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
+				const liveStatus = includeProgress ? displayProgress(step, ctx) : "";
+				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, step.status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind, frame, step)} `)}${stepLabel(step)} · ${step.title}`);
+				if (liveStatus) lines.push(`    ${liveStatus}`);
 			}
 		} else if (reviewActive) {
 			for (const step of reviewSteps) {
@@ -94,10 +103,10 @@ function stageTaskLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, frame
 				const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
 				const queuedFix = step.status === "running" && /fix requested/i.test(phase ?? step.detail ?? "") ? /iteration\s+(\d+)\//i.exec(step.detail ?? "") : undefined;
 				const label = (runtimeStage ? step.title : queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
-				const progress = includeProgress ? displayProgress(step, step.status) : "";
-				const liveStatus = [step.fast ? "Fast" : "", progress].filter(Boolean).join(" · ");
-				lines.push(`  ${ctx.ui.theme.fg(step.status === "attention" ? "error" : step.status === "done" ? "success" : "accent", `${stateIcon(step.status, step.kind, frame)} `)}${label}`);
-				if (liveStatus) lines.push(`    ${ctx.ui.theme.fg("dim", liveStatus)}`);
+				const liveStatus = includeProgress ? displayProgress(step, ctx) : "";
+				const color = step.status === "attention" ? "error" : step.status === "done" ? "success" : step.status === "running" ? agentRunningTone(step) : "accent";
+				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind, frame, step)} `)}${label}`);
+				if (liveStatus) lines.push(`    ${liveStatus}`);
 			}
 		}
 	}

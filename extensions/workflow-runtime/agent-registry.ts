@@ -85,6 +85,8 @@ export interface ProcessAttempt {
 	provider?: string;
 	model?: string;
 	effort?: string;
+	/** Requested capability tier retained for stable live-status rendering. */
+	tier?: string;
 	/** Effective Fast-mode request policy for this resolved process route. */
 	fast?: boolean;
 	sequence: number;
@@ -337,7 +339,7 @@ export class SessionAgentRegistry {
 		})).agent;
 	}
 
-	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string }, activity?: WorkflowActivityDescriptor, fast?: boolean, contextHashes?: PromptContextHashes): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
+	async startAttempt(agentId: string, route?: { provider: string; model: string; effort: string; tier?: string }, activity?: WorkflowActivityDescriptor, fast?: boolean, contextHashes?: PromptContextHashes): Promise<{ agent: SessionAgentRecord; attempt: ProcessAttempt }> {
 		return this.mutate(agentId, "agent.attempt_started", (agent) => {
 			if (!TRANSITIONS[agent.state].has("launching")) throw this.invalidTransition(agent.state, "launching");
 			const now = new Date().toISOString();

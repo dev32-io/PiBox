@@ -275,6 +275,7 @@ test("background returns immediately and delivers one terminal follow-up to the 
 	await f.fire("session_start", { reason: "startup" });
 	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "general-purpose", task: "Background work", mode: "background" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /background as agent-1/);
+	assert.deepEqual(spawned.details.uiRef, { owner: f.services[0]!.owner, agentId: "agent-1" }, "the immutable launch receipt carries an owner-fenced UI correlation, not mutable lifecycle state");
 	f.services[0]!.finish("agent-1", "completed", "background report");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(f.sent.length, 1);

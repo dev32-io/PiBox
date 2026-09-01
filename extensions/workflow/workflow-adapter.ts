@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { WorkflowAdapter, WorkflowExecutionControl, WorkflowMetricCategory, WorkflowRunResult, WorkflowSnapshot, WorkflowStep, WorkflowStepStatus, WorkflowStartProgress } from "../workflow-runtime/api.js";
 import type { AgentProgress } from "../subagent/agent-progress.js";
+import type { SubagentLiveStatus } from "../subagent/display.js";
 import { WorkflowControlStore, type WorkflowControlFence } from "../workflow-runtime/control-store.js";
 import { getManagedWorkflowOperationRegistry } from "../workflow-runtime/operation-registry.js";
 import { isAgentProcessActive, type SessionAgentRecord, type SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
@@ -75,18 +76,40 @@ function currentAttempt(agent: SessionAgentRecord | undefined) {
 	return agent?.attempts.find((attempt) => attempt.id === agent.currentAttemptId);
 }
 
-type ActiveProcessProjection = { running: boolean; attention?: string; progress?: AgentProgress; fast?: boolean };
+type ActiveProcessProjection = { running: boolean; attention?: string; progress?: AgentProgress; fast?: boolean; liveAgent?: SubagentLiveStatus };
 
-function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean): ActiveProcessProjection {
+function liveAgentProjection(agent: SessionAgentRecord, attempt: ReturnType<typeof currentAttempt>, coordinator?: LaunchCoordinator): SubagentLiveStatus {
+	const live = coordinator?.inspect(agent.id);
+	const lifecycle = live?.state === "launching" ? "starting" : live?.state === "stopping" ? "stopping" : attempt?.state === "launching" ? "starting" : "running";
+	return {
+		agent: agent.role,
+		...(attempt?.tier ? { tier: attempt.tier } : {}),
+		resolved: {
+			provider: live?.provider ?? attempt?.provider ?? agent.provider,
+			model: live?.model ?? attempt?.model ?? agent.model,
+			effort: live?.effort ?? attempt?.effort ?? agent.effort,
+		},
+		fast: live?.fast === true || attempt?.fast === true,
+		...(live?.progress ? { progress: live.progress } : attempt?.progress ? { progress: attempt.progress } : {}),
+		startedAt: live?.startedAt ?? attempt?.startedAt ?? agent.startedAt,
+		processStatus: lifecycle === "starting" ? "starting" : "active",
+		lifecycle,
+	};
+}
+
+function scopeActivity(agents: SessionAgentRecord[], scope: "taskId" | "evaluationId", id: string, relevant?: (agent: SessionAgentRecord) => boolean, coordinator?: LaunchCoordinator): ActiveProcessProjection {
 	const matching = agents.filter((agent) => agent[scope] === id && (!relevant || relevant(agent)));
 	const active = matching.find(isAgentProcessActive);
 	const attempt = currentAttempt(active);
-	if (active) return { running: true, ...(attempt?.progress ? { progress: attempt.progress } : {}), ...(attempt?.fast === true ? { fast: true } : {}) };
+	if (active) {
+		const liveAgent = liveAgentProjection(active, attempt, coordinator);
+		return { running: true, liveAgent, ...(liveAgent.progress ? { progress: liveAgent.progress } : {}), ...(liveAgent.fast === true ? { fast: true } : {}) };
+	}
 	const attention = matching.map(agentAttention).find((detail): detail is string => Boolean(detail));
 	return { running: false, ...(attention ? { attention } : {}) };
 }
 
-function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }): ActiveProcessProjection {
+function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: string; loop?: { state?: string; iteration?: number; reviewerAgentId?: string; fixerAgentId?: string } }, coordinator?: LaunchCoordinator): ActiveProcessProjection {
 	const loop = evaluation.loop;
 	// Once canonical settlement reaches the manager checkpoint, the durable
 	// decision boundary owns presentation. Failed/blocked reviewers intentionally
@@ -109,7 +132,10 @@ function evaluationActivity(agents: SessionAgentRecord[], evaluation: { id: stri
 	// generation equivalent while excluding historical reports and exits.
 	const active = current.find(({ agent, attempt }) => isAgentProcessActive(agent) && (attempt?.state === "launching" || attempt?.state === "running"));
 	const attempt = active?.attempt;
-	if (active) return { running: true, ...(attempt?.progress ? { progress: attempt.progress } : {}), ...(attempt?.fast === true ? { fast: true } : {}) };
+	if (active) {
+		const liveAgent = liveAgentProjection(active.agent, attempt, coordinator);
+		return { running: true, liveAgent, ...(liveAgent.progress ? { progress: liveAgent.progress } : {}), ...(liveAgent.fast === true ? { fast: true } : {}) };
+	}
 	if (current.some(({ agent }) => agent.state === "reported")) return { running: false, attention: "result pending reconciliation" };
 	const failed = current.find(({ agent }) => ["failed", "protocol_failed", "recovery_required"].includes(agent.state));
 	if (failed) return { running: false, attention: agentAttention(failed.agent) ?? "failed" };
@@ -422,7 +448,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const parallelStageReadyToMerge = topology.mode === "sequential" || topology.stageSize === 1 || topology.stageTasks.every((id) => contributionStates.has(taskById.get(id)?.status ?? ""));
 				const mergeBarrierOwner = topology.mode === "sequential" || topology.stageSize === 1 || topology.stageTasks[0] === task.id;
 				let mapped = taskStatus(task.status, priorStagesDone && dependenciesDone && priorSequentialTaskDone);
-				const activity = scopeActivity(agents, "taskId", task.id);
+				const activity = scopeActivity(agents, "taskId", task.id, undefined, runtime.coordinator);
 				if (isMergeState && (!priorSequentialTaskDone || !parallelStageReadyToMerge || !mergeBarrierOwner)) mapped = { status: "pending", detail: !priorSequentialTaskDone ? "waiting for prior sequential task" : parallelStageReadyToMerge ? "waiting for stage merge barrier" : "waiting for parallel contributions" };
 				if (mapped.status === "running" && !activity.running) mapped = { status: "attention", detail: activity.attention ?? "stale process state" };
 				const verification = stageVerification.get(topology.stageId);
@@ -445,6 +471,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 					parallelism: isMergeState ? "serial" : topology.parallelism,
 					resourceClaims: isMergeState || topology.isolation === "repository" ? ["working-branch"] : task.execution.resourceClaims,
 					...(activity.progress ? { progress: activity.progress } : {}),
+					...(activity.liveAgent ? { liveAgent: activity.liveAgent } : {}),
 					...(activity.fast ? { fast: true } : {}),
 				};
 			});
@@ -466,7 +493,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const dependenciesDone = dependencySteps.every((step) => step?.status === "done");
 				const dependencyAttention = dependencySteps.find((step) => step?.status === "attention" || step?.status === "cancelled");
 				let status: WorkflowStepStatus = "pending"; let detail: string | undefined;
-				const activity = evaluationActivity(agents, evaluation);
+				const activity = evaluationActivity(agents, evaluation, runtime.coordinator);
 				// Process activity is authoritative over the durable loop label, but only
 				// for the worker that owns the current phase. A prior reviewer report must
 				// not shadow a queued fixer.
@@ -511,7 +538,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				const evaluationRepairLimit = configuredRepairLimit ?? evaluation.loop?.maxIterations ?? DEFAULT_REVIEW_FIX_ITERATIONS;
 				const guidance = `findings ${open.length} (blocking ${blocking.length}); iteration ${evaluation.loop?.iteration ?? 0}/${evaluationRepairLimit}; allowed actions: Approve or Request changes${evaluation.loop?.managerPrompt ? `; manager guidance: ${evaluation.loop.managerPrompt}` : ""}`;
 				const stepDetail = activity.attention || dependencyAttention || (status === "pending" && !dependenciesDone) ? detail : [detail, guidance].filter(Boolean).join(" · ");
-				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), ...(activity.fast ? { fast: true } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
+				steps.push({ ref: `work-item:${item.id}/evaluation:${evaluation.id}`, title: `${finalValidation?.name ?? `Review loop ${evaluation.id}`} · ${phase}`, kind: "evaluation", status, ...(evaluation.checkpoint ? { checkpoint: evaluation.checkpoint } : {}), ...(stepDetail ? { detail: stepDetail } : {}), ...(activity.progress ? { progress: activity.progress } : {}), ...(activity.liveAgent ? { liveAgent: activity.liveAgent } : {}), ...(activity.fast ? { fast: true } : {}), dependsOn: dependencies, parallelism: "serial", resourceClaims: [] });
 			}
 			const status = steps.some((step) => step.status === "attention" || step.status === "cancelled") ? "attention" : steps.length > 0 && steps.every((step) => step.status === "done") ? "done" : steps.some((step) => step.status === "running") ? "running" : "ready";
 			const plannerStages = stages.map((stage, index) => ({ id: stage.id, index, nodes: [...stage.tasks.map((id) => `task:${id}`), ...(stageReviews.get(stage.id) ? [`evaluation:${stageReviews.get(stage.id)!.id}`] : [])], parallel: resolveStageMode(stage) === "concurrent", group: "planner" as const }));

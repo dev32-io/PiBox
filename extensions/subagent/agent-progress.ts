@@ -119,37 +119,34 @@ function elapsed(from: string | number, toMs: number): string {
 
 export interface AgentProgressFormatOptions {
 	fallbackStartedAt?: string | number;
-	/** Manager-derived process state; lifecycle facts remain authoritative over event timing. */
+	/** Retained for callers that also choose an animated lifecycle indicator. */
 	processStatus?: "starting" | "active";
-	/** Render the lifecycle word even when no progress projection exists yet. */
+	/** @deprecated Lifecycle is represented by animation rather than text. */
 	showStarting?: boolean;
-	/** Keep startup visible while allowing compact active surfaces to omit a redundant label. */
+	/** @deprecated Lifecycle is represented by animation rather than text. */
 	showActive?: boolean;
 }
 
 /**
- * Format the bounded, semantic live-progress vocabulary shared by inline
- * subagents, the background footer, and managed workflow task rows.
+ * Format volatile progress after the stable agent and route prefix. Lifecycle is
+ * deliberately absent: shared surface-specific animation owns that signal.
  */
 export function formatAgentProgress(progress: AgentProgress | undefined, now = Date.now(), options: AgentProgressFormatOptions = {}): string {
-	if (!progress && options.fallbackStartedAt === undefined && options.showStarting !== true) return "";
+	if (!progress && options.fallbackStartedAt === undefined) return "";
 	const safeNow = timestamp(now) ?? Date.now();
 	const startedAt = progress?.startedAt ?? options.fallbackStartedAt;
 	const terminalAt = timestamp(progress?.processExitedAt) ?? timestamp(progress?.settledAt) ?? safeNow;
-	const parts = startedAt === undefined ? [] : [elapsed(startedAt, terminalAt)];
+	const parts: string[] = [];
 	const turns = displayCount(progress?.turns);
 	const toolCalls = displayCount(progress?.toolCalls);
+	const toolErrors = displayCount(progress?.toolErrors);
 	const outputTokens = displayCount(progress?.outputTokens);
-	const cacheReadTokens = displayCount(progress?.cacheReadTokens);
-	const cacheWriteTokens = displayCount(progress?.cacheWriteTokens);
 	if (turns > 0) parts.push(`${turns} turn${turns === 1 ? "" : "s"}`);
 	if (toolCalls > 0) parts.push(`${toolCalls} tool${toolCalls === 1 ? "" : "s"}`);
+	if (toolErrors > 0) parts.push(`${toolErrors} error${toolErrors === 1 ? "" : "s"}`);
+	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
+	if (startedAt !== undefined) parts.push(elapsed(startedAt, terminalAt));
 	const activeTool = safeToolName(progress?.activeTool);
 	if (activeTool) parts.push(activeTool);
-	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
-	if (cacheReadTokens > 0) parts.push(`R ${compactNumber(cacheReadTokens)}`);
-	if (cacheWriteTokens > 0) parts.push(`W ${compactNumber(cacheWriteTokens)}`);
-	const processStatus = options.processStatus ?? formatAgentProcessStatus(progress);
-	if (processStatus && (processStatus !== "active" || options.showActive !== false)) parts.push(processStatus);
 	return parts.join(" · ");
 }

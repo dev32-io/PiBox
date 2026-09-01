@@ -333,15 +333,20 @@ test("renders the whole-branch review-fix loop with branch-specific active phase
 test("an active reviewer is the only source of Re-reviewing wording", async () => {
 	const item: any = { id: "example", title: "Example", planning: { revision: 1 }, tasks: [], executionStages: [], integrationUnits: [], evaluations: [{ id: "review" }] };
 	const evaluation: any = { id: "review", type: "combined-review", checkpoint: "stage-review", status: "planned", scope: { workItem: "example" }, loop: { state: "rereviewing", iteration: 2, maxIterations: 3, reviewerAgentId: "reviewer" } };
-	const reviewer = { id: "reviewer", role: "code-reviewer", evaluationId: "review", state: "running", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", fast: true, activity: { kind: "review", generation: 2 }, progress: { startedAt: "2026-01-01T00:00:00.000Z", lastEventAt: "2026-01-01T00:00:05.000Z", turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1450, reasoningTokens: 20 } }] };
-	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } } };
+	const reviewer = { id: "reviewer", role: "code-reviewer", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", evaluationId: "review", state: "running", startedAt: "2026-01-01T00:00:00.000Z", updatedAt: new Date().toISOString(), currentAttemptId: "attempt", attempts: [{ id: "attempt", state: "running", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", tier: "high", fast: true, startedAt: "2026-01-01T00:00:00.000Z", activity: { kind: "review", generation: 2 }, progress: { startedAt: "2026-01-01T00:00:00.000Z", lastEventAt: "2026-01-01T00:00:05.000Z", turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1450, reasoningTokens: 20 } }] };
+	const liveProgress = { startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z", lastEventAt: "2026-01-01T00:00:06.000Z", turns: 4, toolCalls: 5, toolErrors: 0, outputTokens: 1800, reasoningTokens: 25, activeTool: "read" };
+	const runtime: any = { identity: { root: "/repo" }, workItems: { async read() { return item; }, async readEvaluation() { return evaluation; } }, agents: { async list() { return [reviewer]; } }, coordinator: { inspect() { return { state: "running", provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", fast: true, startedAt: "2026-01-01T00:00:00.000Z", progress: liveProgress }; } } };
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, launchTask: async () => ({ content: [] }), launchEvaluation: async () => ({ content: [] }) });
 	const step = (await adapter.snapshot("work-item:example", {} as any)).steps[0]!;
 	assert.equal(step.status, "running");
 	assert.match(step.title, /Re-reviewing #2/);
-	assert.equal(step.progress?.turns, 2);
-	assert.equal(step.progress?.outputTokens, 1450);
+	assert.equal(step.progress?.turns, 4, "the in-memory service snapshot supplies live progress without durable sampling");
+	assert.equal(step.progress?.outputTokens, 1800);
 	assert.equal(step.fast, true);
+	assert.deepEqual(step.liveAgent, {
+		agent: "code-reviewer", tier: "high", resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" }, fast: true,
+		progress: liveProgress, startedAt: "2026-01-01T00:00:00.000Z", processStatus: "active", lifecycle: "running",
+	});
 });
 
 test("a settled re-review report uses report wording, not active wording", async () => {

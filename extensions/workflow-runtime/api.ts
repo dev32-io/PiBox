@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentProgress } from "../subagent/agent-progress.js";
+import type { SubagentLiveStatus } from "../subagent/display.js";
 
 export const WORKFLOW_CONTROL_EVENT = "pibox:workflow:control";
 export const WORKFLOW_LIFECYCLE_EVENT = "pibox:workflow:lifecycle";
@@ -40,7 +41,9 @@ export interface WorkflowStep {
 	resourceClaims: string[];
 	detail?: string;
 	progress?: AgentProgress;
-	/** Effective Fast mode for the active subagent process, omitted when inactive. */
+	/** Complete active-agent projection used by every live-status surface. */
+	liveAgent?: SubagentLiveStatus;
+	/** Effective Fast mode for legacy/third-party adapters that omit liveAgent. */
 	fast?: boolean;
 }
 

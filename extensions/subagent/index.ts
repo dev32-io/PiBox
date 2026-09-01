@@ -141,6 +141,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		const snapshot = agentSnapshot(current, agentId);
 		return {
 			agentId,
+			uiRef: { owner: structuredClone(current.owner), agentId },
 			...(current.tiers.get(agentId) ? { tier: current.tiers.get(agentId) } : {}),
 			...(snapshot ? {
 				agent: snapshot.agent,

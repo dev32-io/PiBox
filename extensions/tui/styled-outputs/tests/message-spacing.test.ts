@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent";
 import styledOutputs from "../index.js";
+import { getSubagentUiProjectionRegistry } from "../../../subagent/ui-projection.js";
 
 function theme(): any {
 	return new Proxy({}, {
@@ -26,14 +27,15 @@ function assistant(content: any[]): any {
 	};
 }
 
-function install(): void {
+function install(requestRender: () => void = () => undefined): Map<string, (...args: any[]) => any> {
 	const handlers = new Map<string, (...args: any[]) => any>();
 	styledOutputs({
 		registerTool() {},
 		registerMarkdownTransformer() {},
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 	} as any);
-	handlers.get("session_start")?.({}, { mode: "tui", ui: { theme: theme() } });
+	handlers.get("session_start")?.({}, { mode: "tui", ui: { theme: theme(), requestRender } });
+	return handlers;
 }
 
 function isSpacer(component: any): boolean {
@@ -56,9 +58,45 @@ const toolDefinition = {
 	async execute() { return { content: [{ type: "text", text: "ok" }] }; },
 } as any;
 
-function tool(id: string): ToolExecutionComponent {
-	return new ToolExecutionComponent("spacing_test", id, {}, {}, toolDefinition, { requestRender() {} } as any, process.cwd());
+function tool(id: string, requestRender: () => void = () => undefined): ToolExecutionComponent {
+	return new ToolExecutionComponent("spacing_test", id, {}, {}, toolDefinition, { requestRender } as any, process.cwd());
 }
+
+test("surviving tool components dereference the newest harness renderer after reload", () => {
+	install();
+	const definition = {
+		...toolDefinition,
+		name: "subagent_status",
+		label: "Subagent status",
+	} as any;
+	const component = new ToolExecutionComponent("subagent_status", "reload-renderer", {}, {}, definition, { requestRender() {} } as any, process.cwd());
+	assert.match(component.render(120).join("\n"), /Inspect subagents/);
+	const state = (globalThis as any)[Symbol.for("pibox:styled-outputs:state")];
+	const prior = state.harnessCallRenderer;
+	try {
+		state.harnessCallRenderer = () => ({ render: () => ["latest renderer"], invalidate() {} });
+		assert.match(component.render(120).join("\n"), /latest renderer/, "the existing component does not retain the pre-reload module closure");
+	} finally {
+		state.harnessCallRenderer = prior;
+	}
+});
+
+test("styled transcript rendering owns projection invalidation without the footer", () => {
+	const registry = getSubagentUiProjectionRegistry();
+	registry.clear();
+	let renders = 0;
+	const requestRender = () => { renders++; };
+	const handlers = install(requestRender);
+	tool("projection-invalidation", requestRender);
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const binding = registry.bind(owner, "styled-output-test");
+	binding.publish([]);
+	assert.equal(renders, 2, "bind and publish each invalidate transcript projections");
+	handlers.get("session_shutdown")?.({ reason: "quit" }, {});
+	binding.publish([]);
+	assert.equal(renders, 2, "session shutdown releases the transcript projection subscription");
+	binding.release();
+});
 
 test("top-level messages own one leading boundary while sibling tool calls stay compact", () => {
 	install();

@@ -15,17 +15,18 @@ import {
 	type ExtensionAPI,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { getKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { decorateHexColors } from "./color-preview.js";
 import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "./config.js";
 import { createPrefixedMarkdown } from "./components/message-layout.js";
 import { renderToolCall, renderToolResult } from "./components/tool-renderers.js";
 import { LinePrefixedComponent } from "./components/tool-shell.js";
+import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v11");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v13");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -34,11 +35,22 @@ const STYLED_TOOL_NAMES = new Set<string>(["read", "bash", "edit", "write", "gre
 interface GlobalStyleState {
 	theme: Theme | undefined;
 	toolGroupBoundaryPending: boolean;
+	unsubscribeSubagents: (() => void) | undefined;
+	requestRender: (() => void) | undefined;
+	harnessCallRenderer: typeof renderHarnessToolCall | undefined;
+	harnessResultRenderer: typeof renderHarnessToolResult | undefined;
 }
 
 function globalState(): GlobalStyleState {
 	const root = globalThis as typeof globalThis & { [STATE_KEY]?: GlobalStyleState };
-	return (root[STATE_KEY] ??= { theme: undefined, toolGroupBoundaryPending: false });
+	return (root[STATE_KEY] ??= {
+		theme: undefined,
+		toolGroupBoundaryPending: false,
+		unsubscribeSubagents: undefined,
+		requestRender: undefined,
+		harnessCallRenderer: undefined,
+		harnessResultRenderer: undefined,
+	});
 }
 
 // Coding-agent packages may resolve their own pi-tui copy. Component identity
@@ -131,12 +143,46 @@ function installMessagePatches(): void {
 	}
 }
 
+class LatestHarnessToolComponent implements Component {
+	constructor(private readonly source: any) {}
+
+	render(width: number): string[] {
+		const state = globalState();
+		const theme = state.theme;
+		const renderCall = state.harnessCallRenderer;
+		if (!theme || !renderCall) return [];
+		const call = renderCall(
+			this.source.toolName,
+			this.source.args ?? {},
+			theme,
+			this.source.isPartial,
+			this.source.result?.isError ?? false,
+			this.source.result?.details,
+		);
+		const lines = call.render(width);
+		const renderResult = state.harnessResultRenderer;
+		if (renderResult && this.source.result && !this.source.isPartial) {
+			lines.push(...renderResult(
+				this.source.toolName,
+				this.source.result,
+				this.source.expanded,
+				theme,
+				this.source.result.isError ?? false,
+			).render(width));
+		}
+		return lines;
+	}
+
+	invalidate(): void {}
+}
+
 function installToolPatch(): void {
 	const prototype = ToolExecutionComponent.prototype as any;
 	if (prototype[TOOL_PATCH_FLAG]) return;
 	const originalUpdateDisplay = prototype.updateDisplay;
 	prototype.updateDisplay = function piBoxToolUpdateDisplay() {
 		originalUpdateDisplay.call(this);
+		if (typeof this.ui?.requestRender === "function") globalState().requestRender = () => this.ui.requestRender();
 		// Keep exactly one starter row before a tool-only assistant response while
 		// preserving compact spacing between sibling calls in the same response.
 		if (this[TOOL_BOUNDARY_FLAG] === undefined) {
@@ -159,13 +205,7 @@ function installToolPatch(): void {
 		// readable instead of appearing as raw JSON blobs. Foreground subagents use
 		// the same pulsing row language as the background footer dashboard.
 		if (isHarnessTool(this.toolName) && Array.isArray(renderContainer?.children)) {
-			const theme = globalState().theme;
-			if (theme) {
-				const call = renderHarnessToolCall(this.toolName, this.args ?? {}, theme, this.isPartial, this.result?.isError ?? false, this.result?.details);
-				const children = [call];
-				if (this.result && !this.isPartial) children.push(renderHarnessToolResult(this.toolName, this.result, this.expanded, theme, this.result.isError ?? false));
-				renderContainer.children = children;
-			}
+			if (globalState().theme) renderContainer.children = [new LatestHarnessToolComponent(this)];
 			return;
 		}
 
@@ -262,15 +302,31 @@ function registerStyledTools(pi: ExtensionAPI): void {
 
 export default function styledOutputs(pi: ExtensionAPI): void {
 	const config = DEFAULT_STYLED_OUTPUTS_CONFIG;
+	// Prototype patches survive /reload, so they must dereference the newest
+	// module graph instead of retaining renderer/display closures from a prior load.
+	const state = globalState();
+	state.harnessCallRenderer = renderHarnessToolCall;
+	state.harnessResultRenderer = renderHarnessToolResult;
 	installMessagePatches();
 	installToolPatch();
 	registerStyledTools(pi);
 
 	pi.on("session_start", (_event, ctx) => {
-		if (ctx.mode === "tui") globalState().theme = ctx.ui.theme;
+		const state = globalState();
+		state.unsubscribeSubagents?.();
+		state.unsubscribeSubagents = undefined;
+		if (ctx.mode !== "tui") return;
+		state.theme = ctx.ui.theme;
+		// Transcript rows consume the same activation-scoped projection as the
+		// footer and own their render invalidation rather than depending on it.
+		state.unsubscribeSubagents = getSubagentUiProjectionRegistry().subscribe(() => state.requestRender?.());
 	});
 	pi.on("session_shutdown", () => {
-		globalState().theme = undefined;
+		const state = globalState();
+		state.unsubscribeSubagents?.();
+		state.unsubscribeSubagents = undefined;
+		state.requestRender = undefined;
+		state.theme = undefined;
 	});
 
 	pi.registerMarkdownTransformer((markdown, context) => {
