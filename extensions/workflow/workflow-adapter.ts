@@ -804,7 +804,7 @@ async function productionExecutor(context: StoryWorkflowActionContext): Promise<
 		const role = context.runtime.config.agents["e2e-tester"] ? "e2e-tester" : "code-reviewer";
 		const stable = [
 			"# Complete final E2E contract", context.story.e2e,
-			"Exercise the complete contract against the integrated branch. Return only JSON with result, summary, optional findings, and evidenceRefs. Evidence refs must be repository-relative paths under evidence/ and contain no sensitive content.",
+			`Exercise the complete contract against the integrated branch. Your working directory is the repository root. Write every retained evidence file beneath agent-artifacts/${context.story.id}/evidence/; do not create a top-level evidence/ directory. In the returned JSON, cite those files with story-relative evidenceRefs such as evidence/result.json (without the agent-artifacts/${context.story.id}/ prefix). Evidence must contain no sensitive content. Return only JSON with result, summary, optional findings, and evidenceRefs.`,
 		].join("\n\n");
 		await assertCleanRepository(context.runtime.identity.root);
 		const coordinates = await reviewCoordinates(context);

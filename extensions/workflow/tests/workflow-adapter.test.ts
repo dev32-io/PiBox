@@ -560,6 +560,7 @@ test("production completion validates evidence and commits only evidence plus th
 	const base = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
 	await new StoryRuntimeStore(f.root, "example").upsertLedger({ id: "risk", updatedAt: new Date().toISOString(), sourceRole: "implementer", summary: "Curated integration risk", evidence: ["src/risk.ts"] });
 	const evaluatorPrompts: string[] = [];
+	let e2eStablePrompt = "";
 	useProductionExecutor(f, async (input) => {
 		if (input.taskId) {
 			await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
@@ -569,6 +570,7 @@ test("production completion validates evidence and commits only evidence plus th
 		}
 		evaluatorPrompts.push(input.attemptUserPrompt);
 		if (input.role === "e2e-tester") {
+			e2eStablePrompt = input.stableSystemContext;
 			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "journey.txt");
 			await mkdir(join(evidence, ".."), { recursive: true });
 			await writeFile(evidence, "journey passed\n");
@@ -581,6 +583,11 @@ test("production completion validates evidence and commits only evidence plus th
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"), 8_000);
 	const committed = (await exec("git", ["show", "--pretty=format:", "--name-only", "HEAD"], { cwd: f.root })).stdout.trim().split("\n").filter(Boolean).sort();
 	assert.deepEqual(committed, ["agent-artifacts/example/evidence/journey.txt", "agent-artifacts/example/outcome.md"]);
+	assert.match(e2eStablePrompt, /working directory is the repository root/);
+	assert.match(e2eStablePrompt, /beneath agent-artifacts\/example\/evidence\//);
+	assert.match(e2eStablePrompt, /do not create a top-level evidence\/ directory/);
+	assert.match(e2eStablePrompt, /story-relative evidenceRefs such as evidence\/result\.json/);
+	assert.match(e2eStablePrompt, /without the agent-artifacts\/example\/ prefix/);
 	assert.ok(evaluatorPrompts.length >= 3, "stage review, final review, and E2E receive dynamic attempts");
 	for (const prompt of evaluatorPrompts) {
 		assert.match(prompt, new RegExp(`Base commit: ${base}`));
