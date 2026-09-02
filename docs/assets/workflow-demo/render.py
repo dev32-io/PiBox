@@ -98,6 +98,22 @@ def measure(draw: ImageDraw.ImageDraw, text: str, face: ImageFont.ImageFont) -> 
     return box[2] - box[0], box[3] - box[1]
 
 
+def fitting_font(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    kind: str,
+    maximum: int,
+    minimum: int,
+    max_width: int,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Choose the largest available face that keeps a label inside its box."""
+    for size in range(maximum, minimum - 1, -1):
+        face = font(kind, size)
+        if measure(draw, text, face)[0] <= max_width:
+            return face
+    return font(kind, minimum)
+
+
 def wrap_text(
     draw: ImageDraw.ImageDraw, text: str, face: ImageFont.ImageFont, max_width: int
 ) -> list[str]:
@@ -226,18 +242,18 @@ class LifecycleNode:
 
 
 LIFECYCLE_NODES = (
-    LifecycleNode("Idea", "DESIRED OUTCOME", ("A useful product change",), (90, 300, 365, 650), P["violet"]),
-    LifecycleNode("Brainstorm", "DISCUSS", ("Explore needs", "Resolve ambiguity"), (425, 300, 775, 650), P["blue"]),
+    LifecycleNode("Idea", "Desired outcome", ("A useful product change",), (90, 300, 365, 650), P["violet"]),
+    LifecycleNode("Brainstorm", "Discuss", ("Explore needs", "Resolve ambiguity"), (425, 300, 775, 650), P["blue"]),
     LifecycleNode(
         "Shape Story",
-        "PRODUCT CONTRACT",
+        "Product contract",
         ("Specification", "Design", "E2E contract"),
         (835, 300, 1395, 650),
         P["cyan"],
     ),
     LifecycleNode(
         "Plan Implementation",
-        "DELIVERY PLAN",
+        "Delivery plan",
         ("Tasks", "Ordered / concurrent stages", "Deterministic checks"),
         (1455, 300, 2305, 650),
         P["amber"],
@@ -250,9 +266,11 @@ def lifecycle_card(image: Image.Image, node: LifecycleNode) -> None:
     rounded_panel(image, node.box, P["card"], P["separator"], radius=28, shadow=12, width=3)
     x1, y1, x2, y2 = node.box
     draw.rounded_rectangle((x1, y1, x1 + 16, y2), radius=8, fill=node.accent)
-    draw.text((x1 + 48, y1 + 40), node.kicker, font=font("bold", 25), fill=node.accent)
-    title_size = 55 if len(node.title) < 15 else 45
-    title_y = draw_wrapped(draw, (x1 + 48, y1 + 88), node.title, font("bold", title_size), P["ice"], x2 - x1 - 90, spacing=4)
+    text_width = x2 - x1 - 90
+    kicker_face = fitting_font(draw, node.kicker, "bold", 25, 18, text_width)
+    title_face = fitting_font(draw, node.title, "bold", 55, 36, text_width)
+    draw.text((x1 + 48, y1 + 40), node.kicker, font=kicker_face, fill=node.accent)
+    title_y = draw_wrapped(draw, (x1 + 48, y1 + 88), node.title, title_face, P["ice"], text_width, spacing=4)
     bullet_y = max(y1 + 205, title_y + 20)
     for bullet in node.bullets:
         draw.ellipse((x1 + 50, bullet_y + 12, x1 + 64, bullet_y + 26), fill=node.accent)
@@ -275,7 +293,7 @@ def render_lifecycle() -> None:
         gd.ellipse((1200 - radius, 980 - radius // 2, 1200 + radius, 980 + radius // 2), fill=(*hex_rgb(P["cyan"]), alpha))
     image.alpha_composite(glow)
 
-    draw.text((90, 82), "PIBOX WORKFLOW", font=font("bold", 28), fill=P["cyan"])
+    draw.text((90, 82), "PiBox Workflow", font=font("bold", 28), fill=P["cyan"])
     draw.text((90, 128), "From idea to fully working product", font=font("bold", 76), fill=P["ice"])
     draw.text(
         (92, 220),
@@ -293,45 +311,71 @@ def render_lifecycle() -> None:
     rounded_panel(image, execution, P["info"], P["blue"], radius=34, shadow=15, width=4)
     ex1, ey1, ex2, ey2 = execution
     draw.rounded_rectangle((ex1, ey1, ex1 + 18, ey2), radius=9, fill=P["cyan"])
-    draw.text((ex1 + 54, ey1 + 38), "MANAGED WORKFLOW EXECUTION", font=font("bold", 29), fill=P["cyan"])
-    draw.text((ex1 + 54, ey1 + 83), "Unattended long-horizon execution", font=font("bold", 62), fill=P["ice"])
-    draw.text((ex1 + 56, ey1 + 158), "within a live activation", font=font("regular", 37), fill=P["steel"])
-
-    # The central execution rail.
-    rail_y = ey1 + 300
-    phases = (
-        (ex1 + 75, 390, "Execute tasks", "ordered  →  concurrent ⇉", P["cyan"]),
-        (ex1 + 520, 355, "Integrate", "combine stage work", P["blue"]),
-        (ex1 + 930, 355, "Verify", "deterministic checks", P["teal"]),
+    draw.text((ex1 + 54, ey1 + 34), "Managed workflow execution", font=font("bold", 29), fill=P["cyan"])
+    draw.text((ex1 + 54, ey1 + 78), "Unattended delivery within a live activation", font=font("bold", 54), fill=P["ice"])
+    draw.text(
+        (ex1 + 56, ey1 + 145),
+        "The reviewed plan advances through staged work and explicit quality gates.",
+        font=font("regular", 29),
+        fill=P["steel"],
     )
-    for x, width, title, detail, accent in phases:
-        box = (x, rail_y - 45, x + width, rail_y + 115)
-        draw.rounded_rectangle(box, radius=18, fill=P["card"], outline=P["separator"], width=3)
-        draw.text((x + 25, rail_y - 18), title, font=font("bold", 32), fill=accent)
-        draw.text((x + 25, rail_y + 34), detail, font=font("unicode", 25), fill=P["steel"])
-    arrow(draw, (ex1 + 465, rail_y + 34), (ex1 + 505, rail_y + 34), width=5, head=16)
-    arrow(draw, (ex1 + 880, rail_y + 34), (ex1 + 920, rail_y + 34), width=5, head=16)
 
-    guard_x = ex1 + 1345
-    draw.text((guard_x, rail_y - 72), "QUALITY GUARDRAILS", font=font("bold", 23), fill=P["amber"])
-    guardrails = (("Review", "Fix"), ("E2E", "Fix"))
-    for index, (left, right) in enumerate(guardrails):
-        y = rail_y - 35 + index * 92
-        draw.rounded_rectangle((guard_x, y, guard_x + 315, y + 70), radius=15, fill=P["card"], outline=P["separator"], width=2)
-        draw.text((guard_x + 22, y + 17), left, font=font("bold", 27), fill=P["ice"])
-        draw.text((guard_x + 135, y + 14), "↔", font=font("unicode", 31), fill=P["amber"])
-        draw.text((guard_x + 202, y + 11), right, font=font("bold", 27), fill=P["ice"])
-        if index == 1:
-            draw.text((guard_x + 202, y + 43), "when needed", font=font("regular", 15), fill=P["mist"])
+    # Mirror the production TUI: an authoritative stage pane plus a compact
+    # quality pane, with only the current concurrent stage expanded.
+    widget = (ex1 + 58, ey1 + 215, ex2 - 55, ey1 + 525)
+    wx1, wy1, wx2, wy2 = widget
+    draw.rounded_rectangle(widget, radius=20, fill=P["card"], outline=P["separator"], width=3)
+    draw.rounded_rectangle((wx1, wy1, wx2, wy1 + 50), radius=20, fill=P["selected"])
+    draw.rectangle((wx1, wy1 + 26, wx2, wy1 + 50), fill=P["selected"])
+    draw.text((wx1 + 24, wy1 + 13), "Workflow · staged delivery · 3/13 tasks", font=font("bold", 25), fill=P["cyan"])
+    draw.text((wx2 - 295, wy1 + 15), "reviewed plan → branch", font=font("regular", 21), fill=P["steel"])
 
-    draw.text((ex1 + 58, ey2 - 88), "Harness-owned state  •  checks and integration  •  whole-branch review  •  final E2E  •  material decisions return to you", font=font("regular", 28), fill=P["mist"])
+    divider_x = wx1 + 1110
+    draw.line((divider_x, wy1 + 50, divider_x, wy2), fill=P["separator"], width=2)
+    stage_rows = (
+        ("✓ →", "Stage 1 · sequential foundation · Completed · 1/1", P["teal"]),
+        ("◆ ⇉", "Stage 2 · parallel work · Implementing · 2/6", P["cyan"]),
+        ("  ├", "Implementing · workstream A", P["cyan"]),
+        ("  └", "Implementing · workstream B", P["cyan"]),
+        ("· ⇉", "Stage 3 · parallel feature slices · Queued · 0/5", P["steel"]),
+        ("· →", "Stage 4 · sequential integration · Queued · 0/1", P["steel"]),
+        ("· →", "Final validation · review + E2E", P["steel"]),
+    )
+    row_y = wy1 + 65
+    for prefix, label, color in stage_rows:
+        draw.text((wx1 + 24, row_y), prefix, font=font("unicode", 22), fill=color)
+        draw.text((wx1 + 92, row_y), label, font=font("regular", 23), fill=color)
+        row_y += 32
+
+    guard_x = divider_x + 30
+    draw.text((guard_x, wy1 + 68), "Quality guardrails", font=font("bold", 24), fill=P["amber"])
+    guardrails = (
+        ("✓", "Deterministic checks", P["teal"]),
+        ("⇢", "Integrate verified work", P["blue"]),
+        ("↔", "Stage review / fix", P["amber"]),
+        ("✓", "Whole-branch review", P["teal"]),
+        ("↔", "E2E journey / fix", P["amber"]),
+        ("·", "Bounded recovery", P["steel"]),
+    )
+    guard_y = wy1 + 98
+    for prefix, label, color in guardrails:
+        draw.text((guard_x, guard_y), prefix, font=font("unicode", 22), fill=color)
+        draw.text((guard_x + 38, guard_y), label, font=font("regular", 22), fill=P["ice"] if color != P["steel"] else P["steel"])
+        guard_y += 32
+
+    draw.text(
+        (ex1 + 58, ey2 - 48),
+        "Harness-owned state  •  Git isolation  •  bounded recovery  •  material decisions return to you",
+        font=font("regular", 26),
+        fill=P["mist"],
+    )
 
     # Product endpoint.
     product = (1970, 875, 2310, 1280)
     rounded_panel(image, product, "#10221F", P["teal"], radius=30, shadow=13, width=4)
     px1, py1, px2, py2 = product
     centered_text(draw, (px1 + 95, py1 + 42, px2 - 95, py1 + 142), "✓", font("unicode", 76), P["teal"])
-    centered_text(draw, (px1 + 30, py1 + 160, px2 - 30, py1 + 230), "FULLY WORKING", font("bold", 29), P["teal"])
+    centered_text(draw, (px1 + 30, py1 + 160, px2 - 30, py1 + 230), "Fully working", font("bold", 29), P["teal"])
     centered_text(draw, (px1 + 25, py1 + 225, px2 - 25, py1 + 310), "Product", font("bold", 55), P["ice"])
     centered_text(draw, (px1 + 25, py1 + 320, px2 - 25, py1 + 370), "verified end to end", font("regular", 25), P["steel"])
     arrow(draw, (ex2 + 20, 1078), (px1 - 22, 1078), color=P["teal"], width=8, head=24)
