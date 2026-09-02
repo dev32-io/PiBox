@@ -204,6 +204,30 @@ async function assertCanonicalBranch(runtime: HarnessWorkflowRuntime, state: Pic
 	if (current !== state.git.canonicalBranch) throw new Error(`Workflow canonical branch is ${state.git.canonicalBranch}; current branch is ${current || "detached HEAD"}`);
 }
 
+function requiredRuntimeIgnorePaths(storyId: string): string[] {
+	return [
+		".worktree/pibox/.ignore-check",
+		`agent-artifacts/${storyId}/state.yaml`,
+		`agent-artifacts/${storyId}/ledger.yaml`,
+		`agent-artifacts/${storyId}/events.jsonl`,
+	];
+}
+
+async function missingRuntimeIgnorePaths(repositoryRoot: string, storyId: string): Promise<string[]> {
+	const required = requiredRuntimeIgnorePaths(storyId);
+	const ignored = await Promise.all(required.map((path) => isGitPathIgnored(repositoryRoot, path)));
+	return required.filter((_path, index) => !ignored[index]);
+}
+
+function runtimeIgnoreDetail(missing: readonly string[]): string {
+	return `Workflow execution requires effective Git ignore rules for runtime-owned paths: ${missing.join(", ")}. Run workflow_init on develop or add equivalent repository/local excludes before starting or resuming.`;
+}
+
+async function assertRuntimePathsIgnored(repositoryRoot: string, storyId: string): Promise<void> {
+	const missing = await missingRuntimeIgnorePaths(repositoryRoot, storyId);
+	if (missing.length) throw new Error(runtimeIgnoreDetail(missing));
+}
+
 async function initialState(runtime: HarnessWorkflowRuntime, loaded: LoadedStory): Promise<StoryRuntimeState> {
 	const [canonicalBranch, baseCommit] = await Promise.all([
 		runGit(runtime.identity.root, ["branch", "--show-current"]),
@@ -1003,11 +1027,10 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				].filter(Boolean).join("; ");
 				return { ok: false, ...prerequisites, detail: `Workflow preflight failed: ${detail}. Configure the declared prerequisites and retry.` };
 			}
+			const missingIgnores = await missingRuntimeIgnorePaths(runtime.identity.root, loaded.story.id);
+			if (missingIgnores.length) return { ok: false, detail: runtimeIgnoreDetail(missingIgnores) };
 			const sameActivationPause = existing?.status === "paused" && sameOwner(existing.activationOwner, runtime.launcher.service.owner) && activeActions(existing).length > 0;
 			if (!sameActivationPause) await assertCleanRepository(runtime.identity.root);
-			if (!await isGitPathIgnored(runtime.identity.root, ".worktree/pibox/.ignore-check")) {
-				return { ok: false, detail: "Workflow execution requires an effective /.worktree/ ignore rule before managed task isolation can start." };
-			}
 			return { ok: true };
 		},
 		async snapshot(ref, ctx) {
@@ -1022,6 +1045,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const loaded = await loadStory(runtime, storyId(ref));
 			const store = storeFor(runtime.identity.root, loaded.story.id);
 			const owner = runtime.launcher.service.owner;
+			if (command === "start" || command === "resume") await assertRuntimePathsIgnored(runtime.identity.root, loaded.story.id);
 			if (command === "start") {
 				const candidate = await initialState(runtime, loaded);
 				let initialized = false;

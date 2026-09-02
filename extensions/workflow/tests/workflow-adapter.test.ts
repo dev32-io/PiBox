@@ -141,6 +141,21 @@ test("start preflight refuses an uncompiled placeholder story without creating r
 	assert.equal(await new StoryRuntimeStore(f.root, "example").readState(), undefined);
 });
 
+test("start preflight refuses a missing runtime ledger ignore before state creation", async (t) => {
+	const f = await fixture(t, {});
+	const ignorePath = join(f.root, ".gitignore");
+	await writeFile(ignorePath, (await readFile(ignorePath, "utf8")).replace("agent-artifacts/*/ledger.yaml\n", ""));
+	await exec("git", ["add", ".gitignore"], { cwd: f.root });
+	await exec("git", ["commit", "-qm", "remove ledger ignore"], { cwd: f.root });
+	const adapter = f.create();
+	const preflight = await adapter.preflightWorkflow!("work-item:example", f.ctx);
+	assert.equal(preflight.ok, false);
+	assert.match(preflight.detail ?? "", /agent-artifacts\/example\/ledger\.yaml/);
+	assert.match(preflight.detail ?? "", /workflow_init|local excludes/);
+	await assert.rejects(adapter.controlExecution!("work-item:example", "start", "start", f.ctx), /ledger\.yaml/);
+	assert.equal(await new StoryRuntimeStore(f.root, "example").readState(), undefined, "ignore refusal must precede runtime initialization");
+});
+
 test("start preflight refuses a plan that failed the non-empty compile contract", async (t) => {
 	const f = await fixture(t, { tasks: [], plan: { schemaVersion: 1, stages: [] } });
 	const adapter = f.create();
