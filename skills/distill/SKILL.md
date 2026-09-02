@@ -11,7 +11,7 @@ Facilitate a technical knowledge distillation. The deliverable is user-judged kn
 
 Translate the user's request into `distill_prepare` parameters. Support explicit refs, tags, commits, dates, paths, work items, current-session inclusion, dirty-state inclusion, and focus. Do not infer a branch mutation, checkout, fetch, pull, or merge.
 
-Show the returned target commit, baseline source and commit, time range, paths, work items, commit/file counts, dirty-state treatment, selected session IDs and entry range, raw-subagent mode, selected and available knowledge providers with locality, focus, and estimated partitions. Resolve material ambiguity with the user. Never select a remote knowledge provider without explicit user agreement. Do not call `distill_collect` until the user confirms that exact preview.
+Show the returned target commit, baseline source and commit, time range, paths, work items, commit/file counts, dirty-state treatment, selected main-session IDs and entry range, selected and available knowledge providers with locality, focus, and estimated partitions. Resolve material ambiguity with the user. Never select a remote knowledge provider without explicit user agreement. Do not call `distill_collect` until the user confirms that exact preview.
 
 Analysis authorization is not authorization to edit guidance, documentation, rules, or memory.
 
@@ -23,12 +23,10 @@ Evidence priority is:
 
 1. Target source and tests.
 2. Git range evidence.
-3. Reviewed workflow/task/review/evaluation/outcome artifacts.
-4. Sanitized main-session context for ad hoc work.
-5. Final subagent reports.
-6. Targeted raw child sessions only for a concrete unresolved gap and only after telling the user why the drill-down is valuable.
+3. Reviewed story, plan, task, state, ledger, and outcome artifacts.
+4. Sanitized selected main-session context for ad hoc work.
 
-Do not bulk-read raw subagent sessions. Workflow reports are the normal compression boundary.
+Standalone child transcripts are activation-private and are not persisted or recovered for distillation. Use the curated workflow ledger and outcome as the compression boundary; never seek obsolete `.pibox/sessions` registries, child reports, evaluation reports, or raw child session files.
 
 ## 3. Partition and delegate
 
@@ -41,7 +39,7 @@ Partition by coherent subsystem, workflow unit, or analysis focus. Launch bounde
 - the instruction-admission policy below;
 - a prohibition on edits and mutations.
 
-Run independent partitions in parallel where useful. Ask for targeted raw-session drill-down only when a report, failure event, or contradiction leaves one precise question unresolved.
+Run independent partitions in parallel where useful. When the evidence packet leaves a precise gap, state that limitation rather than attempting raw child-session recovery.
 
 Persist each returned report with `distill_record category=finding`. Subagents never write distillation artifacts directly.
 

@@ -1,9 +1,7 @@
-# Managed Review Protocol
+# Managed Review and E2E Protocol
 
-The persistent review context is the authoritative plan and diff boundary and survives compaction. Do not call `evaluation_context` as a prerequisite; use it only for one materially necessary targeted refresh. Keep evaluated work read-only.
+The persistent managed context defines the exact role and contract boundary. Attempt-local input supplies exact Git coordinates, current structured findings or failure, and only relevant curated ledger entries. Do not consult `events.jsonl`, historical reports, artifact catalogs, criterion lists, or legacy evaluation handoffs.
 
-Use `evidence_record`, `finding_report`, and `evaluation_checkpoint` when durable progress is useful. The initial review is exhaustive within its exact boundary; broad inspection does not authorize speculative requirements or hardening. Admit a finding only with a concrete trigger, incorrect outcome, supported impact, and exact code or contract evidence. State human severity as Critical/Major/Minor separately from blocking status; record it canonically as `critical`/`high`/`medium`. Advisory observations belong in residual risk and never block.
+For stage review, inspect the scoped task contracts and exact stage diff against the supplied full story specification and design, stage checks, and optional free-form focus. For final review, inspect the complete execution `base..head` diff against the full story specification and design. Admit a finding only with a concrete trigger, incorrect outcome, supported impact, and exact code or contract evidence.
 
-Begin the report with exactly `MERGE: YES`, `MERGE: YES_WITH_RISK`, or `MERGE: NO`. On re-review, verify prior findings and the bounded repair only. Do not reopen the wider implementation or add non-critical requirements; only Critical issues, unmet acceptance, or repair-introduced regressions may block another fix.
-
-For E2E, submit `caseResults` for every approved matrix case exactly once and never infer a pass from historical or blocked evidence. Finish with `evaluation_complete`, including criterion results, minimal sanitized evidence, discrete findings, verdict, and residual risk.
+For E2E, execute the complete rendered story E2E contract exactly as supplied. Preserve every authored `E2E-NNN` case ID and its Exercise, Oracle, and Proof; do not invent, omit, merge, or rewrite cases or add criterion mappings and pass taxonomies. Return the requested structured terminal result and reference only sanitized evidence files created under the supplied story evidence directory. Do not use legacy evaluation or completion tools.

@@ -23,11 +23,50 @@ test("moves within the footer grid and exits only above its first row", () => {
 	assert.equal(moveInteractiveFooterSelection(rows, selection, "up"), undefined);
 });
 
-test("terminal routing consumes Escape in footer and while a dialog resolves, then lets the focused overlay own it", async () => {
+test("Escape exits footer mode and cancels pending dialog resolution", async () => {
 	resetInteractiveFooterRegistryForTests();
 	let resolveSpec!: (value: { title: string; rows: any[] }) => void;
 	const spec = new Promise<{ title: string; rows: any[] }>((resolve) => { resolveSpec = resolve; });
 	const registration = registerInteractiveFooterItem({ id: "permissions", section: "settings", order: 10, status: () => ({ label: "Permissions" }), dialog: () => spec });
+	let terminalInput!: (data: string) => { consume?: boolean } | undefined;
+	let overlayMounted = false;
+	const ctx = {
+		mode: "tui",
+		ui: {
+			onTerminalInput(handler: typeof terminalInput) { terminalInput = handler; return () => {}; },
+			notify() {},
+			custom() { overlayMounted = true; return Promise.resolve(); },
+		},
+	} as any;
+	const controller = attachInteractiveFooter(ctx, { rows: () => [["permissions"]], requestRender() {} });
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true, "Alt+Down enters footer mode");
+	assert.equal(controller.active, true);
+	assert.equal(terminalInput("\x1b")?.consume, true, "the first Escape exits footer mode");
+	assert.equal(controller.active, false);
+	assert.equal(terminalInput("\x1b"), undefined, "later Escape reaches Pi's interrupt handler");
+
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true);
+	assert.equal(terminalInput("\r")?.consume, true);
+	assert.equal(terminalInput("\x1b")?.consume, true, "Escape cancels an unresolved footer dialog");
+	assert.equal(controller.active, false);
+	assert.equal(terminalInput("\x1b"), undefined, "later Escape reaches Pi after resolving was cancelled");
+	resolveSpec({ title: "Permissions", rows: [{ kind: "setting", id: "mode", label: "Mode", value: () => "Enforced", values: ["Enforced", "Bypass"], setValue() {} }] });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(overlayMounted, false, "a cancelled late dialog result cannot mount an overlay");
+	controller.dispose();
+	registration.unregister();
+	resetInteractiveFooterRegistryForTests();
+});
+
+test("terminal routing lets a focused footer overlay own Escape", async () => {
+	resetInteractiveFooterRegistryForTests();
+	const registration = registerInteractiveFooterItem({
+		id: "permissions",
+		section: "settings",
+		order: 10,
+		status: () => ({ label: "Permissions" }),
+		dialog: () => ({ title: "Permissions", rows: [{ kind: "setting", id: "mode", label: "Mode", value: () => "Enforced", values: ["Enforced", "Bypass"], setValue() {} }] }),
+	});
 	let terminalInput!: (data: string) => { consume?: boolean } | undefined;
 	let overlayComponent: { handleInput?(data: string): void } | undefined;
 	const theme = { fg: (_token: string, text: string) => text, bold: (text: string) => text };
@@ -44,11 +83,8 @@ test("terminal routing consumes Escape in footer and while a dialog resolves, th
 		},
 	} as any;
 	const controller = attachInteractiveFooter(ctx, { rows: () => [["permissions"]], requestRender() {} });
-	assert.equal(terminalInput("\x1b[1;3B")?.consume, true, "Alt+Down enters footer mode");
-	assert.equal(terminalInput("\x1b")?.consume, true, "Escape is swallowed in footer mode");
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true);
 	assert.equal(terminalInput("\r")?.consume, true);
-	assert.equal(terminalInput("\x1b")?.consume, true, "Escape is swallowed while an async dialog specification resolves");
-	resolveSpec({ title: "Permissions", rows: [{ kind: "setting", id: "mode", label: "Mode", value: () => "Enforced", values: ["Enforced", "Bypass"], setValue() {} }] });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(terminalInput("\x1b"), undefined, "the mounted overlay receives terminal input directly");
 	overlayComponent?.handleInput?.("\x1b[A");

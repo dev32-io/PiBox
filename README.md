@@ -62,7 +62,7 @@ When the active `openai-codex` model uses OAuth subscription authentication, PiB
 
 Repository policy lives at `.pi/permissions.yaml` and supports `allow`, `ask`, and `deny` decisions for file, Bash, MCP, and extension tools. Restrictive matches win. Enforced mode prompts only in the interactive TUI and denies unattended asks; bypass permits tools without evaluating the repository tool permission policy. `Shift+Tab` and `/permissions` switch the session-scoped mode, and every spawned PiBox child inherits its parent's mode.
 
-Managed workflows require bypass. `workflow_start` shows an extension-owned confirmation before preparation and switches to bypass only after successful preparation and snapshot validation. The permission bypass does not bypass PiBox workflow authority, Git isolation, reviews, or verification. See [extensions/permissions/README.md](extensions/permissions/README.md).
+When the session is not already in bypass, managed workflows launch only after the extension-owned permission-bypass confirmation. `workflow_start` validates topology and prerequisites before showing it, and child-launching resume uses the same guard. Cancellation launches nothing and does not mutate execution state. Permission bypass does not bypass PiBox workflow authority, Git isolation, reviews, verification, or recovery. See [extensions/permissions/README.md](extensions/permissions/README.md).
 
 ## Context rules
 
@@ -86,7 +86,7 @@ Project rules live under `.claude/rules/` or `.pi/rules/`; user rules live under
 
 ## Knowledge distillation
 
-`/distill` previews an exact immutable scope before collecting bounded Git, workflow, guidance, session, and subagent-report evidence under ignored `.pibox/distill/`. Dedicated read-only distillers produce proposals; optional providers such as Mem0 support claim comparison; instruction promotion is exceptional, example-free, and measured for always-loaded context cost. See [extensions/distill/README.md](extensions/distill/README.md).
+`/distill` previews an exact immutable scope before collecting bounded Git, workflow, guidance, and selected main-session evidence under ignored `.pibox/distill/`. Activation-private standalone child transcripts are never recovered. Dedicated read-only distillers produce proposals; optional providers such as Mem0 support claim comparison; instruction promotion is exceptional, example-free, and measured for always-loaded context cost. See [extensions/distill/README.md](extensions/distill/README.md).
 
 ## Architecture visualizer
 
@@ -128,7 +128,9 @@ Discuss and shape the story, review the persisted story, then create and review 
 After reviewing the plan, say “start the workflow” to execute it.
 ```
 
-Task tickets are self-contained; `task_clarify` is an exceptional targeted context lookup. For ad hoc delegation, `general-purpose` handles open-ended assignments with every configured child tool except workflow and recursive subagent controls; specialized definitions remain available for exploration, investigation, review, and managed execution. Agent-definition frontmatter is the sole tool allowlist authority; `harness.yaml` tool lists are ignored. Its `tools` field supports `"*"` as a union-friendly all-tools selector and optional `mcp:<server>` selectors backed by the independently installed `pi-mcp-adapter`. Missing explicitly selected servers are ignored, while launched children without `"*"` scope the adapter proxy to only the declared server names. Delivery plans may add focused evaluations, while the runtime owns final whole-branch journey verification and final branch review. Existing legacy final-E2E coverage is adopted rather than duplicated.
+Stories persist Markdown-rich structured contracts in `story.yaml`: specification sections Outcome, Scope, Behavior, and Acceptance; design sections Approach, Boundaries and Flow, and Failure and Verification; plus concise `E2E-NNN` cases with Exercise, Oracle, and Proof. The orchestrator edits them through flat `story_write` and per-case `e2e_write` tools. Delivery remains a separate reviewed `plan.yaml`, authored one task or stage at a time through `task_write` and `stage_write`; near-zero-argument `workflow_compile` validates the current branch without starting work. Each task is one concise YAML context capsule with `description`, `scope`, and `delivery` plus deterministic `checks`. `task_clarify` is an exceptional bounded line-read/literal-search surface over story `spec` or `design`. Ordered stages run task sets sequentially or concurrently and may add optional review mode/focus; only harness `limits.repairRounds` controls repair retries. The planner authors no evaluations, reports, handoffs, or repair tasks—the runtime owns repair slots, whole-branch review, and final E2E.
+
+For ad hoc delegation, `general-purpose` handles open-ended assignments with every configured child tool except workflow and recursive subagent controls; specialized definitions remain available for exploration, investigation, review, and managed execution. Agent-definition frontmatter is the sole tool allowlist authority; `harness.yaml` tool lists are ignored. Its `tools` field supports `"*"` as a union-friendly all-tools selector and optional `mcp:<server>` selectors backed by the independently installed `pi-mcp-adapter`. Missing explicitly selected servers are ignored, while launched children without `"*"` scope the adapter proxy to only declared server names.
 
 MCP transport and updates remain user-owned. Install `pi-mcp-adapter` separately and register server names such as `playwright` and `context7` in its standard `mcp.json`; PiBox does not bundle MCP clients or server versions.
 
@@ -137,12 +139,10 @@ See [docs/workflow.md](docs/workflow.md) for setup and behavior, and [docs/specs
 ### Workflow execution benchmark
 
 ```bash
-npm run eval:workflow                 # deterministic CI-grade scenarios
-npm run eval:workflow:model           # opt-in Luna model scenarios
-npm run eval:workflow:compare         # compare with the reviewed baseline
+npm run eval:workflow # deterministic target stage-state scenarios
 ```
 
-The benchmark covers scheduling, Git safety, review/repair, recovery, clarification, protocol, and completion. Reports are written beneath ignored `.benchmark/`; reviewed baselines and retained findings live in `benchmarks/workflow-execution/`. See [docs/workflow-execution-eval.md](docs/workflow-execution-eval.md).
+Focused unit and adapter tests cover Git, recovery, permission, review/repair, and completion boundaries. Retained files in `benchmarks/workflow-execution/` are historical evidence. See [docs/workflow-execution-eval.md](docs/workflow-execution-eval.md).
 
 ## License
 

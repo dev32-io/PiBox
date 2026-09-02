@@ -4,6 +4,7 @@ import type {
 	LogicalAgentHandle,
 	LogicalAgentSnapshot,
 	RuntimeOwner,
+	SubagentEvent,
 	SubagentEventListener,
 	SubagentInspection,
 	SubagentReplay,
@@ -38,6 +39,7 @@ export class FakeSubagentService implements SubagentService {
 	private readonly entries = new Map<string, Entry>();
 	private nextId = 0;
 	private cursor = 0;
+	private readonly listeners = new Set<SubagentEventListener>();
 
 	constructor(private readonly handler: FakeHandler = () => ({ status: "completed", reason: "completed", exitCode: 0, text: "done" }), owner: RuntimeOwner = fakeOwner) {
 		this.owner = owner;
@@ -121,8 +123,10 @@ export class FakeSubagentService implements SubagentService {
 		return { snapshot: { owner: this.owner, cursor: this.cursor, agents: this.inspect(owner) }, events: [], reset: false };
 	}
 
-	subscribe(owner: RuntimeOwner, _afterCursor: number, _listener: SubagentEventListener): SubagentSubscription {
-		return { initial: this.replay(owner), unsubscribe() {} };
+	subscribe(owner: RuntimeOwner, _afterCursor: number, listener: SubagentEventListener): SubagentSubscription {
+		this.assertOwner(owner);
+		this.listeners.add(listener);
+		return { initial: this.replay(owner), unsubscribe: () => { this.listeners.delete(listener); } };
 	}
 
 	teardown(): void {}
@@ -134,7 +138,8 @@ export class FakeSubagentService implements SubagentService {
 		entry.resolveStop = undefined;
 		entry.last = result;
 		entry.snapshot = { ...entry.snapshot, state: result.status, updatedAt: new Date().toISOString(), summary: result.text };
-		this.cursor++;
+		const event: SubagentEvent = { owner: this.owner, cursor: ++this.cursor, agentId: entry.handle.agentId, attemptId: result.attemptId, sequence: 1, type: "terminal", at: new Date().toISOString() };
+		for (const listener of this.listeners) listener(event);
 		return result;
 	}
 

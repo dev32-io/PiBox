@@ -59,6 +59,7 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 	controllerGlobal()[ACTIVE_CONTROLLER_KEY]?.dispose();
 	let selection: Selection | undefined;
 	let dialogPhase: "idle" | "resolving" | "overlay" = "idle";
+	let dialogRequest = 0;
 	let disposed = false;
 
 	const render = () => surface.requestRender();
@@ -66,7 +67,14 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 	const unsubscribeInput = ctx.ui.onTerminalInput((data) => {
 		if (disposed) return undefined;
 		if (dialogPhase === "overlay") return undefined;
-		if (dialogPhase === "resolving") return { consume: true };
+		if (dialogPhase === "resolving") {
+			if (!matchesKey(data, Key.escape)) return { consume: true };
+			dialogRequest += 1;
+			dialogPhase = "idle";
+			selection = undefined;
+			render();
+			return { consume: true };
+		}
 		const rows = availableRows(surface.rows());
 		if (!selection) {
 			if (!matchesKey(data, "alt+down") || rows.length === 0) return undefined;
@@ -75,7 +83,11 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 			return { consume: true };
 		}
 
-		if (matchesKey(data, Key.escape)) return { consume: true };
+		if (matchesKey(data, Key.escape)) {
+			selection = undefined;
+			render();
+			return { consume: true };
+		}
 		let direction: "left" | "right" | "up" | "down" | undefined;
 		if (matchesKey(data, Key.left)) direction = "left";
 		else if (matchesKey(data, Key.right)) direction = "right";
@@ -90,16 +102,28 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 			const id = selectedInteractiveFooterId(rows, selection);
 			const item = id ? getInteractiveFooterItem(id) : undefined;
 			if (item) {
+				const request = ++dialogRequest;
 				dialogPhase = "resolving";
 				void Promise.resolve(item.dialog(ctx))
-					.then((spec) => showInteractiveFooterDialog(ctx, spec, () => { dialogPhase = "overlay"; }))
-					.catch((error) => ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"))
-					.finally(() => { dialogPhase = "idle"; render(); });
+					.then((spec) => {
+						if (disposed || request !== dialogRequest) return undefined;
+						return showInteractiveFooterDialog(ctx, spec, () => {
+							if (request === dialogRequest) dialogPhase = "overlay";
+						});
+					})
+					.catch((error) => {
+						if (request === dialogRequest) ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					})
+					.finally(() => {
+						if (request !== dialogRequest) return;
+						dialogPhase = "idle";
+						render();
+					});
 			}
 			return { consume: true };
 		}
-		// Footer mode owns input until Up exits from its first row. Consuming other
-		// keys prevents accidental editor edits and agent interrupts.
+		// Footer mode owns input until Escape or Up exits it. Consuming other keys
+		// prevents accidental editor edits and agent interrupts.
 		return { consume: true };
 	});
 
@@ -109,6 +133,7 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 		dispose() {
 			if (disposed) return;
 			disposed = true;
+			dialogRequest += 1;
 			unsubscribeInput();
 			unsubscribeRegistry();
 			selection = undefined;

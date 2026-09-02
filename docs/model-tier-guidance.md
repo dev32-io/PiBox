@@ -1,6 +1,6 @@
 # Harness Model Tier Guidance
 
-PiBox separates the main orchestrator from managed task capability tiers. Choose them for different jobs: the orchestrator carries product judgment and workflow authority, while tier routes execute bounded implementation, review, and evaluation assignments.
+PiBox separates the main orchestrator from managed task capability tiers. Choose them for different jobs: the orchestrator carries product judgment and workflow authority, while tier routes execute bounded implementation, review, repair, and E2E assignments.
 
 ## Recommended Tier Profiles
 
@@ -53,7 +53,7 @@ Use phase-sensitive orchestration:
 An alternative is to retain GLM-5.2 as the main product and technical orchestrator while routing bounded managed work through the tier table above. Promote GLM to unattended execution only after it demonstrates that it can:
 
 - preserve harness ownership of source edits, Git, worktrees, fixers, and reviewers;
-- use only the matching checkpoint action;
+- resolve only the matching authoritative attention state;
 - avoid replacement reviewer or E2E launches;
 - pause after persistent managed-action failure;
 - avoid unrelated artifact changes.

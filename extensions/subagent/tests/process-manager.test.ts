@@ -8,6 +8,7 @@ import {
 	LIFETIME_WRAPPER_PATH,
 	SubagentProcessManager,
 	createPiInvocationResolver,
+	stableSystemPromptPath,
 	type RuntimeOwner,
 	type SubagentInvocationRequest,
 } from "../index.js";
@@ -315,11 +316,14 @@ test("every owner-bearing call rejects another activation", async (t) => {
 	await assert.rejects(manager.continue({ owner: other, handle: started.handle, attemptUserPrompt: "next" }), /another runtime activation|Unknown or stale/);
 });
 
-test("production Pi resolver uses JSON print mode, the private transcript, and the lifetime wrapper", async () => {
+test("production Pi resolver uses JSON print mode, a private prompt file, and the lifetime wrapper", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-pi-invocation-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const transcriptPath = join(root, "session.jsonl");
 	const resolver = createPiInvocationResolver({ piInvocation: { command: "pi-test", args: ["--base"] }, lifetimeTermGraceMs: 75 });
 	const invocation = await resolver({
 		agentId: "agent", attemptId: "attempt", agent: "reviewer", cwd: "/work",
-		stableSystemContext: "stable", attemptUserPrompt: "dynamic", transcriptPath: "/private/session.jsonl", continuation: false,
+		stableSystemContext: "stable", attemptUserPrompt: "dynamic", transcriptPath, continuation: false,
 		provider: "provider", model: "model", effort: "max", tools: ["read", "grep"],
 		extensionPaths: ["/ext/one.ts", "/ext/two.ts"], skillPaths: ["/skill/one"], fast: true,
 		env: { BASE_ENV: "base" }, workflowCredentials: { WORKFLOW_TOKEN: "token" },
@@ -329,14 +333,48 @@ test("production Pi resolver uses JSON print mode, the private transcript, and t
 	assert.deepEqual(invocation.args, [
 		LIFETIME_WRAPPER_PATH, "--", "pi-test", "--base",
 		"--extension", "/ext/one.ts", "--extension", "/ext/two.ts",
-		"--mode", "json", "-p", "--session", "/private/session.jsonl", "--name", "reviewer",
+		"--mode", "json", "-p", "--session", transcriptPath, "--name", "reviewer",
 		"--provider", "provider", "--model", "model", "--thinking", "max", "--tools", "read,grep",
-		"--append-system-prompt", "stable", "--skill", "/skill/one", "--", "dynamic",
+		"--append-system-prompt", stableSystemPromptPath(transcriptPath), "--skill", "/skill/one", "--", "dynamic",
 	]);
+	assert.equal(await readFile(stableSystemPromptPath(transcriptPath), "utf8"), "stable");
 	assert.deepEqual(invocation.env, {
 		BASE_ENV: "base", WORKFLOW_TOKEN: "token", WORKFLOW_REF: "item", ATTEMPT_REF: "attempt",
 		PIBOX_RUNTIME_ROLE: "subagent", PIBOX_FAST_CHILD_ENABLED: "1", PIBOX_LIFETIME_TERM_GRACE_MS: "75",
 	});
+});
+
+test("production Pi resolver keeps task and review limit prompts byte-exact and off argv", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-pi-large-prompt-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const resolver = createPiInvocationResolver({ piInvocation: { command: "pi-test", args: [] } });
+	for (const bytes of [128 * 1024, 512 * 1024]) {
+		const stableSystemContext = "π".repeat(bytes / 2);
+		assert.equal(Buffer.byteLength(stableSystemContext), bytes);
+		const transcriptPath = join(root, `${bytes}.jsonl`);
+		const invocation = await resolver({
+			agentId: `agent-${bytes}`, attemptId: "attempt", agent: "reviewer", cwd: root,
+			stableSystemContext, attemptUserPrompt: "dynamic", transcriptPath, continuation: false,
+			provider: "provider", model: "model", effort: "high", tools: [], extensionPaths: [], skillPaths: [], fast: false,
+		});
+		assert.equal(await readFile(stableSystemPromptPath(transcriptPath), "utf8"), stableSystemContext);
+		assert.equal(invocation.args.includes(stableSystemContext), false, "stable prompt bytes never consume the OS argument budget");
+		assert.equal(invocation.args[invocation.args.indexOf("--append-system-prompt") + 1], stableSystemPromptPath(transcriptPath));
+	}
+});
+
+test("the real child boundary classifies an oversized argv failure as E2BIG", { skip: process.platform === "win32" }, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-e2big-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const manager = new SubagentProcessManager({
+		owner: owner(), sessionDirectory: join(root, "sessions"),
+		invocationResolver: () => ({ command: process.execPath, args: ["-e", "process.exit(0)", "x".repeat(3 * 1024 * 1024)] }),
+	});
+	t.after(() => manager.teardown());
+	await assert.rejects(
+		manager.launch({ owner: owner(), agent: "oversized", cwd: root, stableSystemContext: "stable", attemptUserPrompt: "prompt", ...EXECUTION }),
+		(error: NodeJS.ErrnoException) => error.code === "E2BIG",
+	);
 });
 
 test("production Pi resolver implements wildcard tools by excluding recursive subagent controls", async () => {

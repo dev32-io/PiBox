@@ -55,7 +55,7 @@ export default function permissions(pi: ExtensionAPI): void {
 		setMode,
 		async confirmCriticalRisk(ctx, ref, findingIds) {
 			if (ctx.mode !== "tui" || !ctx.hasUI) return false;
-			const choice = await ctx.ui.select(`Accept Critical review risk?\n\n${ref}\n\nThis is explicit user authority to merge unresolved Critical findings: ${findingIds.join(", ")}.`, [CRITICAL_RISK_CANCEL, CRITICAL_RISK_CONFIRM]);
+			const choice = await ctx.ui.select(`Accept Critical review risk?\n\n${ref}\n\nThis is explicit user authority to continue with unresolved Critical findings: ${findingIds.join(", ")}.`, [CRITICAL_RISK_CANCEL, CRITICAL_RISK_CONFIRM]);
 			return choice === CRITICAL_RISK_CONFIRM;
 		},
 		async confirmWorkflowStart(ctx, ref) {

@@ -7,9 +7,9 @@ function adapter(id: string, prefix = `${id}:`): WorkflowAdapter {
 	return {
 		id,
 		canHandle: (ref) => ref.startsWith(prefix),
-		async controlExecution(ref, command) { return { workflowRef: ref, mode: command === "pause" || command === "detach" ? "paused" : command === "stop" ? "stopped" : command === "complete" ? "completed" : "running", generation: 1 }; },
-		async snapshot(ref) { return { ref, title: id, status: "ready", steps: [] }; },
-		async runStep(ref) { return { ref, state: "completed", summary: "done" }; },
+		async controlExecution(ref, command) { return { workflowRef: ref, mode: command === "pause" || command === "detach" ? "paused" : command === "stop" ? "stopped" : command === "complete" ? "completed" : "running" }; },
+		async snapshot(ref) { return { ref, title: id, status: "ready", runtime: { status: "ready" } as any }; },
+		async advanceWorkflow() {},
 		async controlWorkflow() {},
 	};
 }

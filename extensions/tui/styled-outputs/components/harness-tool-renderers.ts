@@ -3,12 +3,10 @@ import { Container, getKeybindings, Text, truncateToWidth, type Component } from
 import { currentSubagentIndicator, renderSubagentLiveStatus } from "../../../subagent/display.js";
 import { getSubagentUiProjectionRegistry, type SubagentUiAgentProjection, type SubagentUiAgentRef } from "../../../subagent/ui-projection.js";
 
-const EXACT_HARNESS_TOOLS = new Set([
-	"evidence_record", "finding_report", "memory_adapter", "work_item_complete", "task_integrate",
-]);
+const EXACT_HARNESS_TOOLS = new Set(["memory_adapter"]);
 
 export function isHarnessTool(name: string): boolean {
-	return EXACT_HARNESS_TOOLS.has(name) || /^(resource|workflow|subagent|task|evaluation|distill)_/.test(name);
+	return EXACT_HARNESS_TOOLS.has(name) || /^(resource|workflow|subagent|story|e2e|task|stage|evaluation|distill)_/.test(name);
 }
 
 function words(value: string): string {
@@ -24,10 +22,11 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 	switch (name) {
 		case "resource_list": return { action: "List resources", target: [args.type, args.parent, args.query && `“${compact(args.query, 32)}”`].filter(Boolean).join(" · ") || "all" };
 		case "resource_read": return { action: "Read resource", target: args.ref };
-		case "resource_write": return args.ref
-			? { action: "Update resource", target: args.ref }
-			: { action: "Create resource", target: [args.type, args.value?.title ?? args.value?.id, args.parent].filter(Boolean).join(" · ") };
 		case "resource_delete": return { action: "Delete resource", target: args.ref };
+		case "story_write": return { action: args.ref ? "Update story" : "Create story", target: args.ref ?? [args.id, args.title].filter(Boolean).join(" · ") };
+		case "e2e_write": return { action: args.ref ? "Update E2E case" : "Create E2E case", target: args.ref ?? [args.story, args.id, args.title].filter(Boolean).join(" · ") };
+		case "task_write": return { action: args.ref ? "Update task" : "Create task", target: args.ref ?? [args.story, args.id, args.title].filter(Boolean).join(" · ") };
+		case "stage_write": return { action: args.ref ? "Update stage" : "Create stage", target: args.ref ?? [args.story, args.id].filter(Boolean).join(" · ") };
 		case "distill_prepare": return { action: "Preview distillation", target: [args.baseline && `${args.baseline}..`, args.target ?? "HEAD", args.since && `since ${args.since}`].filter(Boolean).join("") };
 		case "distill_collect": return { action: "Collect distillation", target: compact(args.previewToken, 12) };
 		case "distill_read": return { action: args.runId ? "Read distillation" : "List distillations", target: [args.runId, args.path].filter(Boolean).join(" · ") };
@@ -48,30 +47,16 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 				default: return { action: "Use memory adapter" };
 			}
 		}
-		case "workflow_list": return { action: "List workflow resources", target: [args.resource, args.workItemId, args.query && `“${compact(args.query, 28)}”`].filter(Boolean).join(" · ") };
-		case "workflow_get": return { action: "Read workflow resource", target: [args.ref, args.view].filter(Boolean).join(" · ") };
-		case "workflow_schema": return { action: "Read workflow schema", target: [args.operation, args.resource].filter(Boolean).join(" · ") };
-		case "workflow_plan_write": return { action: `${words(args.mode ?? "write")} plan`, target: args.target ?? args.plan?.id ?? args.plan?.title };
-		case "workflow_create": return { action: "Create workflow resource", target: [args.resource, args.body?.id ?? args.body?.title, args.parent].filter(Boolean).join(" · ") };
-		case "workflow_patch": return { action: "Update workflow resource", target: args.ref };
-		case "workflow_delete": return { action: "Delete workflow resource", target: args.ref };
-		case "workflow_apply_change": return { action: "Apply workflow change", target: `${args.operations?.length ?? 0} operation(s)` };
-		case "workflow_transition": return { action: "Transition workflow", target: [args.ref, args.action].filter(Boolean).join(" · ") };
 		case "workflow_start": return { action: "Start workflow", target: args.ref };
 		case "workflow_control": return { action: `${words(args.action ?? "control")} workflow`, target: args.ref };
-		case "workflow_checkpoint": return { action: args.action === "approve" ? "Approve" : args.action === "request_changes" ? "Request changes" : "Review checkpoint", target: args.ref };
 		case "workflow_status": return { action: "Inspect workflow status" };
+		case "workflow_compile": return { action: "Compile workflow", target: args.ref };
 		case "workflow_init": return { action: "Initialize workflow", target: args.profile };
 		case "subagent_spawn": return { action: args.agent ?? "Subagent", target: compact(args.task, 78) };
 		case "subagent_status": return { action: "Inspect subagents" };
 		case "subagent_control": return { action: `${words(args.action ?? "control")} subagent`, target: args.agentId };
 		case "subagent_continue": return { action: "Continue subagent", target: args.agentId };
-		case "task_clarify": return { action: "Clarify task", target: args.ref ?? args.taskId };
-		case "task_checkpoint": return { action: "Checkpoint task", target: args.summary };
-		case "task_complete": return { action: "Complete task", target: args.summary };
-		case "evaluation_complete": return { action: "Complete evaluation", target: args.verdict };
-		case "evaluation_record": return { action: "Record evaluation", target: [args.evaluationId, args.verdict].filter(Boolean).join(" · ") };
-		case "work_item_complete": return { action: "Complete work item", target: args.workItemId };
+		case "task_clarify": return { action: args.findText ? "Search task context" : "Read task context", target: args.section };
 		default: return { action: words(name), target: args.ref ?? args.workItemId ?? args.taskId ?? args.evaluationId };
 	}
 }
@@ -199,7 +184,7 @@ function structuredItems(payload: any): any[] {
 function summaryFields(payload: any, details: any): Array<[string, string]> {
 	const source = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : details && typeof details === "object" ? details : {};
 	const fields: Array<[string, string]> = [];
-	for (const key of ["ref", "id", "title", "type", "state", "status", "verdict", "revision", "count", "returned", "total", "commit", "branch", "agentId", "runId"]) {
+	for (const key of ["ref", "id", "title", "type", "phase", "state", "status", "verdict", "revision", "count", "returned", "total", "commit", "branch", "agentId", "runId"]) {
 		const value = scalar(source?.[key]);
 		if (value !== undefined) fields.push([words(key), value]);
 	}

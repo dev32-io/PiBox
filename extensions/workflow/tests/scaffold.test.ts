@@ -97,16 +97,18 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);
 	assert.doesNotMatch(policy, /^\s+tools:/m, "repository harness policy must not duplicate agent frontmatter tools");
-	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.worktree/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
+	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/state.yaml"), "agent-artifacts/story/state.yaml");
+	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/ledger.yaml"), "agent-artifacts/story/ledger.yaml");
+	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/events.jsonl"), "agent-artifacts/story/events.jsonl");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".pibox/probe"), ".pibox/probe");
-	await assert.rejects(git(root, "check-ignore", "--no-index", ".pibox/verification.yaml"), /Command failed/);
 	assert.equal((await scaffoldHarness(root, "standard")).created, false);
 });
 
 test("prepares the worktree ignore for an existing harness policy", async (t) => {
 	const root = await emptyRepository(t);
-	await writeFile(join(root, ".gitignore"), "dist/\n");
+	await writeFile(join(root, ".gitignore"), "dist/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
 	await mkdir(join(root, ".pi"), { recursive: true });
 	await writeFile(join(root, ".pi", "harness.yaml"), "schemaVersion: 2\n");
 	await git(root, "add", ".gitignore", ".pi/harness.yaml");
@@ -116,7 +118,7 @@ test("prepares the worktree ignore for an existing harness policy", async (t) =>
 	const result = await scaffoldHarness(root, "standard");
 	assert.equal(result.created, false);
 	assert.equal(result.worktreeIgnoreAdded, true);
-	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.worktree/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
 	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): ignore repository-local worktrees");
 });
 

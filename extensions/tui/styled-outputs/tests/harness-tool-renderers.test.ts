@@ -186,6 +186,13 @@ test("renders memory audit findings with bounded review reasons", () => {
 	]);
 });
 
+test("renders specialized workflow authoring calls", () => {
+	for (const name of ["story_write", "e2e_write", "task_write", "stage_write", "workflow_compile"]) assert.equal(isHarnessTool(name), true, name);
+	assert.deepEqual(lines(renderHarnessToolCall("story_write", { id: "checkout", title: "Reliable checkout" }, theme, false, false)), ["✓ Create story checkout · Reliable checkout"]);
+	assert.deepEqual(lines(renderHarnessToolCall("e2e_write", { story: "work-item:checkout", id: "E2E-001", title: "Submit checkout" }, theme, false, false)), ["✓ Create E2E case work-item:checkout · E2E-001 · Submit checkout"]);
+	assert.deepEqual(lines(renderHarnessToolCall("workflow_compile", {}, theme, false, false)), ["✓ Compile workflow"]);
+});
+
 test("renders resource lists as concise tree rows instead of raw JSON", () => {
 	const result = {
 		content: [{ type: "text", text: JSON.stringify({ count: 2, resources: [
@@ -209,7 +216,7 @@ test("renders resource mutation receipts as labeled fields", () => {
 		content: [{ type: "text", text: `Wrote ${receipt.ref}.\n${JSON.stringify(receipt, null, 2)}` }],
 		details: receipt,
 	};
-	const rendered = lines(renderHarnessToolResult("resource_write", result, false, theme, false));
+	const rendered = lines(renderHarnessToolResult("task_write", result, false, theme, false));
 	assert.equal(rendered[0], "└─ Done · commit abc123");
 	assert.match(rendered.join("\n"), /Ref: work-item:checkout\/task:implement/);
 	assert.match(rendered.join("\n"), /Revision: 3/);
@@ -222,7 +229,7 @@ test("renders canonical resource updates as a colored semantic diff", () => {
 	}, {
 		id: "implement", revision: 3, status: "ready", brief: "New behavior",
 	});
-	const rendered = lines(renderHarnessToolResult("resource_write", {
+	const rendered = lines(renderHarnessToolResult("task_write", {
 		content: [{ type: "text", text: "Wrote work-item:checkout/task:implement." }],
 		details: { commit: "abcdef1234567890", piboxResourceDiff: diff },
 	}, false, theme, false));
@@ -239,7 +246,7 @@ test("renders canonical mutation changes and commit without receipt JSON", () =>
 		changes: [{ action: "create", ref: "work-item:checkout/task:implement" }],
 		affected: [{ ref: "work-item:checkout", revision: 2, state: "active" }],
 	};
-	const rendered = lines(renderHarnessToolResult("resource_write", {
+	const rendered = lines(renderHarnessToolResult("task_write", {
 		content: [{ type: "text", text: `Wrote work-item:checkout/task:implement.\n${JSON.stringify(receipt, null, 2)}` }],
 		details: receipt,
 	}, false, theme, false));

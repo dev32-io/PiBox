@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { lstat, mkdir, readFile, readdir, stat } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { parse } from "yaml";
 import { atomicWriteFile } from "../workflow/repository.js";
@@ -13,9 +13,6 @@ export const MAX_ARTIFACT_CHARS = 120_000;
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const MAX_COMMITS = 2_000;
 const MAX_CHANGED_FILES = 5_000;
-const MAX_SESSION_REGISTRIES = 500;
-const MAX_AGENTS_PER_REGISTRY = 1_000;
-const MAX_AGENT_REGISTRY_BYTES = 2_000_000;
 
 export interface GitResult { code: number; stdout: string; stderr: string }
 export type GitRunner = (args: string[]) => Promise<GitResult>;
@@ -29,7 +26,6 @@ export interface DistillScopeInput {
 	workItems?: string[];
 	includeDirty?: boolean;
 	includeSession?: boolean;
-	rawSubagents?: "none" | "exceptional" | "all";
 	focus?: string[];
 	sessionIds?: string[];
 	sessionStartEntry?: string;
@@ -53,7 +49,6 @@ export interface ResolvedDistillScope {
 	workItems: string[];
 	includeDirty: boolean;
 	includeSession: boolean;
-	rawSubagents: "none" | "exceptional" | "all";
 	focus: string[];
 	sessionIds: string[];
 	sessionStartEntry?: string;
@@ -195,7 +190,7 @@ export async function resolveDistillScope(git: GitRunner, input: DistillScopeInp
 	const dirtyDigest = input.includeDirty ? await currentDirtyDigest(git, paths) : undefined;
 	const basis = {
 		target: { ref: targetRef, commit: targetCommit, ...(targetCommit !== targetTipCommit ? { tipCommit: targetTipCommit } : {}) }, baseline, ...(since ? { since } : {}), ...(until ? { until } : {}), paths, workItems,
-		includeDirty: input.includeDirty === true, includeSession: input.includeSession !== false, rawSubagents: input.rawSubagents ?? "exceptional", focus: input.focus?.length ? [...new Set(input.focus)].sort() : ["knowledge"],
+		includeDirty: input.includeDirty === true, includeSession: input.includeSession !== false, focus: input.focus?.length ? [...new Set(input.focus)].sort() : ["knowledge"],
 		sessionIds, ...(input.sessionStartEntry ? { sessionStartEntry: input.sessionStartEntry } : {}), ...(input.sessionEndEntry ? { sessionEndEntry: input.sessionEndEntry } : {}), knowledgeProviders,
 		knowledgeProviderFingerprint: [...(input.knowledgeProviderFingerprint ?? [])].sort((left, right) => left.id.localeCompare(right.id)),
 		...(input.sessionKey && input.includeSession !== false ? { sessionKey: input.sessionKey } : {}), ...(input.externalInputDigest ? { externalInputDigest: input.externalInputDigest } : {}), ...(dirtyDigest ? { dirtyDigest } : {}),
@@ -283,7 +278,7 @@ async function workflowSnapshot(git: GitRunner, commit: string, workItems: strin
 	for (const id of workItems) {
 		const prefix = `agent-artifacts/${id}`;
 		const listed = await git(["ls-tree", "-r", "--name-only", commit, "--", prefix]);
-		const priority = (path: string) => /(?:outcome\.md|report\.md|evaluation\.ya?ml)$/.test(path) ? 0 : /(?:task\.ya?ml|brief\.md|acceptance\.md)$/.test(path) ? 1 : 2;
+		const priority = (path: string) => /(?:outcome\.md|story\.ya?ml|plan\.ya?ml)$/.test(path) ? 0 : /\/tasks\/[^/]+\.ya?ml$/.test(path) ? 1 : 2;
 		const paths = lines(listed.stdout).filter((path) => /\.(?:md|ya?ml|json)$/.test(path)).sort((left, right) => priority(left) - priority(right) || left.localeCompare(right)).slice(0, 120);
 		output.push(`## ${id}\n\nFiles: ${paths.length}`);
 		for (const path of paths) {
@@ -292,54 +287,6 @@ async function workflowSnapshot(git: GitRunner, commit: string, workItems: strin
 			if (output.join("\n\n").length > MAX_WORKFLOW_CHARS) break;
 		}
 		if (output.join("\n\n").length > MAX_WORKFLOW_CHARS) { output.push("… [workflow cap reached]"); break; }
-	}
-	return sanitizeDistillText(output.join("\n\n"), MAX_WORKFLOW_CHARS);
-}
-
-async function matchingSessionIds(privateRoot: string, selectedSessions: string[], workItems: string[]): Promise<string[]> {
-	if (selectedSessions.length) return [...selectedSessions].sort();
-	if (!workItems.length) return [];
-	const sessions = await readdir(join(privateRoot, "sessions"), { withFileTypes: true }).then((entries) => entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()).catch(() => [] as string[]);
-	if (sessions.length > MAX_SESSION_REGISTRIES) throw new Error(`Work-item report discovery exceeds ${MAX_SESSION_REGISTRIES} session registries; provide explicit sessionIds.`);
-	return sessions;
-}
-
-async function readRegistryAgents(privateRoot: string, sessionId: string): Promise<any[]> {
-	const path = join(privateRoot, "sessions", sessionId, "agents.yaml");
-	let info;
-	try { info = await stat(path); } catch { return []; }
-	if (info.size > MAX_AGENT_REGISTRY_BYTES) throw new Error(`Subagent registry exceeds ${MAX_AGENT_REGISTRY_BYTES} bytes: ${sessionId}`);
-	const parsed = parse(await readFile(path, "utf8")) as any;
-	const agents = Array.isArray(parsed?.agents) ? parsed.agents : [];
-	if (agents.length > MAX_AGENTS_PER_REGISTRY) throw new Error(`Subagent registry exceeds ${MAX_AGENTS_PER_REGISTRY} agents: ${sessionId}`);
-	return agents;
-}
-
-export async function subagentInputDigest(privateRoot: string, selectedSessions: string[], workItems: string[]): Promise<string> {
-	const records: unknown[] = [];
-	for (const candidateSession of await matchingSessionIds(privateRoot, selectedSessions, workItems)) {
-		for (const agent of await readRegistryAgents(privateRoot, candidateSession)) {
-			if (!workItems.length || workItems.includes(agent.workItemId)) records.push({ sessionId: candidateSession, agent });
-		}
-	}
-	return digest(records);
-}
-
-async function subagentSummary(privateRoot: string, selectedSessions: string[], workItems: string[], mode: ResolvedDistillScope["rawSubagents"]): Promise<string> {
-	const sessionIds = await matchingSessionIds(privateRoot, selectedSessions, workItems);
-	const selected: Array<{ sessionId: string; agent: any }> = [];
-	for (const candidateSession of sessionIds) {
-		for (const agent of await readRegistryAgents(privateRoot, candidateSession)) {
-			if (!workItems.length || workItems.includes(agent.workItemId)) selected.push({ sessionId: candidateSession, agent });
-		}
-	}
-	if (!selected.length) return "# Subagent reports\n\nNo matching PiBox subagent reports were available.";
-	const output = ["# Subagent reports", "", "Final reports are preferred over raw child transcripts.", ""];
-	for (const { sessionId: sourceSession, agent } of selected) {
-		output.push(`## ${agent.role ?? "agent"} · ${agent.id}\n\nSession: ${sourceSession}\nState: ${agent.state}\nWork item: ${agent.workItemId ?? "none"}\nTask: ${agent.taskId ?? "none"}\nAttempts: ${agent.attempts?.length ?? 0}\n\n${sanitizeDistillText(agent.summary ?? agent.error ?? "No report", 6_000)}`);
-		const exceptional = ["failed", "protocol_failed", "recovery_required", "blocked", "interrupted"].includes(agent.state) || (agent.attempts?.length ?? 0) > 1;
-		if (mode === "all" || mode === "exceptional" && exceptional) output.push(`Raw-session drill-down candidate: .pibox/sessions/${sourceSession}/agents/${agent.id}/pi-session.jsonl`);
-		if (output.join("\n\n").length > MAX_WORKFLOW_CHARS) { output.push("… [subagent report cap reached]"); break; }
 	}
 	return sanitizeDistillText(output.join("\n\n"), MAX_WORKFLOW_CHARS);
 }
@@ -394,14 +341,13 @@ export async function collectDistillRun(git: GitRunner, options: CollectOptions)
 	}
 	const changes = sanitizeDistillText(`# Change evidence\n\n## Commits\n\n${log || "None"}\n\n## Name status\n\n${nameStatus || "None"}\n\n## Statistics\n\n${stat || "None"}${dirtyStatus ? `\n\n## Dirty checkout status\n\n${dirtyStatus}` : ""}${untracked ? `\n\n## Untracked content hashes\n\n${untracked}\n\nUntracked content is not copied into distillation artifacts.` : ""}${dirty ? `\n\n## Dirty tracked diff\n\n\`\`\`diff\n${dirty}\n\`\`\`` : ""}\n\n## ${dateScoped ? "Selected commit patches" : "Endpoint diff"}\n\n\`\`\`diff\n${diff}\n\`\`\``, MAX_DIFF_CHARS);
 	const transcript = options.scope.includeSession ? renderSessionTranscript(options.entries) : "# Current session transcript\n\nExcluded by scope.";
-	const [guidance, workflow, subagents] = await Promise.all([
+	const [guidance, workflow] = await Promise.all([
 		guidanceSnapshot(git, options.scope.target.commit),
 		workflowSnapshot(git, options.scope.target.commit, options.scope.workItems),
-		subagentSummary(options.privateRoot, options.scope.sessionIds, options.scope.workItems, options.scope.rawSubagents),
 	]);
 	const artifacts: Record<string, string> = {
 		"scope.json": `${JSON.stringify(options.scope, null, 2)}\n`, "changes.md": changes, "transcript.md": transcript,
-		"guidance.md": guidance, "workflow.md": workflow, "subagents.md": subagents,
+		"guidance.md": guidance, "workflow.md": workflow,
 	};
 	for (const [name, content] of Object.entries(artifacts)) await atomicWriteFile(join(runRoot, name), content, 0o600);
 	const manifest = {

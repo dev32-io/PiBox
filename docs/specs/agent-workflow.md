@@ -1,1503 +1,293 @@
 # PiBox Managed Workflow Design Specification
 
-**Status:** Implemented v1
-**Date:** 2026-08-10  
-**Scope:** Full research, planning, execution, integration, evaluation, and recovery workflow
+**Status:** Simplified target contract
 
-## 1. Purpose
+**Scope:** Story shaping, delivery planning, staged execution, persistence, verification, and recovery
 
-PiBox provides a capability-backed managed development workflow for Pi. One live main-session activation owns conversation and child execution; durable workflow state preserves reviewed intent, plans, Git evidence, and safe restart points across later activations.
+## 1. Purpose and authority
 
-The harness is not intended to replace a capable model with a rigid workflow engine. Its central design principle is:
+PiBox combines a capable main-session orchestrator with deterministic workflow machinery:
 
 > Models decide semantic work; capabilities enforce mechanical truth.
 
-The main Pi session remains the user's conversational and orchestration authority because it is where user intent, corrections, and decisions enter the system. Child agents advise or contribute bounded work; they do not own process decisions. The extension provides reliable artifacts, lifecycle state, model routing, worktree isolation, role contracts, completion protocols, evaluation gates, and recovery controls.
+The orchestrator owns product and engineering judgment, ambiguity resolution, risk interpretation, and user conversation. The harness owns resource validation, durable state, child ownership, Git/worktrees, scheduling, integration, checks, bounded repair, review, E2E, metrics, and recovery.
 
-The workflow scales with the work. A small text or color edit can remain ordinary ad-hoc Pi work. A bounded change can use lightweight artifacts and selective delegation. A complex story can use the complete planning, review, execution, and evaluation workflow.
+Small local reversible work remains ordinary ad-hoc Pi work. Managed execution is for work that benefits from a reviewed contract and deterministic delivery controls.
 
-The workflow defines phase-level obligations, not a mandatory per-task ceremony. Planning must establish a reviewed contract; implementation must produce an assembled result; completion must have proportionate evidence. Optional extra or ad-hoc review and broad testing may be omitted for low-risk work where appropriate, but every managed execution stage always runs its required runtime-owned stage review/fix gate and declared checks. This avoids forcing every task through the same implement-review-test-fix loop without weakening the stage contract.
-
-## 2. Design goals
-
-1. Preserve the authority, capability, and flexibility of the main Pi session.
-2. Support a complete workflow from research and brainstorming through proportionate integrated evaluation.
-3. Treat workflow stages as phase-level requirements rather than a uniform per-task pipeline.
-4. Let the orchestrator skip, defer, batch, or combine ceremony according to risk and when the result becomes meaningfully testable.
-5. Make filesystem artifacts the durable source of intent, design, task context, decisions, evidence, and outcomes.
-6. Keep raw operational history private and outside Git and all worktrees.
-7. Make subagent definitions independently configurable, measurable, and improvable.
-8. Use deterministic capabilities for state transitions, paths, Git operations, model resolution, completion handoffs, and integration.
-9. Support safe concurrent work in isolated Git worktrees.
-10. Fail loudly rather than hide dirty branches, stale plans, missing handoffs, invalid evidence, or integration conflicts.
-11. Recover gracefully from provider failures, subscription limits, process interruption, and model unavailability.
-12. Keep artifacts tool-neutral and indexable for a later dashboard.
-13. Avoid Pi upstream modifications and dependencies on terminal-specific layout APIs.
-14. Leave room for later sandboxing without redesigning the agent-facing capability API.
-
-## 3. Non-goals and deferred work
-
-The first version will not provide:
-
-- OS-level filesystem, network, or process sandboxing.
-- Automatic delayed resumption after subscription limits reset.
-- Seamless migration of an active streaming provider request.
-- A full-screen subagent sidebar or web dashboard.
-- Nested delegation by ordinary worker agents.
-- Cross-repository stories or distributed workers.
-- Automatic deletion of private history, branches, or worktrees.
-- A replacement for normal ad-hoc Pi usage.
-
-Deferred work is tracked in [`../../todo-harness.md`](../../todo-harness.md).
-
-## 4. Core concepts
-
-### 4.1 Main session
-
-The user's current main-session activation is the orchestrator. Research, chat, planning, execution control, evaluation triage, and user decisions remain there. A resumed, new, forked, cloned, or restarted session is a new activation; it may read durable workflow state but never adopts the prior activation's child processes or event stream.
-
-The main session may:
-
-- Edit directly for small work.
-- Call any specialist agent definition directly.
-- Start or promote a managed change or story.
-- Create and amend canonical artifacts through capabilities.
-- Schedule, steer, pause, restart, and stop child agents.
-- Judge context impact, task complexity, concurrency, findings, and repair strategy.
-- Integrate reviewed task work.
-- Escalate only critical decisions that exceed its authority.
-
-### 4.2 Work levels
-
-The planner exercises judgment rather than applying a file-count rule:
+## 2. Collaboration boundaries
 
 ```text
-ad hoc
-  Tiny, local, reversible work.
-  Direct implementation and optional role calls.
-  No committed harness artifact is required.
-
-change
-  A bounded outcome, usually one or a few tasks.
-  Lightweight intent/spec/design artifacts and selective delegation.
-
-story
-  Multiple concerns, dependencies, risks, or concurrent tasks.
-  Full planning, review, orchestration, and evaluation.
+free-form product discussion
+  → collaborative story shaping
+  → first persistence of story.yaml
+  → explicit user review of the persisted story
+  → separate delivery planning
+  → user review of plan.yaml and tasks
+  → explicit user request to start or resume
+  → extension-owned bypass confirmation
+  → managed stages, whole-branch review, E2E, completion
 ```
 
-Relevant complexity signals include ambiguity, reversibility, cross-cutting contracts, security or data impact, dependency structure, concurrency opportunity, and verification burden.
+The first story persistence and delivery planning never occur in the same turn. An end-to-end planning request does not waive this story-review boundary. Planning does not authorize execution. A clear request to start or resume the reviewed plan is the only conversational execution gate.
 
-The user can override the planner's classification at any time. Ad-hoc work can be promoted into a change if it grows.
+## 3. Authored resource model
 
-### 4.3 Work-item kinds
-
-Managed work initially supports one extensible schema with:
+### 3.1 Canonical layout
 
 ```text
-kind: change | story
+agent-artifacts/<story>/
+  story.yaml
+  plan.yaml
+  tasks/<task>.yaml
+  state.yaml       # runtime-owned, ignored
+  ledger.yaml      # runtime-owned, ignored
+  events.jsonl     # runtime-owned, ignored
+  outcome.md
+  evidence/        # intentionally retained sanitized evidence only
 ```
 
-A change is small and surgical. A story is broader and normally contains multiple tasks. Additional kinds may be introduced later without replacing the common schema.
+Historical pre-target work items remain immutable history. Target resources have no compatibility fields. Legacy history, if readable, is isolated from executable state and is never mutated or silently reinterpreted.
 
-### 4.4 Canonical and operational state
+### 3.2 Story
 
-The harness separates two planes:
-
-```text
-Committed project artifacts
-  Intent, specs, design, decisions, task contracts,
-  curated evaluations, evidence, and outcomes.
-
-Ignored repository-local operational state (`.pibox/`)
-  Runs, transcripts, events, locks, heartbeats,
-  raw command output, checkpoints, and recovery data.
-```
-
-The orchestrator feature branch is the canonical project source. Private state is not a substitute for committed contracts, and committed artifacts do not contain raw execution history.
-
-## 5. Architecture
-
-### 5.1 Overall topology
-
-```text
-MAIN PI SESSION — ORCHESTRATOR
-│
-├── Research and clarification
-│   └── explorer agents
-│
-├── Planning
-│   ├── Superpowers-style brainstorming
-│   ├── canonical artifact capabilities
-│   └── independent plan critic
-│
-├── Execution
-│   ├── task scheduler
-│   ├── isolated implementers
-│   ├── context and control inboxes
-│   └── serialized integration
-│
-└── Evaluation
-    ├── deterministic gates
-    ├── code reviewers
-    ├── repair implementers
-    └── E2E testers and evidence collectors
-```
-
-### 5.2 Extension components
-
-```text
-workflow extension/runtime
-├── durable work-item scheduler and per-workflow runner
-├── Git/worktree, checks, review/fix, and recovery
-├── workflow adapter capability and dashboard
-└── child executor adapter
-        ↓
-standalone subagent service
-├── generic agent catalog and model/tool resolution
-├── activation ownership and continuation handles
-├── bounded Pi JSON process manager and normalized events
-└── generic tools and TUI projection
-```
-
-Workflow depends on the standalone subagent API and registered service; the standalone package never imports workflow code. Components expose typed operations rather than allowing prompts to invent state paths or Git procedures.
-
-### 5.3 Child process topology
-
-The standalone service runs each child as one bounded `pi --mode json -p` turn with a fixed working directory, stable system context, one attempt-specific user turn, resolved provider/model/effort, exact tool and extension policy, and an activation-owned cancellation/stop path. It parses LF-delimited JSON directly from stdout. Message deltas are display-only; final message/agent settlement, process exit, stdout drain, and terminal classification determine the result.
-
-Ownership is `RuntimeOwner { sessionId, processInstanceId, activationId }`. `/reload` may rebind to the exact process-global manager and active children. `pi -r`, `/resume`, `/new`, `/fork`, `/clone`, process restart, or a different activation ID cannot resolve, adopt, or receive events from old children. `/tree` is blocked while children are active. `PIBOX_RUNTIME_ROLE` alone selects main versus child; `PIBOX_SUBAGENT_ID` is managed identity/fencing metadata only.
-
-A logical agent may start another bounded turn against its existing transcript only after settlement and through an opaque same-activation continuation handle. One writer owns a transcript at a time. A parent-lifetime lease terminates the child process group when ownership disappears. There is no Pi RPC mode, detached process adoption, PID recovery, file-tail observer, durable generic event journal, or generic lifecycle reattachment. Workflow attempt records, credentials, checkpoints, handoffs, and Git state remain durable so a later activation can classify interruption and start a fresh process without attaching to the old one.
-
-## 6. Authority model
-
-### 6.1 Orchestrator authority
-
-The orchestrator may act autonomously while preserving the reviewed contract. This includes:
-
-- Strengthening task isolation.
-- Reordering eligible tasks.
-- Adding dependency edges.
-- Pausing, steering, restarting, or replacing agents.
-- Resolving ordinary implementation details.
-- Splitting oversized tasks without changing intent.
-- Rejecting incomplete handoffs.
-- Requesting additional evaluation.
-- Applying non-semantic artifact corrections.
-- Selecting or revising a task capability tier within reviewed scope.
-
-### 6.2 Mandatory user escalation
-
-The orchestrator pauses affected work and asks the user before it:
-
-- Changes the work-item intent or desired outcome.
-- Materially expands scope.
-- Removes or weakens acceptance criteria.
-- Contradicts an explicit user decision.
-- Changes a security or privacy boundary.
-- Performs destructive Git operations.
-- Abandons a load-bearing task.
-- Accepts a critical unresolved evaluation finding.
-
-A critical decision produces a concise packet containing the finding, affected work, why user authority is required, available options, and the orchestrator's recommendation.
-
-### 6.3 Enforcement boundary
-
-The model judges semantics. The extension enforces mechanics:
-
-| Orchestrator judgment | Extension enforcement |
-|---|---|
-| Classify ad-hoc/change/story | Validate schemas and supported kinds |
-| Choose artifact dimensions | Create deterministic paths and indexes |
-| Decompose and prioritize tasks | Validate dependency references and cycles |
-| Recommend concurrency | Enforce worktrees, resource locks, and limits |
-| Assign capability tier | Resolve an ordered same-tier `provider/model#effort` pair |
-| Judge whether a finding is critical | Keep affected work paused while waiting |
-| Choose repair strategy | Enforce retry bounds and lineage |
-| Judge context impact | Require designated rereads and acknowledgements |
-| Judge semantic completion | Require the declared completion proof |
-| Choose when to skip, defer, batch, or combine checks | Enforce the orchestrator-declared verification plan |
-| Choose integration order and integration units | Serialize and atomically apply integrations |
-
-## 7. Managed workflow
-
-### 7.1 Lifecycle
-
-```text
-Research and clarify
-        ↓
-Create intent, specifications, and design
-        ↓
-Generate task graph and evaluation plan
-        ↓
-Independent plan critique
-        ↓
-Explicit user request to run
-        ↓
-Execute eligible tasks
-        ↓
-Assemble task contributions into integration units
-        ↓
-Run evaluation at the planned meaningful boundary
-        ↓
-Repair when findings require it
-        ↓
-Outcome and completion
-```
-
-The workflow may move backward when a later finding exposes an earlier gap. Individual tasks do not have to traverse every phase independently. A story can defer build, review, or testing until several partial contributions have been assembled into something meaningful.
-
-### 7.2 Work-item state
-
-Phase and operational state remain separate:
-
-```yaml
-phase: planning       # planning | execution | evaluation | complete
-state: active         # active | waiting_user | paused | blocked | failed | complete
-
-planning:
-  revision: 3
-```
-
-This avoids encoding combinations such as `execution-paused-for-user` into one unmaintainable enum.
-
-### 7.3 Execution authorization
-
-Research can flow naturally into planning and review. A clear user request to start or run the reviewed workflow is the model-facing execution gate. Planning, review, acknowledgement, a problem report, or a proposed fix does not itself authorize execution. No separate approval command or planning-status transition exists. After `workflow_start` is called, an extension-owned TUI confirmation tells the user that unattended execution requires permission bypass; cancellation launches nothing. Successful preparation and snapshot validation switch the session to bypass before scheduling work.
-
-The deliverable contract covers intent, requirements, acceptance criteria, and binding user/architecture decisions. Execution mechanics—task boundaries, integration grouping, evaluator placement, and check timing—remain under orchestrator authority unless the user explicitly made one of them binding.
-
-Revisions identify the exact planning context used by workers and evaluators. The harness relies on scoped tools, schema validation, serialization, revision checks, clean Git state, and immutable delivery history rather than approval metadata or contract hashes.
-
-## 8. Canonical artifact model
-
-### 8.1 Root and stable paths
-
-All managed project artifacts live under the visible, tool-neutral root:
-
-```text
-agent-artifacts/
-```
-
-Completed work items are never moved to an archive directory. Status metadata represents lifecycle, preserving stable links and Git history.
-
-### 8.2 Work-item structure
-
-```text
-agent-artifacts/<work-item-id>/
-├── index.yaml
-├── intent.md
-├── specs/
-│   └── <dimension>.md
-├── design/
-│   └── <dimension>.md
-├── decisions/
-│   └── <decision-id>.md
-├── tasks/
-│   └── <task-id>/
-│       ├── task.yaml
-│       ├── brief.md
-│       └── acceptance.md
-├── evaluations/
-│   └── <evaluation-id>/
-│       ├── evaluation.yaml
-│       └── report.md
-├── evidence/
-│   └── <evaluation-id>/
-│       ├── manifest.yaml
-│       └── ...
-└── outcome.md
-```
-
-The core categories are fixed. The planner chooses the number and names of dimensional spec and design documents. Empty optional directories are not required.
-
-### 8.3 Work-item index
-
-`index.yaml` is the machine-readable work-item record and artifact catalog:
+A story has identity and three Markdown-rich fields rendered from flat semantic authoring inputs:
 
 ```yaml
 schemaVersion: 1
-
-id: session-model-redesign
+id: checkout
+title: Reliable checkout
 kind: story
-title: Session Model Redesign
-
-phase: execution
-state: active
-
-planning:
-  revision: 3
-
-artifacts:
-  - id: intent
-    type: intent
-    path: intent.md
-    status: draft
-
-  - id: session-identity
-    type: spec
-    path: specs/session-identity.md
-    status: draft
-    tags: [sessions, security]
-
-  - id: runtime-architecture
-    type: design
-    path: design/runtime-architecture.md
-    status: draft
-    tags: [runtime]
-
-  - id: server-minted-session-ids
-    type: decision
-    path: decisions/server-minted-session-ids.md
-    status: accepted
-
-tasks:
-  - id: session-metadata
-    path: tasks/session-metadata/task.yaml
-
-evaluations:
-  - id: final-e2e
-    path: evaluations/final-e2e/evaluation.yaml
+spec: |
+  # Spec
+  ## Outcome
+  A valid checkout creates one order.
+  ## Scope
+  Checkout submission, excluding settlement.
+  ## Behavior
+  Valid input succeeds; invalid input creates nothing.
+  ## Acceptance
+  Both results are externally observable.
+design: |
+  # Design
+  ## Approach
+  Use the existing checkout command.
+  ## Boundaries and Flow
+  The UI calls the command and renders its typed result.
+  ## Failure and Verification
+  Rejection does not persist; focused tests prove the invariant.
+e2e: |
+  # E2E
+  ## Scope
+  The disposable checkout journey.
+  ## E2E-001 — Complete checkout
+  ### Exercise
+  Submit a disposable valid cart.
+  ### Oracle
+  One confirmation identifies one order.
+  ### Proof
+  Capture both and clean up.
 ```
 
-The index catalogs identity and paths. Task and evaluation details live in their own manifests, avoiding duplicate status sources.
+Specification requires Outcome, Scope, Behavior, and Acceptance. Design requires Approach, Boundaries and Flow, and Failure and Verification. E2E has global Scope, optional Exclusions, and independently addressed stable `E2E-NNN` cases containing Exercise, Oracle, and Proof. Bodies remain free-form Markdown; no criterion taxonomy, block IDs, dimensional artifacts, or verbose case schema is added. Consequential decisions live in the relevant spec or design prose rather than separate decision resources.
 
-### 8.4 Task manifest
+### 3.3 Task
+
+Each task is one concise self-contained YAML context capsule:
 
 ```yaml
 schemaVersion: 1
-
-id: session-metadata
-title: Implement authoritative session metadata
-status: ready
-
+id: submit-checkout
+title: Submit checkout
 dependsOn: []
-references:
-  specs: [session-identity, permissions]
-  designs: [runtime-architecture]
-  decisions: [server-minted-session-ids]
-
-execution:
-  resourceClaims: [session-schema]
-  assignment:
-    agent: implementer
-    tier: high
-    rationale: Bounded but cross-cutting session lifecycle and concurrency reasoning
-
-assembly:
-  stageId: session-screen
-  intermediateState: partial
-
-verification:
-  timing: integration-unit
-  methods: [build, combined-spec-review, combined-quality-review]
-  taskChecks: []
-  rationale: This contribution is not independently runnable or useful.
-```
-
-`brief.md` contains bounded worker instructions and context. `acceptance.md` contains observable completion criteria and required evidence.
-
-### 8.5 Evaluation and evidence manifests
-
-```yaml
-id: session-screen-combined-review
-type: combined-review
-scope:
-  integrationUnit: session-screen
-status: passed
-required: true
-attempt: 1
-result:
-  verdict: pass
-  report: report.md
-  evidence: ../../evidence/session-screen-combined-review/manifest.yaml
-```
-
-Evaluations may target a task, integration unit, or complete work item. Their presence is determined by the orchestrator's proportionate verification plan.
-
-Evidence manifests record producing evaluation, canonical commit, environment, command or interaction, timestamp, result, paths, and checksums. A report cannot claim an absent evidence item.
-
-### 8.6 Artifact mutation
-
-Only the main orchestrator can mutate canonical artifacts through dedicated capabilities. Read capabilities use progressive disclosure: catalogs are compact cursor pages, one resource is a summary by default, and full content is retrieved through revision-pinned ranges or matching passages. Exact mutation schemas are loaded on demand rather than occupying every main-session prompt. Mutations:
-
-1. Acquire the canonical lock.
-2. Require a clean feature branch.
-3. Validate IDs, types, references, and operation scope.
-4. Write through temporary paths.
-5. Validate the complete resulting schema.
-6. Update indexes and informational revision metadata.
-7. Commit the transaction.
-8. Return a compact receipt containing the canonical commit, changed refs, and affected work-item revisions—not complete intermediate resources.
-
-Multi-file transactions produce one canonical commit. Workers submit amendment and decision requests instead of editing `agent-artifacts/`.
-
-## 9. Planning behavior
-
-The collaboration lifecycle and enduring design principles are defined in [`../agent-collaboration-flow.md`](../agent-collaboration-flow.md). Prompt, skill, and workflow changes should preserve that flow.
-
-### 9.1 Main-session skills
-
-The orchestrator uses focused skills rather than one giant workflow prompt:
-
-```text
-product-discussion  → freeform exploration without canonical workflow pressure
-shape-story         → high-level intent, specification, design, and decisions
-plan-delivery       → technical tasks, stages, assignments, and verification
-workflow-run        → explicitly requested execution, recovery, completion, and briefing
-```
-
-Each phase owns one primary deliverable and naturally offers the next phase. Prior authorization to plan carries across story shaping into delivery planning unless a material decision requires the user; execution requires a clear user request to run the reviewed workflow. These skills describe judgment and behavior. The extension provides the mechanical capabilities.
-
-### 9.2 Research and brainstorming
-
-Planning follows Superpowers-style behavior:
-
-- Investigate the repository before proposing changes.
-- Spawn explorers where they improve understanding.
-- Ask one material question at a time.
-- Compare meaningful approaches and trade-offs.
-- Keep the user involved in product and architectural decisions.
-- Exercise judgment on low-level structure rather than burdening the user.
-
-Research agents return source-grounded reports. The main session synthesizes those reports into canonical planning artifacts.
-
-### 9.3 Artifact dependency flow
-
-```text
-research
-   ↓
-intent
-   ↓
-spec dimensions
-   ↓
-design dimensions and decisions
-   ↓
-task graph
-   ↓
-evaluation and evidence plan
-   ↓
-plan critique
-   ↓
-user request to run
-```
-
-Dimensions represent independently understandable concerns, not arbitrary document-size splits.
-
-### 9.4 Task planning requirements
-
-Each task must be:
-
-- A bounded, self-contained context capsule for one fresh agent.
-- A coherent assignment that preserves coupled discovery, reasoning, invariants, implementation, and focused proof.
-- Explicit about its included and excluded scope, consumed and produced interfaces, acceptance, checks, and integration expectations.
-- Clear about whether it is a complete behavior or a partial contribution.
-- Honest about dependencies and its expected intermediate state.
-- Assigned to a stage when several tasks must be assembled before they are meaningful.
-- Assigned to an ordered stage with an explicit `mode`: `sequential` or `concurrent`; blockers live in earlier stages.
-- Given proportionate verification at the task, stage, or whole-work-item boundary.
-- Assigned a capability tier only after task boundaries and stages are settled.
-
-The planner defines tasks around fresh-agent boundaries rather than implementation-step boundaries. Coupled work stays together when one agent benefits from retaining the same source context and implementation-and-test feedback loop. Substantial work splits when assignments are independent and can run concurrently, when a successor needs only durable predecessor output, or when one context would cross into an unrelated problem domain. Focused proof stays with the implementation it constrains; no proof-only, test-only, review-only, or verification-only tasks are created. Preparatory seams and expand–migrate–contract sequences remain valid when they create a safe durable intermediate state.
-
-The planner writes the complete draft atomically, reads the whole plan graph at the exact written revision back, and only then performs one lightweight self-review with fresh eyes: map each binding criterion and constraint to an owning task and proof, find vague placeholders, and verify dependencies, stages, references, and produced/consumed interfaces agree across the graph. If needed, it applies one revision-pinned surgical edit without rewriting unchanged resources and does not repeat the review. Planner-facing writes default harness-owned lifecycle and schema boilerplate, but task briefs and acceptance contracts remain structured because they are injected into implementation context. A stronger tier or deep deliberation never compensates for avoidable task scope.
-
-Each execution stage declares `mode: sequential` or `mode: concurrent`. A sequential stage runs its tasks in declared order on the canonical `feature/<work-item>` branch; each task integrates before the next starts, so later tasks see prior commits. A concurrent stage launches tasks in individual worktrees from one pinned common base, requires compatible resource claims and no same-stage dependency semantics, then crosses one atomic merge barrier in declared order. For backward compatibility, an omitted mode resolves to sequential for a singleton stage and concurrent for a multi-task stage; new plans should declare the mode explicitly.
-
-### 9.5 Optional plan critic
-
-When the user explicitly requests an independent critique, a fresh plan-critic agent checks:
-
-- Intent, spec, and design consistency.
-- Missing edge cases.
-- Ambiguous or unverifiable requirements.
-- Task and acceptance coverage.
-- Dependency correctness.
-- False concurrency assumptions.
-- Integration sequencing.
-- Evaluation coverage.
-- Model assignments.
-- Security, privacy, migration, and operational risks.
-
-The critic reports findings to the orchestrator. It cannot edit canonical artifacts or authorize execution for the user, and ordinary planning does not wait for a critic run.
-
-## 10. Agent-definition system
-
-### 10.1 Agent-definition contract
-
-An agent definition is a generic configurable execution contract rather than a workflow-specific persona:
-
-```markdown
----
-name: implementer
-description: General implementation work for managed tasks
-tools: [read, grep, find, bash, edit, write, mcp:context7]
-tier: medium
----
-
-Deliver the assigned contribution as working, verified code.
-```
-
-Each agent definition configures:
-
-- Purpose and behavioral constraints.
-- Prompt and skill set.
-- Tool and capability allowlist.
-- Workspace policy.
-- Default capability tier.
-- Delegation permission.
-- Context policy.
-- Structured completion schema.
-- Canonical artifact identity.
-
-### 10.2 Initial agent definitions
-
-| Agent definition | Responsibility | Mutation authority |
-|---|---|---|
-| General purpose | Open-ended bounded research, analysis, implementation, commands, and verification | Within the explicit delegation; no recursive delegation |
-| Explorer | Repository investigation and dependency mapping | None |
-| Plan critic | Challenge planning artifacts and verification coverage | Findings only |
-| Implementer | Implement one bounded task and its tests | Assigned worktree |
-| Code reviewer | Compare implementation with requirements and review correctness, maintainability, regressions, and tests | None |
-| E2E tester | Exercise integrated behavior and collect evidence | Runtime/test environment only |
-| Repair implementer | Address accepted evaluator findings | Assigned repair worktree |
-
-Reviewers do not silently fix the work they review. Product or test-infrastructure modifications require an implementer task, preserving evaluator independence.
-
-### 10.3 Direct invocation
-
-Agent definitions remain callable outside a managed workflow. For example:
-
-> Run a code reviewer on my current edits with GPT-5.6 Sol at high effort.
-
-Direct invocation does not require creating a work item. If the work later becomes managed, relevant findings may be promoted into canonical artifacts.
-
-### 10.4 Prompt composition
-
-A managed child launch has four bounded inputs:
-
-```text
-1. Generic agent-definition instructions — persistent system prompt
-2. Workflow-only protocol prompt — persistent system prompt
-3. Selected authoritative context — persistent system prompt
-4. Assignment request — short user prompt
-```
-
-Direct user invocation omits the workflow protocol and canonical context. For implementation tasks, the persistent packet contains the self-contained task brief, acceptance contract, exact assigned specification criteria, explicitly referenced decisions, expected contribution state, and required checks. Reviewers receive scoped task manifests and contracts plus the full specification and design. Pi retains system prompts across compaction, and packets are rebuilt from canonical files for each process attempt.
-
-### 10.5 Agent performance records
-
-Private run records capture role and prompt versions, skills, requested and resolved model/effort, event traces, completion validation, evaluator outcomes, and repair lineage. This permits later empirical comparison without committing raw transcripts.
-
-## 11. Context and communication
-
-### 11.1 Filesystem-first context
-
-Canonical Markdown and YAML files are the durable communication layer. Tool output and conversational memory are not the sole source of required context.
-
-Implementers receive the context required for normal work without calling a tool. When a concrete uncertainty remains, `task_clarify` can list or read additional current resources from the surrounding story/change. Its normal use is one targeted read; it is not a startup step or a browsing loop.
-
-The capability reads from the orchestrator feature branch, not the child's worktree copy. It can expose additional artifacts, sibling task contracts, integration units, and evaluation contracts.
-
-### 11.2 Child communication capabilities
-
-Workers communicate through:
-
-```text
-task_checkpoint
-task_request_change
-task_report_decision
-task_blocked
-task_complete
-```
-
-They do not choose private operational paths and cannot mutate canonical planning artifacts.
-
-### 11.3 Live amendments
-
-The orchestrator judges the impact of canonical changes.
-
-A blocking clarification or change request ends the current process attempt. For a focused factual answer, the orchestrator records a durable response and the scheduler starts a fresh bounded attempt against the same logical transcript when the same live activation still owns it. For a settled contract defect, one atomic `workflow_apply_change` applies the amendment and response before that fresh attempt. A later activation starts from durable workflow/Git/checkpoint state with a new service transcript; it never adopts the old child. No live response or context-version acknowledgement protocol exists.
-
-### 11.4 Checkpoints
-
-Meaningful checkpoints contain completed work, commits, worktree cleanliness, acceptance progress, next steps, and risks. Checkpoints support interruption, model replacement, context refresh, and user-requested pause. They never substitute for terminal completion.
-
-## 12. Model and effort routing
-
-### 12.1 Configuration hierarchy
-
-```text
-Built-in defaults
-    ↓
-~/.pi/agent/harness/config.yaml
-    ↓
-<repository>/.pi/harness.yaml
-    ↓
-planned task assignment
-    ↓
-explicit spawn override
-```
-
-Repository configuration loads only after Pi project trust succeeds.
-
-### 12.2 Capability tiers and model-specific effort
-
-Plans choose one semantic capability tier rather than independently guessing model and reasoning effort:
-
-```yaml
+description: Free-form contribution and necessary context.
+scope: Free-form ownership, exclusions, interfaces, and integration boundary.
+delivery: Free-form implementation, observable result, focused proof, and repository-state expectation.
+checks:
+  - npm test -- checkout-command
 assignment:
   agent: implementer
-  tier: high
-  rationale: Complex pointer geometry with a settled contract
+  tier: medium
+  rationale: A bounded task at an existing seam.
+  # tierJustification: Required for high/max.
 ```
 
-`medium` is the default for normal bounded engineering. Low is pure mechanical and low-risk; high is complex or broadly integrated; max is reserved for architecture, security, privacy, irreversible or high-blast-radius work, and exceptional ambiguity. A stronger tier never compensates for an oversized task.
+Semantic tiers are `local | low | medium | high | max`; `local` requires recorded current user permission. Outside its structural parent field, task prose contains no story references, artifact refs, criteria refs, narrative taxonomy, acceptance blocks, or separate brief/acceptance files. The complete `description`, `scope`, and `delivery` are injected into stable worker system context. `checks` are harness-owned deterministic commands rather than prose evidence claims.
 
-Each profile maps every tier to an ordered list of concrete `provider/model#effort` pairs. The planner still selects only a semantic capability tier; `/tier-profile` changes the session-scoped route profile without editing planned tasks:
+### 3.4 Plan
+
+`plan.yaml` is the separate reviewed execution topology:
 
 ```yaml
-modelTierListProfiles:
-  defaultProfile: performance
-  profiles:
-    performance:
-      max: [openai-codex/gpt-5.6-sol#max]
-      high: [openai-codex/gpt-5.6-sol#high]
-      medium: [openai-codex/gpt-5.6-sol#medium]
-      low: [openai-codex/gpt-5.6-luna#high]
-      local: [local-llm/meta/muse-glimmer#high]
-    token-conservative:
-      max: [openai-codex/gpt-5.6-sol#max]
-      high: [openai-codex/gpt-5.6-sol#high]
-      medium: [openai-codex/gpt-5.6-luna#max]
-      low: [openai-codex/gpt-5.6-luna#high]
-      local: [local-llm/meta/muse-glimmer#high]
+schemaVersion: 1
+stages:
+  - id: checkout-delivery
+    mode: sequential
+    tasks: [submit-checkout]
+    checks: [npm test -- checkout-command]
+    review:
+      mode: required
+      focus: Checkout persistence and typed failure behavior
 ```
 
-Supported concrete Pi effort levels remain:
+Stages are ordered. Each task set runs `sequential` or `concurrent`. A stage may omit review policy or declare `review.mode: required | skip` and optional free-form `review.focus`. Plans never contain `maxIterations`, repair rounds, evaluation resources, evaluator tasks, repair tasks, reports, handoffs, or authored final outcome projections. `.pi/harness.yaml` `limits.repairRounds` is the only retry-limit authority. Once execution initializes, state pins the reviewed story/plan/task digests; authored mutations and digest drift are refused. This version has no in-place replan; a contract change requires explicit stop and a new target story.
+
+## 4. Context and child ownership
+
+A managed child launch has stable generic agent instructions, workflow protocol, selected authoritative context, and a short attempt-specific user turn. Stable prefixes remain byte-stable across attempts when the contract is unchanged.
+
+- Implementers receive complete task description/scope/delivery; checks remain separate harness contract.
+- `task_clarify` provides bounded line reads and case-insensitive literal search over the selected free-form story `spec` or `design`, with range, match, and truncation metadata. It does not browse artifacts, task refs, reports, or evaluations.
+- Reviewers and fixers receive scoped task contracts, optional review focus, current findings/failure, relevant curated ledger entries, and complete story context required by their boundary.
+- Final E2E actors receive the story's complete `e2e` field directly.
+- Debug events are never child context.
+
+The standalone `SubagentService` owns generic agent definitions, process launch, normalized live events, process groups, and activation-local delivery. Workflow depends on that service; dependency never reverses. Children do not receive workflow orchestration or recursive delegation controls and never write canonical/runtime workflow files.
+
+## 5. Stage-centric scheduler
+
+The reviewed plan is an ordered stage train:
+
+- **Sequential stage:** tasks run serially in one isolated stage workspace. Each later task sees prior task commits, and the barrier integrates the ordered contribution once.
+- **Concurrent stage:** independent tasks run in per-task worktrees from one pinned base. All contributions cross one deterministic integration barrier before any later stage starts.
+
+Within each stage:
 
 ```text
-off | minimal | low | medium | high | xhigh | max
+task implementation and task checks/repairs
+  → deterministic integration
+  → stage checks
+  → optional planned review/fix loop
+  → stage complete
 ```
 
-The runtime validates the configured level against the live model's actual `thinkingLevelMap`; it never clamps or silently reinterprets effort.
-
-### 12.3 Resolution order
-
-At spawn time:
-
-1. Read the task's tier, or the agent-definition default for direct/evaluation work.
-2. For a free-form subagent, normalize an optional preferred model expressed as `model`, `provider/model`, or either form suffixed with `#effort`; a separate effort field overrides the suffix.
-3. Promote every configured route matching that model ahead of the requested tier's ordered fallback list.
-4. Filter against Pi's live registry, auth, scoped models, and exact effort support.
-5. Record the requested tier, every attempted pair, and actual provider/model/effort.
-
-Fallback remains inside the selected capability tier after any preferred route and the final route plus private attempt lineage stay auditable. There is no automatic capability downgrade or effort clamping. Within one live activation, provider/auth/capacity/transport recovery may start another bounded attempt for the same compatible logical transcript and workspace while a foreground caller remains pending; intermediate provider-failure output is not injected into the main session. Context overflow, cancellation, implementation, tool, and protocol failure do not justify changing providers or effort. If no acceptable route exists, the run enters `waiting_model` rather than pretending to execute.
-
-### 12.4 Main-session model selection
-
-The planner and orchestrator may recommend or select a stronger active model when work complexity increases:
-
-```yaml
-orchestrator:
-  modelSwitching: auto-visible   # off | suggest | auto-visible
-```
-
-A user-pinned model wins. Automatic selection is always visible.
-
-### 12.5 Configuration merge and versioning
-
-- Maps merge recursively by key.
-- Scalars replace earlier values.
-- Arrays replace rather than concatenate.
-- Agent definitions may explicitly extend other agent definitions.
-- Unknown security-critical fields fail closed.
-- Diagnostics identify source file and property path.
-- Every run records the effective configuration digest.
-
-Model preference changes do not invalidate the reviewed semantic contract. The orchestrator may revise evaluator placement and check timing while preserving the deliverable contract and required final confidence. Broadening role authority, removing a user-mandated control, or weakening a binding security or acceptance obligation requires review.
-
-## 13. Task scheduling and isolation
-
-### 13.1 Tasks are contribution units
-
-A task is a bounded unit of delegation and code ownership. It is not automatically a complete, independently runnable product increment and is not automatically an evaluation boundary.
+After all stages:
 
 ```text
-draft
-  ↓
-blocked / ready
-  ↓
-running
-  ↓
-contribution_complete
-  ↓
-staged in integration unit
-  ↓
-integrated
+whole-branch review of execution-start..current
+  → whole-branch fixes/re-review when needed
+  → final E2E from story.e2e
+  → E2E fixes/recheck when needed
+  → outcome.md
 ```
 
-Optional states such as `reviewing` and `changes_requested` appear only when the orchestrator chooses task-level review. Exceptional terminal states include `failed`, `protocol_failed`, and `cancelled`.
+Routine task, integration, check, repair, review, re-review, final-review, and E2E transitions advance automatically. Runtime-generated CI repair, integration repair, stage reviewer/fixer, whole-branch reviewer/fixer, and E2E/fixer work are first-class slots in state—not authored tasks or resources.
 
-A worker's structured handoff establishes that its assigned contribution is complete. The orchestrator decides whether to inspect it immediately, combine it with sibling work, or defer semantic verification until assembly.
+The orchestrator is involved only for contradictory authority, critical/material risk, explicit risk acceptance, unsafe/destructive recovery, unanswerable clarification, consequential user-owned decisions, or exhausted configured retries.
 
-### 13.2 Execution stages and integration units
+## 6. Story-local runtime authority
 
-Ordered execution stages are the scheduler topology. Each stage has an explicit `mode: sequential | concurrent`. Sequential stages execute every task serially in declared order on the canonical feature branch. Concurrent stages execute tasks independently in per-task worktrees from one pinned common base and integrate them through one atomic merge barrier. When `mode` is omitted, a singleton stage is resolved as sequential and a multi-task stage as concurrent for legacy plans. Integration units remain semantic verification groupings and may span one or more stages.
+### 6.1 State
 
-The planner may group related tasks into an integration unit:
+`state.yaml` is the sole authority for:
 
-```yaml
-integrationUnits:
-  - id: new-screen
-    tasks:
-      - skeleton-layout
-      - text-label-component
-      - compose-screen
-    intermediatePolicy: partial-allowed
-    verification:
-      timing: unit
-      methods: [build, combined-spec-review, combined-quality-review]
-```
+- workflow/stage/task/review/E2E scheduling;
+- active slot ownership and opaque attempt tokens;
+- retry counts and interruption status;
+- Git branches, commits, and worktree coordinates;
+- pinned digests of the reviewed story, plan, and every task contract;
+- pause/resume and outcome status;
+- current structured findings needed for control;
+- cumulative metrics and one open metric clock.
 
-An integration unit is the smallest assembled state that the planner expects to be coherent or meaningfully testable. It may contain one task or many.
+State replacement is atomic. There is no global workflow generation; each active slot has an opaque attempt token and activation owner used to reject stale callbacks.
 
-This supports stories where isolated contributions are intentionally incomplete—for example, a skeleton without its components or generated code without its consumer. The planner does not waste evaluator runs proving that an intentionally partial task is not a complete screen.
+### 6.2 Ledger
 
-### 13.3 Dependency semantics
+`ledger.yaml` is a small rewritten collection of currently relevant non-obvious findings and evidence. It is the only rolling agent handoff context. Entries are curated/upserted/pruned rather than an append-only activity feed. Routine scheduler transitions, checks, status, and completion notices never enter it.
 
-The planner distinguishes:
+### 6.3 Debug journal
 
-- **Canonical dependency:** the prerequisite must already be integrated into the feature branch.
-- **Integration-unit dependency:** a later task may start from the orchestrator-controlled staging base for its unit.
-- **Assembly-only relationship:** independent task branches can run concurrently and are combined later.
+`events.jsonl` is coarse debug/analytics logging only. It may record workflow/stage/task/integration/check/review/repair/E2E/subagent boundaries, durations, routes, usage, and compact result codes.
 
-Tasks cannot depend on another worker's uncontrolled worktree or uncommitted changes. Sequential tasks may build on a durable integration-unit staging commit owned by the orchestrator.
+It never stores prompts, outputs, user content, finding bodies, reports, state patches, control mutations, credentials, or secrets. Startup never replays it. State, metrics, prompts, child context, normal status, tools, and TUI rendering never derive from or include it. Only an explicit bounded filtered diagnostic read may expose it to the orchestrator.
 
-Resource claims protect shared external or generated resources that separate Git worktrees cannot isolate. Expected file paths are advisory only and never treated as proof of independence.
+One serialized workflow writer owns state, ledger, and debug appends. It applies authoritative state first, then best-effort appends the corresponding debug event. A missing final event is acceptable; missing state is not.
 
-### 13.4 Scheduling
+## 7. Git and integration safety
 
-The reviewed stage graph and resolved stage mode determine concurrency and isolation. In a sequential stage, only the next declared task is launched on the canonical feature branch, after the prior task integrates. In a concurrent stage, all compatible ready tasks launch in isolated worktrees from the pinned common base. The extension rejects launches when:
-
-- The declared base or dependencies are not available.
-- A required resource is locked.
-- The main session already owns sixteen nonterminal logical subagents.
-- The feature branch is dirty when a clean canonical operation is required.
-- Worktree allocation fails.
-
-### 13.5 Worktree allocation
-
-Sequential-stage tasks use the canonical feature branch and integrate independently, so each later task sees the prior task's commit. Concurrent-stage tasks use one worktree per task, all based on the same pinned stage commit; the stage crosses one merge barrier after every contribution is ready. A planner cannot request worktree execution for a sequential task or direct-repository execution for a concurrent task.
+Sequential tasks share one repository-local ignored stage worktree under exclusive scheduler ownership. Concurrent tasks use separate repository-local ignored worktrees:
 
 ```text
-branch:
-  harness/<work-item-id>/<task-id>
-
-worktree:
-  <canonical-repository>/.worktree/pibox/
-    <work-item-id>/<task-id>
+<repository>/.worktree/pibox/<story>/<task>/
 ```
 
-Allocation acquires a lock, verifies the selected base, records its exact commit, proves the repository-local target is ignored, checks branch/path ownership, creates or recovers the worktree, and launches the child with fixed `cwd`. Harness initialization creates Git only in an empty directory, ensures and checks out `develop`, idempotently appends effective `/.worktree/` and `/.pibox/` ignore rules, writes explicit repository policy including model-effort tier routes, and commits only harness-owned files. It refuses to stage an existing non-Git project implicitly. Repository-local operational state lives under `.pibox/`; global configuration and credentials remain under `~/.pi/agent/harness/`. Legacy external worktrees remain recoverable at their recorded runtime paths.
+The harness validates the persisted canonical feature/fix branch at start, resume, and every canonical action, plus pinned bases, task ownership, contribution commits, and integration barriers. Canonical repairs are serialized and must preserve ancestry, avoid harness-owned paths, and produce only a validated committed diff. It never auto-stashes, auto-resets, discards dirty work, routinely switches branches, or invisibly resolves conflicts. Failed integration preserves task branches/worktrees and the last authoritative state for safe recovery.
 
-The harness never auto-stashes or auto-commits a dirty feature branch.
+## 8. Verification and repair
 
-### 13.6 Worker completion requirements
+Deterministic task and stage checks are authored commands. Stage review is optional reviewed policy, selected by risk, observability, reversibility, and boundary crossings. Regardless of stage policy, the runtime performs whole-branch review before final E2E.
 
-An implementation task must finish with:
+Repairable non-critical task, integration, verification, review, and E2E failures automatically enter the matching runtime repair slot. Retry budgets come only from `limits.repairRounds`. Exhaustion never silently waives a blocking failure. Critical risk acceptance and material policy/security/privacy/destructive decisions return to the user.
 
-- A clean assigned workspace (feature branch for a singleton stage, worktree for a parallel stage).
-- One or more contribution commits.
-- A structured contribution summary.
-- The checks the planner assigned to this task, which may be none.
-- Explicit disclosure of expected failures or incomplete assembly state.
-- No changes under `agent-artifacts/`.
-- No unacknowledged context amendments.
+Structured findings required for control remain in state. Only intentionally retained sanitized evidence is written beneath `evidence/`. There are no authored evaluations, report files, attempt reports, evaluation handoffs, or duplicated evidence projections. Completion writes one user-facing `outcome.md`.
 
-A task is not required to claim full acceptance, pass the whole repository build, or run E2E when the reviewed execution strategy defers those obligations. Optional extra or ad-hoc review and broad testing may be deferred or omitted. Every managed execution stage runs its declared checks; stage review/fix is required by default, but a reviewed plan may explicitly skip one low-risk stage review with a substantive rationale when deterministic proof covers the complete boundary. The extension validates actual Git state and the declared handoff rather than imposing a universal per-task test checklist.
+## 9. Permission safety gate
 
-## 14. Assembly and integration
+Repository tool permission policy lives at `.pi/permissions.yaml`. Enforced mode applies allow/ask/deny; bypass skips only this policy gate.
 
-### 14.1 Ownership
+`workflow_start` performs side-effect-free topology, branch, command, environment, and contract validation before presenting the extension-owned confirmation for unattended bypass. Cancellation launches nothing and does not mutate execution or permission state. The same guard applies to every resume that would launch children when the current activation is not already in bypass. Critical-risk approval always requires a separate explicit user confirmation, even in bypass. Children inherit the visible parent mode.
 
-Sequential-stage children commit directly to the checked-out feature branch under the scheduler's exclusive feature-branch claim, one task at a time. Concurrent-stage children commit only to task branches; the orchestrator owns their atomic stage barrier. Every assembled stage runs its required stage checks, followed by its runtime-owned review/fix loop unless the reviewed plan explicitly marks that low-risk review skipped. After assembly, whole-branch review inspects the exact `executionStartCommit..reviewedCommit` diff as one integrated feature before final E2E runs on the reviewed delivery branch.
+Bypass never bypasses workflow authority, Git isolation, reviews, verification, or recovery. A new activation cannot silently resume into enforced mode.
 
-### 14.2 Concurrent-stage merge barrier
+## 10. Activation, reload, quit, and recovery
 
-```text
-parallel task branches from one pinned base
-    ↓
-wait for every stage contribution
-    ↓
-merge in declared order on the canonical feature branch
-    ↓
-run the stage's declared checks
-    ↓
-publish all or reset the complete stage merge
-```
+Children belong to one activation. `/reload` is the only same-activation rebind path. A new runner may rebind matching active attempts held by the process-global `SubagentService` using workflow/attempt metadata and bounded current/terminal delivery; the metric clock stays open. No file replay is involved.
 
-No later stage observes a partially merged parallel batch. A failed merge or stage check resets the canonical branch to the pre-barrier commit while preserving task branches and worktrees for recovery. Integration units remain available as semantic review and evaluation boundaries over the assembled state.
+Session quit is treated exactly like process crash. Pi cannot reliably await managed settlement during quit, and users should not quit while workflows run. On owner loss, the lifetime wrapper terminates child process groups, but the exact exit event/time may be absent.
 
-### 14.3 Atomic canonical update
+During startup of the next activation, before status can remain falsely running and before any explicit resume, the harness:
 
-The canonical branch is updated only from an orchestrator-controlled candidate whose expected base still matches. If another unit integrates first, the candidate is rebuilt or rebased under orchestrator control.
+1. compares durable owner identity;
+2. marks old running slots interrupted;
+3. permanently fences old attempt tokens;
+4. pauses the workflow;
+5. closes metrics only through the last durable checkpoint and marks an incomplete interval;
+6. appends synthetic coarse recovery/debug boundaries;
+7. preserves all Git/worktree state;
+8. launches fresh attempts only after explicit resume and any required bypass confirmation.
 
-The stage's required checks run after sequential integration or the concurrent merge barrier. A failed check or required review enters the managed fix loop and blocks later stages until settled. After all stages, runtime-owned whole-branch review evaluates the exact assembled feature diff before final E2E runs every approved matrix case. E2E settlement is a deterministic integrity boundary: every case must be reported exactly once, an incomplete matrix cannot pass or be accepted as risk, and completion revalidates the structured results. The extension never permits these gates to be substituted by manual evaluation or an unreviewed shortcut.
+It never adopts prior children, replays events, scans PIDs, tails files, adds heartbeat recovery, or promises detached survival.
 
-### 14.4 Commit policy
+## 11. Metrics and TUI
 
-The default commit boundary follows the meaningful integration unit, not necessarily an individual task:
+State stores cumulative workflow time, five exclusive category totals, and at most one open `{ category, since }` clock. Categories are `implementation`, `integration`, `verification`, `review`, and `e2e`. Category totals partition workflow wall time; parallel agents never multiply elapsed time.
 
-```text
-feat(screen): add composed session screen
+The TUI projects live time in memory as stored base plus `now - since`. It never samples time into state or reads the debug journal. Time persists only on an existing state transition, pause/interruption, category transition, or completion. Incomplete crash intervals render with `+`.
 
-Harness-Work-Item: session-screen
-Harness-Integration-Unit: new-screen
-Harness-Tasks: skeleton-layout, text-label-component, compose-screen
-Source-Commits: abc1234, def5678, 987fedc
-```
+The primary workflow projection is stage-centric, showing current stage/tasks and review-loop position rather than a generic generated-step list.
 
-This keeps canonical history coherent when individual task contributions are intentionally partial. A single-task integration unit still produces a task-level commit. Repository policy may preserve a validated commit series explicitly.
+## 12. Capability and configuration boundaries
 
-### 14.5 Conflicts and incomplete assembly
+Main-session resource tools manage stories, tasks, and stages. Generic `subagent_spawn` handles ad-hoc bounded delegation only; managed task/review/repair/E2E attempts are internal scheduler launches through `SubagentService`.
 
-Integration conflicts never trigger blind speculative resolution. The orchestrator may restart/rebase a contribution, launch an integration-repair agent, amend context, change assembly order, split or combine units, pause affected work, or escalate a critical semantic conflict.
+Agent-definition Markdown frontmatter owns base tools and default tier. Plans select semantic task tiers; `.pi/harness.yaml` maps each tier to ordered concrete `provider/model#effort` routes. Optional `mcp:<server>` selectors rely on user-managed adapter configuration and degrade gracefully when unavailable.
 
-The extension preserves the last clean canonical state and all task branches.
+The main model-facing controls remain minimal: inspect status, start, pause, resume, stop, recover, and complete through state-backed capabilities. No control mutates state by editing files directly.
 
-## 15. Proportionate evaluation and evidence
+## 13. Completion criteria
 
-### 15.1 Phase-level obligation
+A target-schema workflow completes only when:
 
-Optional extra evaluation is required only at the level necessary to establish confidence in the reviewed deliverable, not once per task. Independently, every managed execution stage has its runtime-owned stage review/fix gate and declared checks. The planner and main orchestrator decide the cheapest meaningful boundary for any additional review or testing.
+1. every authored task is integrated through its stage;
+2. every deterministic task/stage check is settled;
+3. required stage review loops are settled;
+4. whole-branch review is settled;
+5. final E2E covers the complete story `e2e` contract;
+6. no blocking finding remains or is silently waived;
+7. canonical Git state is clean and recorded;
+8. `outcome.md` records delivered behavior, checks, review/E2E results, deviations, and residual risk.
 
-Possible boundaries are:
+The working branch is reported ready for the user's normal merge/PR process without routine switching or automatic merging.
 
-```text
-task
-integration-unit
-work-item/final assembly
-none for a low-risk contribution covered by a later boundary
-```
+## 14. Non-goals
 
-For a new screen composed from skeleton, label, and composition tasks, the normal plan may be:
-
-```text
-no evaluator for skeleton
-no evaluator for label
-no E2E for either partial contribution
-assemble the screen
-run one combined spec/quality review
-run only the tests or E2E journeys meaningful for the assembled screen
-```
-
-### 15.2 Verification plan
-
-The planning artifacts describe coverage and timing:
-
-```yaml
-verification:
-  - id: screen-build
-    scope: integration-unit:new-screen
-    methods: [build, targeted-tests]
-
-  - id: screen-review
-    scope: integration-unit:new-screen
-    methods: [combined-spec-review, combined-quality-review]
-
-  - id: screen-e2e
-    scope: work-item
-    methods: [e2e]
-    when: user-visible-journey-exists
-```
-
-Each binding acceptance criterion must have a credible final verification story, but it need not map to a separate evaluator or test run. One combined evaluation can cover many criteria and tasks.
-
-When requested, the plan critic challenges missing final confidence, not the absence of per-task ceremony.
-
-### 15.3 Orchestrator discretion
-
-The orchestrator may:
-
-- Skip optional extra evaluation for trivial or purely structural contributions.
-- Combine spec and quality concerns into one evaluator prompt when that is efficient.
-- Batch optional extra review across several related tasks.
-- Defer broad build or tests until all required pieces are assembled; the stage's declared checks still run.
-- Run targeted tests instead of the full suite.
-- Omit additional E2E when there is no meaningful user journey or the risk does not justify it; runtime-owned required gates remain mandatory.
-- Add stronger checks when implementation findings increase risk.
-
-These changes do not require another user decision unless they weaken a user-mandated control, leave a binding acceptance criterion without credible proof, or alter a security/quality boundary the user explicitly required.
-
-Child reviewers and evaluators can recommend additional checks, but the main orchestrator decides whether those checks become workflow requirements.
-
-### 15.4 Available evaluation methods
-
-Methods are composable tools, not mandatory stages:
-
-1. **Deterministic checks:** build, types, targeted or full tests, lint, formatting, path restrictions, clean worktree, generated outputs, and repository commands.
-2. **Specification review:** compare an assembled result against reviewed intent, requirements, design constraints, and acceptance criteria.
-3. **Quality review:** assess correctness, edge cases, maintainability, regressions, security, error handling, and test quality.
-4. **Integrated regression:** check interaction with the latest canonical base.
-5. **E2E evaluation:** exercise a meaningful assembled user journey and collect evidence.
-
-A planner may combine specification and quality review into one run. Independent agent definitions remain available when risk warrants separation.
-
-### 15.5 Evaluator independence
-
-When an evaluator is used, it runs in a fresh session and receives the reviewed artifacts, the assigned task/unit/work-item diff, structured handoffs, and evidence manifests. It does not receive implementer raw transcripts or private reasoning.
-
-### 15.6 Findings
-
-```yaml
-id: SPEC-001
-severity: high
-status: open
-criterion: session-id-server-minted
-location: src/session/store.ts:84
-summary: Client-provided session IDs are still accepted
-evidence:
-  - command: npm test -- session-security
-    result: failed
-blocking: true
-```
-
-The orchestrator triages findings as `accepted`, `rejected`, `duplicate`, `deferred`, or `needs_user`. Rejection requires rationale. Deferring a blocking binding criterion requires an explicit user decision.
-
-### 15.7 Repair loop
-
-A repair loop exists only when an evaluation boundary produces accepted findings:
-
-```text
-evaluation finding
-       ↓
-orchestrator triage
-       ↓
-accepted repair brief
-       ↓
-implementer or repair implementer
-       ↓
-proportionate recheck
-```
-
-The orchestrator may re-run only the affected check rather than repeat every evaluator and test. Default repair budgets apply per declared evaluation boundary, not automatically per task. The one protocol nudge remains separate.
-
-Exhaustion never silently waives a blocking finding. The orchestrator replans, escalates model capability, accepts a justified non-blocking risk within its authority, or asks the user when required.
-
-### 15.8 E2E integrity
-
-E2E is reserved for meaningful assembled behavior, not scaffolding or isolated components with no runnable journey. When used, criterion states are:
-
-```text
-passed | failed | blocked | not_applicable
-```
-
-`blocked` requires evidence of attempted setup, the exact blocker, and why the next action cannot be driven. Inconvenience alone is not a blocker.
-
-A passing verdict cannot reference absent evidence. The extension validates evidence paths and checksums.
-
-### 15.9 Completion gate
-
-A managed work item completes only when:
-
-- Every required contribution is assembled or removed through a reviewed contract revision.
-- The orchestrator has run the current verification plan at its declared boundaries.
-- Binding acceptance criteria have proportionate final evidence or an explicit justified disposition.
-- No accepted blocking finding remains.
-- Canonical artifacts match the reviewed deliverable contract.
-- The feature branch is clean.
-- `outcome.md` records delivery, deviations, evidence, skipped/deferred checks, and remaining non-blocking risks.
-
-## 16. Capability API
-
-### 16.1 Orchestrator resource capabilities
-
-```text
-workflow_init
-workflow_list
-workflow_get
-workflow_create
-workflow_patch
-workflow_delete
-workflow_apply_change
-workflow_transition
-```
-
-The resource API is authoritative for normal main-session planning. Earlier resource-specific create/define/update/submission tools remain registered as compatibility adapters but are hidden from the default orchestrator tool surface.
-
-### 16.2 Execution capabilities
-
-The standalone subagent extension provides:
-
-```text
-subagent_spawn
-subagent_status
-subagent_control
-subagent_continue
-```
-
-The separate workflow runtime provides `workflow_start`, `workflow_control`, and `workflow_checkpoint`. Workflow adapters register through an explicit process-global capability registry; there is no discovery-event RPC. The harness adapter translates reviewed tasks, stages, and evaluations into workflow steps and launches every model-backed attempt through `SubagentService`. Workflow never spawns Pi directly, and the standalone service never depends on workflow.
-
-`subagent_spawn` is the sole model-facing generic child launcher: it accepts a configured agent definition and task prompt, defaults to foreground execution, and uses explicit `mode: background` for asynchronous work. Its tier selects a configured fallback list; its optional model and effort fields express a preferred route without exposing separate strictness or tier-justification controls. Foreground execution renders inline and returns the terminal report as the blocking tool result. Background execution returns immediately, displays bounded footer progress, and delivers one terminal follow-up only to the owning live activation. This activation-local delivery is separate from managed workflow lifecycle advancement. Built-in and trusted `.pi/agents/*.md` definitions use conventional Pi frontmatter plus an optional PiBox capability `tier`; their `tools` field is the sole base allowlist, and any `tools` field in global or repository harness policy is ignored. Reserved selectors such as `pibox:task` and `pibox:evaluation` resolve through a central tool-group registry, and managed launches may add a group at runtime without duplicating its concrete capability names. Optional `mcp:<server>` entries reuse the frontmatter `tools` field: they activate the external adapter proxy when present and constrain child calls to the declared server names, while missing user-managed MCP configuration degrades to no capability rather than invalidating the agent. Managed implementation tasks and evaluations are not launched through another model-facing tool; `workflow_start` and resume schedule their canonical steps internally, and adapters launch those attempts through the standalone service. Repository exploration is ordinary delegation to the `explorer` definition. `evaluation_record`, `work_item_complete`, and `workflow_status` remain managed-workflow capabilities.
-
-### 16.3 Worker capabilities
-
-```text
-task_clarify
-task_checkpoint
-task_request_change
-task_report_decision
-task_blocked
-task_complete
-```
-
-### 16.4 Evaluator capabilities
-
-```text
-evaluation_context
-evidence_record
-finding_report
-evaluation_checkpoint
-evaluation_complete
-```
-
-### 16.5 Run-scoped identity
-
-Every child capability binds to immutable repository, work item, task/evaluation, role, attempt, workspace, base commit, and planning revision identity. Model-supplied IDs cannot broaden that scope.
-
-A supervised child receives an unguessable run credential. Future sandboxing can strengthen process boundaries without changing the capability contract.
-
-### 16.6 Idempotency
-
-Mutating calls carry an operation ID:
-
-```text
-same operation ID + same payload
-  → return the prior result
-
-same operation ID + different payload
-  → reject
-```
-
-This prevents duplicate artifact commits, tasks, completions, evidence records, and integrations after retries or transport ambiguity.
-
-### 16.7 Typed failures
-
-Representative error codes include:
-
-```text
-DIRTY_CANONICAL_BRANCH
-DEPENDENCY_NOT_INTEGRATED
-MODEL_UNAVAILABLE
-CAPABILITY_DENIED
-CONTEXT_REFRESH_REQUIRED
-INVALID_HANDOFF
-RESOURCE_LOCKED
-INTEGRATION_CONFLICT
-EVIDENCE_MISSING
-```
-
-Prompts explain recovery behavior, but the typed code remains authoritative.
-
-### 16.8 Completion protocol
-
-Each role has a terminal schema. Prose-only completion is invalid. If a healthy child settles without a valid handoff, the harness sends one deterministic nudge. A second omission produces `PROTOCOL_FAILED`.
-
-Capacity and infrastructure failures do not consume the protocol nudge or semantic repair budget.
-
-## 17. Private control plane
-
-### 17.1 Layout
-
-```text
-<canonical-repository>/.pibox/
-├── events.jsonl
-├── sessions/<workflow-session>/agents.yaml
-├── locks/
-└── work-items/<work-item-id>/
-    ├── runs/<run-id>/
-    │   ├── run.yaml
-    │   ├── handoff.json | evaluation-handoff.json
-    │   └── checkpoint.json
-    ├── verification/
-    └── control/
-```
-
-Repository-owned task checkouts live at `<canonical-repository>/.worktree/pibox/<work-item-id>/<task-id>/`. Generic subagent transcripts and normalized event rings belong to the standalone service's activation-local storage and are not a durable reattachment index. Children interact through scoped capabilities and do not choose operational paths.
-
-### 17.2 Event log
-
-The repository workflow event store records typed sequenced workflow facts. Durable run, work-item, control, and agent snapshots remain the corresponding authorities; generic child lifecycle is not journaled or replayed from disk.
-
-### 17.3 Locks
-
-Locks protect repository integration, worktree allocation, canonical artifact mutation, resource claims, and per-task active ownership. Locks include owner, process identity, acquisition time, and heartbeat. Stale locks are diagnosed before removal.
-
-### 17.4 Retention
-
-Workflow evidence and recovery state are retained according to their stores. Settled standalone transcripts are released after their generic or managed logical loop ends; bounded failure diagnostics do not become permanent stdout/result/process-exit duplicates. The harness does not automatically delete branches or dirty worktrees. `/harness worktrees` inventories PiBox-owned worktrees without recursively measuring disk usage; exact sizes are an explicit slower operation. `cleanupAll` performs one lightweight inventory, serially revalidates and removes only clean inactive worktrees, remains cancellable, and retains every branch. A dirty worktree requires an explicit named `--force` removal. Export and redaction commands remain deferred.
-
-## 18. Lifecycle and recovery
-
-### 18.1 Activation and process lifecycle
-
-`session_start` acquires a new activation except for `/reload`, which may rebind to the exact in-process manager. `session_shutdown` tears down the service and stops its process groups except during that reload handoff. Child lifecycle comes from the bounded JSON stdout stream plus OS process exit and stdout drain; normalized attempt-local events end with `process_exited`, `output_drained`, and `terminal`. The service never reconstructs ownership from Pi transcript entries or disk.
-
-### 18.2 Failure classes
-
-```text
-model_unavailable
-rate_limited
-subscription_exhausted
-authentication_required
-provider_unavailable
-network_interrupted
-context_overflow
-tool_failed
-agent_aborted
-process_crashed
-protocol_failed
-unknown_provider_error
-```
-
-Structured HTTP status, headers, stop reasons, and process status take precedence over provider error-text matching.
-
-### 18.3 Capacity handling
-
-When a subscription or provider limit is detected:
-
-1. Capture lifecycle evidence.
-2. Allow Pi's built-in retry behavior to settle.
-3. Save branch, checkpoint, and run state.
-4. Mark the run `waiting_capacity`.
-5. Stop new launches against the affected model/provider/account scope.
-6. Notify the user without requiring a model response.
-7. Wait for manual resume in v1.
-
-Capacity interruption does not fail the task or consume repair/protocol budgets.
-
-### 18.4 Fallback versus waiting
-
-```text
-Configured model missing
-  → try ranked role fallbacks
-
-Model-specific temporary limit
-  → fallback when policy permits
-
-Provider/account subscription exhausted
-  → wait for user by default
-
-No acceptable capability-ranked fallback
-  → wait for user
-```
-
-Ambiguous limits conservatively wait rather than repeatedly consume requests.
-
-### 18.5 Manual resume
-
-```text
-/workflow resume
-/workflow resume <task-id>
-/workflow resume --provider openai-codex
-```
-
-Resume rechecks model availability, resolves fallback policy, validates canonical and worker Git state, refreshes canonical context, and starts a fresh attempt from the existing branch/checkpoint.
-
-Natural-language resume also works when the main provider is available.
-
-### 18.6 Crash recovery
-
-On startup or session resume, the harness:
-
-1. Loads durable work-item, attempt, handoff, checkpoint, and control projections.
-2. Inspects branches, worktrees, and stale-writer generations.
-3. Classifies any nonterminal attempt without a matching current-activation service process as interrupted.
-4. Presents safe fresh-attempt recovery actions to the orchestrator.
-
-It does not scan old dynamic session entries, replay generic child journals, inspect PIDs, or adopt old processes.
-
-It never resets branches, deletes worktrees, or discards uncommitted worker changes automatically. A dirty canonical feature branch always requires user resolution.
-
-### 18.7 Workflow and subagent controls
-
-```text
-workflow_control(pause | resume | stop)
-subagent_status
-subagent_control(stop)
-subagent_continue
-```
-
-Workflow pause is scheduler-only and allows current attempts to settle. Workflow stop calls the standalone service, waits for confirmed process exit and supervisor settlement, and preserves workflow/Git state. Generic subagent stop is likewise service-owned. Resume launches fresh attempts from durable workflow state; `subagent_continue` is limited to a settled same-activation generic logical handle.
-
-## 19. User experience
-
-### 19.1 Natural-language first
-
-The intended interface is ordinary conversation:
-
-> Research and plan a story for replacing the session model.
-
-> Start the reviewed session-model story.
-
-> Run a code reviewer on my current changes using Sol at high effort.
-
-> Pause the persistence task.
-
-The orchestrator translates user intent into capabilities.
-
-### 19.2 Deterministic commands
-
-Commands remain available when a model is unavailable or exact control is preferred:
-
-```text
-/harness init [standard|economy]
-/workflow status
-/workflow agents
-/workflow pause [task]
-/workflow resume [task]
-/workflow stop [task]
-/workflow recover
-```
-
-### 19.3 V1 presentation
-
-V1 uses inline tool rendering and a compact status indicator:
-
-```text
-Story: session-model-redesign
-Phase: execution
-Tasks: 4 integrated · 2 running · 1 ready · 1 blocked
-Agents: 3 active
-```
-
-A full sidebar or dashboard is not required. The execution architecture remains independent of the eventual visual surface.
-
-### 19.4 Notifications
-
-The harness interrupts the user for:
-
-- Plan ready for review.
-- Critical decision required.
-- Subscription/provider capacity wait.
-- No acceptable model fallback.
-- Dirty canonical branch.
-- Integration conflict.
-- Repair budget exhaustion.
-- Work-item completion.
-
-Routine successful transitions remain visible without demanding attention.
-
-## 20. Safety and trust boundaries
-
-### 20.1 V1 guarantees
-
-The first version can deterministically enforce:
-
-- Capability scoping.
-- Canonical artifact ownership.
-- Structured completion.
-- Git/worktree allocation and validation.
-- Branch/path diff checks.
-- Model rank and effort policy.
-- Planning revision and canonical context refresh.
-- Locks, idempotency, and recovery records.
-
-### 20.2 V1 limitation
-
-Without OS-level sandboxing, an agent with `bash` may technically access paths beyond its assigned worktree. Tool allowlists and post-run checks reduce accidental violations but are not a security boundary against a malicious or prompt-injected process.
-
-The capability API is intentionally designed so a later sandbox can enforce filesystem, network, process, and private-state boundaries without changing role contracts.
-
-### 20.3 Trusted repository configuration
-
-Repository role prompts, skills, and tool policies are executable agent configuration. The harness loads them only after Pi's project-trust mechanism accepts the repository.
-
-## 21. Workflow verification strategy
-
-The harness itself requires deterministic and model-assisted testing.
-
-### 21.1 Unit tests
-
-- Schema validation and migrations.
-- Configuration merge semantics.
-- Model and effort resolution.
-- Capability authorization.
-- State-machine transitions.
-- Planning revision and explicit execution request.
-- Idempotent mutation handling.
-- Failure classification.
-- Lock ownership and stale-lock diagnosis.
-
-### 21.2 Git integration tests
-
-Use temporary repositories to verify:
-
-- Dirty feature branches fail loudly.
-- Concurrent worktree allocation is collision-free.
-- Workers cannot integrate canonical artifact changes.
-- Canonical, integration-unit, and assembly-only dependencies use the correct controlled base.
-- Integration-unit candidates preserve canonical cleanliness.
-- Explicit partial intermediate states remain traceable and cannot accidentally satisfy final completion.
-- Conflicts retain recoverable state.
-- Unit-level squash commits retain source-task traceability.
-- Interrupted worktrees can be reconciled safely.
-
-### 21.3 Lifecycle fault injection
-
-Recorded or synthetic event streams should cover:
-
-- HTTP 429 with and without retry headers.
-- Subscription exhaustion.
-- Missing auth.
-- Provider 5xx/network interruption.
-- Context overflow and Pi compaction retry.
-- Child process crash.
-- Parent shutdown.
-- Missing completion handoff.
-- Duplicate capability calls after timeout.
-
-### 21.4 Agent-definition and prompt evaluations
-
-Agent behavior is evaluated separately from deterministic extension correctness. Versioned datasets should compare planner coverage, implementer protocol compliance, reviewer precision, false-positive rate, E2E drivability, model selection, and repair success.
-
-Prompt scaffolding should be retained only when empirical results show it is load-bearing.
-
-## 22. Implementation references
-
-These projects and local materials informed the design and should be revisited during implementation. They are references, not runtime dependencies or sources to copy wholesale.
-
-### 22.1 Pi and PiBox
-
-- Installed Pi extension documentation, especially lifecycle hooks, custom tools, model registry/scoping, thinking levels, session events, and `agent_settled` semantics.
-- Installed Pi `examples/extensions/subagent/index.ts` for supervised child invocation, structured JSON events, cancellation, model selection, usage collection, and error extraction.
-- PiBox's existing extension structure and tests for package conventions and lifecycle-safe initialization.
-
-The implementation must target public Pi extension/SDK APIs and must not patch upstream Pi internals.
-
-### 22.2 Pikit
-
-Repository: [adrianapan/pikit](https://github.com/adrianapan/pikit)
-
-Useful references:
-
-- `agent/extensions/subagents/index.ts`
-- `agent/extensions/subagents/agents.ts`
-- `agent/extensions/subagents/config.ts`
-- `agent/extensions/subagents/types.ts`
-- `agent/extensions/subagents/subagents.example.json`
-
-Relevant lessons include role definitions, model-aware subagent configuration, supervised Pi subprocesses, structured output handling, and compact inline rendering. PiBox should retain its stronger capability scoping, durable handoffs, worktree isolation, and canonical artifact ownership rather than adopting prompt-only conventions.
-
-### 22.3 pi-subagents
-
-Repository: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents)
-
-Useful references:
-
-- `docs/agents.md`
-- `docs/configuration.md`
-- `docs/extension-api.md`
-- `docs/models.md`
-- `docs/observability.md`
-- `docs/workflows.md`
-- `src/extension/config.ts`
-- `src/runs/shared/nested-render.ts`
-- `src/runs/background/fleet-view.ts`
-- `src/tui/fleet-status.ts`
-- `src/tui/fleet.ts`
-
-Relevant lessons include role files, model overrides, run observability, background/fleet concepts, and nested transcript presentation. Background execution, nested delegation, and a fleet UI remain deferred unless needed by the reviewed first implementation.
-
-### 22.4 Agentic Dev Harness
-
-Repository: [dev32-io/agentic-dev-harness](https://github.com/dev32-io/agentic-dev-harness)
-
-Useful references:
-
-- `docs/continuous-learning.md`
-- `docs/ruleset-philosophy.md`
-- `docs/workflow-and-skills.md`
-
-Relevant lessons include keeping rules load-bearing, separating workflow skills, promoting proven learning deliberately, and periodically removing scaffolding that newer models no longer need.
-
-### 22.5 Superpowers and skill references
-
-- [obra/superpowers](https://github.com/obra/superpowers), especially brainstorming, writing plans, and subagent-driven development.
-- [mattpocock/skills](https://github.com/mattpocock/skills), especially `to-spec`, `to-tickets`, `implement`, `code-review`, and `grill-with-docs`.
-- [Agent Skills](https://agentskills.io/) for portable skill structure and progressive disclosure.
-
-PiBox deliberately retains Superpowers' research-first planning discipline while removing its uniform per-task implementation/review/test ceremony. Skills should guide judgment; extension capabilities should enforce only mechanical truth and the orchestrator's chosen plan.
-
-### 22.6 Artifact-system references
-
-- [Fission-AI/OpenSpec](https://github.com/Fission-AI/OpenSpec), especially artifact dependencies, change organization, and spec-writing guidance.
-- GitHub Spec Kit as a reference for staged specification and planning workflows.
-
-PiBox uses a fixed core artifact structure with flexible dimensions rather than requiring users to adopt an external artifact engine.
-
-### 22.7 Sentient repository
-
-Local reference: `~/Development/sentient`
-
-Relevant materials include architecture, agent rules, test knowledge, Superpowers plans/specs, evidence manifests, and session/skill-system designs. Its execution history provides concrete failure cases to test:
-
-- Shared Git index/worktree collisions.
-- False assumptions that tasks are disjoint.
-- Non-bisectable intermediate commits.
-- False-positive or ungrounded evidence.
-- Agents declaring drivable E2E work blocked.
-- Excessive repeated per-task review and testing.
-
-The integration-unit and proportionate-verification design should be validated against realistic Sentient workflows such as a screen assembled from multiple partial component tasks.
-
-## 23. Acceptance criteria for the initial harness
-
-The design is successfully implemented when:
-
-1. The main session remains the user-facing authority and can stay ad-hoc or create a managed change/story.
-2. Managed planning produces indexed intent, specs, design, decisions, tasks, integration units, and proportionate verification coverage.
-3. Execution begins only after a clear user request to run the reviewed workflow.
-4. The planner can explicitly skip, defer, batch, or combine task-level review and testing while declaring the later meaningful verification boundary.
-5. Partial task contributions can be assembled in orchestrator-controlled stages without pretending they are independently complete.
-6. Agent definitions own their tools in Markdown frontmatter; capability-tier routes, model-specific effort mappings, and same-tier fallback order can be set globally and overridden per repository.
-7. The planner records one capability tier per task; the runtime resolves its ordered provider/model/effort pairs against Pi availability and exact thinking support.
-8. Missing or unsupported pairs fall back visibly within the requested tier or enter a waiting state without silent downgrade or effort clamping.
-9. Concurrent tasks run in deterministic isolated worktrees from a clean committed base.
-10. Workers communicate through scoped capabilities and cannot own canonical artifacts or integration.
-11. Completion requires a valid role-specific terminal handoff, with one deterministic nudge on omission.
-12. The extension enforces the orchestrator-declared verification plan rather than a universal per-task pipeline.
-13. Binding acceptance criteria receive proportionate final evidence, while meaningless task-level E2E is not required.
-14. Integration occurs through controlled task/unit candidates and leaves the canonical branch clean.
-15. Provider/subscription interruptions become recoverable waiting states and can be resumed manually.
-16. Session restart reconstructs durable workflow, Git, and pending recovery actions but never adopts old child processes or generic events.
-17. Raw operational history remains outside Git and is retained by default.
-18. Small direct work remains possible without mandatory harness artifacts or workflow ceremony.
-
-## 24. Design summary
-
-PiBox's harness is a hybrid between a flexible skill-driven agent and a deterministic workflow engine:
-
-- The current main-session activation remains the user-facing authority; durable workflow state survives without transferring child ownership.
-- Specialized agent definitions are independent, configurable contributors with explicit contracts.
-- Canonical files preserve semantic truth.
-- Private event logs preserve operational truth.
-- The planner applies proportional ceremony, groups partial work into meaningful integration units, and assigns task-specific model capability.
-- The extension enforces execution authorization, identity, paths, lifecycle, Git isolation, handoffs, and the orchestrator-declared verification plan.
-- Evaluation is selectively applied at meaningful boundaries, evidence-backed when used, and repair-bounded.
-- Failures pause recoverably rather than being hidden or treated as success.
-- Normal Pi freedom remains available whenever the full workflow would be excessive.
-
-This architecture provides strong execution guarantees without making the harness the primary source of engineering judgment.
-
-## 25. Resource-oriented orchestrator authority
-
-The main-session capability surface is a stateless, progressively disclosed resource API over canonical file-backed state. Work items, artifacts, tasks, integration units, and evaluations have stable references, typed validation, and explicit relationships. `workflow_list` exposes compact filterable pages; `workflow_get` exposes summaries and, for a full work-item read, the complete artifact/task/unit/evaluation graph in bounded revision-pinned slices; `workflow_schema` exposes exact mutation contracts on demand. `workflow_plan_write` is the ordinary planning surface: complete create/replacement writes are atomic and revision-pinned surgical edits change only selected resources. `workflow_create`, `workflow_patch`, `workflow_delete`, and `workflow_apply_change` remain compatibility and repair surfaces; successful mutations return receipts rather than full resources.
-
-The orchestrator is the trusted canonical coordinator, not a requirements clerk constrained by its own prior draft. It may revise or remove undelivered resources, reshape integration topology, and amend reviewed planning in response to repository evidence, evaluator findings, or subagent requests. Mutations record rationale and sources. Materially consequential or explicitly user-owned decisions still return to the user, but no approval disposition or status is stored.
-
-`workflow_apply_change` serializes and applies its canonical operations as one Git commit. It does not ask the model to supply revision tokens or contract hashes. Resource errors identify the code, resource reference, retryability, and valid recovery actions so a model does not need to inspect extension source or create a duplicate work item to escape a correctable plan.
-
-Capabilities continue to enforce mechanical truth: schema, identity, relation integrity, idempotency, serialization, clean canonical state, immutable delivery/evidence history, scoped child authority, and explicit finalization locks. They do not determine product materiality or prohibit sound orchestrator judgment. Postponement is resumable; archival creates the explicit finalization lock, and reopening is an auditable transition.
+- OS-level sandboxing.
+- Nested worker delegation.
+- Event-sourced recovery or metrics.
+- PID/process adoption across activations.
+- Detached child survival after owner loss.
+- Heartbeat recovery or file-tail observers.
+- Authored evaluation/report/handoff resources.
+- Automatic destructive Git cleanup.
+- Silent compatibility execution of historical work items.
+- Replacing ordinary ad-hoc Pi usage.

@@ -1,9 +1,8 @@
-import type { TaskStatus } from "../../workflow/types.js";
 import type { Diagnostic, DocumentGroup, DocumentSummary, ReportSummary, StorySummary, TaskCard, TaskColumn } from "./models.js";
 
-export const TASK_STATUSES: readonly TaskStatus[] = [
+export const TASK_STATUSES = [
 	"draft", "blocked", "ready", "running", "paused", "submitted", "awaiting_ci", "contribution_complete", "reviewing", "changes_requested", "accepted", "merge_queued", "merging", "merged", "staged", "integrating", "integrated", "failed", "protocol_failed", "cancelled",
-];
+] as const;
 const TODO = new Set<string>(["draft", "blocked", "ready"]);
 const DONE = new Set<string>(["merged", "integrated", "cancelled"]);
 

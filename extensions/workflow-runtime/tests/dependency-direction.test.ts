@@ -17,14 +17,15 @@ async function productionTypeScriptFiles(root: string): Promise<string[]> {
 
 test("workflow consumes the standalone subagent boundary and dependency direction never reverses", async () => {
 	const repository = resolve(".");
-	const coordinator = await readFile(join(repository, "extensions/workflow-runtime/launch-coordinator.ts"), "utf8");
+	const launcher = await readFile(join(repository, "extensions/workflow-runtime/subagent-launcher.ts"), "utf8");
 	const workflow = await readFile(join(repository, "extensions/workflow/index.ts"), "utf8");
-	assert.match(coordinator, /from "\.\.\/subagent\/api\.js"/);
+	assert.match(launcher, /from "\.\.\/subagent\/api\.js"/);
 	assert.match(workflow, /from "\.\.\/subagent\/registry\.js"/);
 	assert.match(workflow, /resolveSubagentServiceForConsumer/);
-	assert.doesNotMatch(coordinator, /child_process|runDirectAgent|legacy-launch/);
+	assert.doesNotMatch(launcher, /child_process|runDirectAgent|legacy-launch/);
 
 	for (const relative of [
+		"extensions/workflow-runtime/launch-coordinator.ts",
 		"extensions/workflow-runtime/legacy-launch-coordinator.ts",
 		"extensions/workflow-runtime/direct-agent.ts",
 		"extensions/workflow-runtime/agent-live-projection.ts",

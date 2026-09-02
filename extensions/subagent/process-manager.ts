@@ -23,7 +23,7 @@ import type {
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
 import { ContinuationCapabilityStore, type ContinuationReservation } from "./continuations.js";
 import { SubagentEventBuffer } from "./events.js";
-import { createPiInvocationResolver, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
+import { createPiInvocationResolver, stableSystemPromptPath, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
 import { JsonlStreamParser } from "./jsonl.js";
 import { promptContextHashes } from "./prompt-context.js";
 import { SUBAGENT_PROTOCOL_VERSION } from "./registry.js";
@@ -152,6 +152,7 @@ export class SubagentProcessManager implements SubagentService {
 		} catch (error) {
 			this.agents.delete(agentId);
 			this.capabilities.revoke(this.owner, record.handle);
+			await rm(stableSystemPromptPath(record.transcriptPath), { force: true }).catch(() => undefined);
 			throw error;
 		}
 	}
@@ -227,7 +228,10 @@ export class SubagentProcessManager implements SubagentService {
 		if (record.active) throw new Error("Cannot release an active logical agent");
 		this.capabilities.revoke(owner, record.handle);
 		this.agents.delete(record.agentId);
-		await rm(record.transcriptPath, { force: true });
+		await Promise.all([
+			rm(record.transcriptPath, { force: true }),
+			rm(stableSystemPromptPath(record.transcriptPath), { force: true }),
+		]);
 	}
 
 	replay(owner: RuntimeOwner, afterCursor?: number): SubagentReplay {

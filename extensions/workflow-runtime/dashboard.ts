@@ -1,159 +1,268 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { renderSubagentLiveStatus, subagentIndicatorFrame } from "../subagent/display.js";
-import type { WorkflowMetrics, WorkflowSnapshot, WorkflowStep } from "./api.js";
+import type {
+	E2ERuntimeState,
+	ReviewRuntimeState,
+	StageRuntimeState,
+	StoryRuntimeState,
+	StoryWorkflowMetrics,
+	WorkflowMetricCategory,
+} from "../workflow/story-runtime-store.js";
 
-const RUNNING_FRAMES: Record<string, readonly string[]> = {
-	task: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
-	merge: ["⇢", "→", "⇢", "⇒"],
-	verification: ["◐", "◓", "◑", "◒"],
-	evaluation: ["◐", "◓", "◑", "◒"],
-};
+export type DashboardStatus = "active" | "queued" | "interrupted" | "attention" | "completed";
 
-const displayProgress = (step: WorkflowStep, ctx: ExtensionContext): string =>
-	step.status === "running" ? renderSubagentLiveStatus(step.liveAgent ?? { ...(step.fast !== undefined ? { fast: step.fast } : {}), ...(step.progress ? { progress: step.progress } : {}) }, ctx.ui.theme) : "";
-const stateRank = (status: WorkflowStep["status"]): number => status === "attention" ? 5 : status === "running" ? 4 : status === "ready" ? 3 : status === "pending" ? 2 : status === "done" ? 1 : 5;
-const stateIcon = (status: WorkflowStep["status"], kind: string, frame: number, step?: WorkflowStep): string => {
-	if (status === "running") {
-		if ((kind === "task" || kind === "evaluation") && step) {
-			const lifecycle = step.liveAgent?.lifecycle ?? (step.liveAgent?.processStatus === "active" ? "running" : "starting");
-			return subagentIndicatorFrame(lifecycle, frame);
-		}
-		const frames = RUNNING_FRAMES[kind] ?? RUNNING_FRAMES.task!;
-		return frames[frame % frames.length]!;
-	}
-	return status === "attention" ? "⚠" : status === "ready" ? "◆" : status === "pending" ? "·" : status === "done" ? "✓" : "–";
-};
-const agentRunningTone = (step: WorkflowStep): "muted" | "warning" | "accent" => {
-	const lifecycle = step.liveAgent?.lifecycle ?? (step.liveAgent?.processStatus === "active" ? "running" : "starting");
-	return lifecycle === "starting" ? "muted" : lifecycle === "stopping" ? "warning" : "accent";
-};
-const visualStatus = (step: WorkflowStep): WorkflowStep["status"] =>
-	step.status === "running" ? step.status : ["verification-failed", "candidate-ci-failed", "integration-conflict"].includes(step.phase ?? "") ? "attention" : step.phase === "contribution-ready" ? "ready" : step.status;
-const stepLabel = (step: WorkflowStep): string => {
-	if (step.kind === "task") return step.status === "done" ? "Implemented" : "Implementing";
-	if (step.kind !== "merge") return step.kind;
-	if (step.status === "done" || step.phase === "integrated") return "Integrated";
-	if (step.status === "running") {
-		if (step.phase === "verifying-candidate") return "Verifying candidate";
-		if (step.phase === "repairing-candidate" || step.phase === "candidate-ci-failed") return "Repairing candidate CI";
-		if (step.phase === "integration-conflict") return "Resolving candidate conflict";
-		return "Assembling candidate";
-	}
-	if (step.phase === "integration-conflict") return "Candidate conflict";
-	if (step.phase === "candidate-ci-failed") return "Candidate CI failed";
-	if (step.phase === "verification-failed") return "Verification failed";
-	if (step.detail === "waiting for stage merge barrier") return "Waiting for shared merge barrier";
-	if (step.phase === "contribution-ready") return "Contribution ready";
-	return "Ready to integrate";
-};
-
-function rawTaskLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, frame: number, includeProgress = true): string[] {
-	const done = snapshot.steps.filter((step) => step.status === "done").length;
-	const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
-	for (const step of snapshot.steps) {
-		const color = step.status === "done" ? "success" : step.status === "attention" ? "error" : step.status === "running" ? agentRunningTone(step) : "muted";
-		const liveStatus = includeProgress ? displayProgress(step, ctx) : "";
-		lines.push(`${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind, frame, step)} `)}${step.title}`);
-		if (liveStatus) lines.push(`  ${liveStatus}`);
-	}
-	return lines;
+export interface DashboardItem {
+	label: string;
+	status: DashboardStatus;
+	detail?: string;
+	indent: 0 | 1;
 }
 
-function stageTaskLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, frame: number, includeProgress = true): string[] {
-	if (!snapshot.stages?.length) return rawTaskLines(snapshot, ctx, frame, includeProgress);
-	const done = snapshot.steps.filter((step) => step.status === "done").length;
-	const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${snapshot.title} · ${done}/${snapshot.steps.length} steps`))];
-	for (const stage of snapshot.stages) {
-		const stageSteps = snapshot.steps.filter((step) => stage.nodes.some((node) => step.ref.endsWith(`/${node}`)));
-		const primary = stageSteps.reduce<WorkflowStep | undefined>((best, step) => !best || stateRank(step.status) > stateRank(best.status) ? step : best, undefined);
-		const stageStatus = primary?.status ?? "pending";
-		const reviewSteps = stageSteps.filter((step) => step.kind === "evaluation");
-		const mergeSteps = stageSteps.filter((step) => step.kind === "merge");
-		const reviewActive = reviewSteps.some((step) => ["running", "ready", "attention"].includes(step.status));
-		const implementationActive = !reviewActive && stageSteps.some((step) => step.kind === "task" && ["running", "ready", "attention"].includes(step.status));
-		const integrationActive = !reviewActive && !implementationActive && mergeSteps.some((step) => !["done", "cancelled"].includes(step.status));
-		const runningMerge = mergeSteps.find((step) => step.status === "running");
-		const failedMerge = !runningMerge ? mergeSteps.find((step) => ["verification-failed", "candidate-ci-failed", "integration-conflict"].includes(step.phase ?? "")) : undefined;
-		const failureLabel = failedMerge?.phase === "integration-conflict" ? "Candidate conflict" : failedMerge?.phase === "candidate-ci-failed" ? "Candidate CI failed" : "Verification failed";
-		const verifying = runningMerge?.phase === "verifying-candidate";
-		const runtimeStage = stage.group === "runtime";
-		const runtimeLoop = primary?.checkpoint === "final-e2e" ? "E2E journey/fix loop" : primary?.checkpoint === "final-review" ? "Whole-branch review/fix loop" : "Final validation queued";
-		const lifecycle = runtimeStage
-			? stageStatus === "done" ? "Validated" : `${runtimeLoop}${stageStatus === "attention" ? " needs attention" : ""}`
-			: stageStatus === "attention" ? "Needs attention" : stageStatus === "done" ? "Integrated" : reviewActive ? "Reviewing" : implementationActive ? "Implementing" : failedMerge ? failureLabel : verifying ? "Verifying candidate" : runningMerge ? "Assembling / repairing candidate" : integrationActive ? "Ready to integrate" : "Queued";
-		const stageVisualStatus = failedMerge ? "attention" : stageStatus;
-		const stageColor = stageVisualStatus === "attention" ? "error" : implementationActive || integrationActive || reviewActive ? "accent" : stageStatus === "done" ? "success" : "muted";
-		const title = runtimeStage ? "Final validation" : `Stage ${stage.index + 1} · ${stage.id}`;
-		const unitCount = runtimeStage ? stageSteps.length : stageSteps.filter((step) => step.kind === "task" || step.kind === "merge").length;
-		const unitName = runtimeStage ? "gate" : "task";
-		lines.push(ctx.ui.theme.fg(stageColor, `${stateIcon(stageVisualStatus, verifying ? "verification" : primary?.kind ?? "task", frame)} ${stage.parallel ? "⇉" : "→"} ${title} · ${lifecycle} · ${unitCount} ${unitName}${unitCount === 1 ? "" : "s"}`));
-		if (implementationActive || integrationActive) {
-			for (const step of stageSteps.filter((candidate) => candidate.kind !== "evaluation")) {
-				const waitingOnActiveBarrier = step.detail === "waiting for stage merge barrier" && Boolean(runningMerge);
-				const shownStatus = waitingOnActiveBarrier ? "running" : visualStatus(step);
-				const color = shownStatus === "done" ? "success" : shownStatus === "attention" ? "error" : shownStatus === "running" && (step.kind === "task" || step.kind === "evaluation") ? agentRunningTone(step) : shownStatus === "running" || shownStatus === "ready" ? "accent" : "muted";
-				const liveStatus = includeProgress ? displayProgress(step, ctx) : "";
-				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(shownStatus, step.status === "running" && step.phase === "verifying-candidate" ? "verification" : step.kind, frame, step)} `)}${stepLabel(step)} · ${step.title}`);
-				if (liveStatus) lines.push(`    ${liveStatus}`);
-			}
-		} else if (reviewActive) {
-			for (const step of reviewSteps) {
-				const phase = step.title.includes(" · ") ? step.title.split(" · ").pop()! : undefined;
-				const legacyFix = !phase && /fixing\s*·\s*iteration\s*(\d+)/i.exec(step.detail ?? "");
-				const queuedFix = step.status === "running" && /fix requested/i.test(phase ?? step.detail ?? "") ? /iteration\s+(\d+)\//i.exec(step.detail ?? "") : undefined;
-				const label = (runtimeStage ? step.title : queuedFix ? `Fix #${Math.max(2, Number(queuedFix[1]) + 1)}` : phase ?? (legacyFix ? `Fix #${Math.max(2, Number(legacyFix[1]) + 1)}` : /fix requested/i.test(step.detail ?? "") ? "Fix requested" : step.title)).replace(/^Fixing (#[0-9]+)$/, "Fix $1");
-				const liveStatus = includeProgress ? displayProgress(step, ctx) : "";
-				const color = step.status === "attention" ? "error" : step.status === "done" ? "success" : step.status === "running" ? agentRunningTone(step) : "accent";
-				lines.push(`  ${ctx.ui.theme.fg(color, `${stateIcon(step.status, step.kind, frame, step)} `)}${label}`);
-				if (liveStatus) lines.push(`    ${liveStatus}`);
-			}
-		}
-	}
-	return lines;
+export interface DashboardMetricProjection {
+	workflowMs: number;
+	categories: Record<WorkflowMetricCategory, number>;
+	incomplete: boolean;
+	incompleteCategories: WorkflowMetricCategory[];
+	activeCategory?: WorkflowMetricCategory;
 }
 
-const metricDuration = (milliseconds: number): string => {
-	const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-	return `${Math.floor(minutes / 60)}h ${minutes % 60}m ${seconds % 60}s`;
+export interface WorkflowDashboardProjection {
+	title: string;
+	completedTasks: number;
+	totalTasks: number;
+	items: DashboardItem[];
+	metrics: DashboardMetricProjection;
+	reviewPosition: string;
+}
+
+const CATEGORY_LABELS: Record<WorkflowMetricCategory, string> = {
+	implementation: "Implementation",
+	integration: "Integration",
+	verification: "Verification",
+	review: "Review",
+	e2e: "E2E",
 };
-const projectedMetric = (metrics: WorkflowMetrics, base: number, activeIntervals: number, now = Date.now()): number =>
-	!metrics.live || activeIntervals <= 0 ? base : base + Math.max(0, now - metrics.live.sampledAtMs) * activeIntervals;
-const metricRows = (snapshot: WorkflowSnapshot): Array<readonly [string, string]> => {
-	const metrics = snapshot.metrics!;
-	return [
-		["Total time", metricDuration(projectedMetric(metrics, metrics.runningMs, metrics.live?.running ? 1 : 0))],
-		["Implementer", metricDuration(projectedMetric(metrics, metrics.implementerMs ?? 0, metrics.live?.activeImplementers ?? 0))],
-		["Reviewer", metricDuration(projectedMetric(metrics, metrics.reviewerMs ?? 0, metrics.live?.activeReviewers ?? 0))],
-		["Fixer", metricDuration(projectedMetric(metrics, metrics.fixerMs ?? 0, metrics.live?.activeFixers ?? 0))],
-		["E2E", metricDuration(projectedMetric(metrics, metrics.e2eAgentMs ?? 0, metrics.live?.activeE2e ?? 0))],
-		["Deterministic steps", metricDuration(projectedMetric(metrics, metrics.deterministicMs ?? metrics.verificationMs, metrics.live?.activeVerifications ?? 0))],
-		["Orchestrator", metricDuration(projectedMetric(metrics, metrics.orchestrationMs ?? 0, metrics.live?.orchestrator ? 1 : 0))],
-		["Harness scheduling", metricDuration(projectedMetric(metrics, metrics.harnessSchedulingMs ?? 0, metrics.live?.activeScheduling ?? 0))],
-		[snapshot.repairLoop?.label ?? "Current fix loop", snapshot.repairLoop ? `${snapshot.repairLoop.iteration} / ${snapshot.repairLoop.maxIterations}` : "—"],
+
+function projectedMetrics(metrics: StoryWorkflowMetrics, now: number): DashboardMetricProjection {
+	const categories = { ...metrics.categories };
+	let workflowMs = metrics.workflowMs;
+	if (metrics.open) {
+		const since = Date.parse(metrics.open.since);
+		const elapsed = Number.isFinite(since) ? Math.max(0, now - since) : 0;
+		workflowMs += elapsed;
+		categories[metrics.open.category] += elapsed;
+	}
+	return {
+		workflowMs,
+		categories,
+		incomplete: metrics.incompleteIntervals > 0,
+		incompleteCategories: [...metrics.incompleteCategories],
+		...(metrics.open ? { activeCategory: metrics.open.category } : {}),
+	};
+}
+
+function taskStatus(status: StageRuntimeState["tasks"][number]["status"]): DashboardStatus {
+	if (status === "completed") return "completed";
+	if (status === "interrupted") return "interrupted";
+	if (status === "attention") return "attention";
+	if (status === "implementing" || status === "checking" || status === "repairing") return "active";
+	return "queued";
+}
+
+function integrationStatus(status: StageRuntimeState["integration"]["status"]): DashboardStatus {
+	if (status === "completed") return "completed";
+	if (status === "interrupted") return "interrupted";
+	if (status === "attention") return "attention";
+	if (status === "integrating" || status === "repairing") return "active";
+	return "queued";
+}
+
+function verificationStatus(status: StageRuntimeState["verification"]["status"]): DashboardStatus {
+	if (status === "completed") return "completed";
+	if (status === "interrupted") return "interrupted";
+	if (status === "attention") return "attention";
+	if (status === "checking" || status === "repairing") return "active";
+	return "queued";
+}
+
+function reviewStatus(status: ReviewRuntimeState["status"]): DashboardStatus {
+	if (status === "completed" || status === "skipped") return "completed";
+	if (status === "interrupted") return "interrupted";
+	if (status === "attention") return "attention";
+	if (status === "reviewing" || status === "fixing") return "active";
+	return "queued";
+}
+
+function e2eStatus(status: E2ERuntimeState["status"]): DashboardStatus {
+	if (status === "completed") return "completed";
+	if (status === "interrupted") return "interrupted";
+	if (status === "attention") return "attention";
+	if (status === "testing" || status === "fixing") return "active";
+	return "queued";
+}
+
+function taskDetail(status: StageRuntimeState["tasks"][number]["status"]): string | undefined {
+	if (status === "check_pending" || status === "checking") return "checks";
+	if (status === "repair_pending" || status === "repairing") return "repair";
+	if (status === "implementing") return "implementation";
+	return undefined;
+}
+
+function integrationDetail(status: StageRuntimeState["integration"]["status"]): string | undefined {
+	return status === "repair_pending" || status === "repairing" ? "repair" : undefined;
+}
+
+function verificationDetail(status: StageRuntimeState["verification"]["status"]): string | undefined {
+	return status === "repair_pending" || status === "repairing" ? "repair" : undefined;
+}
+
+function reviewDetail(review: ReviewRuntimeState): string {
+	if (review.status === "skipped") return "skipped";
+	if (review.status === "fix_pending" || review.status === "fixing" || (review.status === "interrupted" && review.interruptedFrom === "fixing")) {
+		return `fix #${review.repairCount + 1}`;
+	}
+	const iteration = review.status === "pending" && review.iteration > 0 ? review.iteration + 1 : Math.max(1, review.iteration);
+	return `review #${iteration}`;
+}
+
+function e2eDetail(e2e: E2ERuntimeState): string {
+	return e2e.status === "fix_pending" || e2e.status === "fixing" || (e2e.status === "interrupted" && e2e.interruptedFrom === "fixing")
+		? `fix #${e2e.repairCount + 1}`
+		: "journey";
+}
+
+function stageDashboardStatus(stage: StageRuntimeState): DashboardStatus {
+	if (stage.status === "completed") return "completed";
+	if (stage.status === "attention") return "attention";
+	const childStatuses: DashboardStatus[] = [
+		...stage.tasks.map((task) => taskStatus(task.status)),
+		integrationStatus(stage.integration.status),
+		verificationStatus(stage.verification.status),
+		reviewStatus(stage.review.status),
 	];
-};
+	if (childStatuses.includes("attention")) return "attention";
+	if (childStatuses.includes("interrupted")) return "interrupted";
+	return stage.status === "running" || childStatuses.includes("active") ? "active" : "queued";
+}
 
-/** Pure TUI projection of a runner-owned snapshot. */
-export function workflowDashboardLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number, frame = 0): string[] {
+function currentReviewPosition(state: StoryRuntimeState): string {
+	for (const [index, stage] of state.stages.entries()) {
+		if (stage.integration.status !== "completed" || stage.verification.status !== "completed") continue;
+		if (stage.review.status !== "completed" && stage.review.status !== "skipped") {
+			return `Stage ${index + 1} · ${reviewDetail(stage.review)} · ${reviewStatus(stage.review.status)}`;
+		}
+	}
+	if (state.stages.every((stage) => stage.status === "completed") && state.finalReview.status !== "completed") {
+		return `Final · ${reviewDetail(state.finalReview)} · ${reviewStatus(state.finalReview.status)}`;
+	}
+	return "—";
+}
+
+/** Pure stage-centric projection of authoritative runtime state. */
+export function projectWorkflowDashboard(state: StoryRuntimeState, now: number): WorkflowDashboardProjection {
+	const items: DashboardItem[] = [];
+	for (const [index, stage] of state.stages.entries()) {
+		const completed = stage.tasks.filter((task) => task.status === "completed").length;
+		items.push({ label: `Stage ${index + 1} · ${stage.id} · ${completed}/${stage.tasks.length} tasks`, status: stageDashboardStatus(stage), indent: 0 });
+		for (const task of stage.tasks) {
+			const detail = taskDetail(task.status);
+			items.push({ label: `Task · ${task.id}`, status: taskStatus(task.status), ...(detail ? { detail } : {}), indent: 1 });
+		}
+		const integrationDetailText = integrationDetail(stage.integration.status);
+		items.push({ label: "Integration", status: integrationStatus(stage.integration.status), ...(integrationDetailText ? { detail: integrationDetailText } : {}), indent: 1 });
+		const verificationDetailText = verificationDetail(stage.verification.status);
+		items.push({ label: "Verification", status: verificationStatus(stage.verification.status), ...(verificationDetailText ? { detail: verificationDetailText } : {}), indent: 1 });
+		items.push({ label: "Review", status: reviewStatus(stage.review.status), detail: reviewDetail(stage.review), indent: 1 });
+	}
+	items.push({ label: "Final review", status: reviewStatus(state.finalReview.status), detail: reviewDetail(state.finalReview), indent: 0 });
+	items.push({ label: "E2E", status: e2eStatus(state.e2e.status), detail: e2eDetail(state.e2e), indent: 0 });
+	return {
+		title: state.storyId,
+		completedTasks: state.stages.flatMap((stage) => stage.tasks).filter((task) => task.status === "completed").length,
+		totalTasks: state.stages.reduce((total, stage) => total + stage.tasks.length, 0),
+		items,
+		metrics: projectedMetrics(state.metrics, now),
+		reviewPosition: currentReviewPosition(state),
+	};
+}
+
+const ACTIVE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+
+function icon(status: DashboardStatus, frame: number): string {
+	if (status === "active") return ACTIVE_FRAMES[frame % ACTIVE_FRAMES.length]!;
+	if (status === "completed") return "✓";
+	if (status === "attention") return "⚠";
+	if (status === "interrupted") return "‖";
+	return "·";
+}
+
+function tone(status: DashboardStatus): "accent" | "success" | "error" | "warning" | "muted" {
+	if (status === "active") return "accent";
+	if (status === "completed") return "success";
+	if (status === "attention") return "error";
+	if (status === "interrupted") return "warning";
+	return "muted";
+}
+
+function duration(milliseconds: number, incomplete = false): string {
+	const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+	let value: string;
+	if (seconds < 60) value = `${seconds}s`;
+	else {
+		const minutes = Math.floor(seconds / 60);
+		value = minutes < 60 ? `${minutes}m ${seconds % 60}s` : `${Math.floor(minutes / 60)}h ${minutes % 60}m ${seconds % 60}s`;
+	}
+	return `${value}${incomplete ? "+" : ""}`;
+}
+
+function itemLines(projection: WorkflowDashboardProjection, ctx: ExtensionContext, frame: number): string[] {
+	const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${projection.title} · ${projection.completedTasks}/${projection.totalTasks} tasks`))];
+	for (const item of projection.items) {
+		const detail = item.detail ? ` · ${item.detail}` : "";
+		lines.push(`${item.indent ? "  " : ""}${ctx.ui.theme.fg(tone(item.status), `${icon(item.status, frame)} ${item.label} · ${item.status}${detail}`)}`);
+	}
+	return lines;
+}
+
+function metricRows(projection: WorkflowDashboardProjection): Array<readonly [string, string]> {
+	return [
+		["Workflow time", duration(projection.metrics.workflowMs, projection.metrics.incomplete)],
+		...Object.entries(CATEGORY_LABELS).map(([category, label]) => {
+			const metricCategory = category as WorkflowMetricCategory;
+			return [label, duration(projection.metrics.categories[metricCategory], projection.metrics.incompleteCategories.includes(metricCategory))] as const;
+		}),
+		["Review loop", projection.reviewPosition],
+	];
+}
+
+function narrowMetricLine(projection: WorkflowDashboardProjection): string {
+	const workflow = duration(projection.metrics.workflowMs, projection.metrics.incomplete);
+	if (!projection.metrics.activeCategory) return `Time · ${workflow}`;
+	const category = projection.metrics.activeCategory;
+	return `Time · ${workflow} · ${CATEGORY_LABELS[category]} ${duration(projection.metrics.categories[category], projection.metrics.incompleteCategories.includes(category))}`;
+}
+
+/** TUI renderer; all workflow semantics come from the pure state projection above. */
+export function workflowDashboardLines(state: StoryRuntimeState, ctx: ExtensionContext, width: number, frame?: number, now?: number): string[];
+/** Temporary broad overload until workflow-runtime/index.ts supplies StoryRuntimeState directly. */
+export function workflowDashboardLines(state: unknown, ctx: ExtensionContext, width: number, frame?: number, now?: number): string[];
+export function workflowDashboardLines(state: unknown, ctx: ExtensionContext, width: number, frame = 0, now = Date.now()): string[] {
+	const projection = projectWorkflowDashboard(state as StoryRuntimeState, now);
 	const innerWidth = Math.max(1, width - 2);
-	const tasks = stageTaskLines(snapshot, ctx, frame, true);
-	const structuralTasks = stageTaskLines(snapshot, ctx, frame, false);
-	const naturalTaskWidth = Math.max(...structuralTasks.map((task) => visibleWidth(task)));
-	const compactTaskWidth = Math.min(naturalTaskWidth, Math.max(28, Math.floor(innerWidth * 0.58)));
-	const metricWidth = innerWidth - compactTaskWidth - 3;
-	const showMetrics = Boolean(snapshot.metrics && innerWidth >= 72 && metricWidth >= 24);
-	const taskWidth = showMetrics ? compactTaskWidth : innerWidth;
-	const metrics = showMetrics ? metricRows(snapshot) : [];
-	const rowCount = showMetrics ? Math.max(tasks.length, metrics.length) : tasks.length;
+	const items = itemLines(projection, ctx, frame);
+	const naturalItemWidth = Math.max(...items.map((item) => visibleWidth(item)));
+	const compactItemWidth = Math.min(naturalItemWidth, Math.max(28, Math.floor(innerWidth * 0.58)));
+	const metricWidth = innerWidth - compactItemWidth - 3;
+	const showWideMetrics = innerWidth >= 72 && metricWidth >= 24;
+	const leftWidth = showWideMetrics ? compactItemWidth : innerWidth;
+	const metrics = showWideMetrics ? metricRows(projection) : [];
+	const leftLines = showWideMetrics ? items : [items[0]!, ctx.ui.theme.fg("dim", narrowMetricLine(projection)), ...items.slice(1)];
+	const rowCount = showWideMetrics ? Math.max(leftLines.length, metrics.length) : leftLines.length;
 	return Array.from({ length: rowCount }, (_, index) => {
-		const left = truncateToWidth(tasks[index] ?? "", taskWidth, "…");
+		const left = truncateToWidth(leftLines[index] ?? "", leftWidth, "…");
 		let content = left;
-		if (showMetrics) {
-			const leftPane = `${left}${" ".repeat(Math.max(0, taskWidth - visibleWidth(left)))}`;
+		if (showWideMetrics) {
+			const leftPane = `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))}`;
 			const metric = metrics[index];
 			let metricText = "";
 			if (metric) {

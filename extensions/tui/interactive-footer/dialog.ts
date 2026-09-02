@@ -78,7 +78,7 @@ class InteractiveFooterDialog implements Component {
 
 	handleInput(data: string): void {
 		// Once the overlay owns focus, Escape safely closes it instead of reaching
-		// Pi's agent interrupt handler. Footer-grid mode still uses Up to exit.
+		// Pi's agent interrupt handler. The footer controller handles its own exit.
 		if (matchesKey(data, Key.escape)) {
 			this.actionAbort?.abort();
 			this.done();

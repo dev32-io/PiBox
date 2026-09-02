@@ -1,1 +1,0 @@
-PiBox retained {{count}} task worktree(s){{modified}}. Include this inventory in the briefing and remind the user they can inspect or safely clean inactive worktrees with `/harness worktrees`.

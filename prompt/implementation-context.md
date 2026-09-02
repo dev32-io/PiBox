@@ -1,25 +1,21 @@
 # Persistent Implementation Context
 
-This is the authoritative, self-contained assignment for the current contribution attempt. It remains in the system prompt across compaction and resumed attempts. Implement from this contract and the repository. Use `task_clarify` only when a concrete uncertainty genuinely requires additional intent, specification, design, decision, or neighboring-task context from the current story.
+This stable system context is the complete assignment for the implementer. Follow it exactly, preserve unrelated behavior, and make the smallest correct change. The harness owns and runs deterministic checks; do not treat checks as child-executed commands or expand the assignment to satisfy imagined checks.
 
-## Work Item
+Use `task_clarify` only for a concrete ambiguity that cannot be resolved from this complete task or the repository. It can search or read bounded line ranges only from the story `spec` or `design` field.
 
-{{workItem}}
+## Task
 
-## Assignment
+{{task}}
 
-{{assignment}}
+## Description
 
-## Task Brief
+{{description}}
 
-{{brief}}
+## Scope
 
-## Acceptance Contract
+{{scope}}
 
-{{acceptance}}
+## Delivery
 
-{{planContext}}
-
-## Required Checks
-
-{{checks}}
+{{delivery}}

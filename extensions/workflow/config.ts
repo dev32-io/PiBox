@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parse } from "yaml";
 import { HarnessError } from "./errors.js";
 import type {
@@ -17,11 +17,14 @@ import {
 import { discoverProjectAgents } from "../subagent/agent-definitions.js";
 import { DEFAULT_SUBAGENT_CATALOG_CONFIG, resolveAgentConfigs } from "../subagent/catalog.js";
 import { validateToolSelectors } from "./tool-groups.js";
-import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 
-const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTierListProfiles", "agents", "roles", "orchestrator", "limits"]);
+const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTierListProfiles", "agents", "roles", "orchestrator", "limits", "verification"]);
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
+const VERIFICATION_KEYS = new Set(["defaultProfile", "profiles"]);
+const VERIFICATION_PROFILE_KEYS = new Set(["shell", "bootstrap", "requiredEnvironment"]);
+const PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	schemaVersion: 2,
@@ -32,7 +35,7 @@ export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 		implementer: { ...DEFAULT_SUBAGENT_CATALOG_CONFIG.agents.implementer!, completionSchema: "implementer-v1" },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
-	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: DEFAULT_REVIEW_FIX_ITERATIONS },
+	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 8 },
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -96,6 +99,26 @@ export function validateHarnessConfig(value: unknown, requestedModelTierProfile?
 	const switching = expectString(normalized.orchestrator.modelSwitching, "orchestrator.modelSwitching");
 	if (switching !== "off" && switching !== "suggest" && switching !== "auto-visible") throw new HarnessError("CONFIG_INVALID", "orchestrator.modelSwitching is unsupported");
 
+	let verification: HarnessConfig["verification"];
+	if (normalized.verification !== undefined) {
+		if (!isRecord(normalized.verification)) throw new HarnessError("CONFIG_INVALID", "verification must be a mapping");
+		rejectUnknownKeys(normalized.verification, VERIFICATION_KEYS, "verification");
+		if (!isRecord(normalized.verification.profiles) || Object.keys(normalized.verification.profiles).length === 0) throw new HarnessError("CONFIG_INVALID", "verification.profiles must define at least one profile");
+		const profiles: NonNullable<HarnessConfig["verification"]>["profiles"] = {};
+		for (const [name, raw] of Object.entries(normalized.verification.profiles)) {
+			if (!PROFILE_NAME.test(name) || !isRecord(raw)) throw new HarnessError("CONFIG_INVALID", `Invalid verification profile: ${name}`);
+			rejectUnknownKeys(raw, VERIFICATION_PROFILE_KEYS, `verification.profiles.${name}`);
+			const shell = expectString(raw.shell, `verification.profiles.${name}.shell`);
+			if (!isAbsolute(shell)) throw new HarnessError("CONFIG_INVALID", `verification.profiles.${name}.shell must be absolute`);
+			if (raw.bootstrap !== undefined && (typeof raw.bootstrap !== "string" || !raw.bootstrap.trim())) throw new HarnessError("CONFIG_INVALID", `verification.profiles.${name}.bootstrap must be a non-empty string`);
+			if (raw.requiredEnvironment !== undefined && (!Array.isArray(raw.requiredEnvironment) || raw.requiredEnvironment.some((entry) => typeof entry !== "string" || !ENVIRONMENT_NAME.test(entry)))) throw new HarnessError("CONFIG_INVALID", `verification.profiles.${name}.requiredEnvironment contains an invalid name`);
+			profiles[name] = { shell, ...(raw.bootstrap ? { bootstrap: raw.bootstrap.trim() } : {}), requiredEnvironment: [...new Set((raw.requiredEnvironment ?? []) as string[])] };
+		}
+		const defaultProfile = normalized.verification.defaultProfile;
+		if (defaultProfile !== undefined && (typeof defaultProfile !== "string" || !profiles[defaultProfile])) throw new HarnessError("CONFIG_INVALID", "verification.defaultProfile must name a configured profile");
+		verification = { profiles, ...(typeof defaultProfile === "string" ? { defaultProfile } : {}) };
+	}
+
 	return {
 		schemaVersion: 2,
 		modelTierListProfiles,
@@ -109,6 +132,7 @@ export function validateHarnessConfig(value: unknown, requestedModelTierProfile?
 			protocolNudges: expectInteger(normalized.limits.protocolNudges, "limits.protocolNudges"),
 			repairRounds: expectInteger(normalized.limits.repairRounds, "limits.repairRounds"),
 		},
+		...(verification ? { verification } : {}),
 	};
 }
 

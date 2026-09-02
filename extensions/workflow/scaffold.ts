@@ -26,12 +26,16 @@ export interface HarnessScaffoldResult {
 	commit?: string;
 }
 
+const PRIVATE_RUNTIME_IGNORE_PATTERN = "/.pibox/";
+const PRIVATE_RUNTIME_IGNORE_PROBE = ".pibox/.ignore-check";
+const LEGACY_PRIVATE_IGNORE_EXCEPTIONS = new Set(["!/.pibox/", "/.pibox/*", "!/.pibox/verification.yaml"]);
 const WORKTREE_IGNORE_PATTERN = "/.worktree/";
-const PRIVATE_STATE_IGNORE_PATTERN = "/.pibox/";
-const VERSIONED_VERIFICATION_PATTERNS = ["!/.pibox/", "/.pibox/*", "!/.pibox/verification.yaml"] as const;
+const STORY_RUNTIME_IGNORES = [
+	["/agent-artifacts/*/state.yaml", "agent-artifacts/ignore-probe/state.yaml"],
+	["/agent-artifacts/*/ledger.yaml", "agent-artifacts/ignore-probe/ledger.yaml"],
+	["/agent-artifacts/*/events.jsonl", "agent-artifacts/ignore-probe/events.jsonl"],
+] as const;
 const WORKTREE_IGNORE_PROBE = ".worktree/pibox/.ignore-check";
-const PRIVATE_STATE_IGNORE_PROBE = ".pibox/.ignore-check";
-const VERIFICATION_CONFIG_PROBE = ".pibox/verification.yaml";
 
 async function readOptional(path: string): Promise<string | undefined> {
 	try {
@@ -43,19 +47,25 @@ async function readOptional(path: string): Promise<string | undefined> {
 }
 
 async function ensureHarnessIgnores(repositoryRoot: string, ignorePath: string): Promise<boolean> {
+	const previous = await readOptional(ignorePath) ?? "";
+	// Old workflow verification policy briefly made one .pibox file trackable. The
+	// target keeps no workflow authority there, while other PiBox facilities still
+	// require the whole private root to remain ignored.
+	const retained = previous.split("\n").filter((line) => !LEGACY_PRIVATE_IGNORE_EXCEPTIONS.has(line));
+	let normalized = retained.join("\n");
+	if (previous.endsWith("\n") && !normalized.endsWith("\n")) normalized += "\n";
 	const required: string[] = [];
+	if (!(await isGitPathIgnored(repositoryRoot, PRIVATE_RUNTIME_IGNORE_PROBE)) || !normalized.split("\n").includes(PRIVATE_RUNTIME_IGNORE_PATTERN)) required.push(PRIVATE_RUNTIME_IGNORE_PATTERN);
 	if (!(await isGitPathIgnored(repositoryRoot, WORKTREE_IGNORE_PROBE))) required.push(WORKTREE_IGNORE_PATTERN);
-	const privateStateMissing = !(await isGitPathIgnored(repositoryRoot, PRIVATE_STATE_IGNORE_PROBE));
-	if (privateStateMissing) required.push(PRIVATE_STATE_IGNORE_PATTERN, ...VERSIONED_VERIFICATION_PATTERNS);
-	else if (await isGitPathIgnored(repositoryRoot, VERIFICATION_CONFIG_PROBE)) required.push(...VERSIONED_VERIFICATION_PATTERNS);
-	if (required.length === 0) return false;
-	const previous = await readOptional(ignorePath);
-	const prefix = previous && !previous.endsWith("\n") ? `${previous}\n` : (previous ?? "");
-	await atomicWriteFile(ignorePath, `${prefix}${required.join("\n")}\n`);
-	for (const probe of [WORKTREE_IGNORE_PROBE, PRIVATE_STATE_IGNORE_PROBE]) {
+	for (const [pattern, probe] of STORY_RUNTIME_IGNORES) {
+		if (!(await isGitPathIgnored(repositoryRoot, probe))) required.push(pattern);
+	}
+	if (required.length === 0 && normalized === previous) return false;
+	const prefix = normalized && !normalized.endsWith("\n") ? `${normalized}\n` : normalized;
+	await atomicWriteFile(ignorePath, `${prefix}${required.join("\n")}${required.length ? "\n" : ""}`);
+	for (const probe of [PRIVATE_RUNTIME_IGNORE_PROBE, WORKTREE_IGNORE_PROBE, ...STORY_RUNTIME_IGNORES.map(([, probe]) => probe)]) {
 		if (!(await isGitPathIgnored(repositoryRoot, probe))) throw new HarnessError("CONFIG_INVALID", "Failed to establish PiBox runtime ignores in .gitignore");
 	}
-	if (await isGitPathIgnored(repositoryRoot, VERIFICATION_CONFIG_PROBE)) throw new HarnessError("CONFIG_INVALID", "Failed to make .pibox/verification.yaml versionable");
 	return true;
 }
 

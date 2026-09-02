@@ -4,10 +4,10 @@
 
 ## Flow
 
-1. `distill_prepare` resolves an immutable target/baseline/time/path/workflow/session-entry scope, fingerprints dirty and mutable report inputs, lists selected knowledge providers with locality, and returns a preview token without writing artifacts.
+1. `distill_prepare` resolves an immutable target/baseline/time/path/workflow/session-entry scope, fingerprints dirty and selected main-session inputs, lists selected knowledge providers with locality, and returns a preview token without writing artifacts.
 2. The user reviews the exact resolved commits, counts, source tiers, and estimated partitions.
-3. `distill_collect` captures bounded Git evidence, tracked guidance with measured burden, selected workflow artifacts, a sanitized current-session transcript, and final subagent reports. `distill_read sourcePath=…` provides bounded no-checkout reads from the immutable target commit.
-4. `knowledge-distiller` subagents analyze coherent partitions. Managed reports are preferred; raw child sessions are targeted drill-down evidence only.
+3. `distill_collect` captures bounded Git evidence, tracked guidance with measured burden, selected workflow artifacts, and a sanitized selected main-session transcript. Activation-private standalone child transcripts are never persisted or recovered. `distill_read sourcePath=…` provides bounded no-checkout reads from the immutable target commit.
+4. `knowledge-distiller` subagents analyze coherent partitions from the collected evidence packet.
 5. `distill_compare` asks only the user-confirmed knowledge providers for claim-specific comparisons under one aggregate item/character budget. Local Mem0 registers as one optional provider; remote providers are never selected implicitly.
 6. `distill_instruction_check` rejects example-bearing or explanatory instruction candidates and reports exact character/token burden.
 7. The distill skill discusses proposals with the user. No destination mutation occurs without approval of exact wording, scope, and destination.
@@ -22,7 +22,6 @@
 ├── transcript.md
 ├── guidance.md
 ├── workflow.md
-├── subagents.md
 ├── findings/
 ├── comparisons/
 ├── synthesis.md

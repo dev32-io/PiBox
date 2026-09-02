@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALL_TOOLS_SUBAGENT_ENV, PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE, SUBAGENT_CONTROL_TOOLS, usesAllTools } from "./tool-policy.js";
 
@@ -42,6 +43,11 @@ export const LIFETIME_WRAPPER_PATH = fileURLToPath(new URL("./lifetime-wrapper.m
 /** Consumed by the standalone fast-mode extension when explicitly loaded. */
 export const SUBAGENT_FAST_ENV = "PIBOX_FAST_CHILD_ENABLED";
 
+/** Private sidecar consumed by Pi's documented file-valued prompt option. */
+export function stableSystemPromptPath(transcriptPath: string): string {
+	return `${transcriptPath}.append-system-prompt.md`;
+}
+
 /** Wrap an invocation in the stdin liveness-lease helper. */
 export function createLifetimeWrappedInvocation(invocation: SubagentInvocation, termGraceMs = 1_000): SubagentInvocation {
 	if (!Number.isFinite(termGraceMs) || termGraceMs < 0) throw new Error("termGraceMs must be a non-negative number");
@@ -57,8 +63,14 @@ export function createLifetimeWrappedInvocation(invocation: SubagentInvocation, 
 
 /** Production resolver for one bounded Pi JSON turn against a private transcript. */
 export function createPiInvocationResolver(options: PiInvocationResolverOptions = {}): SubagentInvocationResolver {
-	return (request) => {
+	return async (request) => {
 		const pi = options.piInvocation ?? currentPiInvocation();
+		let stableSystemContextPath: string | undefined;
+		if (request.stableSystemContext) {
+			stableSystemContextPath = stableSystemPromptPath(request.transcriptPath);
+			await mkdir(dirname(stableSystemContextPath), { recursive: true, mode: 0o700 });
+			await writeFile(stableSystemContextPath, request.stableSystemContext, { encoding: "utf8", mode: 0o600 });
+		}
 		const allTools = usesAllTools(request.tools);
 		const toolArgs = allTools
 			? ["--exclude-tools", SUBAGENT_CONTROL_TOOLS.join(",")]
@@ -73,7 +85,7 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 			"--model", request.model,
 			"--thinking", request.effort,
 			...toolArgs,
-			...(request.stableSystemContext ? ["--append-system-prompt", request.stableSystemContext] : []),
+			...(stableSystemContextPath ? ["--append-system-prompt", stableSystemContextPath] : []),
 			...request.skillPaths.flatMap((path) => ["--skill", path]),
 			"--", request.attemptUserPrompt,
 		];

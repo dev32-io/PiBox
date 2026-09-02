@@ -1,8 +1,7 @@
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
-import { parseTaskManifest, parseWorkItemIndex } from "../../workflow/work-items.js";
-import type { WorkItemIndex } from "../../workflow/types.js";
+import { parseLegacyTaskManifest, parseLegacyWorkItemIndex, type LegacyWorkItemIndex } from "./legacy-history.js";
 import { readEvidenceMetadata } from "./evidence.js";
 import type { DeliveryHistory, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, ReportDetail, ReportSummary, StorySummary, StoryWorkspace, TaskCard, TaskDetail } from "./models.js";
 import { documentGroup, orderDocuments, orderReports, orderStorySummaries, orderTaskCards, projectStorySummary, projectTaskCard } from "./projector.js";
@@ -49,7 +48,7 @@ async function invalidExistingFile(path: string, root: string, repositoryRoot: s
 	return Boolean(await lstat(path).catch(() => undefined)) && !(await regularFile(path, root, repositoryRoot));
 }
 
-interface IndexRead { value: RecordValue; strict?: WorkItemIndex; diagnostics: Diagnostic[] }
+interface IndexRead { value: RecordValue; strict?: LegacyWorkItemIndex; diagnostics: Diagnostic[] }
 
 export class StoryBoardReader {
 	readonly repositoryRoot: string;
@@ -91,9 +90,9 @@ export class StoryBoardReader {
 			return { value: recovered, diagnostics: [diagnostic(display, "Story index is malformed; bounded metadata was recovered")] };
 		}
 		try {
-			const strict = parseWorkItemIndex(content, display);
+			const strict = parseLegacyWorkItemIndex(content, display);
 			if (strict.id !== id) return { value, diagnostics: [diagnostic(display, "Story index id does not match its canonical directory")] };
-			return { value, strict, diagnostics: [] };
+			return { value, strict, diagnostics: value.schemaVersion === 1 ? [] : [diagnostic(display, "Story index uses an older historical schema; compatible metadata was recovered")] };
 		} catch { return { value, diagnostics: [diagnostic(display, "Story index does not satisfy the current contract; compatible metadata was recovered")] }; }
 	}
 
@@ -150,7 +149,7 @@ export class StoryBoardReader {
 			const taskPath = join(root, entry.path);
 			if (!(await regularFile(taskPath, root, this.repositoryRoot))) throw new Error("not regular");
 			const content = await readFile(taskPath, "utf8"); raw = record(parse(content)) ?? {};
-			try { const strict = parseTaskManifest(content, display); if (strict.id !== entry.id) throw new Error("id mismatch"); } catch { diagnostics.push(diagnostic(display, "Task manifest does not satisfy the current contract; compatible metadata was recovered")); }
+			try { const strict = parseLegacyTaskManifest(content, display); if (strict.id !== entry.id) throw new Error("id mismatch"); } catch { diagnostics.push(diagnostic(display, "Task manifest does not satisfy the historical display contract; compatible metadata was recovered")); }
 		} catch { diagnostics.push(diagnostic(display, "Task manifest is missing, malformed, or not a contained regular file")); }
 		const assembly = record(raw.assembly); const stage = typeof assembly?.stageId === "string" ? assembly.stageId : typeof assembly?.integrationUnit === "string" ? assembly.integrationUnit : undefined;
 		return projectTaskCard({ id: entry.id, title: typeof raw.title === "string" ? raw.title : undefined, status: typeof raw.status === "string" ? raw.status : undefined, dependsOn: strings(raw.dependsOn), stage, relatedReportIds: reportIds, diagnostics });

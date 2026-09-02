@@ -5,170 +5,99 @@ description: Use when shaping product discussion into a high-level story, produc
 
 # Shape Story
 
-Hold a collaborative technical round with the user, then turn the shared understanding into a durable intent, specification, and high-level design. This phase sharpens the domain and explores the design; it is not a serialization step between discussion and planning.
+Hold a collaborative technical round with the user, then persist one reviewable story. This phase sharpens the product contract and high-level design; it is not delivery planning.
 
 ## Enter Deliberately
 
-Enter when the user chooses to make an outcome, scope, specification, or design durable. Agreement with a rough feature outline only starts shaping—it does not approve a story or technical design that has not yet been presented.
+Enter when the user chooses to make an outcome, scope, specification, or design durable. Agreement with a rough feature outline starts shaping—it does not approve a story that has not yet been presented.
 
-Use `resource_list` to look for a matching unfinished story. Read relevant repository behavior, existing intent/spec/design artifacts, `CONTEXT.md`, context maps, and consequential decisions before proposing changes. Continue existing work only when it represents the current unfinished outcome.
+Look for a matching unfinished story and inspect it when one exists. Read relevant repository behavior, project context, and consequential prior decisions before proposing changes. Continue existing work only when it represents the current unfinished outcome.
 
 ## Collaborate Before Writing
 
 Do not create story resources immediately. First work through the technical frontier with the user:
 
-1. **Frame the outcome** — Reflect the problem, actors, desired result, known constraints, and assumptions. Identify what came from the user versus repository evidence or your recommendation.
-2. **Sharpen the domain** — Challenge vague, overloaded, or conflicting terms. Propose precise canonical language and distinguish concepts that have different identity, ownership, state, or lifecycle. If repository vocabulary disagrees with the conversation, surface it immediately.
-3. **Probe with scenarios** — Invent concrete primary, edge, failure, and recovery scenarios. Use them to expose hidden rules, invalid states, boundaries between concepts, and behavior the user has not decided yet.
-4. **Inspect reality** — Cross-reference claims with the code and current interfaces. Follow existing patterns where they serve the outcome; call out contradictions and targeted structural problems that materially affect the design.
-5. **Explore approaches** — Present credible alternatives when a consequential design choice exists. Lead with your recommendation and explain the tradeoffs; do not manufacture alternatives for trivial choices.
-6. **Present the contract and design** — Walk through the proposed domain language, behavior and acceptance, then high-level technical design. Scale each section to its complexity and pause after each consequential section so the user can correct it. Revisit earlier sections when a scenario changes the model.
+1. **Frame the outcome** — Reflect the problem, actors, desired result, included and excluded scope, constraints, assumptions, and success signals.
+2. **Sharpen the domain** — Challenge vague or conflicting terms and reconcile the conversation with repository vocabulary.
+3. **Probe with scenarios** — Use concrete primary, edge, failure, and recovery scenarios to expose hidden rules and invalid states.
+4. **Inspect reality** — Cross-reference claims with current code and interfaces; surface consequential contradictions.
+5. **Explore approaches** — Lead with a recommendation and real tradeoffs when a consequential choice exists.
+6. **Present the contract and design** — Walk through behavior, boundaries, flow, failure/recovery, and verification implications. Pause for correction at consequential points.
 
-Ask one useful question at a time when possible. Prefer a concrete scenario or a small set of choices over a broad questionnaire. Respond substantively before asking the next question.
+Ask one useful question at a time when possible. Respond substantively before asking the next question.
 
-## What to Shape
+## Author the Story
 
-A coherent story captures only durable high-level understanding:
+`story_write` accepts the minimum required structured authoring inputs and renders them as free-form Markdown. Every story has these sections:
 
-- **Intent** — problem, desired outcome, included and excluded scope, constraints, assumptions, and success signals.
-- **Specification** — actors, canonical domain language, required behavior, concrete scenarios, edge cases, and stable observable acceptance criteria.
-- **Design** — chosen approach, component and interface boundaries, data/control flow, failure and recovery behavior, compatibility, security/privacy, and verification boundaries where relevant.
-- **Decisions** — only choices that are hard to reverse, surprising without context, and the result of a genuine tradeoff.
+### Specification
 
-Do not define implementation tasks, stages, assignments, capability tiers, worktree strategy, or evaluation plans. If the discussion becomes exploratory again, stay in this technical round or return explicitly to `product-discussion`; do not harden tentative ideas.
+- **Outcome** — the durable desired result, actors, context, constraints, and success signals needed to understand it.
+- **Scope** — included and excluded product behavior and any material assumptions.
+- **Behavior** — canonical language, rules, transitions, scenarios, and edge or recovery behavior.
+- **Acceptance** — stable observable conditions that establish the outcome.
+
+### Design
+
+- **Approach** — the chosen high-level technical direction and consequential rationale.
+- **Boundaries and Flow** — ownership, interfaces, data/control flow, and relevant compatibility or security/privacy boundaries.
+- **Failure and Verification** — failure and recovery behavior, material invariants, and the seams at which they can be proved.
+
+Section bodies are Markdown-rich. Keep them proportional and non-repetitive. The renderer owns level-two (`##`) headings; inside a field use bold labels, lists, tables, or level-three (`###`) headings only.
+
+Do not create intent artifacts, spec/design artifact catalogs, decision artifacts, narrative taxonomy IDs, criterion IDs, or block IDs. Preserve consequential decisions in the relevant story section. Do not define tasks, stages, assignments, worktree strategy, authored evaluations, reports, or handoffs.
+
+## Author the E2E Matrix
+
+E2E is a concise outside-in matrix with:
+
+- one global **Scope** describing the touched journey surface;
+- optional global **Exclusions** for deliberately unexercised surfaces or risks; and
+- independently authored, stable cases containing only **Exercise**, **Oracle**, and **Proof**.
+
+Give each case a short stable ID and descriptive title. **Exercise** combines only the setup, action/event, and safety details needed to run the journey. **Oracle** states the externally observable result and final state. **Proof** states the evidence that establishes the oracle, using internal evidence only for a named hidden invariant.
+
+Derive cases from real actors, surfaces, rules, transitions, and material risks—not implementation structure. Use the smallest non-duplicate set. Do not restore classifications, criterion mappings, source catalogs, separate actor/pre-state/action/outcome/safety fields, or other verbose case metadata when Exercise, Oracle, and Proof already carry the information.
+
+Write global `e2eScope` and optional `e2eExclusions` through `story_write`. Write each stable `E2E-NNN` case through one flat `e2e_write` call.
+
+## Flat Writer Contract
+
+- Create a story without `ref`: provide `id`, `title`, all seven story sections, and `e2eScope`. Create each case without `ref`: provide `story`, `id`, `title`, `exercise`, `oracle`, and `proof`.
+- Update by canonical `ref` and send only changed fields. If stored spec or design structure is invalid, replace its complete four-field or three-field group as directed by the error.
+- Require a valid Git `HEAD`, clean worktree, and `develop` or matching feature/fix branch. Flat writers own target-branch creation and harness commits; never repair Git setup manually without user authority.
+- `workflow_compile` requires substantive structured sections and at least one E2E case. Standalone `TBD`, `N/A`, `NONE`, uppercase `TODO`, and wrapped placeholder markers are rejected; legitimate “todo” is allowed.
 
 ## Validate, Then Persist
 
-Before writing resources, present a compact story/design checkpoint **and a conservative touched-area E2E matrix**.
+Before writing, present a compact checkpoint containing the complete proposed story sections and E2E matrix. State deliberate E2E exclusions and unresolved coverage gaps. Explicitly ask whether the checkpoint represents the user's intent. Prior agreement to “build,” “shape,” or “plan” does not approve an unseen checkpoint.
 
-Derive the matrix outside-in:
+After the user validates it:
 
-- Derive cases from actors, real surfaces, rules, transitions, and material risks—not implementation structure.
-- Use the smallest non-duplicate set. Add variants only when behavior, authority, state, driver, or evidence changes; state questions and exclusions.
-- Each case names its actor, pre-state, external action or event, observable outcome and final state, available source references, and safe setup and cleanup.
-- Treat the user-visible result as the oracle; use internal evidence only for a named hidden invariant.
-- Give every requirement a case or explicit gap; do not invent behavior, duplicate cases, or substitute implementation probes.
+1. Create the story and its cases using the flat writer contract above.
+2. Read them back; check structure, placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between behavior, design, and journeys.
+3. Update only the affected field or case, except when an error requires a complete malformed field group.
+4. Call near-zero-argument `workflow_compile`. It reads existing resources, reports all deterministic issues, mutates nothing, and authorizes neither planning nor execution. Fix named resources and recompile.
 
-The matrix must list substantive structured cases with stable IDs, one classification (golden-path, edge, failure, or recovery), journey, setup, actions, expected outcomes, evidence, and safety notes where suitable. This is the last collaborative checkpoint: explicitly discuss and finalize the matrix with the user, including what is deliberately excluded, then ask whether the complete checkpoint represents the user's intent. Prior agreement to “build,” “shape,” or “plan” does not approve this unseen checkpoint.
+Example content should stay compact:
 
-After the user validates the checkpoint:
+- Outcome: “A valid checkout creates exactly one order and returns its identifier.”
+- Approach: “Route submission through the existing checkout command and preserve its typed result.”
+- `E2E-001` — Exercise: “Submit a disposable valid cart through checkout.” Oracle: “One confirmation identifies one created order.” Proof: “Capture the confirmation and query the disposable order, then remove it.”
 
-1. Create or update the work item with `resource_write`. From clean `develop`, initial creation prepares and binds `feature/<work-item-id>` before writing. From a clean existing `feature/*` or `fix/*` checkout, it binds the new work item to that current branch without creating or switching branches. For defect work, pass `branchKind: "fix"`; pass `workingBranch` only when an explicit matching feature/fix name is required. Subsequent story mutations stay on that bound branch.
-2. Write only the specification, design, conservative touched-area `e2e-matrix`, and rare decision artifacts the story needs. Persist the exact user-approved matrix content; do not summarize or replace its cases.
-3. Read each written artifact ref back individually and check for placeholders, contradictions, ambiguous terms, missing scenarios, and disagreement between acceptance and design. A compact work-item read is not a substitute for reading its child artifacts.
-4. Correct only the affected resource. Include the persisted e2e-matrix in the story review checkpoint and resource refs.
-
-## Resource Shapes
-
-The resource API translates these author-facing shapes to canonical storage. Creation uses `type`, optional `parent`, and `value`; updates use only `ref` and `value`.
-
-**Story container:**
-
-```json
-{
-  "type": "work-item",
-  "value": {
-    "id": "checkout",
-    "title": "Reliable checkout",
-    "branchKind": "feature",
-    "intentSections": {
-      "problem": "Customers cannot reliably complete checkout.",
-      "desiredOutcome": "A valid checkout consistently produces an order.",
-      "scopeIncluded": ["Checkout submission and user-visible failures"],
-      "scopeExcluded": ["Payment settlement"],
-      "constraints": ["Existing clients remain compatible"],
-      "successSignals": ["Specified success and failure scenarios are observable"]
-    }
-  }
-}
-```
-
-**Specification artifact:**
-
-```json
-{
-  "type": "artifact",
-  "parent": "work-item:checkout",
-  "value": {
-    "id": "checkout-behavior",
-    "kind": "spec",
-    "title": "Checkout behavior",
-    "content": {
-      "context": "Defines checkout submission from the customer's perspective.",
-      "domainLanguage": ["Checkout is the mutable purchase attempt; Order is the accepted result."],
-      "actors": ["Customer"],
-      "behaviors": ["Valid submission creates exactly one order."],
-      "acceptance": ["A valid checkout returns the created order identifier."],
-      "scenarios": ["A customer submits a valid checkout once."],
-      "edgeCases": ["Repeated submission does not create a duplicate order."],
-      "outOfScope": ["Payment settlement"]
-    }
-  }
-}
-```
-
-**Design artifact:**
-
-```json
-{
-  "type": "artifact",
-  "parent": "work-item:checkout",
-  "value": {
-    "id": "checkout-design",
-    "kind": "design",
-    "title": "Checkout design",
-    "content": {
-      "goal": "Keep checkout behavior isolated behind one command boundary.",
-      "approach": ["Route submission through CheckoutCommand and return its typed result."],
-      "components": ["Checkout form calls CheckoutCommand; repository persists the accepted Order."],
-      "flow": ["Validate checkout, create order, persist it, return identifier."],
-      "failureAndRecovery": ["Validation failures return without persistence."],
-      "verification": ["Command tests prove success, rejection, and duplicate-submission behavior."],
-      "alternatives": ["Direct component persistence was rejected because it couples UI and storage."]
-    }
-  }
-}
-```
-
-**Approved E2E matrix artifact** (omit inapplicable optional fields; `None` and `N/A` are rejected placeholders):
-
-```json
-{
-  "type": "artifact",
-  "parent": "work-item:checkout",
-  "value": {
-    "id": "checkout-e2e",
-    "kind": "e2e-matrix",
-    "title": "Checkout E2E matrix",
-    "content": {
-      "scope": ["Touched checkout submission and visible rejection paths"],
-      "cases": [{
-        "id": "E2E-001",
-        "classification": "golden-path",
-        "journey": "Customer completes checkout",
-        "setup": ["Use a disposable customer and valid cart"],
-        "actions": ["Open checkout", "Submit the valid cart"],
-        "expectedOutcomes": ["One order is created", "Confirmation shows its identifier"],
-        "evidence": ["Visible confirmation and persisted disposable order"],
-        "safety": ["Remove disposable state; retain no customer secrets"]
-      }],
-      "safety": ["Never exercise live settlement"]
-    }
-  }
-}
-```
+Use only the specialized flat authoring tools. Do not write raw YAML or use `resource_write`, `workflow_apply_change`, or a generic nested story payload.
 
 ## Story Review Gate
 
-After persistence, present the story checkpoint and resource refs to the user, then stop. Always wait for the user to review or explicitly ask to proceed to delivery planning—even when they originally requested an end-to-end plan. Never load or invoke `plan-delivery` in the same turn that finishes shaping.
+After the story is first persisted, present the complete rendered story and E2E checkpoint with its story identity, then stop. Always wait for the user to review it or explicitly ask to proceed to delivery planning—even when the original request asked for an end-to-end plan. Never load or invoke `plan-delivery` in the same turn that first persists the shaped story.
 
-A later explicit request such as “the story looks right, plan it” enters `plan-delivery`. Requested changes remain in `shape-story`.
+A later explicit request such as “the story looks right, plan it” enters `plan-delivery`. Requested story changes remain in `shape-story`.
 
 ## Exit States
 
 End with exactly one result:
 
 1. one focused domain, behavior, or design question;
-2. a proposed story/design section awaiting user correction or validation;
-3. a persisted coherent story checkpoint awaiting explicit user review; or
+2. a proposed story section or E2E matrix awaiting correction or validation;
+3. a persisted coherent story awaiting explicit user review; or
 4. an explicit return to `product-discussion` with the reopened frontier.
