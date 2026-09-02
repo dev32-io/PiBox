@@ -10,6 +10,7 @@ import { WORKFLOW_CONTROL_EVENT, WORKFLOW_LIFECYCLE_EVENT, type WorkflowAdapter,
 import { getWorkflowAdapterCapabilityRegistry } from "./capability-registry.js";
 import { workflowDashboardNeedsAnimation, workflowDashboardsLines, type WorkflowDashboardEntry } from "./dashboard.js";
 import { WorkflowRunner, type WorkflowRunnerNotice } from "./runner.js";
+import { registerWorkflowRunnerRestorer } from "./runner-restoration.js";
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 const bounded = (value: unknown, limit = 700) => String(value ?? "").replace(/[\r\n\t]+/g, " ").replace(/\s{2,}/g, " ").trim().slice(0, limit);
@@ -21,10 +22,9 @@ export default function workflows(pi: ExtensionAPI): void {
 	const runners = new Map<string, WorkflowRunner>();
 	let sessionCtx: ExtensionContext | undefined;
 	let selectedRef: string | undefined;
-	let restoringReload = false;
 	let shuttingDown = false;
-	let unregisterRegistry: (() => void) | undefined;
 	let unregisterSubagentUi: (() => void) | undefined;
+	let unregisterRunnerRestorer: (() => void) | undefined;
 	let frame = 0;
 	let timer: NodeJS.Timeout | undefined;
 	let dashboardTui: { requestRender?: () => void } | undefined;
@@ -132,18 +132,16 @@ export default function workflows(pi: ExtensionAPI): void {
 
 	pi.events.on(WORKFLOW_CONTROL_EVENT, (value: unknown) => { const event = value as WorkflowControlEvent; if (!sessionCtx || shuttingDown) return; void (async () => { if (event.action === "resume") { const adapter = adapterFor(event.ref); await requireResolvedAttention(adapter, event.ref, sessionCtx!); const guard = await guardLaunch(adapter, event.ref, sessionCtx!); if (!guard.ok) return; } selectedRef = event.ref; await runnerFor(event.ref).command(event.action, event.operationId ?? `event:${Date.now()}`, { invokeDomainControl: false }); })().catch((error) => sendNotice({ workflowRef: event.ref, title: `${event.ref} · control failed`, detail: error instanceof Error ? error.message : String(error), attention: true })); });
 
-	const restoreAvailable = async () => {
-		if (!sessionCtx || shuttingDown || !restoringReload) return;
-		for (const adapter of registry.list()) for (const control of await adapter.listExecutionControls?.(sessionCtx).catch(() => []) ?? []) {
-			if (control.mode !== "running" && control.mode !== "paused") continue;
-			if (control.ownerSessionId && control.ownerSessionId !== sessionCtx.sessionManager.getSessionId()) continue;
-			selectedRef = control.workflowRef; await runnerFor(control.workflowRef).command("attach", `reload:${control.workflowRef}`, { restoreMode: control.mode });
-		}
-		renderDashboard();
-	};
-	pi.on("session_start", async (event, ctx) => {
-		shuttingDown = false; restoringReload = event.reason === "reload"; sessionCtx = ctx;
-		unregisterRegistry?.(); unregisterRegistry = registry.subscribe(() => { void restoreAvailable(); });
+	pi.on("session_start", async (_event, ctx) => {
+		shuttingDown = false; sessionCtx = ctx;
+		unregisterRunnerRestorer?.(); unregisterRunnerRestorer = registerWorkflowRunnerRestorer(async (controls) => {
+			if (!sessionCtx || shuttingDown) return;
+			for (const control of controls) {
+				if ((control.mode !== "running" && control.mode !== "paused") || runners.has(control.workflowRef) || (control.ownerSessionId && control.ownerSessionId !== sessionCtx.sessionManager.getSessionId())) continue;
+				selectedRef = control.workflowRef; await runnerFor(control.workflowRef).command("attach", `demand:${control.workflowRef}`, { restoreMode: control.mode, invokeDomainControl: false });
+			}
+			renderDashboard();
+		});
 		unregisterSubagentUi?.(); unregisterSubagentUi = subagentUi.subscribe(() => {
 			if (shuttingDown || !sessionCtx?.hasUI) return;
 			const entries = dashboardEntries();
@@ -154,8 +152,6 @@ export default function workflows(pi: ExtensionAPI): void {
 			if (dashboardTui) { dashboardTui.requestRender?.(); syncDashboardTimer(); }
 			else renderDashboard();
 		});
-		if (!restoringReload) for (const adapter of registry.list()) await adapter.reconcileActivation?.(ctx);
-		await restoreAvailable();
 	});
-	pi.on("session_shutdown", async (_event, ctx) => { shuttingDown = true; await Promise.all([...runners.values()].map((runner) => runner.dispose())); runners.clear(); selectedRef = undefined; sessionCtx = undefined; restoringReload = false; unregisterRegistry?.(); unregisterRegistry = undefined; unregisterSubagentUi?.(); unregisterSubagentUi = undefined; clearDashboard(ctx); });
+	pi.on("session_shutdown", async (_event, ctx) => { shuttingDown = true; await Promise.all([...runners.values()].map((runner) => runner.dispose())); runners.clear(); selectedRef = undefined; sessionCtx = undefined; unregisterRunnerRestorer?.(); unregisterRunnerRestorer = undefined; unregisterSubagentUi?.(); unregisterSubagentUi = undefined; clearDashboard(ctx); });
 }

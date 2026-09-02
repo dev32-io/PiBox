@@ -139,6 +139,18 @@ function sameOwner(left: RuntimeOwner | undefined, right: RuntimeOwner): boolean
 	return left?.sessionId === right.sessionId && left.processInstanceId === right.processInstanceId && left.activationId === right.activationId;
 }
 
+export async function reconcileHarnessActivation(runtime: HarnessWorkflowRuntime): Promise<WorkflowExecutionControl[]> {
+	const owner = runtime.launcher.service.owner; const controls: WorkflowExecutionControl[] = [];
+	for (const item of await runtime.workItems.list()) {
+		const store = storeFor(runtime.identity.root, item.id); const durable = await store.readState();
+		if (!durable || (durable.status !== "running" && durable.status !== "paused") || !durable.activationOwner) continue;
+		if (sameOwner(durable.activationOwner, owner)) { controls.push({ workflowRef: `work-item:${item.id}`, mode: durable.status, ownerSessionId: owner.sessionId, ownerProcessInstanceId: owner.processInstanceId, ownerActivationId: owner.activationId }); continue; }
+		const lostOwner = durable.activationOwner;
+		await withGitLock(runtime, `story-reconcile:${item.id}`, () => store.updateState((current) => current ? interruptOwnedAttempts(current, lostOwner) : (() => { throw new Error(`Workflow ${item.id} state disappeared during first-demand reconciliation`); })(), { type: "workflow.interrupted", resultCode: "activation_first_demand_owner_mismatch" }));
+	}
+	return controls;
+}
+
 function checkId(check: AuthoredTaskDocument["checks"][number], index: number): string {
 	return typeof check === "string" ? `check-${index + 1}` : check.id ?? `check-${index + 1}`;
 }
@@ -1151,28 +1163,6 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			emit(runtime.identity.root, loaded.story.id);
 			const mode = committed.state.status === "completed" ? "completed" : committed.state.status === "stopped" ? "stopped" : committed.state.status === "paused" ? "paused" : "running";
 			return { workflowRef: ref, mode, ownerSessionId: owner.sessionId, ownerProcessInstanceId: owner.processInstanceId, ownerActivationId: owner.activationId };
-		},
-		async listExecutionControls(ctx) {
-			const runtime = await options.runtimeFor(ctx);
-			const owner = runtime.launcher.service.owner;
-			const controls: WorkflowExecutionControl[] = [];
-			for (const item of await runtime.workItems.list()) {
-				const state = await storeFor(runtime.identity.root, item.id).readState().catch(() => undefined);
-				if (!state || !sameOwner(state.activationOwner, owner) || (state.status !== "running" && state.status !== "paused")) continue;
-				controls.push({ workflowRef: `work-item:${item.id}`, mode: state.status, ownerSessionId: owner.sessionId, ownerProcessInstanceId: owner.processInstanceId, ownerActivationId: owner.activationId });
-			}
-			return controls;
-		},
-		async reconcileActivation(ctx) {
-			const runtime = await options.runtimeFor(ctx);
-			const owner = runtime.launcher.service.owner;
-			for (const item of await runtime.workItems.list()) {
-				const store = storeFor(runtime.identity.root, item.id);
-				const durable = await store.readState();
-				if (!durable || (durable.status !== "running" && durable.status !== "paused") || !durable.activationOwner || sameOwner(durable.activationOwner, owner)) continue;
-				const lostOwner = durable.activationOwner;
-				await withGitLock(runtime, `story-reconcile:${item.id}`, () => store.updateState((current) => current ? interruptOwnedAttempts(current, lostOwner) : (() => { throw new Error(`Workflow ${item.id} state disappeared during activation reconciliation`); })(), { type: "workflow.interrupted", resultCode: "activation_startup_owner_mismatch" }));
-			}
 		},
 		async reconcileWorkflow(ref, ctx) {
 			const runtime = await options.runtimeFor(ctx);

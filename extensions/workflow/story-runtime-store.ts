@@ -329,7 +329,7 @@ function validReview(value: unknown): boolean {
 		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
 function validTask(value: unknown): boolean {
-	return record(value) && onlyKeys(value, ["id", "status", "repairCount", "attempt", "interruptedFrom", "checks", "contributionCommit", "result", "failure"]) && boundedString(value.id, 200)
+	return record(value) && onlyKeys(value, ["id", "status", "repairCount", "attempt", "interruptedFrom", "checks", "contributionCommit", "result", "failure"]) && typeof value.id === "string" && STORY_ID.test(value.id)
 		&& oneOf(value.status, ["pending", "implementing", "check_pending", "checking", "repair_pending", "repairing", "interrupted", "completed", "attention"])
 		&& nonNegativeInteger(value.repairCount) && validAttempt(value.attempt)
 		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["implementing", "checking", "repairing"]))
@@ -395,18 +395,20 @@ function validStateShape(state: Record<string, unknown>): boolean {
 		&& (state.activationOwner === undefined || validOwner(state.activationOwner)) && validOptionalSummary(state.attention)
 		&& validContracts(state.contracts) && validGit(state.git) && validMetrics(state.metrics) && boundedArray(state.stages, 100)
 		&& state.stages.every((stage) => record(stage) && onlyKeys(stage, ["id", "status", "tasks", "integration", "verification", "review"])
-			&& boundedString(stage.id, 200) && oneOf(stage.status, ["pending", "running", "completed", "attention"])
+			&& typeof stage.id === "string" && STORY_ID.test(stage.id) && oneOf(stage.status, ["pending", "running", "completed", "attention"])
 			&& boundedArray(stage.tasks, 200) && stage.tasks.every(validTask) && validIntegration(stage.integration)
 			&& validVerification(stage.verification) && validReview(stage.review))
 		&& validReview(state.finalReview) && validE2E(state.e2e)
 		&& (state.outcomeStatus === undefined || oneOf(state.outcomeStatus, ["pending", "written", "failed"]));
 }
-function validateState(value: unknown, storyId: string): StoryRuntimeState {
+export function parseStoryRuntimeState(value: unknown, storyId: string): StoryRuntimeState {
 	if (!record(value) || value.schemaVersion !== 1 || value.storyId !== storyId || !validStateShape(value)) {
 		throw new Error(`Unsupported or invalid runtime state for ${storyId}`);
 	}
 	return value as unknown as StoryRuntimeState;
 }
+
+const validateState = parseStoryRuntimeState;
 
 function validateLedgerEntry(entry: LedgerEntry): void {
 	if (!record(entry) || !onlyKeys(entry as unknown as Record<string, unknown>, ["id", "summary", "sourceRole", "updatedAt", "evidence"])) throw new Error("Ledger entries contain unsupported fields");

@@ -43,8 +43,11 @@ test("refuses the obsolete generic-slot runtime shape", async (t) => {
 test("rejects representative corrupt nested authoritative state", async (t) => {
 	const { store } = await fixture(t);
 	const valid = state();
+	const validStage = { id: "delivery", status: "pending", tasks: [] as TaskRuntimeState[], integration: { status: "pending", repairCount: 0, contributionCommits: [] }, verification: { status: "pending", repairCount: 0, checks: [] }, review: { status: "pending", iteration: 0, repairCount: 0, currentFindings: [] } };
 	const corruptions: unknown[] = [
 		{ ...valid, status: "teleporting" },
+		{ ...valid, stages: [{ ...validStage, id: 'x\"><img src=x onerror="globalThis.PWNED=1' }] },
+		{ ...valid, stages: [{ ...validStage, tasks: [{ id: 'x\"><img src=x onerror="globalThis.PWNED=1', status: "pending", repairCount: 0, checks: [] }] }] },
 		{ ...valid, steps: [] },
 		{ ...valid, finalReview: { ...valid.finalReview, report: { verdict: "passed" } } },
 		{ ...valid, git: { ...valid.git, baseCommit: "" } },

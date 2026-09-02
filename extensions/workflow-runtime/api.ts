@@ -69,8 +69,6 @@ export interface WorkflowAdapter {
 	canHandle(ref: string): boolean;
 	subscribeLifecycle?(ref: string, ctx: ExtensionContext, listener: (update?: WorkflowLifecycleUpdate) => void, signal?: AbortSignal): void | (() => void) | Promise<void | (() => void)>;
 	controlExecution(ref: string, command: "start" | "pause" | "resume" | "stop" | "complete" | "detach" | "attach", operationId: string, ctx: ExtensionContext): Promise<WorkflowExecutionControl>;
-	listExecutionControls?(ctx: ExtensionContext): Promise<WorkflowExecutionControl[]>;
-	reconcileActivation?(ctx: ExtensionContext): Promise<void>;
 	reconcileWorkflow?(ref: string, ctx: ExtensionContext): Promise<void>;
 	advanceWorkflow(ref: string, ctx: ExtensionContext): Promise<void>;
 	resolveAttention?(ref: string, decision: WorkflowAttentionDecision, ctx: ExtensionContext, options?: { dryRun?: boolean }): Promise<StoryRuntimeState>;

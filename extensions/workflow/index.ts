@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadHarnessConfig } from "./config.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { initializeHarnessRepository } from "./scaffold.js";
@@ -13,8 +13,9 @@ import { WorkItemStore } from "./work-items.js";
 import { StoryRuntimeStore } from "./story-runtime-store.js";
 import { registerWorkerCapabilities, isTargetTaskProcess } from "./worker-capabilities.js";
 import { registerWorkflowAdapter, type WorkflowAdapterRegistration } from "../workflow-runtime/capability-registry.js";
-import { createHarnessWorkflowAdapter } from "./workflow-adapter.js";
+import { createHarnessWorkflowAdapter, reconcileHarnessActivation } from "./workflow-adapter.js";
 import { WorkflowSubagentLauncher } from "../workflow-runtime/subagent-launcher.js";
+import { requestWorkflowRunnerRestore } from "../workflow-runtime/runner-restoration.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "../subagent/child-extensions.js";
 import { getSubagentProcessInstanceId } from "../subagent/process-instance.js";
 import { resolveSubagentServiceForConsumer } from "../subagent/registry.js";
@@ -32,7 +33,7 @@ const RESOURCE_TYPE = StringEnum(["work-item", "task", "stage", "e2e"] as const)
 const CHECKS = Type.Array(Type.Unknown(), { description: "Executable deterministic commands, or existing command/profile check objects. The supplied array replaces prior checks." });
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
-interface HarnessRuntime {
+export interface HarnessRuntime {
 	identity: RepositoryIdentity;
 	workItems: WorkItemStore;
 	config: ReturnType<typeof loadHarnessConfig>["config"];
@@ -55,14 +56,66 @@ function requireTrusted(ctx: ExtensionContext): void {
 	if (!ctx.isProjectTrusted()) throw new HarnessError("CAPABILITY_DENIED", "Workflow mutations require a trusted repository");
 }
 
-async function createRuntime(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">, modelTierProfile?: string): Promise<HarnessRuntime> {
-	const identity = await discoverRepository(ctx.cwd);
+async function createRuntime(ctx: Pick<ExtensionContext, "sessionManager">, identity: RepositoryIdentity, modelTierProfile?: string): Promise<HarnessRuntime> {
 	const config = loadHarnessConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}) }).config;
 	const sessionId = ctx.sessionManager.getSessionId();
 	const capability = resolveSubagentServiceForConsumer({ sessionId, processInstanceId: getSubagentProcessInstanceId() });
 	if (!capability) throw new HarnessError("CAPABILITY_DENIED", "The standalone SubagentService is unavailable for this workflow activation");
 	const canonical = new CanonicalMutationCoordinator(identity.root, identity.commonDir ?? join(identity.root, ".git"));
 	return { identity, config, workItems: new WorkItemStore(identity.root, canonical), launcher: new WorkflowSubagentLauncher(capability.service, [...WORKFLOW_CHILD_EXTENSION_PATHS]), mutex: canonical.mutex };
+}
+
+export function createFirstDemandReconciler(recover: (runtime: HarnessRuntime) => Promise<unknown> = reconcileHarnessActivation): {
+	run(runtime: HarnessRuntime): Promise<void>;
+	reset(): void;
+} {
+	const reconciledRoots = new Set<string>();
+	const pendingByRoot = new Map<string, Promise<void>>();
+	return {
+		async run(runtime) {
+			const root = runtime.identity.root; if (reconciledRoots.has(root)) return;
+			let pending = pendingByRoot.get(root);
+			if (!pending) {
+				pending = recover(runtime).then(() => { reconciledRoots.add(root); });
+				pendingByRoot.set(root, pending);
+				void pending.finally(() => { if (pendingByRoot.get(root) === pending) pendingByRoot.delete(root); }).catch(() => {});
+			}
+			await pending;
+		},
+		reset() { reconciledRoots.clear(); pendingByRoot.clear(); },
+	};
+}
+
+export function createDemandRuntimeResolver(options: {
+	discover(cwd: string): Promise<RepositoryIdentity>;
+	create(ctx: Pick<ExtensionContext, "sessionManager">, identity: RepositoryIdentity): Promise<HarnessRuntime>;
+	reconcile(runtime: HarnessRuntime): Promise<void>;
+}): { run(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime>; reset(): void } {
+	const runtimeByCwd = new Map<string, HarnessRuntime>(); const runtimeByRoot = new Map<string, HarnessRuntime>();
+	const pendingByCwd = new Map<string, Promise<HarnessRuntime>>(); const pendingByRoot = new Map<string, Promise<HarnessRuntime>>(); const reconciler = createFirstDemandReconciler(options.reconcile);
+	return {
+		async run(ctx) {
+			const cwd = resolve(ctx.cwd); let current = runtimeByCwd.get(cwd);
+			if (!current) {
+				let demand = pendingByCwd.get(cwd);
+				if (!demand) {
+					demand = (async () => {
+						const identity = await options.discover(cwd); let resolved = runtimeByRoot.get(identity.root);
+						if (!resolved) {
+							let creation = pendingByRoot.get(identity.root);
+							if (!creation) { creation = options.create(ctx, identity).then((created) => { runtimeByRoot.set(identity.root, created); return created; }); pendingByRoot.set(identity.root, creation); void creation.finally(() => { if (pendingByRoot.get(identity.root) === creation) pendingByRoot.delete(identity.root); }).catch(() => {}); }
+							resolved = await creation;
+						}
+						await reconciler.run(resolved); runtimeByCwd.set(cwd, resolved); return resolved;
+					})();
+					pendingByCwd.set(cwd, demand); void demand.finally(() => { if (pendingByCwd.get(cwd) === demand) pendingByCwd.delete(cwd); }).catch(() => {});
+				}
+				current = await demand;
+			}
+			return current;
+		},
+		reset() { runtimeByCwd.clear(); runtimeByRoot.clear(); pendingByCwd.clear(); pendingByRoot.clear(); reconciler.reset(); },
+	};
 }
 
 function formatState(state: Awaited<ReturnType<StoryRuntimeStore["readState"]>>): string {
@@ -85,18 +138,11 @@ export default function workflow(pi: ExtensionAPI): void {
 		return;
 	}
 
-	let runtime: HarnessRuntime | undefined;
-	let runtimePromise: Promise<HarnessRuntime> | undefined;
+	const runtimeResolver = createDemandRuntimeResolver({ discover: discoverRepository, create: (ctx, identity) => createRuntime(ctx, identity, modelTierProfile), reconcile: async (current) => { const controls = await reconcileHarnessActivation(current); await requestWorkflowRunnerRestore(controls); } });
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
-		const identity = await discoverRepository(ctx.cwd);
-		if (runtime?.identity.root === identity.root) {
-			if (modelTierProfile && runtime.config.modelTierProfile !== modelTierProfile) runtime.config = loadHarnessConfig(identity.root, { modelTierProfile }).config;
-			return runtime;
-		}
-		if (runtimePromise) return runtimePromise;
-		const pending = createRuntime(ctx, modelTierProfile).then((created) => runtime = created);
-		runtimePromise = pending;
-		try { return await pending; } finally { if (runtimePromise === pending) runtimePromise = undefined; }
+		const current = await runtimeResolver.run(ctx);
+		if (modelTierProfile && current.config.modelTierProfile !== modelTierProfile) current.config = loadHarnessConfig(current.identity.root, { modelTierProfile }).config;
+		return current;
 	};
 	const serviceFor = async (ctx: ExtensionContext) => { const current = await runtimeFor(ctx); return new OrchestratorResourceService(current.identity.root, current.workItems, current.config); };
 	const mutate = async <T>(ctx: ExtensionContext, _operationId: string, operation: (current: HarnessRuntime) => Promise<T>) => { requireTrusted(ctx); return operation(await runtimeFor(ctx)); };
@@ -162,21 +208,20 @@ export default function workflow(pi: ExtensionAPI): void {
 	} });
 
 	pi.registerTool({ name: "workflow_init", label: "Initialize Workflow Harness", description: "Initialize .pi/harness.yaml and required runtime ignores on develop.", parameters: Type.Object({ profile: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("economy")])), overwrite: Type.Optional(Type.Boolean()) }, { additionalProperties: false }), async execute(_id, params, _signal, _update, ctx) {
-		try { requireTrusted(ctx); const scaffold = await initializeHarnessRepository(ctx.cwd, params.profile ?? "standard", params.overwrite ?? false); runtime = undefined; return result(scaffold.created ? "Initialized target workflow policy." : "Target workflow policy is already valid.", scaffold); } catch (error) { throw structuredCapabilityError(error); }
+		try { requireTrusted(ctx); const scaffold = await initializeHarnessRepository(ctx.cwd, params.profile ?? "standard", params.overwrite ?? false); runtimeResolver.reset(); return result(scaffold.created ? "Initialized target workflow policy." : "Target workflow policy is already valid.", scaffold); } catch (error) { throw structuredCapabilityError(error); }
 	} });
 
 	const command = async (args: string, ctx: ExtensionContext) => {
 		const [action, target] = args.trim().split(/\s+/, 2);
-		if (action === "init") { requireTrusted(ctx); const scaffold = await initializeHarnessRepository(ctx.cwd, target === "economy" ? "economy" : "standard"); runtime = undefined; ctx.ui.notify(scaffold.created ? "Initialized target workflow policy." : "Workflow policy already valid.", "info"); return; }
+		if (action === "init") { requireTrusted(ctx); const scaffold = await initializeHarnessRepository(ctx.cwd, target === "economy" ? "economy" : "standard"); runtimeResolver.reset(); ctx.ui.notify(scaffold.created ? "Initialized target workflow policy." : "Workflow policy already valid.", "info"); return; }
 		if (action === "status" || !action) { const current = await runtimeFor(ctx); const rows = await Promise.all((await current.workItems.listForCurrentBranch()).map(async (item) => `${item.id} · ${formatState(await new StoryRuntimeStore(current.identity.root, item.id).readState())}`)); ctx.ui.notify(rows.join("\n") || "No target stories on this branch.", "info"); return; }
 		ctx.ui.notify("Usage: /workflow [status] | /workflow init [standard|economy]", "warning");
 	};
 	pi.registerCommand("workflow", { description: "Inspect or initialize target workflows", handler: command });
 	pi.registerCommand("harness", { description: "Alias for /workflow", handler: command });
 	pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_CONTRACT}` }));
-	pi.on("session_start", async (event, ctx) => {
+	pi.on("session_start", () => {
 		if (!registration) registration = registerWorkflowAdapter(adapter, { replace: true });
-		if (event.reason !== "reload") await adapter.reconcileActivation?.(ctx);
 	});
-	pi.on("session_shutdown", async () => { registration?.unregister(); registration = undefined; runtime = undefined; runtimePromise = undefined; resetActiveFastModePolicy(); });
+	pi.on("session_shutdown", async () => { registration?.unregister(); registration = undefined; runtimeResolver.reset(); resetActiveFastModePolicy(); });
 }

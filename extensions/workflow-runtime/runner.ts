@@ -60,7 +60,9 @@ export class WorkflowRunner {
 
 	private async applyCommand(command: WorkflowRunnerCommand, operationId: string, options: WorkflowRunnerCommandOptions): Promise<void> {
 		if (this.disposed) throw new Error(`Workflow runner ${this.ref} is disposed`);
-		const control = await this.adapter.controlExecution(this.ref, command, operationId, this.ctx);
+		const control = command === "attach" && options.invokeDomainControl === false
+			? { workflowRef: this.ref, mode: options.restoreMode ?? "running" }
+			: await this.adapter.controlExecution(this.ref, command, operationId, this.ctx);
 		this.revision++;
 		const revision = this.revision;
 		if (command === "stop" || command === "detach") this.stopLifecycle();
@@ -73,7 +75,10 @@ export class WorkflowRunner {
 		if (this.modeValue === "stopped") this.snapshotValue = undefined;
 		this.publish();
 		if (command !== "detach" && this.modeValue === "running") this.requestTick();
-		else if (command !== "detach" && this.modeValue === "paused") await this.refresh().catch(() => undefined);
+		else if (command !== "detach" && this.modeValue === "paused") {
+			if (command === "attach" && options.invokeDomainControl === false) queueMicrotask(() => { void this.refresh().catch(() => undefined); });
+			else await this.refresh().catch(() => undefined);
+		}
 	}
 
 	private ensureTickDrain(): Promise<void> {

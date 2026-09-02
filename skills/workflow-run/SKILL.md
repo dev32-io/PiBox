@@ -67,11 +67,11 @@ There is no replay recovery. State is applied atomically before a best-effort de
 
 ## Reload, Quit, and Crash Recovery
 
-`/reload` is the only same-activation rebind path. A reloaded runner may rebind matching active attempts from the process-global `SubagentService` using workflow/attempt metadata and bounded current/terminal delivery; it does not replay files.
+`/reload` is the only same-activation rebind path. The first explicit workflow demand after reload automatically recreates the runner and may rebind matching active attempts from the process-global `SubagentService` using workflow/attempt metadata and bounded current/terminal delivery; it does not replay files. Reload startup itself performs no workflow disk restoration.
 
 Treat session quit exactly like a process crash. Do not promise graceful settlement, detached survival, or continued handoff writing, and tell users not to quit while work is running. On owner loss the lifetime wrapper terminates children, though the exact exit time/event may be absent.
 
-During startup of the next activation, before any resume or child launch, compare durable ownership, mark old running slots interrupted, permanently fence their attempt tokens, pause the workflow, preserve Git/worktree state, and mark incomplete metric time. Never adopt old children, replay `events.jsonl`, inspect PIDs, tail files, add heartbeats, or infer completion from old process output.
+On the first explicit workflow demand in the next activation, before status, start, resume, control, or list inspection proceeds, compare durable ownership, mark old running slots interrupted, permanently fence their attempt tokens, pause the workflow, preserve Git/worktree state, and mark incomplete metric time. Ordinary startup performs no repository discovery or workflow disk restoration. Never adopt old children, replay `events.jsonl`, inspect PIDs, tail files, add heartbeats, or infer completion from old process output.
 
 Recovery launches only fresh attempts and only after an explicit user request to resume. If that resume would launch children outside bypass mode, show the bypass confirmation first; cancellation launches nothing.
 

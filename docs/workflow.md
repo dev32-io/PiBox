@@ -158,11 +158,11 @@ One serialized workflow writer owns all three. Children never write them. State 
 
 ## Activation and recovery
 
-Children belong to one activation. `/reload` is the only same-activation rebind path; a reloaded runner may reconnect to matching active attempts already held by the process-global `SubagentService`, with bounded current/terminal delivery and no file replay.
+Children belong to one activation. `/reload` is the only same-activation rebind path; the first explicit workflow demand after reload automatically recreates the runner and may reconnect to matching active attempts already held by the process-global `SubagentService`, with bounded current/terminal delivery and no file replay. Reload startup itself performs no workflow disk restoration.
 
 Treat quit exactly like a process crash. Pi cannot guarantee graceful managed settlement during quit, so users should not quit while a workflow is running. Owner loss terminates child process groups, although the exact terminal event may be missing.
 
-During startup of a later activation, before any resume or child launch, the harness compares durable ownership, marks old running slots interrupted, fences their attempt tokens, pauses the workflow, preserves Git/worktrees, and marks incomplete timing. It never adopts old processes, scans PIDs, tails files, uses heartbeat recovery, or replays debug events. An explicit resume launches fresh attempts only; if launching requires bypass, confirmation occurs first.
+On the first explicit workflow demand in a later activation, before status, start, resume, control, or list inspection proceeds, the harness compares durable ownership, marks old running slots interrupted, fences their attempt tokens, pauses the workflow, preserves Git/worktrees, and marks incomplete timing. Ordinary startup performs no repository discovery, configuration loading, artifact enumeration, YAML parsing, or workflow disk restoration. It never adopts old processes, scans PIDs, tails files, uses heartbeat recovery, or replays debug events. An explicit resume launches fresh attempts only; if launching requires bypass, confirmation occurs first.
 
 ## Configuration
 

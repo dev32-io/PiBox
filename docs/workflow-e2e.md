@@ -33,9 +33,9 @@ The directory must not contain intent/spec/design sub-artifacts, brief/acceptanc
 6. **Stage progression** — Exercise one concurrent stage when independent tasks exist and one sequential stage only when a later task must consume integrated output. Confirm each stage crosses implementation/check, integration, stage-check, and optional review gates before the next starts.
 7. **Runtime-owned repair** — Induce one deterministic or review failure and confirm repair uses a state slot rather than an authored task/evaluation. Confirm retry count comes from `limits.repairRounds`.
 8. **Whole-branch verification** — Confirm runtime-owned final review covers the exact execution-start-to-current diff and final E2E receives the complete story `e2e` field.
-9. **Persistence separation** — Confirm `state.yaml` alone drives scheduling/resume, `ledger.yaml` contains only curated non-obvious continuity, and `events.jsonl` is not read by startup, prompts, status, metrics, or TUI.
-10. **Reload** — During an active attempt, `/reload` may rebind only through the same process-global `SubagentService` activation without replaying files.
-11. **Crash recovery** — Force owner loss. Confirm children terminate, a later activation interrupts/fences old attempts and pauses, and only explicit resume plus any required bypass confirmation launches fresh attempts. No old process is adopted.
+9. **Persistence separation** — Confirm `state.yaml` alone drives scheduling/resume, `ledger.yaml` contains only curated non-obvious continuity, ordinary startup performs no repository or workflow disk reads, and `events.jsonl` is not read by first demand, prompts, status, metrics, or TUI.
+10. **Reload** — During an active attempt, confirm `/reload` startup performs no disk restoration and the first explicit workflow demand automatically recreates a runner that may rebind only through the same process-global `SubagentService` activation without replaying files.
+11. **Crash recovery** — Force owner loss. Confirm children terminate, the first explicit workflow demand in a later activation interrupts/fences old attempts and pauses before inspection, and only explicit resume plus any required bypass confirmation launches fresh attempts. No old process is adopted.
 12. **Completion** — Confirm one `outcome.md` records delivery, checks, review/E2E, deviations, and residual risk, while the clean working branch remains ready for normal merge/PR handling.
 
 ## Safety assertions

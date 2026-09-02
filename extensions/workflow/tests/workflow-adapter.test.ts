@@ -9,7 +9,7 @@ import type { RuntimeOwner } from "../../subagent/api.js";
 import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { StoryRuntimeStore } from "../story-runtime-store.js";
-import { createE2eScratchDirectory, createHarnessWorkflowAdapter, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
+import { createE2eScratchDirectory, createHarnessWorkflowAdapter, reconcileHarnessActivation, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 
@@ -838,7 +838,7 @@ test("a stopped canonical repair cannot cross the mutation fence or move canonic
 	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim(), head);
 });
 
-test("non-reload activation reconciliation interrupts a paused active owner without launching", async (t) => {
+test("first-demand reconciliation interrupts a paused active owner without launching", async (t) => {
 	const gate = deferred<StoryWorkflowActionResult>();
 	let launches = 0;
 	const f = await fixture(t, {
@@ -853,9 +853,10 @@ test("non-reload activation reconciliation interrupts a paused active owner with
 	await eventually(() => assert.equal(launches, 1));
 	await original.controlExecution!("work-item:example", "pause", "pause-active", f.ctx);
 	assert.equal((await original.snapshot("work-item:example", f.ctx)).runtime.status, "paused");
+	assert.deepEqual(await reconcileHarnessActivation(f.runtime), [{ workflowRef: "work-item:example", mode: "paused", ownerSessionId: "session", ownerProcessInstanceId: "process-a", ownerActivationId: "activation-a" }]);
 	f.setOwner({ sessionId: "session", processInstanceId: "process-b", activationId: "activation-b" });
 	const replacement = f.create();
-	await replacement.reconcileActivation!(f.ctx);
+	assert.deepEqual(await reconcileHarnessActivation(f.runtime), []);
 	const interrupted = (await replacement.snapshot("work-item:example", f.ctx)).runtime;
 	assert.equal(interrupted.status, "paused");
 	assert.equal(interrupted.stages[0]?.tasks[0]?.status, "interrupted");
@@ -863,7 +864,7 @@ test("non-reload activation reconciliation interrupts a paused active owner with
 	assert.equal(interrupted.metrics.open, undefined);
 	assert.equal(interrupted.metrics.incompleteIntervals, 1);
 	assert.deepEqual(interrupted.metrics.incompleteCategories, ["implementation"]);
-	assert.equal(launches, 1, "startup reconciliation must not bind or launch work");
+	assert.equal(launches, 1, "first-demand reconciliation must not bind or launch work");
 	await replacement.controlExecution!("work-item:example", "resume", "explicit-resume", f.ctx);
 	await replacement.advanceWorkflow!("work-item:example", f.ctx);
 	await eventually(() => assert.equal(launches, 2));

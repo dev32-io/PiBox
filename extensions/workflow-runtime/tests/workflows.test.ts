@@ -7,6 +7,7 @@ import { emptyWorkflowMetrics, type StoryRuntimeState } from "../../workflow/sto
 import type { WorkflowAdapter } from "../api.js";
 import { getWorkflowAdapterCapabilityRegistry, registerWorkflowAdapter } from "../capability-registry.js";
 import workflows from "../index.js";
+import { requestWorkflowRunnerRestore } from "../runner-restoration.js";
 
 function state(status: StoryRuntimeState["status"] = "ready", storyId = "example"): StoryRuntimeState {
 	return {
@@ -332,18 +333,44 @@ test("Critical approval requires explicit user confirmation even when permission
 	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
 });
 
-test("non-reload activation startup reconciles durable ownership without control or launch", { concurrency: false }, async () => {
+test("startup, reload, and registry changes stay disk-idle until an explicit runner handoff", { concurrency: false }, async () => {
 	const f = fixture(true);
-	let reconciliations = 0; let controls = 0; let advances = 0;
+	let listings = 0; let controls = 0; let advances = 0;
+	const adapter = {
+		id: "test", canHandle: () => true,
+		async snapshot(ref: string) { return { ref, title: "Example", status: "paused" as const, runtime: state("paused") }; },
+		async listExecutionControls() { listings++; return [{ workflowRef: "test:example", mode: "paused" as const }]; },
+		async controlExecution(ref: string) { controls++; return { workflowRef: ref, mode: "running" as const }; },
+		async advanceWorkflow() { advances++; }, async controlWorkflow() {},
+	};
+	register(adapter);
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	register({ ...adapter, id: "replacement" });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(listings, 0); assert.equal(controls, 0); assert.equal(advances, 0);
+	await f.handlers.get("session_shutdown")?.({ reason: "reload" }, f.ctx);
+
+	const reloaded = fixture(true);
+	register(adapter);
+	await reloaded.handlers.get("session_start")?.({ reason: "reload" }, reloaded.ctx);
+	assert.equal(listings, 0); assert.equal(controls, 0); assert.equal(advances, 0);
+	assert.equal(await requestWorkflowRunnerRestore([{ workflowRef: "test:example", mode: "paused", ownerSessionId: "session" }]), true);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(controls, 0, "lazy restoration does not reapply domain control"); assert.equal(advances, 0); assert.match(reloaded.dashboardLines().join("\n"), /Example/);
+	await reloaded.handlers.get("session_shutdown")?.({ reason: "quit" }, reloaded.ctx);
+});
+
+test("first-demand restoration skips a runner whose control command already owns the queue", { concurrency: false }, async () => {
+	const f = fixture(true); let controls = 0; let restoreRequests = 0;
 	register({
 		id: "test", canHandle: () => true,
 		async snapshot(ref) { return { ref, title: "Example", status: "paused", runtime: state("paused") }; },
-		async reconcileActivation() { reconciliations++; },
-		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running" }; },
-		async advanceWorkflow() { advances++; }, async controlWorkflow() {},
+		async controlExecution(ref) { controls++; restoreRequests++; await requestWorkflowRunnerRestore([{ workflowRef: ref, mode: "paused", ownerSessionId: "session" }]); return { workflowRef: ref, mode: "paused" }; },
+		async advanceWorkflow() {}, async controlWorkflow() {},
 	});
-	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
-	assert.equal(reconciliations, 1); assert.equal(controls, 0); assert.equal(advances, 0);
+	await f.handlers.get("session_start")?.({ reason: "reload" }, f.ctx);
+	await f.tools.get("workflow_control").execute("pause-demand", { ref: "test:example", action: "pause" }, undefined, undefined, f.ctx);
+	assert.equal(controls, 1); assert.equal(restoreRequests, 1); assert.match(f.dashboardLines().join("\n"), /Example/);
 	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
 });
 

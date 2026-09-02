@@ -231,11 +231,11 @@ Bypass never bypasses workflow authority, Git isolation, reviews, verification, 
 
 ## 10. Activation, reload, quit, and recovery
 
-Children belong to one activation. `/reload` is the only same-activation rebind path. A new runner may rebind matching active attempts held by the process-global `SubagentService` using workflow/attempt metadata and bounded current/terminal delivery; the metric clock stays open. No file replay is involved.
+Children belong to one activation. `/reload` is the only same-activation rebind path. The first explicit workflow demand after reload automatically recreates the runner and may rebind matching active attempts held by the process-global `SubagentService` using workflow/attempt metadata and bounded current/terminal delivery; the metric clock stays open. Reload startup itself performs no workflow disk restoration, and no file replay is involved.
 
 Session quit is treated exactly like process crash. Pi cannot reliably await managed settlement during quit, and users should not quit while workflows run. On owner loss, the lifetime wrapper terminates child process groups, but the exact exit event/time may be absent.
 
-During startup of the next activation, before status can remain falsely running and before any explicit resume, the harness:
+On the first explicit workflow demand in the next activation, before status, start, resume, control, or list inspection proceeds, the harness:
 
 1. compares durable owner identity;
 2. marks old running slots interrupted;
@@ -246,7 +246,7 @@ During startup of the next activation, before status can remain falsely running 
 7. preserves all Git/worktree state;
 8. launches fresh attempts only after explicit resume and any required bypass confirmation.
 
-It never adopts prior children, replays events, scans PIDs, tails files, adds heartbeat recovery, or promises detached survival.
+Ordinary startup performs no repository discovery, configuration loading, artifact enumeration, YAML parsing, or workflow disk restoration. The harness never adopts prior children, replays events, scans PIDs, tails files, adds heartbeat recovery, or promises detached survival.
 
 ## 11. Metrics and TUI
 
