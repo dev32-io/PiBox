@@ -404,6 +404,10 @@ function stageDefinition(context: StoryWorkflowActionContext) {
 	return stage;
 }
 
+class WorkspaceInvariantError extends Error {
+	constructor(message: string) { super(message); this.name = "WorkspaceInvariantError"; }
+}
+
 function stageBase(state: StoryRuntimeState, stageId: string): string {
 	const index = state.stages.findIndex((stage) => stage.id === stageId);
 	if (index < 0) throw new Error(`Unknown stage ${stageId}`);
@@ -424,7 +428,7 @@ async function taskWorkspace(context: StoryWorkflowActionContext): Promise<{ pat
 	return withGitLock(context.runtime, `story-worktree:${context.story.id}:${workspaceId}`, async () => {
 		if (await exists(join(path, ".git"))) {
 			const containsBase = await runGit(path, ["merge-base", "--is-ancestor", base, "HEAD"]).then(() => true, () => false);
-			if (!containsBase) throw new Error(`Retained workspace ${workspaceId} is not descended from pinned stage base ${base}`);
+			if (!containsBase) throw new WorkspaceInvariantError(`Retained workspace ${workspaceId} is not descended from pinned stage base ${base}`);
 			return { path, base };
 		}
 		await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
@@ -433,7 +437,7 @@ async function taskWorkspace(context: StoryWorkflowActionContext): Promise<{ pat
 		if (branchExists) await runGit(root, ["worktree", "add", path, branch]);
 		else await runGit(root, ["worktree", "add", "-b", branch, path, base]);
 		const containsBase = await runGit(path, ["merge-base", "--is-ancestor", base, "HEAD"]).then(() => true, () => false);
-		if (!containsBase) throw new Error(`Workspace branch ${branch} is not descended from pinned stage base ${base}`);
+		if (!containsBase) throw new WorkspaceInvariantError(`Workspace branch ${branch} is not descended from pinned stage base ${base}`);
 		return { path, base };
 	});
 }
@@ -912,7 +916,9 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 				result = await execute({ ctx, runtime, ...loaded, state, action, token, owner, signal: controller.signal, ledger: ledger.entries });
 			} catch (error) {
 				if (error instanceof OwnerLostTerminal) { ownerLost = true; return; }
-				result = { result: "repairable", failure: failure("action_failed", error instanceof Error ? error.message : String(error)) };
+				result = error instanceof WorkspaceInvariantError
+					? { result: "needs_user", failure: failure("workspace_invariant", error.message) }
+					: { result: "repairable", failure: failure("action_failed", error instanceof Error ? error.message : String(error)) };
 			}
 			let accepted = false;
 			await storeFor(runtime.identity.root, loaded.story.id).updateState((current) => {

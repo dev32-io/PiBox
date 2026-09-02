@@ -404,6 +404,28 @@ test("production Git executor shares a sequential stage workspace and pins concu
 	});
 });
 
+test("an incompatible retained workspace requires user attention once without consuming repairs", async (t) => {
+	const f = await fixture(t, {});
+	const staleCommit = (await exec("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "stale harness branch"], { cwd: f.root })).stdout.trim();
+	await exec("git", ["branch", "harness/example/stage/delivery", staleCommit], { cwd: f.root });
+	let launches = 0;
+	useProductionExecutor(f, async () => {
+		launches++;
+		return { text: "must not launch" };
+	});
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.status, "attention"));
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
+	const taskState = runtime.stages[0]!.tasks[0]!;
+	assert.equal(launches, 0);
+	assert.equal(taskState.repairCount, 0);
+	assert.equal(taskState.failure?.code, "workspace_invariant");
+	assert.match(taskState.failure?.summary ?? "", /not descended from pinned stage base/);
+	const events = await new StoryRuntimeStore(f.root, "example").readDebugTail(50);
+	assert.equal(events.filter((event) => event.type === "action.settled").length, 1);
+});
+
 test("invalid worker commits remain isolated and never reach canonical integration", async (t) => {
 	const f = await fixture(t, {});
 	let taskAttempts = 0;
