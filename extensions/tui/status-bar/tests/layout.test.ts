@@ -4,6 +4,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { normalizeStatusBarConfig } from "../config.js";
 import { layoutMode, renderStatusBar, renderStatusBarLayout } from "../layout.js";
+import type { SubagentUiAgentProjection } from "../../../subagent/ui-projection.js";
 
 const theme = {
 	fg: (_token: string, value: string) => value,
@@ -201,6 +202,18 @@ test("medium layout preserves the higher-priority context segment", () => {
 	const firstLine = renderStatusBar(72, { ...data, ctx: longModelContext })[1] ?? "";
 	assert.match(firstLine, /42\.0%/);
 	assert.ok(visibleWidth(firstLine) <= 72);
+});
+
+test("generic footer excludes workflow-managed projections while retaining standalone rows", () => {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const startedAt = "2026-01-01T00:00:00.000Z";
+	const agents: SubagentUiAgentProjection[] = [
+		{ agentId: "standalone", agent: "standalone", state: "running", presentation: "background", provider: "provider", model: "model", effort: "medium", fast: false, startedAt, updatedAt: startedAt },
+		{ agentId: "managed", agent: "managed", state: "running", presentation: "background", provider: "provider", model: "model", effort: "medium", fast: false, startedAt, updatedAt: startedAt, workflow: { storyId: "story", slotId: "task:one" } },
+	];
+	const text = renderStatusBar(120, { ...data, subagents: { owner, agents, overflow: 0 } }).join("\n");
+	assert.match(text, /standalone/);
+	assert.doesNotMatch(text, /managed/);
 });
 
 test("structured subagent projection renders bounded semantic rows and overflow width-safely", () => {

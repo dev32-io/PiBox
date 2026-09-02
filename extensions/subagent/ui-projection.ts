@@ -3,6 +3,13 @@ import { sameRuntimeOwner } from "./activation.js";
 import type { AgentProgress } from "./agent-progress.js";
 import type { LogicalAgentState, RuntimeOwner } from "./api.js";
 
+export interface SubagentUiWorkflowProvenance {
+	readonly storyId: string;
+	readonly slotId: string;
+	readonly action?: string;
+	readonly taskId?: string;
+}
+
 export interface SubagentUiAgentProjection {
 	readonly agentId: string;
 	readonly agent: string;
@@ -16,12 +23,26 @@ export interface SubagentUiAgentProjection {
 	readonly startedAt: string;
 	readonly updatedAt: string;
 	readonly progress?: AgentProgress;
+	/** Whitelisted non-secret identity for a workflow-managed child. */
+	readonly workflow?: SubagentUiWorkflowProvenance;
 }
 
+/** Bounded standalone background rows owned by the generic footer. */
 export interface SubagentUiProjection {
 	readonly owner: RuntimeOwner;
 	readonly agents: readonly SubagentUiAgentProjection[];
 	readonly overflow: number;
+}
+
+export interface SubagentUiWorkflowAgentProjection extends SubagentUiAgentProjection {
+	readonly workflow: SubagentUiWorkflowProvenance;
+}
+
+/** Active workflow children for one story, unbounded for consumer-owned layout. */
+export interface SubagentUiWorkflowProjection {
+	readonly owner: RuntimeOwner;
+	readonly storyId: string;
+	readonly agents: readonly SubagentUiWorkflowAgentProjection[];
 }
 
 /** Immutable correlation carried by a Pi tool result into the transcript UI. */
@@ -81,13 +102,26 @@ export class SubagentUiProjectionRegistry {
 		if (!Number.isInteger(maxRows) || maxRows < 1) throw new Error("Subagent footer row limit must be a positive integer");
 		const current = this.binding;
 		if (!current) return undefined;
-		const active = current.agents
-			.filter((agent) => ACTIVE_STATES.has(agent.state) && agent.presentation === "background")
-			.sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt) || left.agentId.localeCompare(right.agentId));
+		const active = this.activeAgents(current.agents)
+			.filter((agent) => agent.presentation === "background" && !agent.workflow);
 		return {
 			owner: structuredClone(current.owner),
 			agents: structuredClone(active.slice(0, maxRows)),
 			overflow: Math.max(0, active.length - maxRows),
+		};
+	}
+
+	/** Active workflow-managed children for a dashboard to match by durable slot. */
+	projectWorkflow(storyId: string): SubagentUiWorkflowProjection | undefined {
+		if (!storyId) throw new Error("Workflow story id is required");
+		const current = this.binding;
+		if (!current) return undefined;
+		const agents = this.activeAgents(current.agents)
+			.filter((agent): agent is SubagentUiWorkflowAgentProjection => agent.workflow?.storyId === storyId);
+		return {
+			owner: structuredClone(current.owner),
+			storyId,
+			agents: structuredClone(agents),
 		};
 	}
 
@@ -102,6 +136,12 @@ export class SubagentUiProjectionRegistry {
 		this.changed();
 	}
 
+	private activeAgents(agents: readonly SubagentUiAgentProjection[]): SubagentUiAgentProjection[] {
+		return agents
+			.filter((agent) => ACTIVE_STATES.has(agent.state))
+			.sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt) || left.agentId.localeCompare(right.agentId));
+	}
+
 	private changed(): void {
 		for (const listener of this.listeners) {
 			try { listener(); } catch { /* rendering observers cannot affect process lifecycle */ }
@@ -109,9 +149,9 @@ export class SubagentUiProjectionRegistry {
 	}
 }
 
-// Versioned so /reload cannot retain a process-global registry without the
-// terminal transcript lookup contract.
-const UI_REGISTRY_KEY = Symbol.for("pibox:subagent-ui-projection-registry:v2");
+// Versioned so /reload cannot retain a process-global registry without typed
+// workflow provenance and workflow-aware footer filtering.
+const UI_REGISTRY_KEY = Symbol.for("pibox:subagent-ui-projection-registry:v3");
 type UiRegistryGlobal = typeof globalThis & { [UI_REGISTRY_KEY]?: SubagentUiProjectionRegistry };
 
 export function getSubagentUiProjectionRegistry(): SubagentUiProjectionRegistry {

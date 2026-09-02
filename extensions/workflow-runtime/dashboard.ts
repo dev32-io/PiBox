@@ -1,21 +1,26 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { renderSubagentFooterProjection, subagentIndicatorFrame } from "../subagent/display.js";
+import type { SubagentUiWorkflowAgentProjection, SubagentUiWorkflowProjection } from "../subagent/ui-projection.js";
 import type {
 	E2ERuntimeState,
 	ReviewRuntimeState,
 	StageRuntimeState,
-	StoryRuntimeState,
 	StoryWorkflowMetrics,
 	WorkflowMetricCategory,
 } from "../workflow/story-runtime-store.js";
+import type { WorkflowSnapshot } from "./api.js";
 
-export type DashboardStatus = "active" | "queued" | "interrupted" | "attention" | "completed";
+export type DashboardStatus = "active" | "ready" | "queued" | "interrupted" | "attention" | "completed";
+export type DashboardActivity = "implementing" | "checking" | "repairing" | "integrating" | "verifying" | "reviewing" | "fixing" | "testing" | "queued" | "interrupted" | "attention" | "completed";
 
 export interface DashboardItem {
 	label: string;
 	status: DashboardStatus;
-	detail?: string;
+	activity: DashboardActivity;
 	indent: 0 | 1;
+	slotId?: string;
+	liveAgent?: SubagentUiWorkflowAgentProjection;
 }
 
 export interface DashboardMetricProjection {
@@ -32,7 +37,12 @@ export interface WorkflowDashboardProjection {
 	totalTasks: number;
 	items: DashboardItem[];
 	metrics: DashboardMetricProjection;
-	reviewPosition: string;
+	currentLoop: string;
+}
+
+export interface WorkflowDashboardEntry {
+	snapshot: WorkflowSnapshot;
+	workflowChildren?: SubagentUiWorkflowProjection;
 }
 
 const CATEGORY_LABELS: Record<WorkflowMetricCategory, string> = {
@@ -42,6 +52,12 @@ const CATEGORY_LABELS: Record<WorkflowMetricCategory, string> = {
 	review: "Review",
 	e2e: "E2E",
 };
+
+const ACTIVE_TASK_STATUSES = new Set(["implementing", "checking", "repairing"]);
+const ACTIVE_INTEGRATION_STATUSES = new Set(["integrating", "repairing"]);
+const ACTIVE_VERIFICATION_STATUSES = new Set(["checking", "repairing"]);
+const ACTIVE_REVIEW_STATUSES = new Set(["reviewing", "fixing"]);
+const ACTIVE_E2E_STATUSES = new Set(["testing", "fixing"]);
 
 function projectedMetrics(metrics: StoryWorkflowMetrics, now: number): DashboardMetricProjection {
 	const categories = { ...metrics.categories };
@@ -61,146 +77,282 @@ function projectedMetrics(metrics: StoryWorkflowMetrics, now: number): Dashboard
 	};
 }
 
-function taskStatus(status: StageRuntimeState["tasks"][number]["status"]): DashboardStatus {
-	if (status === "completed") return "completed";
-	if (status === "interrupted") return "interrupted";
-	if (status === "attention") return "attention";
-	if (status === "implementing" || status === "checking" || status === "repairing") return "active";
-	return "queued";
-}
-
-function integrationStatus(status: StageRuntimeState["integration"]["status"]): DashboardStatus {
-	if (status === "completed") return "completed";
-	if (status === "interrupted") return "interrupted";
-	if (status === "attention") return "attention";
-	if (status === "integrating" || status === "repairing") return "active";
-	return "queued";
-}
-
-function verificationStatus(status: StageRuntimeState["verification"]["status"]): DashboardStatus {
-	if (status === "completed") return "completed";
-	if (status === "interrupted") return "interrupted";
-	if (status === "attention") return "attention";
-	if (status === "checking" || status === "repairing") return "active";
-	return "queued";
-}
-
-function reviewStatus(status: ReviewRuntimeState["status"]): DashboardStatus {
-	if (status === "completed" || status === "skipped") return "completed";
-	if (status === "interrupted") return "interrupted";
-	if (status === "attention") return "attention";
-	if (status === "reviewing" || status === "fixing") return "active";
-	return "queued";
-}
-
-function e2eStatus(status: E2ERuntimeState["status"]): DashboardStatus {
-	if (status === "completed") return "completed";
-	if (status === "interrupted") return "interrupted";
-	if (status === "attention") return "attention";
-	if (status === "testing" || status === "fixing") return "active";
-	return "queued";
-}
-
-function taskDetail(status: StageRuntimeState["tasks"][number]["status"]): string | undefined {
-	if (status === "check_pending" || status === "checking") return "checks";
-	if (status === "repair_pending" || status === "repairing") return "repair";
-	if (status === "implementing") return "implementation";
-	return undefined;
-}
-
-function integrationDetail(status: StageRuntimeState["integration"]["status"]): string | undefined {
-	return status === "repair_pending" || status === "repairing" ? "repair" : undefined;
-}
-
-function verificationDetail(status: StageRuntimeState["verification"]["status"]): string | undefined {
-	return status === "repair_pending" || status === "repairing" ? "repair" : undefined;
-}
-
-function reviewDetail(review: ReviewRuntimeState): string {
-	if (review.status === "skipped") return "skipped";
-	if (review.status === "fix_pending" || review.status === "fixing" || (review.status === "interrupted" && review.interruptedFrom === "fixing")) {
-		return `fix #${review.repairCount + 1}`;
+function latestLiveAgents(projection: SubagentUiWorkflowProjection | undefined): Map<string, SubagentUiWorkflowAgentProjection> {
+	const result = new Map<string, SubagentUiWorkflowAgentProjection>();
+	for (const agent of projection?.agents ?? []) {
+		const slotId = agent.workflow.slotId;
+		const current = result.get(slotId);
+		if (!current || Date.parse(agent.updatedAt) >= Date.parse(current.updatedAt)) result.set(slotId, agent);
 	}
-	const iteration = review.status === "pending" && review.iteration > 0 ? review.iteration + 1 : Math.max(1, review.iteration);
-	return `review #${iteration}`;
+	return result;
 }
 
-function e2eDetail(e2e: E2ERuntimeState): string {
-	return e2e.status === "fix_pending" || e2e.status === "fixing" || (e2e.status === "interrupted" && e2e.interruptedFrom === "fixing")
-		? `fix #${e2e.repairCount + 1}`
-		: "journey";
+function item(
+	label: string,
+	status: DashboardStatus,
+	activity: DashboardActivity,
+	indent: 0 | 1,
+	slotId: string | undefined,
+	live: ReadonlyMap<string, SubagentUiWorkflowAgentProjection>,
+): DashboardItem {
+	const liveAgent = slotId ? live.get(slotId) : undefined;
+	return { label, status, activity, indent, ...(slotId ? { slotId } : {}), ...(liveAgent ? { liveAgent } : {}) };
 }
 
-function stageDashboardStatus(stage: StageRuntimeState): DashboardStatus {
+function interruptedActivity(value: string | undefined): DashboardActivity {
+	if (value === "implementing") return "implementing";
+	if (value === "checking") return "checking";
+	if (value === "integrating") return "integrating";
+	if (value === "reviewing") return "reviewing";
+	return value === "fixing" || value === "repairing" ? "repairing" : "interrupted";
+}
+
+function taskItem(task: StageRuntimeState["tasks"][number], live: ReadonlyMap<string, SubagentUiWorkflowAgentProjection>): DashboardItem {
+	const slotId = `task:${task.id}`;
+	if (task.status === "completed") return item(`Implemented · ${task.id}`, "completed", "completed", 1, slotId, live);
+	if (task.status === "attention") return item(`Task attention · ${task.id}`, "attention", "attention", 1, slotId, live);
+	if (task.status === "interrupted") {
+		const activity = interruptedActivity(task.interruptedFrom);
+		const label = task.interruptedFrom === "checking" ? "Checking interrupted" : task.interruptedFrom === "repairing" ? "Repair interrupted" : "Implementation interrupted";
+		return item(`${label} · ${task.id}`, "interrupted", activity, 1, slotId, live);
+	}
+	if (task.status === "implementing") return item(`Implementing · ${task.id}`, "active", "implementing", 1, slotId, live);
+	if (task.status === "check_pending") return item(`Checking · ${task.id}`, "ready", "checking", 1, slotId, live);
+	if (task.status === "checking") return item(`Checking · ${task.id}`, "active", "checking", 1, slotId, live);
+	if (task.status === "repair_pending") return item(`Repairing #${task.repairCount + 1} · ${task.id}`, "ready", "repairing", 1, slotId, live);
+	if (task.status === "repairing") return item(`Repairing #${task.repairCount + 1} · ${task.id}`, "active", "repairing", 1, slotId, live);
+	return item(`Queued · ${task.id}`, "queued", "queued", 1, slotId, live);
+}
+
+function integrationItem(stage: StageRuntimeState, live: ReadonlyMap<string, SubagentUiWorkflowAgentProjection>): DashboardItem {
+	const value = stage.integration;
+	const slotId = `stage:${stage.id}:integration`;
+	if (value.status === "completed") return item("Integrated", "completed", "completed", 1, slotId, live);
+	if (value.status === "attention") return item("Integration attention", "attention", "attention", 1, slotId, live);
+	if (value.status === "interrupted") return item(value.interruptedFrom === "repairing" ? "Integration repair interrupted" : "Integration interrupted", "interrupted", interruptedActivity(value.interruptedFrom), 1, slotId, live);
+	if (value.status === "integrating") return item("Integrating", "active", "integrating", 1, slotId, live);
+	if (value.status === "repair_pending") return item(`Repairing integration #${value.repairCount + 1}`, "ready", "repairing", 1, slotId, live);
+	if (value.status === "repairing") return item(`Repairing integration #${value.repairCount + 1}`, "active", "repairing", 1, slotId, live);
+	return item("Ready to integrate", "ready", "integrating", 1, slotId, live);
+}
+
+function verificationItem(stage: StageRuntimeState, live: ReadonlyMap<string, SubagentUiWorkflowAgentProjection>): DashboardItem {
+	const value = stage.verification;
+	const slotId = `stage:${stage.id}:verification`;
+	if (value.status === "completed") return item("Verified", "completed", "completed", 1, slotId, live);
+	if (value.status === "attention") return item("Verification attention", "attention", "attention", 1, slotId, live);
+	if (value.status === "interrupted") return item(value.interruptedFrom === "repairing" ? "Verification repair interrupted" : "Verification interrupted", "interrupted", interruptedActivity(value.interruptedFrom), 1, slotId, live);
+	if (value.status === "checking") return item("Verifying", "active", "verifying", 1, slotId, live);
+	if (value.status === "repair_pending") return item(`Repairing verification #${value.repairCount + 1}`, "ready", "repairing", 1, slotId, live);
+	if (value.status === "repairing") return item(`Repairing verification #${value.repairCount + 1}`, "active", "repairing", 1, slotId, live);
+	return item("Ready to verify", "ready", "verifying", 1, slotId, live);
+}
+
+function reviewIteration(review: ReviewRuntimeState): number {
+	return review.status === "pending" && review.iteration > 0 ? review.iteration + 1 : Math.max(1, review.iteration);
+}
+
+function reviewItem(review: ReviewRuntimeState, slotId: string, prefix: string, live: ReadonlyMap<string, SubagentUiWorkflowAgentProjection>): DashboardItem {
+	if (review.status === "completed") return item(`${prefix} reviewed`, "completed", "completed", 1, slotId, live);
+	if (review.status === "skipped") return item(`${prefix} review skipped`, "completed", "completed", 1, slotId, live);
+	if (review.status === "attention") return item(`${prefix} review attention`, "attention", "attention", 1, slotId, live);
+	const fixNumber = review.repairCount + 1;
+	if (review.status === "interrupted") {
+		const fixing = review.interruptedFrom === "fixing";
+		return item(`${prefix} ${fixing ? `fix #${fixNumber}` : `review #${reviewIteration(review)}`} interrupted`, "interrupted", fixing ? "fixing" : "reviewing", 1, slotId, live);
+	}
+	if (review.status === "reviewing") return item(`${prefix} review #${reviewIteration(review)}`, "active", "reviewing", 1, slotId, live);
+	if (review.status === "fix_pending") return item(`${prefix} fix #${fixNumber}`, "ready", "fixing", 1, slotId, live);
+	if (review.status === "fixing") return item(`${prefix} fix #${fixNumber}`, "active", "fixing", 1, slotId, live);
+	return item(`Ready for ${prefix.toLowerCase()} review #${reviewIteration(review)}`, "ready", "reviewing", 1, slotId, live);
+}
+
+function e2eItem(e2e: E2ERuntimeState, live: ReadonlyMap<string, SubagentUiWorkflowAgentProjection>): DashboardItem {
+	const slotId = "e2e";
+	if (e2e.status === "completed") return item("E2E journey completed", "completed", "completed", 1, slotId, live);
+	if (e2e.status === "attention") return item("E2E attention", "attention", "attention", 1, slotId, live);
+	if (e2e.status === "interrupted") {
+		const fixing = e2e.interruptedFrom === "fixing";
+		return item(fixing ? `E2E fix #${e2e.repairCount + 1} interrupted` : "E2E journey interrupted", "interrupted", fixing ? "fixing" : "testing", 1, slotId, live);
+	}
+	if (e2e.status === "testing") return item("E2E journey", "active", "testing", 1, slotId, live);
+	if (e2e.status === "fix_pending") return item(`E2E fix #${e2e.repairCount + 1}`, "ready", "fixing", 1, slotId, live);
+	if (e2e.status === "fixing") return item(`E2E fix #${e2e.repairCount + 1}`, "active", "fixing", 1, slotId, live);
+	return item("E2E journey queued", "queued", "queued", 1, slotId, live);
+}
+
+function stageAttention(stage: StageRuntimeState): boolean {
+	return stage.status === "attention" || stage.tasks.some((task) => task.status === "attention")
+		|| stage.integration.status === "attention" || stage.verification.status === "attention" || stage.review.status === "attention";
+}
+
+function stageInterrupted(stage: StageRuntimeState): boolean {
+	return stage.tasks.some((task) => task.status === "interrupted") || stage.integration.status === "interrupted"
+		|| stage.verification.status === "interrupted" || stage.review.status === "interrupted";
+}
+
+function stageWaitingForCapacity(stage: StageRuntimeState): boolean {
+	return stage.status === "running" && stage.tasks.length > 0 && stage.tasks.every((task) => task.status === "pending");
+}
+
+function stageHasActiveWork(stage: StageRuntimeState): boolean {
+	return stage.tasks.some((task) => ACTIVE_TASK_STATUSES.has(task.status))
+		|| ACTIVE_INTEGRATION_STATUSES.has(stage.integration.status)
+		|| ACTIVE_VERIFICATION_STATUSES.has(stage.verification.status)
+		|| ACTIVE_REVIEW_STATUSES.has(stage.review.status);
+}
+
+function stageActivity(stage: StageRuntimeState): DashboardActivity {
+	const task = stage.tasks.find((candidate) => ACTIVE_TASK_STATUSES.has(candidate.status) || candidate.status === "check_pending" || candidate.status === "repair_pending");
+	if (task?.status === "checking" || task?.status === "check_pending") return "checking";
+	if (task?.status === "repairing" || task?.status === "repair_pending") return "repairing";
+	if (task) return "implementing";
+	if (ACTIVE_INTEGRATION_STATUSES.has(stage.integration.status) || stage.integration.status === "repair_pending") return stage.integration.status === "integrating" ? "integrating" : "repairing";
+	if (ACTIVE_VERIFICATION_STATUSES.has(stage.verification.status) || stage.verification.status === "repair_pending") return stage.verification.status === "checking" ? "verifying" : "repairing";
+	if (ACTIVE_REVIEW_STATUSES.has(stage.review.status) || stage.review.status === "fix_pending") return stage.review.status === "reviewing" ? "reviewing" : "fixing";
 	if (stage.status === "completed") return "completed";
-	if (stage.status === "attention") return "attention";
-	const childStatuses: DashboardStatus[] = [
-		...stage.tasks.map((task) => taskStatus(task.status)),
-		integrationStatus(stage.integration.status),
-		verificationStatus(stage.verification.status),
-		reviewStatus(stage.review.status),
-	];
-	if (childStatuses.includes("attention")) return "attention";
-	if (childStatuses.includes("interrupted")) return "interrupted";
-	return stage.status === "running" || childStatuses.includes("active") ? "active" : "queued";
+	if (stage.status === "pending") return "queued";
+	if (stage.tasks.some((candidate) => candidate.status !== "completed")) return "implementing";
+	if (stage.integration.status !== "completed") return "integrating";
+	if (stage.verification.status !== "completed") return "verifying";
+	if (stage.review.status !== "completed" && stage.review.status !== "skipped") return "reviewing";
+	return "queued";
 }
 
-function currentReviewPosition(state: StoryRuntimeState): string {
+function activityLabel(activity: DashboardActivity): string {
+	if (activity === "implementing") return "Implementing";
+	if (activity === "checking") return "Checking";
+	if (activity === "repairing") return "Repairing";
+	if (activity === "integrating") return "Integrating";
+	if (activity === "verifying") return "Verifying";
+	if (activity === "reviewing") return "Reviewing";
+	if (activity === "fixing") return "Fixing";
+	if (activity === "testing") return "E2E journey";
+	if (activity === "completed") return "Completed";
+	return "Queued";
+}
+
+function reviewLoop(review: ReviewRuntimeState): string {
+	const phase = review.status === "fix_pending" || review.status === "fixing" || (review.status === "interrupted" && review.interruptedFrom === "fixing")
+		? `fix #${review.repairCount + 1}` : `review #${reviewIteration(review)}`;
+	return review.status === "interrupted" ? `${phase} interrupted` : phase;
+}
+
+function currentLoop(snapshot: WorkflowSnapshot): string {
+	const state = snapshot.runtime;
 	for (const [index, stage] of state.stages.entries()) {
 		if (stage.integration.status !== "completed" || stage.verification.status !== "completed") continue;
-		if (stage.review.status !== "completed" && stage.review.status !== "skipped") {
-			return `Stage ${index + 1} · ${reviewDetail(stage.review)} · ${reviewStatus(stage.review.status)}`;
-		}
+		if (stage.review.status !== "completed" && stage.review.status !== "skipped") return `Stage ${index + 1} · ${reviewLoop(stage.review)}`;
 	}
 	if (state.stages.every((stage) => stage.status === "completed") && state.finalReview.status !== "completed") {
-		return `Final · ${reviewDetail(state.finalReview)} · ${reviewStatus(state.finalReview.status)}`;
+		return `Final · ${reviewLoop(state.finalReview)}`;
+	}
+	if (state.finalReview.status === "completed") {
+		if (state.e2e.status === "testing") return "E2E · journey";
+		if (state.e2e.status === "fix_pending" || state.e2e.status === "fixing") return `E2E · fix #${state.e2e.repairCount + 1}`;
+		if (state.e2e.status === "interrupted") {
+			return state.e2e.interruptedFrom === "fixing" ? `E2E · fix #${state.e2e.repairCount + 1} interrupted` : "E2E · journey interrupted";
+		}
+		if (state.e2e.status === "attention") return "E2E · attention";
 	}
 	return "—";
 }
 
-/** Pure stage-centric projection of authoritative runtime state. */
-export function projectWorkflowDashboard(state: StoryRuntimeState, now: number): WorkflowDashboardProjection {
+function stageModeIndicators(snapshot: WorkflowSnapshot): string[] {
+	const topology = snapshot.stageTopology;
+	const stages = snapshot.runtime.stages;
+	const matches = topology?.length === stages.length && topology.every((entry, index) => entry.id === stages[index]?.id);
+	if (!matches) return stages.map(() => "?");
+	return topology.map((entry) => entry.mode === "concurrent" ? "⇉" : "→");
+}
+
+/** Pure progressive-disclosure projection of authoritative stage state plus authored display topology. */
+export function projectWorkflowDashboard(snapshot: WorkflowSnapshot, now: number, workflowChildren?: SubagentUiWorkflowProjection): WorkflowDashboardProjection {
+	const state = snapshot.runtime;
+	const live = latestLiveAgents(workflowChildren);
+	const modeIndicators = stageModeIndicators(snapshot);
 	const items: DashboardItem[] = [];
 	for (const [index, stage] of state.stages.entries()) {
 		const completed = stage.tasks.filter((task) => task.status === "completed").length;
-		items.push({ label: `Stage ${index + 1} · ${stage.id} · ${completed}/${stage.tasks.length} tasks`, status: stageDashboardStatus(stage), indent: 0 });
-		for (const task of stage.tasks) {
-			const detail = taskDetail(task.status);
-			items.push({ label: `Task · ${task.id}`, status: taskStatus(task.status), ...(detail ? { detail } : {}), indent: 1 });
-		}
-		const integrationDetailText = integrationDetail(stage.integration.status);
-		items.push({ label: "Integration", status: integrationStatus(stage.integration.status), ...(integrationDetailText ? { detail: integrationDetailText } : {}), indent: 1 });
-		const verificationDetailText = verificationDetail(stage.verification.status);
-		items.push({ label: "Verification", status: verificationStatus(stage.verification.status), ...(verificationDetailText ? { detail: verificationDetailText } : {}), indent: 1 });
-		items.push({ label: "Review", status: reviewStatus(stage.review.status), detail: reviewDetail(stage.review), indent: 1 });
+		const attention = stageAttention(stage);
+		const interrupted = stageInterrupted(stage);
+		const waitingForCapacity = !attention && !interrupted && stageWaitingForCapacity(stage);
+		const active = stageHasActiveWork(stage);
+		const expanded = (stage.status === "running" && !waitingForCapacity) || attention || interrupted;
+		const status: DashboardStatus = attention ? "attention" : interrupted ? "interrupted" : stage.status === "completed" ? "completed"
+			: waitingForCapacity || stage.status === "pending" ? "queued" : active ? "active" : "ready";
+		const activity: DashboardActivity = attention ? "attention" : interrupted ? "interrupted" : waitingForCapacity ? "queued" : stageActivity(stage);
+		const lifecycle = attention ? "Needs attention" : interrupted ? "Interrupted" : waitingForCapacity ? "Waiting for capacity" : activityLabel(activity);
+		items.push(item(`${modeIndicators[index]} Stage ${index + 1} · ${stage.id} · ${lifecycle} · ${completed}/${stage.tasks.length} tasks`, status, activity, 0, undefined, live));
+		if (!expanded) continue;
+
+		const integrationReached = stage.tasks.every((task) => task.status === "completed") || stage.integration.status !== "pending";
+		const verificationReached = stage.integration.status === "completed" || stage.verification.status !== "pending";
+		const reviewReached = stage.review.status !== "skipped" && (stage.verification.status === "completed" || stage.review.status !== "pending");
+		if (!integrationReached) for (const task of stage.tasks) items.push(taskItem(task, live));
+		if (integrationReached) items.push(integrationItem(stage, live));
+		if (verificationReached) items.push(verificationItem(stage, live));
+		if (reviewReached) items.push(reviewItem(stage.review, `stage:${stage.id}:review`, "Stage", live));
 	}
-	items.push({ label: "Final review", status: reviewStatus(state.finalReview.status), detail: reviewDetail(state.finalReview), indent: 0 });
-	items.push({ label: "E2E", status: e2eStatus(state.e2e.status), detail: e2eDetail(state.e2e), indent: 0 });
+
+	const finalAttention = state.finalReview.status === "attention" || state.e2e.status === "attention";
+	const finalInterrupted = state.finalReview.status === "interrupted" || state.e2e.status === "interrupted";
+	const finalReviewActive = ACTIVE_REVIEW_STATUSES.has(state.finalReview.status);
+	const finalReviewReached = finalReviewActive || state.finalReview.status === "fix_pending";
+	const e2eActive = ACTIVE_E2E_STATUSES.has(state.e2e.status);
+	const e2eReached = e2eActive || state.e2e.status === "fix_pending";
+	const finalReady = state.finalReview.status === "fix_pending" || state.e2e.status === "fix_pending";
+	const finalCompleted = state.finalReview.status === "completed" && state.e2e.status === "completed";
+	const finalStatus: DashboardStatus = finalAttention ? "attention" : finalInterrupted ? "interrupted" : finalCompleted ? "completed" : finalReady ? "ready" : finalReviewActive || e2eActive ? "active" : "queued";
+	const finalActivity: DashboardActivity = finalAttention ? "attention" : finalInterrupted ? "interrupted"
+		: e2eReached ? (state.e2e.status === "testing" ? "testing" : "fixing")
+			: finalReviewReached ? (state.finalReview.status === "reviewing" ? "reviewing" : "fixing")
+				: finalCompleted ? "completed" : "queued";
+	const finalLifecycle = finalAttention ? "Needs attention" : finalInterrupted ? "Interrupted" : finalCompleted ? "Completed"
+		: e2eReached ? (state.e2e.status === "testing" ? "E2E journey" : "E2E fix")
+			: finalReviewReached ? (state.finalReview.status === "reviewing" ? "Whole-branch review" : "Whole-branch fix") : "Queued";
+	items.push(item(`→ Final validation · ${finalLifecycle}`, finalStatus, finalActivity, 0, undefined, live));
+	if (finalReviewReached || state.finalReview.status === "interrupted" || state.finalReview.status === "attention") {
+		items.push(reviewItem(state.finalReview, "final-review", "Whole-branch", live));
+	} else if (e2eReached || state.e2e.status === "interrupted" || state.e2e.status === "attention") {
+		items.push(e2eItem(state.e2e, live));
+	}
+
 	return {
-		title: state.storyId,
+		title: snapshot.title,
 		completedTasks: state.stages.flatMap((stage) => stage.tasks).filter((task) => task.status === "completed").length,
 		totalTasks: state.stages.reduce((total, stage) => total + stage.tasks.length, 0),
 		items,
 		metrics: projectedMetrics(state.metrics, now),
-		reviewPosition: currentReviewPosition(state),
+		currentLoop: currentLoop(snapshot),
 	};
 }
 
-const ACTIVE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const TASK_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const INTEGRATION_FRAMES = ["⇢", "→", "⇢", "⇒"] as const;
+const VERIFICATION_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 
-function icon(status: DashboardStatus, frame: number): string {
-	if (status === "active") return ACTIVE_FRAMES[frame % ACTIVE_FRAMES.length]!;
-	if (status === "completed") return "✓";
-	if (status === "attention") return "⚠";
-	if (status === "interrupted") return "‖";
-	return "·";
+function icon(value: DashboardItem, frame: number): string {
+	if (value.status === "completed") return "✓";
+	if (value.status === "attention") return "⚠";
+	if (value.status === "interrupted") return "‖";
+	if (value.liveAgent) {
+		const lifecycle = value.liveAgent.state === "launching" ? "starting" : value.liveAgent.state === "stopping" ? "stopping" : "running";
+		return subagentIndicatorFrame(lifecycle, frame);
+	}
+	if (value.status === "ready") return "◆";
+	if (value.status === "queued") return "·";
+	if (value.activity === "integrating") return INTEGRATION_FRAMES[frame % INTEGRATION_FRAMES.length]!;
+	if (value.activity === "checking" || value.activity === "verifying") return VERIFICATION_FRAMES[frame % VERIFICATION_FRAMES.length]!;
+	return TASK_FRAMES[frame % TASK_FRAMES.length]!;
 }
 
-function tone(status: DashboardStatus): "accent" | "success" | "error" | "warning" | "muted" {
-	if (status === "active") return "accent";
-	if (status === "completed") return "success";
-	if (status === "attention") return "error";
-	if (status === "interrupted") return "warning";
+function tone(value: DashboardItem): "accent" | "success" | "error" | "warning" | "muted" {
+	if (value.status === "completed") return "success";
+	if (value.status === "attention") return "error";
+	if (value.status === "interrupted") return "warning";
+	if (value.liveAgent) return value.liveAgent.state === "stopping" ? "warning" : value.liveAgent.state === "launching" ? "muted" : "accent";
+	if (value.status === "active" || value.status === "ready") return "accent";
 	return "muted";
 }
 
@@ -215,11 +367,11 @@ function duration(milliseconds: number, incomplete = false): string {
 	return `${value}${incomplete ? "+" : ""}`;
 }
 
-function itemLines(projection: WorkflowDashboardProjection, ctx: ExtensionContext, frame: number): string[] {
+function itemLines(projection: WorkflowDashboardProjection, ctx: ExtensionContext, frame: number, now: number): string[] {
 	const lines = [ctx.ui.theme.fg("accent", ctx.ui.theme.bold(`Workflow · ${projection.title} · ${projection.completedTasks}/${projection.totalTasks} tasks`))];
-	for (const item of projection.items) {
-		const detail = item.detail ? ` · ${item.detail}` : "";
-		lines.push(`${item.indent ? "  " : ""}${ctx.ui.theme.fg(tone(item.status), `${icon(item.status, frame)} ${item.label} · ${item.status}${detail}`)}`);
+	for (const value of projection.items) {
+		lines.push(`${value.indent ? "  " : ""}${ctx.ui.theme.fg(tone(value), `${icon(value, frame)} ${value.label}`)}`);
+		if (value.liveAgent) lines.push(`    ${renderSubagentFooterProjection(value.liveAgent, ctx.ui.theme, now)}`);
 	}
 	return lines;
 }
@@ -231,7 +383,7 @@ function metricRows(projection: WorkflowDashboardProjection): Array<readonly [st
 			const metricCategory = category as WorkflowMetricCategory;
 			return [label, duration(projection.metrics.categories[metricCategory], projection.metrics.incompleteCategories.includes(metricCategory))] as const;
 		}),
-		["Review loop", projection.reviewPosition],
+		["Current loop", projection.currentLoop],
 	];
 }
 
@@ -242,27 +394,24 @@ function narrowMetricLine(projection: WorkflowDashboardProjection): string {
 	return `Time · ${workflow} · ${CATEGORY_LABELS[category]} ${duration(projection.metrics.categories[category], projection.metrics.incompleteCategories.includes(category))}`;
 }
 
-/** TUI renderer; all workflow semantics come from the pure state projection above. */
-export function workflowDashboardLines(state: StoryRuntimeState, ctx: ExtensionContext, width: number, frame?: number, now?: number): string[];
-/** Temporary broad overload until workflow-runtime/index.ts supplies StoryRuntimeState directly. */
-export function workflowDashboardLines(state: unknown, ctx: ExtensionContext, width: number, frame?: number, now?: number): string[];
-export function workflowDashboardLines(state: unknown, ctx: ExtensionContext, width: number, frame = 0, now = Date.now()): string[] {
-	const projection = projectWorkflowDashboard(state as StoryRuntimeState, now);
-	const innerWidth = Math.max(1, width - 2);
-	const items = itemLines(projection, ctx, frame);
-	const naturalItemWidth = Math.max(...items.map((item) => visibleWidth(item)));
-	const compactItemWidth = Math.min(naturalItemWidth, Math.max(28, Math.floor(innerWidth * 0.58)));
-	const metricWidth = innerWidth - compactItemWidth - 3;
-	const showWideMetrics = innerWidth >= 72 && metricWidth >= 24;
-	const leftWidth = showWideMetrics ? compactItemWidth : innerWidth;
-	const metrics = showWideMetrics ? metricRows(projection) : [];
-	const leftLines = showWideMetrics ? items : [items[0]!, ctx.ui.theme.fg("dim", narrowMetricLine(projection)), ...items.slice(1)];
-	const rowCount = showWideMetrics ? Math.max(leftLines.length, metrics.length) : leftLines.length;
+function projectionLines(projection: WorkflowDashboardProjection, ctx: ExtensionContext, width: number, frame: number, now: number): string[] {
+	if (width <= 0) return [];
+	const padding = width >= 3 ? 1 : 0;
+	const innerWidth = width - (padding * 2);
+	const tasks = itemLines(projection, ctx, frame, now);
+	const desiredMetricWidth = Math.min(40, Math.floor(innerWidth * 0.25));
+	const showMetrics = innerWidth >= 96 && desiredMetricWidth >= 24;
+	const metricWidth = showMetrics ? desiredMetricWidth : 0;
+	const taskWidth = showMetrics ? innerWidth - metricWidth - 3 : innerWidth;
+	const metrics = showMetrics ? metricRows(projection) : [];
+	const leftLines = showMetrics ? tasks : [tasks[0]!, ctx.ui.theme.fg("dim", narrowMetricLine(projection)), ...tasks.slice(1)];
+	const rowCount = showMetrics ? Math.max(leftLines.length, metrics.length) : leftLines.length;
+	const side = " ".repeat(padding);
 	return Array.from({ length: rowCount }, (_, index) => {
-		const left = truncateToWidth(leftLines[index] ?? "", leftWidth, "…");
+		const left = truncateToWidth(leftLines[index] ?? "", taskWidth, "…");
 		let content = left;
-		if (showWideMetrics) {
-			const leftPane = `${left}${" ".repeat(Math.max(0, leftWidth - visibleWidth(left)))}`;
+		if (showMetrics) {
+			const leftPane = `${left}${" ".repeat(Math.max(0, taskWidth - visibleWidth(left)))}`;
 			const metric = metrics[index];
 			let metricText = "";
 			if (metric) {
@@ -272,6 +421,23 @@ export function workflowDashboardLines(state: unknown, ctx: ExtensionContext, wi
 			}
 			content = `${leftPane}${ctx.ui.theme.fg("borderMuted", " │ ")}${metricText}`;
 		}
-		return ctx.ui.theme.bg("customMessageBg", ` ${content}${" ".repeat(Math.max(0, innerWidth - visibleWidth(content)))} `);
+		const boundedContent = truncateToWidth(content, innerWidth, "…");
+		return ctx.ui.theme.bg("customMessageBg", `${side}${boundedContent}${" ".repeat(Math.max(0, innerWidth - visibleWidth(boundedContent)))}${side}`);
 	});
+}
+
+/** True only while this projection has elapsed or active visuals to advance. */
+export function workflowDashboardNeedsAnimation(entry: WorkflowDashboardEntry, now = Date.now()): boolean {
+	const projection = projectWorkflowDashboard(entry.snapshot, now, entry.workflowChildren);
+	return Boolean(projection.metrics.activeCategory || entry.workflowChildren?.agents.length || projection.items.some((value) => value.status === "active"));
+}
+
+/** TUI renderer; timers may advance only frame/elapsed visuals, never workflow state. */
+export function workflowDashboardLines(snapshot: WorkflowSnapshot, ctx: ExtensionContext, width: number, frame = 0, now = Date.now(), workflowChildren?: SubagentUiWorkflowProjection): string[] {
+	return projectionLines(projectWorkflowDashboard(snapshot, now, workflowChildren), ctx, width, frame, now);
+}
+
+/** Renders every attached workflow into one widget without sharing child rows between stories. */
+export function workflowDashboardsLines(entries: readonly WorkflowDashboardEntry[], ctx: ExtensionContext, width: number, frame = 0, now = Date.now()): string[] {
+	return entries.flatMap((entry) => projectionLines(projectWorkflowDashboard(entry.snapshot, now, entry.workflowChildren), ctx, width, frame, now));
 }

@@ -44,15 +44,35 @@ import {
 	type SubagentUiAgentProjection,
 	type SubagentUiProjectionBinding,
 	type SubagentUiProjectionRegistry,
+	type SubagentUiWorkflowProvenance,
 } from "./ui-projection.js";
 
 const MAX_STATUS_AGENTS = 20;
 const MAX_TOOL_OUTPUT_BYTES = 48 * 1024;
 const ACTIVE_STATES = new Set(["launching", "running", "stopping"]);
+const WORKFLOW_STORY_ID = "PIBOX_WORKFLOW_STORY_ID";
+const WORKFLOW_SLOT_ID = "PIBOX_WORKFLOW_SLOT_ID";
+const WORKFLOW_ACTION = "PIBOX_WORKFLOW_ACTION";
+const WORKFLOW_TASK_ID = "PIBOX_WORKFLOW_TASK_ID";
+const WORKFLOW_TIER = "PIBOX_WORKFLOW_TIER";
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
 
 type CatalogLoader = (repositoryRoot: string, options?: LoadSubagentCatalogOptions) => LoadedSubagentCatalog;
+
+function workflowProvenance(snapshot: LogicalAgentSnapshot): SubagentUiWorkflowProvenance | undefined {
+	const storyId = snapshot.workflowMetadata?.[WORKFLOW_STORY_ID];
+	const slotId = snapshot.workflowMetadata?.[WORKFLOW_SLOT_ID];
+	if (!storyId || !slotId) return undefined;
+	const action = snapshot.workflowMetadata?.[WORKFLOW_ACTION] ?? snapshot.attemptMetadata?.[WORKFLOW_ACTION];
+	const taskId = snapshot.workflowMetadata?.[WORKFLOW_TASK_ID] ?? snapshot.attemptMetadata?.[WORKFLOW_TASK_ID];
+	return {
+		storyId,
+		slotId,
+		...(action ? { action } : {}),
+		...(taskId ? { taskId } : {}),
+	};
+}
 
 export interface SubagentExtensionDependencies {
 	readonly env?: NodeJS.ProcessEnv;
@@ -122,7 +142,8 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	const publishProjection = (current: SessionBinding, snapshot = current.service.replay(current.owner).snapshot): void => {
 		if (!current.active || binding !== current) return;
 		const agents: SubagentUiAgentProjection[] = snapshot.agents.map((agent) => {
-			const tier = current.tiers.get(agent.handle.agentId);
+			const workflow = workflowProvenance(agent);
+			const tier = current.tiers.get(agent.handle.agentId) ?? (workflow ? agent.workflowMetadata?.[WORKFLOW_TIER] : undefined);
 			return {
 			agentId: agent.handle.agentId,
 			agent: agent.agent,
@@ -136,6 +157,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			startedAt: agent.startedAt,
 			updatedAt: agent.updatedAt,
 			...(agent.progress ? { progress: agent.progress } : {}),
+			...(workflow ? { workflow } : {}),
 		};
 		});
 		current.ui.publish(agents);
@@ -313,18 +335,39 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			durationMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 3_600_000, description: "Elapsed time to wait in milliseconds" })),
 			event: Type.Optional(StringEnum(["subagent_settled"] as const, { description: "Event to subscribe to; currently only background subagent settlement is supported" })),
 		}, { additionalProperties: false }),
-		async execute(_id, params, signal) {
+		async execute(_id, params, signal, onUpdate) {
 			const current = requireBinding();
 			const hasDuration = params.durationMs !== undefined;
 			const hasEvent = params.event !== undefined;
 			if (hasDuration === hasEvent) throw new Error("Provide exactly one of durationMs or event");
+			const startedAt = Date.now();
 			if (params.durationMs !== undefined) {
+				onUpdate?.(result("", { kind: "time", durationMs: params.durationMs, startedAt }));
 				await waitForDuration(params.durationMs, signal);
-				return result(`Waited ${params.durationMs} ms.`, { kind: "time", durationMs: params.durationMs });
+				const finishedAt = Date.now();
+				return result(`Waited ${params.durationMs} ms.`, {
+					kind: "time",
+					durationMs: params.durationMs,
+					startedAt,
+					finishedAt,
+					elapsedMs: finishedAt - startedAt,
+				});
 			}
-			const settlements = await waitForSettlements(current, signal);
+			const pendingCount = pendingDeliveries.count(current.owner);
+			const waiting = waitForSettlements(current, signal);
+			onUpdate?.(result("", { kind: "event", event: "subagent_settled", startedAt, pendingCount }));
+			const settlements = await waiting;
+			const finishedAt = Date.now();
 			const formatted = formatSettlements(settlements);
-			return result(formatted.text, { kind: "event", event: "subagent_settled", settlements: formatted.details });
+			return result(formatted.text, {
+				kind: "event",
+				event: "subagent_settled",
+				startedAt,
+				finishedAt,
+				elapsedMs: finishedAt - startedAt,
+				pendingCount,
+				settlements: formatted.details,
+			});
 		},
 	});
 

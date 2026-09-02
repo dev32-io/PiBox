@@ -209,6 +209,12 @@ export interface StoryRuntimeStoreOptions {
 	now?: () => Date;
 }
 
+export interface StoryStateWriteResult {
+	state: StoryRuntimeState;
+	stateWritten: boolean;
+	debugEventAppended: boolean;
+}
+
 const STORY_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const DEFAULT_MAX_LEDGER_ENTRIES = 32;
 const ABSOLUTE_MAX_LEDGER_ENTRIES = 100;
@@ -453,13 +459,15 @@ export class StoryRuntimeStore {
 		return this.#readStateUnlocked();
 	}
 
-	async writeState(state: StoryRuntimeState, event?: StoryDebugEvent): Promise<{ state: StoryRuntimeState; debugEventAppended: boolean }> {
+	async writeState(state: StoryRuntimeState, event?: StoryDebugEvent): Promise<StoryStateWriteResult> {
 		return this.#serialize(() => this.#commitStateUnlocked(state, event));
 	}
 
-	async updateState(update: (current: StoryRuntimeState | undefined) => StoryRuntimeState, event?: StoryDebugEvent | ((state: StoryRuntimeState) => StoryDebugEvent | undefined)): Promise<{ state: StoryRuntimeState; debugEventAppended: boolean }> {
+	async updateState(update: (current: StoryRuntimeState | undefined) => StoryRuntimeState, event?: StoryDebugEvent | ((state: StoryRuntimeState) => StoryDebugEvent | undefined)): Promise<StoryStateWriteResult> {
 		return this.#serialize(async () => {
-			const state = update(await this.#readStateUnlocked());
+			const current = await this.#readStateUnlocked();
+			const state = update(current);
+			if (current && state === current) return { state, stateWritten: false, debugEventAppended: false };
 			return this.#commitStateUnlocked(state, typeof event === "function" ? event(state) : event);
 		});
 	}
@@ -541,11 +549,11 @@ export class StoryRuntimeStore {
 		return content === undefined ? { schemaVersion: 1, entries: [] } : validateLedger(parse(content), this.#storyId);
 	}
 
-	async #commitStateUnlocked(state: StoryRuntimeState, event?: StoryDebugEvent): Promise<{ state: StoryRuntimeState; debugEventAppended: boolean }> {
+	async #commitStateUnlocked(state: StoryRuntimeState, event?: StoryDebugEvent): Promise<StoryStateWriteResult> {
 		validateState(state, this.#storyId);
 		await atomicWriteFile(this.statePath, stringify(state), 0o600);
 		const debugEventAppended = event ? await this.#appendDebugBestEffort(event) : false;
-		return { state, debugEventAppended };
+		return { state, stateWritten: true, debugEventAppended };
 	}
 
 	async #appendDebugBestEffort(event: StoryDebugEvent): Promise<boolean> {

@@ -15,11 +15,18 @@ export interface WorkflowLifecycleEvent {
 	correlationId?: string;
 }
 
+export interface WorkflowStageTopology {
+	id: string;
+	mode: "sequential" | "concurrent";
+}
+
 export interface WorkflowSnapshot {
 	ref: string;
 	title: string;
 	status: "ready" | "running" | "paused" | "attention" | "done";
 	runtime: StoryRuntimeState;
+	/** Ordered authored display topology; missing or ID-mismatched positions have unknown display mode. */
+	stageTopology?: WorkflowStageTopology[];
 }
 
 export interface WorkflowStartProgress {

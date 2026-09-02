@@ -2,11 +2,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { activateWorkflowBypass, confirmCriticalRisk, confirmWorkflowBypass, currentPermissionMode } from "../permissions/runtime.js";
+import { SUBAGENT_ANIMATION_INTERVAL_MS } from "../subagent/display.js";
 import { isSubagentRuntime } from "../subagent/tool-policy.js";
+import { getSubagentUiProjectionRegistry } from "../subagent/ui-projection.js";
 import { hasWorkflowAttention } from "../workflow/story-runtime-store.js";
 import { WORKFLOW_CONTROL_EVENT, WORKFLOW_LIFECYCLE_EVENT, type WorkflowAdapter, type WorkflowControlEvent, type WorkflowLifecycleEvent, type WorkflowPreflight } from "./api.js";
 import { getWorkflowAdapterCapabilityRegistry } from "./capability-registry.js";
-import { workflowDashboardLines } from "./dashboard.js";
+import { workflowDashboardNeedsAnimation, workflowDashboardsLines, type WorkflowDashboardEntry } from "./dashboard.js";
 import { WorkflowRunner, type WorkflowRunnerNotice } from "./runner.js";
 
 const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
@@ -15,29 +17,62 @@ const bounded = (value: unknown, limit = 700) => String(value ?? "").replace(/[\
 export default function workflows(pi: ExtensionAPI): void {
 	if (isSubagentRuntime(process.env)) return;
 	const registry = getWorkflowAdapterCapabilityRegistry();
+	const subagentUi = getSubagentUiProjectionRegistry();
 	const runners = new Map<string, WorkflowRunner>();
 	let sessionCtx: ExtensionContext | undefined;
 	let selectedRef: string | undefined;
 	let restoringReload = false;
 	let shuttingDown = false;
 	let unregisterRegistry: (() => void) | undefined;
+	let unregisterSubagentUi: (() => void) | undefined;
 	let frame = 0;
 	let timer: NodeJS.Timeout | undefined;
 	let dashboardTui: { requestRender?: () => void } | undefined;
+	let dashboardSubagentKey = "";
 
 	const adapterFor = (ref: string): WorkflowAdapter => { const adapter = registry.resolve(ref); if (!adapter) throw new Error(`No target workflow adapter accepts ${ref}`); return adapter; };
 	const sendLifecycle = (event: WorkflowLifecycleEvent) => { try { pi.events.emit(WORKFLOW_LIFECYCLE_EVENT, event); } catch { /* durable state remains authoritative */ } };
+	const dashboardEntries = (): WorkflowDashboardEntry[] => {
+		const seenStories = new Set<string>();
+		return [...runners.values()].flatMap((runner) => {
+			if ((runner.mode !== "running" && runner.mode !== "paused") || !runner.snapshot) return [];
+			const storyId = runner.snapshot.runtime.storyId;
+			const workflowChildren = seenStories.has(storyId) ? undefined : subagentUi.projectWorkflow(storyId);
+			seenStories.add(storyId);
+			return [{ snapshot: runner.snapshot, ...(workflowChildren ? { workflowChildren } : {}) }];
+		});
+	};
+	const subagentKey = (entries: readonly WorkflowDashboardEntry[]) => JSON.stringify(entries.map((entry) => [entry.snapshot.runtime.storyId, entry.workflowChildren?.agents ?? []]));
+	const stopDashboardTimer = () => { if (timer) clearTimeout(timer); timer = undefined; };
+	const clearDashboard = (ctx?: ExtensionContext) => {
+		stopDashboardTimer(); dashboardTui = undefined; dashboardSubagentKey = ""; frame = 0;
+		ctx?.ui.setWidget("pibox-workflow", undefined);
+	};
+	const syncDashboardTimer = () => {
+		const entries = dashboardEntries();
+		if (!sessionCtx?.hasUI || !dashboardTui || !entries.some((entry) => workflowDashboardNeedsAnimation(entry))) { stopDashboardTimer(); return; }
+		if (timer) return;
+		timer = setTimeout(() => {
+			timer = undefined; frame++; dashboardTui?.requestRender?.(); syncDashboardTimer();
+		}, SUBAGENT_ANIMATION_INTERVAL_MS);
+		timer.unref();
+	};
 	const renderDashboard = () => {
-		const ctx = sessionCtx; const snapshot = selectedRef ? runners.get(selectedRef)?.snapshot : undefined;
-		if (!ctx?.hasUI || !snapshot) { ctx?.ui.setWidget("pibox-workflow", undefined); return; }
-		ctx.ui.setWidget("pibox-workflow", (tui) => { dashboardTui = tui as unknown as { requestRender?: () => void }; return { render: (width: number) => workflowDashboardLines(runners.get(selectedRef!)?.snapshot?.runtime ?? snapshot.runtime, ctx, width, frame), invalidate() {} }; });
-		if (!timer) {
-			const animate = () => { const current = selectedRef ? runners.get(selectedRef)?.snapshot?.runtime : undefined; if (!current || current.status === "completed" || current.status === "paused" || current.status === "stopped") { timer = undefined; return; } timer = setTimeout(() => { frame++; dashboardTui?.requestRender?.(); animate(); }, 100); timer.unref(); };
-			animate();
-		}
+		const ctx = sessionCtx;
+		const entries = dashboardEntries();
+		if (!ctx?.hasUI || !entries.length) { clearDashboard(ctx); return; }
+		dashboardSubagentKey = subagentKey(entries);
+		ctx.ui.setWidget("pibox-workflow", (tui) => {
+			dashboardTui = tui as unknown as { requestRender?: () => void };
+			return {
+				render: (width: number) => workflowDashboardsLines(dashboardEntries(), ctx, width, frame),
+				invalidate() {},
+			};
+		});
+		syncDashboardTimer();
 	};
 	const sendNotice = (notice: WorkflowRunnerNotice) => {
-		if (selectedRef === notice.workflowRef) renderDashboard();
+		if (runners.has(notice.workflowRef)) renderDashboard();
 		if (!notice.attention) return;
 		const safe = { ...notice, title: bounded(notice.title, 180), ...(notice.detail ? { detail: bounded(notice.detail) } : {}), ...(notice.nextAction ? { nextAction: bounded(notice.nextAction, 240) } : {}) };
 		try { pi.sendMessage({ customType: "pibox-workflow-event", content: `[Workflow attention]\n${safe.title}${safe.detail ? `\n${safe.detail}` : ""}${safe.nextAction ? `\nNext: ${safe.nextAction}` : ""}`, display: true, details: safe }, { deliverAs: "steer", triggerTurn: true }); } catch { /* durable state remains */ }
@@ -45,7 +80,7 @@ export default function workflows(pi: ExtensionAPI): void {
 	const runnerFor = (ref: string): WorkflowRunner => {
 		const existing = runners.get(ref); if (existing) return existing;
 		if (!sessionCtx) throw new Error("Workflow runtime is not attached to a session");
-		const runner = new WorkflowRunner(ref, adapterFor(ref), sessionCtx, { onProjection() { if (selectedRef === ref) renderDashboard(); }, onNotice: sendNotice, onLifecycle: sendLifecycle, onComplete(_ref, prompt) { try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* outcome remains durable */ } } });
+		const runner = new WorkflowRunner(ref, adapterFor(ref), sessionCtx, { onProjection() { renderDashboard(); }, onNotice: sendNotice, onLifecycle: sendLifecycle, onComplete(_ref, prompt) { try { pi.sendMessage({ customType: "pibox-workflow-complete", content: prompt, display: false }, { deliverAs: "steer", triggerTurn: true }); } catch { /* outcome remains durable */ } } });
 		runners.set(ref, runner); return runner;
 	};
 	const reportPreflight = (ref: string, preflight: WorkflowPreflight) => {
@@ -109,8 +144,18 @@ export default function workflows(pi: ExtensionAPI): void {
 	pi.on("session_start", async (event, ctx) => {
 		shuttingDown = false; restoringReload = event.reason === "reload"; sessionCtx = ctx;
 		unregisterRegistry?.(); unregisterRegistry = registry.subscribe(() => { void restoreAvailable(); });
+		unregisterSubagentUi?.(); unregisterSubagentUi = subagentUi.subscribe(() => {
+			if (shuttingDown || !sessionCtx?.hasUI) return;
+			const entries = dashboardEntries();
+			if (!entries.length) return;
+			const key = subagentKey(entries);
+			if (dashboardSubagentKey === key) return;
+			dashboardSubagentKey = key;
+			if (dashboardTui) { dashboardTui.requestRender?.(); syncDashboardTimer(); }
+			else renderDashboard();
+		});
 		if (!restoringReload) for (const adapter of registry.list()) await adapter.reconcileActivation?.(ctx);
 		await restoreAvailable();
 	});
-	pi.on("session_shutdown", async (_event, ctx) => { shuttingDown = true; await Promise.all([...runners.values()].map((runner) => runner.dispose())); runners.clear(); selectedRef = undefined; sessionCtx = undefined; restoringReload = false; unregisterRegistry?.(); unregisterRegistry = undefined; if (timer) clearTimeout(timer); timer = undefined; dashboardTui = undefined; ctx.ui.setWidget("pibox-workflow", undefined); });
+	pi.on("session_shutdown", async (_event, ctx) => { shuttingDown = true; await Promise.all([...runners.values()].map((runner) => runner.dispose())); runners.clear(); selectedRef = undefined; sessionCtx = undefined; restoringReload = false; unregisterRegistry?.(); unregisterRegistry = undefined; unregisterSubagentUi?.(); unregisterSubagentUi = undefined; clearDashboard(ctx); });
 }

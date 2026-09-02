@@ -3,7 +3,7 @@ import { Container, getKeybindings, Text, truncateToWidth, type Component } from
 import { currentSubagentIndicator, renderSubagentLiveStatus } from "../../../subagent/display.js";
 import { getSubagentUiProjectionRegistry, type SubagentUiAgentProjection, type SubagentUiAgentRef } from "../../../subagent/ui-projection.js";
 
-const EXACT_HARNESS_TOOLS = new Set(["memory_adapter"]);
+const EXACT_HARNESS_TOOLS = new Set(["memory_adapter", "wait"]);
 
 export function isHarnessTool(name: string): boolean {
 	return EXACT_HARNESS_TOOLS.has(name) || /^(resource|workflow|subagent|story|e2e|task|stage|evaluation|distill)_/.test(name);
@@ -92,6 +92,82 @@ function projectionDetails(details: Record<string, any> | undefined, projection:
 			? (projection.progress?.processStartedAt ? "active" : "starting")
 			: undefined,
 	};
+}
+
+function waitTimestamp(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value !== "string") return undefined;
+	const parsed = Date.parse(value);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function formatWaitDuration(milliseconds: number, roundUp = false): string {
+	const bounded = Math.max(0, milliseconds);
+	if (bounded < 1_000) return `${Math.round(bounded)}ms`;
+	const seconds = (roundUp ? Math.ceil : Math.floor)(bounded / 1_000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds % 60;
+	return `${minutes}m ${String(remainder).padStart(2, "0")}s`;
+}
+
+class WaitCallComponent implements Component {
+	constructor(
+		private readonly args: Record<string, any>,
+		private readonly theme: Theme,
+		private readonly partial: boolean,
+		private readonly error: boolean,
+		private readonly details?: Record<string, any>,
+		private readonly now: () => number = Date.now,
+	) {}
+
+	render(width: number): string[] {
+		const now = this.now();
+		const startedAt = waitTimestamp(this.details?.startedAt) ?? now;
+		const elapsedMs = typeof this.details?.elapsedMs === "number"
+			? Math.max(0, this.details.elapsedMs)
+			: Math.max(0, now - startedAt);
+		const durationMs = typeof this.args.durationMs === "number"
+			? this.args.durationMs
+			: typeof this.details?.durationMs === "number" ? this.details.durationMs : undefined;
+		const event = typeof this.args.event === "string"
+			? this.args.event
+			: typeof this.details?.event === "string" ? this.details.event : undefined;
+		const icon = this.partial
+			? this.theme.fg("accent", currentSubagentIndicator("starting", now))
+			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
+
+		let action: string;
+		let target: string | undefined;
+		let detail: string | undefined;
+		if (this.error) {
+			action = "Wait failed";
+			target = event ?? (durationMs !== undefined ? formatWaitDuration(durationMs, true) : undefined);
+		} else if (this.partial && durationMs !== undefined) {
+			const remainingMs = Math.max(0, durationMs - elapsedMs);
+			action = "Waiting";
+			target = `${formatWaitDuration(remainingMs, true)} remaining`;
+			detail = `Timer · ${formatWaitDuration(durationMs, true)} total · ${formatWaitDuration(elapsedMs)} elapsed`;
+		} else if (this.partial) {
+			action = event === "subagent_settled" ? "Waiting for next subagent settlement" : "Waiting for event";
+			const pendingCount = typeof this.details?.pendingCount === "number" ? this.details.pendingCount : undefined;
+			const pending = pendingCount === undefined ? "" : ` · ${pendingCount} subagent${pendingCount === 1 ? "" : "s"} pending`;
+			detail = `Event: ${event ?? "unknown"} · ${formatWaitDuration(elapsedMs)} elapsed${pending}`;
+		} else if (durationMs !== undefined) {
+			action = "Waited";
+			target = formatWaitDuration(elapsedMs || durationMs);
+		} else {
+			action = "Event received";
+			target = event;
+		}
+
+		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", action))}${target ? ` ${this.theme.fg("dim", target)}` : ""}`;
+		const lines = [truncateToWidth(headline, width, "…")];
+		if (detail) lines.push(truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", detail)}`, width, "…"));
+		return lines;
+	}
+
+	invalidate(): void {}
 }
 
 class HarnessCallComponent implements Component {
@@ -224,6 +300,7 @@ function appendOutputBlock(container: Container, text: string, theme: Theme, exp
 }
 
 export function renderHarnessToolCall(name: string, args: Record<string, any>, theme: Theme, partial: boolean, error: boolean, details?: Record<string, any>, now: () => number = Date.now, lookup: SubagentProjectionLookup = defaultSubagentLookup): Component {
+	if (name === "wait") return new WaitCallComponent(args, theme, partial, error, details, now);
 	return new HarnessCallComponent(name, args, theme, partial, error, details, now, lookup);
 }
 
@@ -285,8 +362,50 @@ function renderMemoryToolResult(result: any, expanded: boolean, theme: Theme, er
 	return component;
 }
 
+function renderWaitToolResult(result: any, expanded: boolean, theme: Theme, error: boolean): Component {
+	const component = new Container();
+	const details = result?.details ?? {};
+	const text = firstText(result);
+	if (error) {
+		component.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("error", "Error")}`, 0, 0));
+		const rows = outputRows(text).filter((row) => row.trim());
+		if (rows.length) appendTreeRows(component, rows, theme, expanded, 4);
+		return component;
+	}
+
+	const elapsedMs = typeof details.elapsedMs === "number"
+		? Math.max(0, details.elapsedMs)
+		: typeof details.durationMs === "number" ? Math.max(0, details.durationMs) : 0;
+	if (details.kind === "time") {
+		component.addChild(new Text(
+			`${theme.fg("dim", "└─")} ${theme.fg("success", "Timer complete")}${theme.fg("dim", " · ")}${theme.fg("muted", `${formatWaitDuration(elapsedMs)} elapsed`)}`,
+			0,
+			0,
+		));
+		return component;
+	}
+
+	const settlements = Array.isArray(details.settlements) ? details.settlements : [];
+	const count = settlements.length;
+	const countLabel = `${count} settlement${count === 1 ? "" : "s"}`;
+	component.addChild(new Text(
+		`${theme.fg("dim", "└─")} ${theme.fg("success", "Event received")}${theme.fg("dim", " · ")}${theme.fg("muted", `${details.event ?? "event"} · ${countLabel} · ${formatWaitDuration(elapsedMs)} elapsed`)}`,
+		0,
+		0,
+	));
+	if (count > 0) {
+		appendTreeRows(component, settlements.map((settlement: any) => {
+			const identity = [compact(scalar(settlement?.agent) ?? "subagent", 48), compact(scalar(settlement?.status) ?? "settled", 32), compact(scalar(settlement?.agentId) ?? "", 48)].filter(Boolean).join(" · ");
+			const summary = expanded ? compact(scalar(settlement?.summary) ?? "", 120) : "";
+			return summary ? `${identity} · ${summary}` : identity;
+		}), theme, expanded, 5);
+	}
+	return component;
+}
+
 function renderHarnessToolResultSnapshot(name: string, result: any, expanded: boolean, theme: Theme, error: boolean): Component {
 	if (name === "memory_adapter") return renderMemoryToolResult(result, expanded, theme, error);
+	if (name === "wait") return renderWaitToolResult(result, expanded, theme, error);
 	const component = new Container();
 	const text = firstText(result);
 	// A returned subagent report is prose and often contains code, file excerpts,

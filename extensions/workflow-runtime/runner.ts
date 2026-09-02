@@ -39,8 +39,15 @@ export class WorkflowRunner {
 		return pending;
 	}
 
-	requestTick(): void { if (!this.disposed && this.modeValue === "running") { this.tickRequested = true; void this.ensureTickDrain(); } }
-	async advance(): Promise<void> { if (!this.disposed && this.modeValue === "running") { this.tickRequested = true; await this.ensureTickDrain(); } }
+	requestTick(): void {
+		if (this.disposed || this.modeValue !== "running") return;
+		if (this.tickDrain) this.tickRequested = true;
+		else void this.ensureTickDrain();
+	}
+	async advance(): Promise<void> {
+		if (this.disposed || this.modeValue !== "running") return;
+		await (this.tickDrain ?? this.ensureTickDrain());
+	}
 	async refresh(): Promise<WorkflowSnapshot | undefined> {
 		if (this.disposed) return undefined;
 		const revision = this.revision;
@@ -71,10 +78,14 @@ export class WorkflowRunner {
 
 	private ensureTickDrain(): Promise<void> {
 		if (this.tickDrain) return this.tickDrain;
-		const pending = this.drainTicks().finally(() => { if (this.tickDrain === pending) this.tickDrain = undefined; if (!this.disposed && this.modeValue === "running" && this.tickRequested) void this.ensureTickDrain(); });
-		this.tickDrain = pending; return pending;
+		this.tickRequested = false;
+		const pending = this.tickOnce().finally(() => {
+			if (this.tickDrain === pending) this.tickDrain = undefined;
+			if (!this.disposed && this.modeValue === "running" && this.tickRequested) void this.ensureTickDrain();
+		});
+		this.tickDrain = pending;
+		return pending;
 	}
-	private async drainTicks(): Promise<void> { while (!this.disposed && this.modeValue === "running" && this.tickRequested) { this.tickRequested = false; await this.tickOnce(); } }
 	private async tickOnce(): Promise<void> {
 		const revision = this.revision;
 		try {

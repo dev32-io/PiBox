@@ -10,6 +10,7 @@ import {
 	createPiInvocationResolver,
 	stableSystemPromptPath,
 	type RuntimeOwner,
+	type SubagentInvocation,
 	type SubagentInvocationRequest,
 } from "../index.js";
 
@@ -192,6 +193,96 @@ test("stop emits lifecycle events, confirms exit, and escalates an ignored SIGTE
 	assert.equal(manager.replay(owner()).snapshot.agents[0]?.summary, "Stopped by user.");
 });
 
+test("stop and wait promptly settle an initial launch whose invocation never resolves", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-launch-stop-"));
+	let invocationRequested!: () => void;
+	const requested = new Promise<void>((resolve) => { invocationRequested = resolve; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver() {
+			invocationRequested();
+			return new Promise<SubagentInvocation>(() => {});
+		},
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+
+	const launching = launch(manager, "wait");
+	await requested;
+	const snapshot = manager.inspect(owner())[0];
+	assert.equal(snapshot?.state, "launching");
+	assert.ok(snapshot?.attemptId);
+	const waiting = manager.wait(owner(), snapshot!.handle);
+	await assert.rejects(manager.release(owner(), snapshot!.handle), /Cannot release an active logical agent/);
+	await promptly(manager.stop(owner(), snapshot!.handle));
+
+	const started = await promptly(launching);
+	const terminal = await promptly(waiting);
+	assert.deepEqual(await started.result, terminal);
+	assert.equal(terminal.status, "cancelled");
+	assert.equal(terminal.reason, "explicit_stop");
+	assert.equal(terminal.text, "Stopped by user.");
+	assert.equal(manager.inspect(owner())[0]?.state, "cancelled");
+	assert.equal(manager.inspect(owner())[0]?.processId, undefined);
+	assert.deepEqual(await eventTypes(manager), ["stop_requested", "terminal"]);
+});
+
+test("teardown promptly settles an initial launch whose invocation never resolves", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-launch-teardown-"));
+	let invocationRequested!: () => void;
+	const requested = new Promise<void>((resolve) => { invocationRequested = resolve; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver() {
+			invocationRequested();
+			return new Promise<SubagentInvocation>(() => {});
+		},
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+
+	const launching = launch(manager, "wait");
+	await requested;
+	const handle = manager.inspect(owner())[0]!.handle;
+	const waiting = manager.wait(owner(), handle);
+	await promptly(manager.teardown());
+	const started = await promptly(launching);
+	const terminal = await promptly(waiting);
+	assert.deepEqual(await started.result, terminal);
+	assert.equal(terminal.status, "cancelled");
+	assert.equal(terminal.reason, "owner_lost");
+	assert.equal(terminal.text, "Stopped because the owning activation ended.");
+});
+
+test("a late beforeSpawn completion cannot spawn or publish after launch stop", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-late-fence-"));
+	const marker = join(root, "spawned");
+	let beforeSpawnEntered!: () => void;
+	let releaseBeforeSpawn!: () => void;
+	const entered = new Promise<void>((resolve) => { beforeSpawnEntered = resolve; });
+	const gate = new Promise<void>((resolve) => { releaseBeforeSpawn = resolve; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: () => ({ command: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned")`] }),
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+
+	const launching = manager.launch({
+		owner: owner(), agent: "wait", cwd: root, stableSystemContext: "stable", attemptUserPrompt: "prompt", ...EXECUTION,
+		beforeSpawn() { beforeSpawnEntered(); return gate; },
+	});
+	await entered;
+	const handle = manager.inspect(owner())[0]!.handle;
+	await promptly(manager.stop(owner(), handle));
+	const started = await promptly(launching);
+	await promptly(started.result);
+	releaseBeforeSpawn();
+	await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
+	await assert.rejects(access(marker), /ENOENT/);
+	assert.deepEqual(await eventTypes(manager), ["stop_requested", "terminal"]);
+});
+
 test("teardown is terminal cancellation, terminates children, and fences later delivery", async (t) => {
 	const { manager, sessionDirectory } = await fixture(t, { terminationGraceMs: 50 });
 	const started = await launch(manager, "wait");
@@ -281,6 +372,85 @@ test("continuation consumes handles, rejects concurrent writers, and rotates the
 	assert.deepEqual(diagnostics.map((event) => event.data?.stableSystemContextHash), [first, second, third].map((result) => result.contextHashes.stableSystemContextHash));
 	assert.equal(JSON.stringify(diagnostics).includes("WORKFLOW_CREDENTIAL"), false);
 	assert.equal(JSON.stringify(diagnostics).includes(invocations[0]!.transcriptPath), false);
+});
+
+test("continuation launching is published, blocks release, and promptly stops with capability rotation when invocation never resolves", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-continuation-stop-"));
+	let invocationCount = 0;
+	let continuationRequested!: () => void;
+	const requested = new Promise<void>((resolve) => { continuationRequested = resolve; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver(request) {
+			invocationCount += 1;
+			if (invocationCount === 2) {
+				continuationRequested();
+				return new Promise<SubagentInvocation>(() => {});
+			}
+			return fakeInvocation(request);
+		},
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+
+	const first = await (await launch(manager, "continuation", "one")).result;
+	const continuing = manager.continue({
+		owner: owner(), handle: first.handle, attemptUserPrompt: "two",
+		attemptMetadata: { PIBOX_WORKFLOW_ATTEMPT_TOKEN: "attempt-two" },
+	});
+	await requested;
+	const snapshot = manager.inspect(owner())[0];
+	assert.equal(snapshot?.state, "launching");
+	assert.deepEqual(snapshot?.attemptMetadata, { PIBOX_WORKFLOW_ATTEMPT_TOKEN: "attempt-two" });
+	assert.notEqual(snapshot?.attemptId, first.attemptId);
+	assert.equal(snapshot?.handle.continuationCapability, first.handle.continuationCapability);
+	const waiting = manager.wait(owner(), first.handle);
+	await assert.rejects(manager.release(owner(), first.handle), /Cannot release an active logical agent/);
+	await promptly(manager.stop(owner(), first.handle));
+
+	const started = await promptly(continuing);
+	const stopped = await promptly(started.result);
+	assert.deepEqual(await promptly(waiting), stopped);
+	assert.deepEqual(started.handle, stopped.handle, "a pre-spawn cancelled continuation returns its fresh live handle");
+	assert.equal(stopped.reason, "explicit_stop");
+	assert.notEqual(stopped.handle.continuationCapability, first.handle.continuationCapability);
+	await assert.rejects(manager.continue({ owner: owner(), handle: first.handle, attemptUserPrompt: "stale" }), /Unknown or stale/);
+	const third = await (await manager.continue({ owner: owner(), handle: stopped.handle, attemptUserPrompt: "three" })).result;
+	assert.equal(third.text, "reply:three");
+	assert.equal(invocationCount, 3);
+});
+
+test("teardown promptly settles a continuation whose invocation never resolves as owner_lost", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-continuation-teardown-"));
+	let invocationCount = 0;
+	let continuationRequested!: () => void;
+	const requested = new Promise<void>((resolve) => { continuationRequested = resolve; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver(request) {
+			invocationCount += 1;
+			if (invocationCount === 2) {
+				continuationRequested();
+				return new Promise<SubagentInvocation>(() => {});
+			}
+			return fakeInvocation(request);
+		},
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+
+	const first = await (await launch(manager, "continuation", "one")).result;
+	const continuing = manager.continue({ owner: owner(), handle: first.handle, attemptUserPrompt: "two" });
+	await requested;
+	assert.equal(manager.inspect(owner())[0]?.state, "launching");
+	const waiting = manager.wait(owner(), first.handle);
+	await promptly(manager.teardown());
+	const started = await promptly(continuing);
+	const terminal = await promptly(started.result);
+	assert.deepEqual(await promptly(waiting), terminal);
+	assert.equal(terminal.status, "cancelled");
+	assert.equal(terminal.reason, "owner_lost");
+	assert.equal(terminal.text, "Stopped because the owning activation ended.");
 });
 
 test("output-drain subscribers cannot start a continuation before writer release and terminal publication", async (t) => {
@@ -425,6 +595,26 @@ test("lifetime wrapper escalates the process group after its direct child exits 
 	assert.ok(Date.now() - leaseLostAt >= 60, "wrapper exited before the group escalation window");
 	await Promise.all([waitUntilGone(childPid, 2_000), waitUntilGone(descendantPid, 2_000)]);
 });
+
+function fakeInvocation(request: SubagentInvocationRequest): SubagentInvocation {
+	return {
+		command: process.execPath,
+		args: [FAKE_CHILD, request.agent],
+		env: { FAKE_PROMPT: request.attemptUserPrompt, FAKE_TRANSCRIPT: request.transcriptPath },
+	};
+}
+
+async function promptly<T>(promise: Promise<T>): Promise<T> {
+	let timer: NodeJS.Timeout | undefined;
+	try {
+		return await Promise.race([
+			promise,
+			new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Lifecycle operation did not settle promptly")), 500); }),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
 
 async function waitForEvent(manager: SubagentProcessManager, type: string): Promise<void> {
 	if ((await eventTypes(manager)).includes(type)) return;

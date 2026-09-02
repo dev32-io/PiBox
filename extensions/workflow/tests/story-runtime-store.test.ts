@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -81,6 +81,18 @@ test("serializes concurrent read-modify-write callbacks", async (t) => {
 		finalReview: { ...current!.finalReview, repairCount: current!.finalReview.repairCount + 1 },
 	}))));
 	assert.equal((await store.readState())?.finalReview.repairCount, 12);
+});
+
+test("an identity-preserving update skips state replacement and its debug event", async (t) => {
+	const { store } = await fixture(t);
+	await store.writeState(state("running"));
+	const before = await stat(store.statePath);
+	const result = await store.updateState((current) => current!, { type: "workflow.advanced", resultCode: "running" });
+	const after = await stat(store.statePath);
+	assert.equal(result.stateWritten, false);
+	assert.equal(result.debugEventAppended, false);
+	assert.equal(after.ino, before.ino, "a no-op must not atomically replace state.yaml");
+	assert.deepEqual(await store.readDebugTail(), []);
 });
 
 test("rejects stale attempts by opaque token and activation owner", () => {

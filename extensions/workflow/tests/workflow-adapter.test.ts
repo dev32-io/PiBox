@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { RuntimeOwner } from "../../subagent/api.js";
+import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { StoryRuntimeStore } from "../story-runtime-store.js";
 import { createHarnessWorkflowAdapter, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
@@ -57,6 +58,7 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	const tasks = options.tasks ?? [task("task-a")];
 	const plan = options.plan ?? { schemaVersion: 1, stages: [{ id: "delivery", tasks: tasks.map((entry) => entry.id), mode: "sequential", checks: [], review: { mode: "skip" } }] };
 	let owner = options.owner ?? { sessionId: `session-${root}`, processInstanceId: "process", activationId: "activation-a" };
+	const capacityListeners = new Set<() => void>();
 	const runtime: any = {
 		identity: { id: "repo", root, privateRoot: join(root, ".git", "pibox"), commonDir: join(root, ".git") },
 		workItems: {
@@ -67,13 +69,22 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 			async findDelivery() { return { workingBranch: "feature/example", createdFromCommit: "fixture" }; },
 			async list() { return [{ id: story.id }]; },
 		},
-		launcher: { service: { get owner() { return owner; }, inspect() { return []; } }, activeCount() { return 0; }, async stopStory() { return 0; }, async releaseStory() { return 0; } },
+		launcher: {
+			service: { get owner() { return owner; }, inspect() { return []; } },
+			activeCount() { return 0; },
+			subscribeCapacity(listener: () => void) { capacityListeners.add(listener); return () => capacityListeners.delete(listener); },
+			async stopStory() { return 0; }, async releaseStory() { return 0; },
+		},
 		mutex: { async run<T>(_owner: string, operation: () => Promise<T>): Promise<T> { return operation(); } },
 		config: { ...structuredClone(DEFAULT_HARNESS_CONFIG), limits: { ...DEFAULT_HARNESS_CONFIG.limits, repairRounds: 2, maxConcurrency: 4, maxActiveSubagentsPerSession: 16 } },
 	};
 	const ctx = { sessionManager: { getSessionId: () => owner.sessionId } } as any;
 	const create = () => createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, ...(options.execute ? { executeAction: options.execute } : {}), now: (() => { let tick = 0; return () => new Date(1_700_000_000_000 + tick++); })() });
-	return { root, runtime, ctx, create, setOwner(value: RuntimeOwner) { owner = value; } };
+	return {
+		root, runtime, ctx, create,
+		fireCapacity() { for (const listener of capacityListeners) listener(); },
+		setOwner(value: RuntimeOwner) { owner = value; },
+	};
 }
 
 function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<{ text: string; exitCode?: number; stderr?: string; terminalReason?: string }>): void {
@@ -146,8 +157,10 @@ test("start and resume remain bound to the persisted canonical branch", async (t
 	await exec("git", ["switch", "feature/example"], { cwd: f.root });
 	await adapter.controlExecution!("work-item:example", "start", "start", f.ctx);
 	await adapter.controlExecution!("work-item:example", "pause", "pause", f.ctx);
-	const pinned = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const pinnedSnapshot = await adapter.snapshot("work-item:example", f.ctx);
+	const pinned = pinnedSnapshot.runtime;
 	assert.equal(pinned.git.canonicalBranch, "feature/example");
+	assert.deepEqual(pinnedSnapshot.stageTopology, [{ id: "delivery", mode: "sequential" }]);
 	await exec("git", ["switch", "wrong-branch"], { cwd: f.root });
 	await assert.rejects(adapter.controlExecution!("work-item:example", "resume", "wrong-resume", f.ctx), /canonical branch is feature\/example/i);
 	await assert.rejects(adapter.advanceWorkflow!("work-item:example", f.ctx), /canonical branch is feature\/example/i);
@@ -166,6 +179,67 @@ test("authoritative contract digests reject any persisted story, plan, or task m
 	authoredTask.description = "Mutated after authoritative initialization.";
 	await assert.rejects(adapter.snapshot("work-item:example", f.ctx), /contract does not match/i);
 	await assert.rejects(adapter.advanceWorkflow!("work-item:example", f.ctx), /contract does not match/i);
+});
+
+test("a live production-shaped child leaves start bounded and idle scheduler wakes write nothing", async (t) => {
+	const gate = deferred<StoryWorkflowActionResult>();
+	let childSettled = false;
+	void gate.promise.then(() => { childSettled = true; });
+	const f = await fixture(t, {
+		execute: async ({ action }) => action.kind === "task-launch" ? gate.promise : passed(),
+	});
+	const production = f.create();
+	let advances = 0;
+	let lifecycleNotifications = 0;
+	const adapter = {
+		...production,
+		async advanceWorkflow(ref: string, ctx: any) { advances++; await production.advanceWorkflow(ref, ctx); },
+		subscribeLifecycle(ref: string, ctx: any, listener: (update?: any) => void, signal?: AbortSignal) {
+			return production.subscribeLifecycle!(ref, ctx, (update) => { lifecycleNotifications++; listener(update); }, signal);
+		},
+	};
+	const runner = new WorkflowRunner("work-item:example", adapter, f.ctx, {
+		onProjection() {}, onNotice() {}, onLifecycle() {}, onComplete() {},
+	});
+	t.after(() => runner.dispose());
+
+	let timeout: NodeJS.Timeout | undefined;
+	await Promise.race([
+		(async () => { await runner.command("start", "production-start"); await runner.advance(); })(),
+		new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("initial scheduling did not return")), 500); }),
+	]).finally(() => { if (timeout) clearTimeout(timeout); });
+	assert.equal(childSettled, false, "start must not wait for child settlement");
+	await eventually(() => assert.equal(runner.snapshot?.runtime.stages[0]?.tasks[0]?.status, "implementing"));
+	await new Promise((resolve) => setTimeout(resolve, 25));
+
+	const store = new StoryRuntimeStore(f.root, "example");
+	const initialEvents = await store.readDebugTail(50);
+	assert.equal(initialEvents.filter((event) => event.type === "workflow.advanced").length, 1, "one action activation produces one scheduling event");
+	assert.ok(lifecycleNotifications >= 1 && lifecycleNotifications <= 2, "initial subscription and action activation produce bounded lifecycle wakes");
+	const beforeIdle = await stat(store.statePath);
+	const eventCountBeforeIdle = initialEvents.length;
+	const advancesBeforeIdle = advances;
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.equal(advances, advancesBeforeIdle, "an idle active child produces no periodic scheduler ticks");
+	for (let index = 0; index < 20; index++) f.fireCapacity();
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	const afterIdleEvents = await store.readDebugTail(50);
+	const afterIdle = await stat(store.statePath);
+	assert.ok(advances - advancesBeforeIdle <= 2, "a synchronous capacity burst coalesces to the active pass plus at most one follow-up");
+	assert.equal(afterIdleEvents.length, eventCountBeforeIdle, "idle passes append no scheduler debug events");
+	assert.equal(afterIdle.ino, beforeIdle.ino, "idle passes do not atomically replace state.yaml");
+
+	await runner.command("pause", "pause-before-settlement");
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	const eventsBeforeSettlement = (await store.readDebugTail(50)).length;
+	const notificationsBeforeSettlement = lifecycleNotifications;
+	gate.resolve({ ...passed(), contributionCommit: "task-commit" });
+	await eventually(async () => assert.equal((await production.snapshot("work-item:example", f.ctx)).runtime.stages[0]?.tasks[0]?.status, "completed"));
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	const settledEvents = await store.readDebugTail(50);
+	assert.equal(settledEvents.length - eventsBeforeSettlement, 1, "one accepted settlement appends one debug event");
+	assert.equal(settledEvents.at(-1)?.type, "action.settled");
+	assert.equal(lifecycleNotifications - notificationsBeforeSettlement, 1, "one accepted settlement emits one lifecycle wake");
 });
 
 test("production scheduling preserves ordered stages and concurrent task batches", async (t) => {
@@ -217,7 +291,8 @@ test("production scheduling preserves ordered stages and concurrent task batches
 
 test("production Git executor shares a sequential stage workspace and pins concurrent task bases", async (t) => {
 	await t.test("sequential task B sees A and ordered commits integrate once", async (t) => {
-		const tasks = [task("a"), { ...task("b"), dependsOn: ["a"] }];
+		const firstTask = task("a");
+		const tasks = [{ ...firstTask, assignment: { ...firstTask.assignment, tier: "high" as const } }, { ...task("b"), dependsOn: ["a"] }];
 		const f = await fixture(t, {
 			plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["a", "b"], mode: "sequential", checks: [], review: { mode: "skip" } }] },
 			tasks,
@@ -225,6 +300,7 @@ test("production Git executor shares a sequential stage workspace and pins concu
 		const workspaces: string[] = [];
 		useProductionExecutor(f, async (input) => {
 			if (input.taskId) {
+				assert.equal(input.tier, input.taskId === "a" ? "high" : "medium", "task launches carry the authored assignment tier");
 				assert.ok(input.tools.includes("task_clarify"));
 				assert.equal(input.tools.includes("task_checkpoint"), false, "target launch must not regain the legacy task group");
 				workspaces.push(input.cwd);
@@ -234,6 +310,7 @@ test("production Git executor shares a sequential stage workspace and pins concu
 				await exec("git", ["commit", "-qm", `implement ${input.taskId}`], { cwd: input.cwd });
 				return { text: `${input.taskId} complete` };
 			}
+			assert.equal(input.tier, f.runtime.config.agents[input.role]?.tier, "non-task launches carry the resolved role tier");
 			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
 		});
 		const adapter = f.create();

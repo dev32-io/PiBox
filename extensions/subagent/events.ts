@@ -100,7 +100,7 @@ export class SubagentEventBuffer {
 		if (phase === "exited" && input.type !== "output_drained") throw new Error("Only output drain may follow process exit");
 		if (phase === "drained" && input.type !== "terminal") throw new Error("Only terminal settlement may follow output drain");
 		if (phase === "open" && input.type === "output_drained") throw new Error("Output drain must follow process exit");
-		if (phase === "open" && input.type === "terminal") throw new Error("Terminal settlement must follow output drain");
+		if (phase === "open" && input.type === "terminal" && input.data?.spawned !== false) throw new Error("Terminal settlement must follow output drain");
 	}
 
 	private advancePhase(key: string, type: SubagentEventType): void {

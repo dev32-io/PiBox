@@ -133,6 +133,52 @@ test("renders continuation foreground progress and prose like spawn", () => {
 	assert.doesNotMatch(result.join("\n"), /line 11/);
 });
 
+test("renders wait timers with an animated countdown and elapsed completion", () => {
+	assert.equal(isHarnessTool("wait"), true);
+	const startedAt = Date.parse("2026-01-01T00:00:00.000Z");
+	let now = startedAt + 10_000;
+	const live = renderHarnessToolCall("wait", { durationMs: 30_000 }, theme, true, false, {
+		kind: "time", durationMs: 30_000, startedAt,
+	}, () => now);
+	const rendered = lines(live);
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Waiting 20s remaining$/);
+	assert.equal(rendered[1], "└─ Timer · 30s total · 10s elapsed");
+	now += 90;
+	assert.notEqual(lines(live)[0]?.[0], rendered[0]?.[0], "the wait indicator advances with the shared animation cadence");
+	assert.ok(live.render(24).every((line) => stripTerminalSequences(line).length <= 24));
+
+	assert.deepEqual(lines(renderHarnessToolCall("wait", { durationMs: 30_000 }, theme, false, false, {
+		kind: "time", durationMs: 30_000, startedAt, elapsedMs: 30_000,
+	})), ["✓ Waited 30s"]);
+	assert.deepEqual(lines(renderHarnessToolResult("wait", {
+		content: [{ type: "text", text: "Waited 30000 ms." }],
+		details: { kind: "time", durationMs: 30_000, startedAt, elapsedMs: 30_000 },
+	}, false, theme, false)), ["└─ Timer complete · 30s elapsed"]);
+});
+
+test("renders event waits with the event, elapsed time, pending count, and settlements", () => {
+	const startedAt = Date.parse("2026-01-01T00:00:00.000Z");
+	const live = lines(renderHarnessToolCall("wait", { event: "subagent_settled" }, theme, true, false, {
+		kind: "event", event: "subagent_settled", startedAt, pendingCount: 2,
+	}, () => startedAt + 72_000));
+	assert.match(live[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Waiting for next subagent settlement$/);
+	assert.equal(live[1], "└─ Event: subagent_settled · 1m 12s elapsed · 2 subagents pending");
+
+	assert.deepEqual(lines(renderHarnessToolCall("wait", { event: "subagent_settled" }, theme, false, false, {
+		kind: "event", event: "subagent_settled", startedAt, elapsedMs: 74_000,
+	})), ["✓ Event received subagent_settled"]);
+	assert.deepEqual(lines(renderHarnessToolResult("wait", {
+		content: [{ type: "text", text: "dependency report" }],
+		details: {
+			kind: "event", event: "subagent_settled", startedAt, elapsedMs: 74_000,
+			settlements: [{ agent: "general-purpose", agentId: "agent-1", status: "completed", summary: "dependency report" }],
+		},
+	}, false, theme, false)), [
+		"└─ Event received · subagent_settled · 1 settlement · 1m 14s elapsed",
+		"└─ general-purpose · completed · agent-1",
+	]);
+});
+
 test("renders distillation calls with scope-specific titles", () => {
 	assert.equal(isHarnessTool("distill_prepare"), true);
 	assert.deepEqual(lines(renderHarnessToolCall("distill_prepare", {

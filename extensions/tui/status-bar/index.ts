@@ -20,6 +20,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 	let clockTimer: ReturnType<typeof setInterval> | undefined;
 	let subagentAnimationTimer: ReturnType<typeof setInterval> | undefined;
 	let unsubscribeSubagents: (() => void) | undefined;
+	let standaloneSubagentKey: string | undefined;
 
 	const stop = () => {
 		poller?.stop();
@@ -30,6 +31,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 		subagentAnimationTimer = undefined;
 		unsubscribeSubagents?.();
 		unsubscribeSubagents = undefined;
+		standaloneSubagentKey = undefined;
 		activeTui = undefined;
 	};
 
@@ -42,7 +44,11 @@ export default function statusBar(pi: ExtensionAPI): void {
 		clockTimer = setInterval(() => activeTui?.requestRender(), 30_000);
 		const subagentUi = getSubagentUiProjectionRegistry();
 		const refreshSubagents = () => {
-			const active = Boolean(subagentUi.project()?.agents.length);
+			const projection = subagentUi.project();
+			const key = JSON.stringify({ agents: projection?.agents ?? [], overflow: projection?.overflow ?? 0 });
+			if (key === standaloneSubagentKey) return;
+			standaloneSubagentKey = key;
+			const active = Boolean(projection?.agents.length);
 			if (active && !subagentAnimationTimer) {
 				subagentAnimationTimer = setInterval(() => activeTui?.requestRender(), SUBAGENT_ANIMATION_INTERVAL_MS);
 				subagentAnimationTimer.unref?.();
@@ -74,7 +80,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 					const fastMode = parseFastModeStatus(extensionStatuses.get(FAST_MODE_STATUS_KEY));
 					const provider = ctx.model?.provider;
 					const usage = provider ? readUsageStatus(extensionStatuses.get(`${USAGE_STATUS_PREFIX}${provider}`)) : undefined;
-					const subagents = subagentUi.project();
+					const footerSubagents = subagentUi.project();
 					const layout = renderStatusBarLayout(width, {
 						ctx,
 						...(usage ? { usage } : {}),
@@ -95,7 +101,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						},
 						config,
 						...(serviceStatuses.length ? { serviceStatuses } : {}),
-						...(subagents && (subagents.agents.length > 0 || subagents.overflow > 0) ? { subagents } : {}),
+						...(footerSubagents && (footerSubagents.agents.length > 0 || footerSubagents.overflow > 0) ? { subagents: footerSubagents } : {}),
 						...(controller.selectedId ? { selectedInteractiveId: controller.selectedId } : {}),
 					});
 					navigationRows = layout.interactiveRows

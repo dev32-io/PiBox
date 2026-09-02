@@ -23,7 +23,7 @@ import type {
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
 import { ContinuationCapabilityStore, type ContinuationReservation } from "./continuations.js";
 import { SubagentEventBuffer } from "./events.js";
-import { createPiInvocationResolver, stableSystemPromptPath, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
+import { createPiInvocationResolver, stableSystemPromptPath, type SubagentInvocation, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
 import { JsonlStreamParser } from "./jsonl.js";
 import { promptContextHashes } from "./prompt-context.js";
 import { SUBAGENT_PROTOCOL_VERSION } from "./registry.js";
@@ -56,9 +56,25 @@ interface AgentRecord {
 	updatedAt: string;
 	progress: AgentProgress | undefined;
 	summary: string | undefined;
+	launching: LaunchingAttemptRecord | undefined;
 	active: AttemptRecord | undefined;
 	lastAttemptMetadata: Readonly<Record<string, string>> | undefined;
 	lastResult: TerminalResult | undefined;
+}
+
+interface LaunchingAttemptRecord {
+	readonly attemptId: string;
+	readonly contextHashes: PromptContextHashes;
+	readonly continuation: boolean;
+	readonly writerCapability: string;
+	readonly reservation: ContinuationReservation<AgentRecord> | undefined;
+	readonly previousState: LogicalAgentSnapshot["state"];
+	readonly previousAttemptMetadata: Readonly<Record<string, string>> | undefined;
+	readonly publicResult: Deferred<TerminalResult>;
+	readonly completion: Deferred<void>;
+	readonly cancelled: Deferred<void>;
+	terminationReason: Extract<TerminalReason, "explicit_stop" | "owner_lost"> | undefined;
+	terminalized: boolean;
 }
 
 interface AttemptRecord {
@@ -126,7 +142,7 @@ export class SubagentProcessManager implements SubagentService {
 		const transcriptPath = resolve(this.sessionDirectory, `${agentId}.jsonl`);
 		this.assertPrivateTranscriptPath(transcriptPath);
 		const startedAt = new Date().toISOString();
-		const record = {
+		const record: AgentRecord = {
 			agentId,
 			agent: spec.agent,
 			cwd: resolve(spec.cwd),
@@ -140,14 +156,16 @@ export class SubagentProcessManager implements SubagentService {
 			updatedAt: startedAt,
 			progress: undefined,
 			summary: undefined,
+			launching: undefined,
 			active: undefined,
 			lastAttemptMetadata: publicAttemptMetadata(initialAttemptMetadata),
 			lastResult: undefined,
 		};
 		record.handle = this.capabilities.issue(this.owner, agentId, record);
 		this.agents.set(agentId, record);
+		const launching = this.beginLaunching(record, spec.attemptUserPrompt, false, record.handle.continuationCapability);
 		try {
-			const attempt = await this.startAttempt(record, spec.attemptUserPrompt, false, record.handle.continuationCapability, undefined, initialAttemptMetadata, undefined, undefined, spec.beforeSpawn);
+			const attempt = await this.startAttempt(record, spec.attemptUserPrompt, launching, initialAttemptMetadata, undefined, undefined, spec.beforeSpawn);
 			return { handle: structuredClone(record.handle), result: attempt.publicResult.promise };
 		} catch (error) {
 			this.agents.delete(agentId);
@@ -163,13 +181,14 @@ export class SubagentProcessManager implements SubagentService {
 		requireText(spec.attemptUserPrompt, "attemptUserPrompt");
 		const reservation = this.capabilities.reserve(spec.owner, spec.handle);
 		const record = reservation.value;
-		if (record.active) {
+		if (record.launching || record.active || this.transcriptWriters.has(record.transcriptPath)) {
 			reservation.release();
 			throw new Error("Logical agent already has an active transcript writer");
 		}
+		const launching = this.beginLaunching(record, spec.attemptUserPrompt, true, spec.handle.continuationCapability, reservation);
 		try {
-			const attempt = await this.startAttempt(record, spec.attemptUserPrompt, true, spec.handle.continuationCapability, reservation, spec.attemptMetadata, spec.env, spec.workflowCredentials, spec.beforeSpawn);
-			return { handle: structuredClone(spec.handle), result: attempt.publicResult.promise };
+			const attempt = await this.startAttempt(record, spec.attemptUserPrompt, launching, spec.attemptMetadata, spec.env, spec.workflowCredentials, spec.beforeSpawn);
+			return { handle: structuredClone(record.handle), result: attempt.publicResult.promise };
 		} catch (error) {
 			try { reservation.release(); } catch { /* a spawned attempt already consumed it */ }
 			throw error;
@@ -182,7 +201,13 @@ export class SubagentProcessManager implements SubagentService {
 		this.assertOwner(handle.owner);
 		const record = this.agents.get(handle.agentId);
 		if (!record || record.handle.continuationCapability !== handle.continuationCapability) throw new Error("Unknown or stale logical agent handle");
+		const launching = record.launching;
+		if (launching) {
+			await launching.completion.promise;
+			if (launching.terminalized) return launching.publicResult.promise;
+		}
 		if (record.active) return record.active.publicResult.promise;
+		if (launching && !launching.terminalized) throw new Error("Logical agent launch failed before an attempt started");
 		if (record.lastResult) return structuredClone(record.lastResult);
 		throw new Error("Logical agent has no attempt to wait for");
 	}
@@ -204,10 +229,18 @@ export class SubagentProcessManager implements SubagentService {
 		this.assertOwner(owner);
 		this.assertOwner(handle.owner);
 		const record = this.agents.get(handle.agentId);
-		const attempt = record?.active;
-		if (!record || !attempt || attempt.writerCapability !== handle.continuationCapability) {
-			throw new Error("Unknown or inactive logical agent handle");
+		if (!record || record.handle.continuationCapability !== handle.continuationCapability) throw new Error("Unknown or inactive logical agent handle");
+		const launching = record.launching;
+		if (launching) {
+			if (!launching.terminationReason) {
+				record.state = "stopping";
+				this.append(record, launching, "stop_requested");
+				this.terminalizeLaunching(record, launching, "explicit_stop");
+			}
+			return;
 		}
+		const attempt = record.active;
+		if (!attempt || attempt.writerCapability !== handle.continuationCapability) throw new Error("Unknown or inactive logical agent handle");
 		if (!attempt.stopRequested) {
 			attempt.stopRequested = true;
 			attempt.terminationReason = "explicit_stop";
@@ -225,8 +258,8 @@ export class SubagentProcessManager implements SubagentService {
 		this.assertOwner(handle.owner);
 		const record = this.agents.get(handle.agentId);
 		if (!record || record.handle.continuationCapability !== handle.continuationCapability) throw new Error("Unknown or stale logical agent handle");
-		if (record.active) throw new Error("Cannot release an active logical agent");
-		this.capabilities.revoke(owner, record.handle);
+		if (record.launching || record.active) throw new Error("Cannot release an active logical agent");
+		if (!this.capabilities.revoke(owner, record.handle)) throw new Error("Cannot release a reserved or stale logical agent capability");
 		this.agents.delete(record.agentId);
 		await Promise.all([
 			rm(record.transcriptPath, { force: true }),
@@ -253,7 +286,11 @@ export class SubagentProcessManager implements SubagentService {
 	private async performTeardown(): Promise<void> {
 		this.closed = true;
 		this.capabilities.clear();
-		const attempts = [...this.agents.values()].flatMap((record) => record.active ? [record.active] : []);
+		const records = [...this.agents.values()];
+		for (const record of records) {
+			if (record.launching) this.terminalizeLaunching(record, record.launching, "owner_lost");
+		}
+		const attempts = records.flatMap((record) => record.active ? [record.active] : []);
 		for (const attempt of attempts) {
 			attempt.stopRequested = true;
 			attempt.terminationReason = "owner_lost";
@@ -262,7 +299,7 @@ export class SubagentProcessManager implements SubagentService {
 		}
 		await Promise.all(attempts.map((attempt) => this.escalateAndConfirm(attempt)));
 		this.events.close();
-		const transcripts = [...this.agents.values()].map((record) => rm(record.transcriptPath, { force: true }).catch(() => undefined));
+		const transcripts = records.map((record) => rm(record.transcriptPath, { force: true }).catch(() => undefined));
 		await Promise.all(transcripts);
 		this.agents.clear();
 		this.transcriptWriters.clear();
@@ -271,54 +308,95 @@ export class SubagentProcessManager implements SubagentService {
 		await rm(this.sessionDirectory, { recursive: true, force: true }).catch(() => undefined);
 	}
 
-	private async startAttempt(
+	private beginLaunching(
 		record: AgentRecord,
 		attemptUserPrompt: string,
 		continuation: boolean,
 		writerCapability: string,
 		reservation?: ContinuationReservation<AgentRecord>,
+	): LaunchingAttemptRecord {
+		if (record.launching || record.active || this.transcriptWriters.has(record.transcriptPath)) throw new Error("Transcript already has an active writer");
+		const launching: LaunchingAttemptRecord = {
+			attemptId: this.nextId("attempt"),
+			contextHashes: promptContextHashes(record.stableSystemContext, attemptUserPrompt),
+			continuation,
+			writerCapability,
+			reservation,
+			previousState: record.state,
+			previousAttemptMetadata: record.lastAttemptMetadata,
+			publicResult: deferred<TerminalResult>(),
+			completion: deferred<void>(),
+			cancelled: deferred<void>(),
+			terminationReason: undefined,
+			terminalized: false,
+		};
+		record.launching = launching;
+		record.state = "launching";
+		record.updatedAt = new Date().toISOString();
+		return launching;
+	}
+
+	private async startAttempt(
+		record: AgentRecord,
+		attemptUserPrompt: string,
+		launching: LaunchingAttemptRecord,
 		attemptMetadata?: Readonly<Record<string, string>>,
 		attemptEnv?: Readonly<Record<string, string>>,
 		attemptWorkflowCredentials?: Readonly<Record<string, string>>,
 		beforeSpawn?: () => void | Promise<void>,
-	): Promise<AttemptRecord> {
-		this.assertOpen();
-		if (record.active || this.transcriptWriters.has(record.transcriptPath)) throw new Error("Transcript already has an active writer");
-		const attemptId = this.nextId("attempt");
-		const contextHashes = promptContextHashes(record.stableSystemContext, attemptUserPrompt);
-		const normalizedAttemptMetadata = attemptMetadata ? cloneStringRecord(attemptMetadata, "attemptMetadata") : undefined;
-		const request: SubagentInvocationRequest = {
-			agentId: record.agentId,
-			attemptId,
-			agent: record.agent,
-			cwd: record.cwd,
-			stableSystemContext: record.stableSystemContext,
-			attemptUserPrompt,
-			transcriptPath: record.transcriptPath,
-			continuation,
-			...record.execution,
-			...(attemptEnv ? { env: { ...record.execution.env, ...cloneStringRecord(attemptEnv, "env") } } : record.execution.env ? { env: record.execution.env } : {}),
-			...(normalizedAttemptMetadata ? { attemptMetadata: normalizedAttemptMetadata } : {}),
-			...(attemptWorkflowCredentials ? { workflowCredentials: cloneStringRecord(attemptWorkflowCredentials, "workflowCredentials") } : {}),
-		};
-		const invocation = await this.invocationResolver(request);
-		this.assertOpen();
-		validateInvocation(invocation);
-		await beforeSpawn?.();
-		this.assertOpen();
-		const child = spawn(invocation.command, [...invocation.args], {
-			cwd: record.cwd,
-			detached: false,
-			env: { ...process.env, ...invocation.env },
-			shell: false,
-			stdio: ["pipe", "pipe", "pipe"],
-		});
+	): Promise<AttemptRecord | LaunchingAttemptRecord> {
+		let invocation: SubagentInvocation;
+		try {
+			const normalizedAttemptMetadata = attemptMetadata ? cloneStringRecord(attemptMetadata, "attemptMetadata") : undefined;
+			record.lastAttemptMetadata = publicAttemptMetadata(normalizedAttemptMetadata);
+			const request: SubagentInvocationRequest = {
+				agentId: record.agentId,
+				attemptId: launching.attemptId,
+				agent: record.agent,
+				cwd: record.cwd,
+				stableSystemContext: record.stableSystemContext,
+				attemptUserPrompt,
+				transcriptPath: record.transcriptPath,
+				continuation: launching.continuation,
+				...record.execution,
+				...(attemptEnv ? { env: { ...record.execution.env, ...cloneStringRecord(attemptEnv, "env") } } : record.execution.env ? { env: record.execution.env } : {}),
+				...(normalizedAttemptMetadata ? { attemptMetadata: normalizedAttemptMetadata } : {}),
+				...(attemptWorkflowCredentials ? { workflowCredentials: cloneStringRecord(attemptWorkflowCredentials, "workflowCredentials") } : {}),
+			};
+			const resolved = await this.raceLaunchingStage(launching, () => this.invocationResolver(request));
+			if (resolved.cancelled) return launching;
+			invocation = resolved.value;
+			validateInvocation(invocation);
+			if (beforeSpawn) {
+				const fenced = await this.raceLaunchingStage(launching, beforeSpawn);
+				if (fenced.cancelled) return launching;
+			}
+			if (launching.terminalized || record.launching !== launching || this.closed) return launching;
+		} catch (error) {
+			if (launching.terminalized) return launching;
+			this.failLaunching(record, launching);
+			throw error;
+		}
+
+		let child: ChildProcessWithoutNullStreams;
+		try {
+			child = spawn(invocation.command, [...invocation.args], {
+				cwd: record.cwd,
+				detached: false,
+				env: { ...process.env, ...invocation.env },
+				shell: false,
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+		} catch (error) {
+			this.failLaunching(record, launching);
+			throw error;
+		}
 		const attempt: AttemptRecord = {
-			attemptId,
-			contextHashes,
+			attemptId: launching.attemptId,
+			contextHashes: launching.contextHashes,
 			child,
-			writerCapability,
-			continuation,
+			writerCapability: launching.writerCapability,
+			continuation: launching.continuation,
 			publicResult: deferred<TerminalResult>(),
 			completion: deferred<void>(),
 			stopRequested: false,
@@ -326,18 +404,68 @@ export class SubagentProcessManager implements SubagentService {
 			termSent: false,
 			settled: false,
 		};
+		record.launching = undefined;
 		record.active = attempt;
-		record.lastAttemptMetadata = publicAttemptMetadata(normalizedAttemptMetadata);
 		record.state = "running";
 		const startedAt = new Date().toISOString();
 		record.startedAt = startedAt;
 		record.updatedAt = startedAt;
 		record.progress = child.pid === undefined ? initialAgentProgress(startedAt) : markAgentProcessStarted(initialAgentProgress(startedAt), startedAt);
 		this.transcriptWriters.add(record.transcriptPath);
-		reservation?.settle();
-		this.append(record, attempt, "attempt_started", { pid: child.pid ?? null, continuation, ...contextHashes });
+		launching.reservation?.settle();
+		launching.completion.resolve(undefined);
+		this.append(record, attempt, "attempt_started", { pid: child.pid ?? null, continuation: attempt.continuation, ...attempt.contextHashes });
 		this.observeProcess(record, attempt);
 		return attempt;
+	}
+
+	private async raceLaunchingStage<T>(launching: LaunchingAttemptRecord, stage: () => T | Promise<T>): Promise<{ cancelled: false; value: T } | { cancelled: true }> {
+		return Promise.race([
+			Promise.resolve().then(stage).then((value) => ({ cancelled: false as const, value })),
+			launching.cancelled.promise.then(() => ({ cancelled: true as const })),
+		]);
+	}
+
+	private failLaunching(record: AgentRecord, launching: LaunchingAttemptRecord): void {
+		if (record.launching === launching) {
+			record.launching = undefined;
+			record.state = launching.previousState;
+			record.lastAttemptMetadata = launching.previousAttemptMetadata;
+			record.updatedAt = new Date().toISOString();
+		}
+		launching.completion.resolve(undefined);
+	}
+
+	private terminalizeLaunching(record: AgentRecord, launching: LaunchingAttemptRecord, reason: Extract<TerminalReason, "explicit_stop" | "owner_lost">): LaunchingAttemptRecord {
+		if (launching.terminalized) return launching;
+		launching.terminalized = true;
+		launching.terminationReason = reason;
+		launching.cancelled.resolve(undefined);
+		const at = new Date().toISOString();
+		record.updatedAt = at;
+		record.state = "cancelled";
+		const text = reason === "explicit_stop" ? "Stopped by user." : "Stopped because the owning activation ended.";
+		record.summary = text;
+		if (launching.continuation) {
+			launching.reservation?.settle();
+			if (!this.closed) record.handle = this.capabilities.issue(this.owner, record.agentId, record);
+		}
+		const result: TerminalResult = {
+			owner: structuredClone(this.owner),
+			handle: structuredClone(record.handle),
+			attemptId: launching.attemptId,
+			contextHashes: structuredClone(launching.contextHashes),
+			status: "cancelled",
+			reason,
+			exitCode: null,
+			text,
+		};
+		record.lastResult = result;
+		if (record.launching === launching) record.launching = undefined;
+		if (!this.closed) this.append(record, launching, "terminal", { status: "cancelled", reason, exitCode: null, spawned: false, agentSettled: false, ...launching.contextHashes });
+		launching.publicResult.resolve(result);
+		launching.completion.resolve(undefined);
+		return launching;
 	}
 
 	private observeProcess(record: AgentRecord, attempt: AttemptRecord): void {
@@ -519,7 +647,7 @@ export class SubagentProcessManager implements SubagentService {
 		await attempt.completion.promise;
 	}
 
-	private append(record: AgentRecord, attempt: AttemptRecord, type: Parameters<SubagentEventBuffer["append"]>[0]["type"], data?: Readonly<Record<string, unknown>>, at?: string): void {
+	private append(record: AgentRecord, attempt: Pick<AttemptRecord, "attemptId">, type: Parameters<SubagentEventBuffer["append"]>[0]["type"], data?: Readonly<Record<string, unknown>>, at?: string): void {
 		if (this.closed) return;
 		record.updatedAt = at ?? new Date().toISOString();
 		this.events.append({ agentId: record.agentId, attemptId: attempt.attemptId, type, ...(data ? { data } : {}), ...(at ? { at } : {}) }, { agents: this.snapshots() });
@@ -540,7 +668,7 @@ export class SubagentProcessManager implements SubagentService {
 			...(record.lastAttemptMetadata ? { attemptMetadata: structuredClone(record.lastAttemptMetadata) } : {}),
 			startedAt: record.startedAt,
 			updatedAt: record.updatedAt,
-			...(record.active ? { attemptId: record.active.attemptId, contextHashes: structuredClone(record.active.contextHashes) } : record.lastResult ? { contextHashes: structuredClone(record.lastResult.contextHashes) } : {}),
+			...(record.active ? { attemptId: record.active.attemptId, contextHashes: structuredClone(record.active.contextHashes) } : record.launching ? { attemptId: record.launching.attemptId, contextHashes: structuredClone(record.launching.contextHashes) } : record.lastResult ? { contextHashes: structuredClone(record.lastResult.contextHashes) } : {}),
 			...(record.progress ? { progress: structuredClone(record.progress) } : {}),
 			...(record.summary ? { summary: record.summary } : {}),
 		}));

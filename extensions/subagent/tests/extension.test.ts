@@ -25,6 +25,8 @@ import { SubagentCapabilityRegistry } from "../registry.js";
 import { PendingSubagentDeliveryRegistry } from "../pending-deliveries.js";
 import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../tool-policy.js";
 import { SubagentUiProjectionRegistry } from "../ui-projection.js";
+import { formatSubagentFooterProjection } from "../display.js";
+import { WorkflowSubagentLauncher } from "../../workflow-runtime/subagent-launcher.js";
 
 interface Deferred<T> { promise: Promise<T>; resolve(value: T): void }
 function deferred<T>(): Deferred<T> {
@@ -66,6 +68,9 @@ class FakeService implements SubagentService {
 		this.snapshots.set(agentId, {
 			handle, agent: spec.agent, state: "running", attemptId,
 			provider: spec.provider, model: spec.model, effort: spec.effort, fast: spec.fast,
+			...(spec.continuationKey ? { continuationKey: spec.continuationKey } : {}),
+			...(spec.workflowMetadata ? { workflowMetadata: spec.workflowMetadata } : {}),
+			...(spec.attemptMetadata ? { attemptMetadata: spec.attemptMetadata } : {}),
 			startedAt: now, updatedAt: now,
 			progress: { startedAt: now, processStartedAt: now, lastEventAt: now, turns: 0, toolCalls: 0, toolErrors: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
 		});
@@ -81,7 +86,7 @@ class FakeService implements SubagentService {
 		if (!current || current.handle.continuationCapability !== spec.handle.continuationCapability) throw new Error("stale handle");
 		const attemptId = `attempt-${++this.id}`;
 		const now = new Date().toISOString();
-		this.snapshots.set(spec.handle.agentId, { ...current, state: "running", attemptId, startedAt: now, updatedAt: now });
+		this.snapshots.set(spec.handle.agentId, { ...current, state: "running", attemptId, ...(spec.attemptMetadata ? { attemptMetadata: spec.attemptMetadata } : {}), startedAt: now, updatedAt: now });
 		const pending = deferred<TerminalResult>();
 		this.attempts.set(spec.handle.agentId, pending);
 		this.emit(spec.handle.agentId, attemptId, "attempt_started");
@@ -302,6 +307,48 @@ test("background returns immediately and steers one terminal batch to the same b
 	assert.deepEqual(f.sent[0].delivery, { deliverAs: "steer", triggerTurn: true });
 });
 
+test("production workflow launch projects whitelisted provenance and configured tier without duplicating the footer", async () => {
+	const uiRegistry = new SubagentUiProjectionRegistry();
+	const f = harness({ uiRegistry });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("standalone", { agent: "general-purpose", task: "Standalone work", mode: "background" }, undefined, undefined, f.ctx);
+	const service = f.services[0]!;
+	const launcher = new WorkflowSubagentLauncher(service);
+	const launched = launcher.launch({
+		storyId: "story-one",
+		slotId: "task:task-one",
+		attemptToken: "workflow-token",
+		action: "task-launch",
+		role: "implementer",
+		tier: "high",
+		cwd: process.cwd(),
+		stableSystemContext: "stable workflow context",
+		attemptUserPrompt: "implement the task",
+		provider: "provider",
+		model: "model",
+		effort: "high",
+		tools: ["read"],
+		taskId: "task-one",
+	});
+	await waitUntil(() => service.launches.length === 2, "workflow service launch was not published");
+
+	assert.deepEqual(uiRegistry.project()?.agents.map((agent) => agent.agentId), ["agent-1"]);
+	const workflow = uiRegistry.projectWorkflow("story-one");
+	assert.deepEqual(workflow?.agents.map((agent) => agent.agentId), ["agent-2"]);
+	assert.equal(workflow?.agents[0]?.tier, "high");
+	assert.deepEqual(workflow?.agents[0]?.workflow, {
+		storyId: "story-one",
+		slotId: "task:task-one",
+		action: "task-launch",
+		taskId: "task-one",
+	});
+	assert.equal("PIBOX_WORKFLOW_ATTEMPT_TOKEN" in (workflow?.agents[0]?.workflow ?? {}), false);
+	assert.match(formatSubagentFooterProjection(workflow!.agents[0]!, Date.now()), /implementer · High \(provider\/model#high\)/, "the shared workflow row renderer receives the production tier projection");
+
+	service.finish("agent-2", "completed", "workflow complete");
+	await launched;
+});
+
 test("near-simultaneous background settlements are steered in one message", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
@@ -332,12 +379,21 @@ test("large completion sets are chunked without consuming model-invisible settle
 	assert.ok(f.sent.every((entry) => Buffer.byteLength(entry.message.content, "utf8") < 48 * 1024));
 });
 
-test("wait supports elapsed time and abort without shell sleep", async () => {
+test("wait supports elapsed time, live timer metadata, and abort without shell sleep", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	const elapsed = await f.tools.get("wait").execute("time", { durationMs: 1 }, undefined, undefined, f.ctx);
+	const updates: any[] = [];
+	const elapsed = await f.tools.get("wait").execute("time", { durationMs: 1 }, undefined, (update: any) => updates.push(update), f.ctx);
 	assert.equal(elapsed.content[0].text, "Waited 1 ms.");
-	assert.deepEqual(elapsed.details, { kind: "time", durationMs: 1 });
+	assert.equal(updates.length, 1);
+	assert.equal(updates[0].details.kind, "time");
+	assert.equal(updates[0].details.durationMs, 1);
+	assert.equal(typeof updates[0].details.startedAt, "number");
+	assert.equal(elapsed.details.kind, "time");
+	assert.equal(elapsed.details.durationMs, 1);
+	assert.equal(elapsed.details.startedAt, updates[0].details.startedAt);
+	assert.equal(typeof elapsed.details.finishedAt, "number");
+	assert.equal(typeof elapsed.details.elapsedMs, "number");
 
 	const controller = new AbortController();
 	const waiting = f.tools.get("wait").execute("abort", { durationMs: 60_000 }, controller.signal, undefined, f.ctx);
@@ -349,15 +405,23 @@ test("wait subscribes once to background settlement and consumes automatic deliv
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
-	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, undefined, f.ctx);
+	const updates: any[] = [];
+	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, (update: any) => updates.push(update), f.ctx);
 	f.services[0]!.finish("agent-1", "completed", "dependency report");
 	const settled = await waiting;
 	assert.match(settled.content[0].text, /dependency report/);
-	assert.deepEqual(settled.details, {
-		kind: "event",
-		event: "subagent_settled",
-		settlements: [{ agent: "general-purpose", agentId: "agent-1", status: "completed", summary: "dependency report" }],
-	});
+	assert.equal(updates.length, 1);
+	assert.equal(updates[0].details.event, "subagent_settled");
+	assert.equal(updates[0].details.pendingCount, 1);
+	assert.equal(settled.details.kind, "event");
+	assert.equal(settled.details.event, "subagent_settled");
+	assert.equal(settled.details.startedAt, updates[0].details.startedAt);
+	assert.equal(typeof settled.details.finishedAt, "number");
+	assert.equal(typeof settled.details.elapsedMs, "number");
+	assert.equal(settled.details.pendingCount, 1);
+	assert.deepEqual(settled.details.settlements, [
+		{ agent: "general-purpose", agentId: "agent-1", status: "completed", summary: "dependency report" },
+	]);
 	assert.equal(f.sent.length, 0, "the wait result is the sole model-visible delivery");
 });
 

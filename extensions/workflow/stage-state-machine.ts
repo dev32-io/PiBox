@@ -67,6 +67,7 @@ export interface ActionSettlement {
 export interface MachineAdvance {
 	state: StoryRuntimeState;
 	actions: WorkflowAction[];
+	changed: boolean;
 }
 
 function checks(items: readonly MachineCheck[] | undefined): DurableCheckState[] {
@@ -121,16 +122,18 @@ function attentionAction(state: StoryRuntimeState): WorkflowAction[] {
 
 /** Pure scheduling projection. It never starts work or manufactures attempt identities. */
 export function advanceStageStateMachine(plan: StageMachinePlan, state: StoryRuntimeState): MachineAdvance {
+	if (state.status === "attention") return { state, actions: attentionAction(state), changed: false };
+	if (state.status !== "running") return { state, actions: [], changed: false };
 	const next = structuredClone(state);
-	if (next.status === "attention") return { state: next, actions: attentionAction(next) };
-	if (next.status !== "running") return { state: next, actions: [] };
+	let changed = false;
+	const projected = (actions: WorkflowAction[]): MachineAdvance => ({ state: changed ? next : state, actions, changed });
 
 	for (let index = 0; index < next.stages.length; index++) {
 		const stage = next.stages[index]!;
 		const definition = plan.stages[index];
 		if (!definition || definition.id !== stage.id) return putAttention(next, { code: "plan_mismatch", summary: `Runtime stage ${stage.id} does not match the plan` });
 		if (stage.status === "completed") continue;
-		stage.status = "running";
+		if (stage.status !== "running") { stage.status = "running"; changed = true; }
 		const activeTask = stage.tasks.some((task) => ["implementing", "checking", "repairing"].includes(task.status));
 		const pendingTaskActions = stage.tasks.flatMap((task): WorkflowAction[] => {
 			if (task.status === "pending") return [{ kind: "task-launch", stageId: stage.id, taskId: task.id }];
@@ -139,29 +142,29 @@ export function advanceStageStateMachine(plan: StageMachinePlan, state: StoryRun
 			return [];
 		});
 		if (!allTasksComplete(stage)) {
-			if (definition.mode === "concurrent") return { state: next, actions: pendingTaskActions };
-			return { state: next, actions: activeTask ? [] : pendingTaskActions.slice(0, 1) };
+			if (definition.mode === "concurrent") return projected(pendingTaskActions);
+			return projected(activeTask ? [] : pendingTaskActions.slice(0, 1));
 		}
 		const integration = actionForIntegration(stage);
-		if (integration) return { state: next, actions: [integration] };
-		if (stage.integration.status !== "completed") return { state: next, actions: [] };
+		if (integration) return projected([integration]);
+		if (stage.integration.status !== "completed") return projected([]);
 		const verification = actionForVerification(stage);
-		if (verification) return { state: next, actions: [verification] };
-		if (stage.verification.status !== "completed") return { state: next, actions: [] };
+		if (verification) return projected([verification]);
+		if (stage.verification.status !== "completed") return projected([]);
 		const review = actionForReview(stage.review, "review", "review-fix", stage.id);
-		if (review) return { state: next, actions: [review] };
-		if (stage.review.status !== "completed" && stage.review.status !== "skipped") return { state: next, actions: [] };
+		if (review) return projected([review]);
+		if (stage.review.status !== "completed" && stage.review.status !== "skipped") return projected([]);
 		stage.status = "completed";
-		continue;
+		changed = true;
 	}
 
 	const finalReview = actionForReview(next.finalReview, "final-review", "final-review-fix");
-	if (finalReview) return { state: next, actions: [finalReview] };
-	if (next.finalReview.status !== "completed") return { state: next, actions: [] };
-	if (next.e2e.status === "pending") return { state: next, actions: [{ kind: "e2e" }] };
-	if (next.e2e.status === "fix_pending") return { state: next, actions: [{ kind: "e2e-fix" }] };
-	if (next.e2e.status !== "completed") return { state: next, actions: [] };
-	return { state: next, actions: [{ kind: "completion" }] };
+	if (finalReview) return projected([finalReview]);
+	if (next.finalReview.status !== "completed") return projected([]);
+	if (next.e2e.status === "pending") return projected([{ kind: "e2e" }]);
+	if (next.e2e.status === "fix_pending") return projected([{ kind: "e2e-fix" }]);
+	if (next.e2e.status !== "completed") return projected([]);
+	return projected([{ kind: "completion" }]);
 }
 
 function actionForIntegration(stage: StageRuntimeState): WorkflowAction | undefined {
@@ -185,7 +188,7 @@ function actionForReview(review: ReviewRuntimeState, reviewKind: "review" | "fin
 function putAttention(state: StoryRuntimeState, reason: FailureSummary): MachineAdvance {
 	state.status = "attention";
 	state.attention = reason;
-	return { state, actions: [{ kind: "attention", reason }] };
+	return { state, actions: [{ kind: "attention", reason }], changed: true };
 }
 
 function stageById(state: StoryRuntimeState, id: string | undefined): StageRuntimeState | undefined {
@@ -200,8 +203,8 @@ function attempt(token: string, owner: RuntimeOwner, activatedAt: string): Activ
 
 /** Mark one projected action active. Completion is the only synchronous action. */
 export function activateWorkflowAction(state: StoryRuntimeState, action: WorkflowAction, token: string, owner: RuntimeOwner, activatedAt: string): StoryRuntimeState {
+	if (state.status !== "running" || action.kind === "attention" || !state.activationOwner || !sameOwner(state.activationOwner, owner)) return state;
 	const next = structuredClone(state);
-	if (next.status !== "running" || action.kind === "attention" || !next.activationOwner || !sameOwner(next.activationOwner, owner)) return next;
 	if (action.kind === "completion") {
 		next.status = "completed";
 		return next;

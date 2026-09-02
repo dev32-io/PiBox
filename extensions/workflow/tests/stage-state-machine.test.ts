@@ -78,8 +78,19 @@ test("ordered sequential stages expose one task and hold later stages behind the
 test("concurrent stages expose every pending task without summing them into steps", () => {
 	const value = plan({ stages: [{ id: "stage-a", mode: "concurrent", tasks: [{ id: "a" }, { id: "b" }, { id: "c" }], checks: [], review: { mode: "skip" } }] });
 	const projected = advanceStageStateMachine(value, initial(value));
+	assert.equal(projected.changed, true);
 	assert.deepEqual(projected.actions.map((item) => item.taskId), ["a", "b", "c"]);
 	assert.ok(projected.actions.every((item) => item.kind === "task-launch"));
+});
+
+test("an idle active attempt is an explicit no-op that preserves the authoritative state object", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [{ id: "task-a" }], checks: [], review: { mode: "skip" } }] });
+	const projected = advanceStageStateMachine(value, initial(value));
+	const active = activateWorkflowAction(projected.state, projected.actions[0]!, "active-token", ownerA, at);
+	const idle = advanceStageStateMachine(value, active);
+	assert.equal(idle.changed, false);
+	assert.equal(idle.state, active);
+	assert.deepEqual(idle.actions, []);
 });
 
 test("stage review is scheduled only when required", () => {

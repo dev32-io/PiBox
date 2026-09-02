@@ -291,12 +291,13 @@ function snapshotStatus(state: StoryRuntimeState): WorkflowSnapshot["status"] {
 	return "ready";
 }
 
-function workflowSnapshot(ref: string, title: string, state: StoryRuntimeState): WorkflowSnapshot {
+function workflowSnapshot(ref: string, title: string, state: StoryRuntimeState, plan: StoryPlanDocument): WorkflowSnapshot {
 	return {
 		ref,
 		title,
 		status: snapshotStatus(state),
 		runtime: structuredClone(state),
+		stageTopology: plan.stages.map(({ id, mode }) => ({ id, mode })),
 	};
 }
 
@@ -470,13 +471,17 @@ async function launchAgent(context: StoryWorkflowActionContext, role: string, st
 	const selectors = definition.tools ?? DEFAULT_SUBAGENT_TOOLS;
 	const tools = resolveToolSelectors(selectors);
 	if (context.action.taskId && (context.action.kind === "task-launch" || context.action.kind === "task-repair") && !tools.includes("task_clarify")) tools.push("task_clarify");
-	const slotId = context.action.taskId ? `task:${context.action.taskId}` : context.action.stageId ? `stage:${context.action.stageId}:${context.action.kind.replace(/-fix$/, "")}` : context.action.kind.replace(/-fix$/, "");
+	const slotKind = context.action.kind === "integration-repair" ? "integration"
+		: context.action.kind === "verification-repair" ? "verification"
+			: context.action.kind.replace(/-fix$/, "");
+	const slotId = context.action.taskId ? `task:${context.action.taskId}` : context.action.stageId ? `stage:${context.action.stageId}:${slotKind}` : slotKind;
 	const launched = await context.runtime.launcher.launch({
 		storyId: context.story.id,
 		slotId,
 		attemptToken: context.token,
 		action: context.action.kind,
 		role,
+		tier,
 		cwd,
 		stableSystemContext: [`You are the PiBox ${role}. Follow the supplied bounded role context exactly.`, stableContext].join("\n\n"),
 		attemptUserPrompt: attemptPrompt,
@@ -963,7 +968,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			return next;
 		}, (state) => ({ type: completed ? "workflow.completed" : "workflow.advanced", resultCode: state.status }));
 		const state = committed.state;
-		if (completed) {
+		if (completed && committed.stateWritten) {
 			try {
 				await finalizeCompletion(runtime, loaded, state);
 				await store.updateState((current) => ({ ...current!, status: "completed", outcomeStatus: "written" }), { type: "outcome.written", resultCode: "written" });
@@ -976,7 +981,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			return;
 		}
 		await rebind(ctx, runtime, loaded, state);
-		emit(runtime.identity.root, loaded.story.id);
+		if (committed.stateWritten) emit(runtime.identity.root, loaded.story.id);
 	};
 
 	return {
@@ -1010,7 +1015,7 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			const loaded = await loadStory(runtime, storyId(ref));
 			const state = await storeFor(runtime.identity.root, loaded.story.id).readState() ?? await initialState(runtime, loaded);
 			stateMatchesPlan(state, loaded);
-			return workflowSnapshot(ref, loaded.story.title, state);
+			return workflowSnapshot(ref, loaded.story.title, state, loaded.plan);
 		},
 		async controlExecution(ref, command, _operationId, ctx): Promise<WorkflowExecutionControl> {
 			const runtime = await options.runtimeFor(ctx);

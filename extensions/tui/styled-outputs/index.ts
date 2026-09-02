@@ -26,7 +26,7 @@ import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from ".
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v13");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v14");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";

@@ -314,7 +314,7 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 		interactiveRows.push(visibleServices.map((service) => service.id));
 	}
 	if (data.subagents) {
-		for (const agent of data.subagents.agents) {
+		for (const agent of data.subagents.agents.filter((candidate) => !candidate.workflow)) {
 			const lifecycle = agent.state === "launching" ? "starting" : agent.state === "stopping" ? "stopping" : "running";
 			const tone = lifecycle === "starting" ? "muted" : lifecycle === "stopping" ? "warning" : "accent";
 			const now = data.now ?? Date.now();
