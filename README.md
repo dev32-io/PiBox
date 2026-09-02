@@ -19,11 +19,18 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 
 ## Workflow: from idea to working product
 
-[![Static preview of an active Aero Todo workflow with 12 of 13 tasks complete; select it to play the accelerated terminal demo](docs/assets/workflow-demo/workflow-demo-poster.png)](docs/assets/workflow-demo/workflow-demo.gif)
+[![Static preview of the real Pi TUI showing an active Aero Todo workflow with 9 of 13 tasks complete; select it to play the accelerated terminal recording](docs/assets/workflow-demo/workflow-demo-poster.png)](docs/assets/workflow-demo/workflow-demo.gif)
 
-[Watch the 18-second accelerated terminal demo.](docs/assets/workflow-demo/workflow-demo.gif)
+[Watch the 18-second accelerated terminal recording.](docs/assets/workflow-demo/workflow-demo.gif)
 
-> **Accelerated reenactment based on a real PiBox workflow run.** Playback is opt-in; the terminal scenes faithfully compress its lifecycle and the final screen is the Aero Todo application delivered by that run.
+> **Accelerated reenactment based on a real PiBox workflow run.** Playback is opt-in. The terminal pixels are recorded from the real Pi TUI; a capture-only fixture advances representative reconstructed states through PiBox's production workflow dashboard renderer. Its topology, repair outcomes, final metrics, checks, and E2E result are grounded in a sanitized Run 6 provenance record. The final screen is the Aero Todo application delivered by that run.
+
+<details>
+<summary>Text transcript of the terminal recording</summary>
+
+The user types “Let's make a todo list app.” Pi moves through product discussion, a reviewed specification/design/E2E contract, and a 13-task implementation plan. The production workflow dashboard then advances four 1/6/5/1-task sequential/concurrent stages, shows the two review fixes found in the real run, completes whole-branch review, and reports 62/62 deterministic checks plus 5/5 E2E journeys. The recording ends on the real delivered Aero Todo application.
+
+</details>
 
 PiBox turns an open-ended request into an explicit product contract before implementation begins. You brainstorm with the main agent, shape a Markdown-rich story with specification, design, and outside-in E2E cases, then review a separate implementation plan. Nothing executes until you explicitly start the reviewed workflow.
 

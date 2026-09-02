@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "basis": "Sanitized facts from the completed Aero Todo durability Run 6",
+  "storyId": "aero-todo-list",
+  "title": "Aero Todo List",
+  "stages": [
+    {
+      "id": "workspace-foundation",
+      "mode": "sequential",
+      "tasks": ["bootstrap-react-workspace"],
+      "review": { "status": "skipped", "iteration": 0, "repairCount": 0 }
+    },
+    {
+      "id": "independent-foundations",
+      "mode": "concurrent",
+      "tasks": [
+        "implement-todo-domain",
+        "build-aero-theme",
+        "build-aero-surfaces",
+        "build-aero-form-controls",
+        "build-aero-action-controls",
+        "build-aero-feedback"
+      ],
+      "review": { "status": "skipped", "iteration": 0, "repairCount": 0 }
+    },
+    {
+      "id": "independent-feature-slices",
+      "mode": "concurrent",
+      "tasks": [
+        "implement-todo-session",
+        "build-todo-composer",
+        "build-todo-collection",
+        "build-todo-toolbar",
+        "build-design-system-catalog"
+      ],
+      "review": { "status": "completed", "iteration": 2, "repairCount": 1 }
+    },
+    {
+      "id": "application-integration",
+      "mode": "sequential",
+      "tasks": ["assemble-aero-todo-app"],
+      "review": { "status": "completed", "iteration": 1, "repairCount": 0 }
+    }
+  ],
+  "checks": { "passed": 62, "total": 62 },
+  "finalReview": { "status": "completed", "iteration": 2, "repairCount": 1 },
+  "e2e": { "passed": 5, "total": 5, "repairCount": 0 },
+  "metricsMs": {
+    "workflow": 2071974,
+    "implementation": 1076093,
+    "integration": 948,
+    "verification": 102454,
+    "review": 598228,
+    "e2e": 294251
+  },
+  "outcome": { "deviations": 0, "residualRisks": 0 }
+}
