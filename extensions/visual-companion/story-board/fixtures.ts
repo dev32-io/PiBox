@@ -1,12 +1,15 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stringify } from "yaml";
+import { parseAuthoredTaskDocument, parseStoryDocument, parseStoryPlanDocument } from "../../workflow/work-items.js";
 import { TASK_STATUSES } from "./projector.js";
 
 export const ASSISTED_FIXTURE_MARKER = ".visual-companion-assisted-fixture.json";
 export const ASSISTED_E2E_CASES = ["E2E-001", "E2E-002", "E2E-003", "E2E-004", "E2E-005", "E2E-006"] as const;
 export const RECOVERY_STORY_ID = "malformed-recovery";
+export const CURRENT_STORY_ID = "current-delivery";
 
 const documentTypes = [
 	["intent", "intent", "intent.md"], ["product-spec", "spec", "specs/product.md"], ["secondary-spec", "spec", "specs/secondary.md"],
@@ -17,6 +20,7 @@ const documentTypes = [
 async function put(root: string, relative: string, body: string | Uint8Array): Promise<void> {
 	const path = join(root, relative); await mkdir(dirname(path), { recursive: true }); await writeFile(path, body);
 }
+function digest(value: unknown): string { return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`; }
 function taskManifest(id: string, status: string): string {
 	return stringify({ schemaVersion: 1, id, title: `${status.replaceAll("_", " ")} task`, status, dependsOn: [], execution: { assignment: { agent: "implementer", tier: "low", rationale: "Canonical assisted fixture" } }, assembly: { stageId: "fixture-stage" }, verification: { timing: "task", methods: ["browser inspection"], taskChecks: ["fixture"] } });
 }
@@ -53,6 +57,34 @@ export async function createAssistedFixtureRepository(): Promise<AssistedFixture
 	const docs = documentTypes.map(([id, type, path]) => ({ id, type, path, status: "approved", narrativeSchemaVersion: 2 }));
 	for (const [id, , path] of documentTypes) await put(active, path, `# ${id.replaceAll("-", " ")}\n\nCanonical readable Markdown for the assisted fixture.`);
 	await put(active, "index.yaml", stringify({ schemaVersion: 1, id: "active-delivery", kind: "story", title: "Active delivery", phase: "execution", state: "active", planning: { revision: 3 }, artifacts: docs, tasks, integrationUnits: [], evaluations: evaluations.map(({ id, path }) => ({ id, path })) }));
+
+	const currentRoot = join(artifacts, CURRENT_STORY_ID);
+	const currentTasks = Array.from({ length: 13 }, (_, index) => ({ id: `current-task-${String(index + 1).padStart(2, "0")}`, title: `Current task ${index + 1}` }));
+	const currentStages = [
+		{ id: "foundation", mode: "sequential", tasks: currentTasks.slice(0, 3) },
+		{ id: "features", mode: "concurrent", tasks: currentTasks.slice(3, 8) },
+		{ id: "hardening", mode: "concurrent", tasks: currentTasks.slice(8, 11) },
+		{ id: "release", mode: "sequential", tasks: currentTasks.slice(11) },
+	];
+	const currentStoryYaml = stringify({ schemaVersion: 1, id: CURRENT_STORY_ID, title: "Completed current delivery", kind: "story", spec: "# Outcome\n\nDeliver the current stage-centric board.", design: "# Design\n\nProject only current authored and authoritative state.", e2e: "# E2E\n\nExercise the completed four-stage delivery." });
+	const currentPlanYaml = stringify({ schemaVersion: 1, stages: currentStages.map((stage) => ({ id: stage.id, mode: stage.mode, tasks: stage.tasks.map((task) => task.id), checks: ["npm test"], review: { mode: "required" } })) });
+	const currentTaskYaml = new Map(currentTasks.map((task) => [task.id, stringify({ schemaVersion: 1, id: task.id, title: task.title, dependsOn: [], description: `Implement ${task.title}.`, scope: "Current fixture scope.", delivery: "Deliver verified code.", checks: ["npm test"], assignment: { agent: "implementer", tier: "low", rationale: "Focused fixture contribution" } })]));
+	await put(currentRoot, "story.yaml", currentStoryYaml); await put(currentRoot, "plan.yaml", currentPlanYaml);
+	for (const [taskId, body] of currentTaskYaml) await put(currentRoot, `tasks/${taskId}.yaml`, body);
+	const currentContracts = {
+		story: digest(parseStoryDocument(currentStoryYaml, "story.yaml")), plan: digest(parseStoryPlanDocument(currentPlanYaml, "plan.yaml", { draft: true })),
+		tasks: Object.fromEntries([...currentTaskYaml].map(([taskId, body]) => [taskId, digest(parseAuthoredTaskDocument(body, `${taskId}.yaml`))])),
+	};
+	await put(currentRoot, "tasks/malformed-task.yaml", "schemaVersion: 1\nid: malformed-task\ndescription: [unterminated");
+	const completedReview = { status: "completed", iteration: 1, repairCount: 0, currentFindings: [], result: { code: "passed", summary: "Review passed in /private/worktrees/current" } };
+	const runtimeStages = currentStages.map((stage) => ({ id: stage.id, status: "completed", tasks: stage.tasks.map((task) => ({ id: task.id, status: "completed", repairCount: 0, checks: [{ id: "task-check", status: "passed" }], contributionCommit: `commit-${task.id}` })), integration: { status: "completed", repairCount: 0, contributionCommits: stage.tasks.map((task) => `commit-${task.id}`), integratedCommit: `integrated-${stage.id}`, result: { code: "passed", summary: "Integration passed" } }, verification: { status: "completed", repairCount: 0, checks: [{ id: "stage-check", status: "passed" }], result: { code: "passed", summary: "Verification passed" } }, review: completedReview }));
+	await put(currentRoot, "state.yaml", stringify({ schemaVersion: 1, storyId: CURRENT_STORY_ID, status: "completed", activationOwner: { sessionId: "private-session", processInstanceId: "private-process", activationId: "private-activation" }, contracts: currentContracts, git: { canonicalBranch: "main", baseCommit: "base", integrationBranch: "private/integration", integrationWorktree: "/private/worktrees/current" }, stages: runtimeStages, finalReview: completedReview, e2e: { status: "completed", repairCount: 0, evidenceRefs: ["evidence/summary.txt", "evidence/nested/shot.png", "evidence/data.json", "evidence/archive.zip"], result: { code: "passed", summary: "E2E passed" } }, metrics: { workflowMs: 0, categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 }, incompleteIntervals: 0, incompleteCategories: [] }, outcomeStatus: "written" }));
+	await put(currentRoot, "outcome.md", "# Delivered outcome\n\nAll four stages and thirteen tasks completed.");
+	await put(currentRoot, "evidence/summary.txt", "Current flat evidence"); await put(currentRoot, "evidence/nested/shot.png", Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64")); await put(currentRoot, "evidence/data.json", '{"literal":"<tag>"}\n'); await put(currentRoot, "evidence/archive.zip", "unsupported"); await put(currentRoot, "evidence/uncited.txt", "must not be served");
+
+	await put(artifacts, "malformed-current/story.yaml", "schemaVersion: 1\nid: malformed-current\nspec: [unterminated");
+	await put(artifacts, "current-precedence/story.yaml", stringify({ schemaVersion: 1, id: "current-precedence", title: "Current wins", kind: "story", spec: "Current specification", design: "Current design", e2e: "Current E2E" }));
+	await put(artifacts, "current-precedence/index.yaml", stringify({ schemaVersion: 1, id: "current-precedence", kind: "story", title: "Legacy loses", phase: "execution", state: "active", planning: { revision: 1 }, artifacts: [], tasks: [], integrationUnits: [], evaluations: [] }));
 
 	const historicalStories: ReadonlyArray<readonly [string, string, string, string]> = [["completed-story", "Completed story", "complete", "complete"], ["archived-story", "Archived story", "complete", "archived"], ["legacy-story", "Legacy historical story", "historical", "legacy"]];
 	for (const [id, title, phase, state] of historicalStories) {

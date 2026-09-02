@@ -13,33 +13,33 @@ function declaration(css: string, name: string): string | undefined {
 test("approved semantic tokens provide color, type, spacing, geometry, focus, and motion", async () => {
 	const css = await readFile(resolve(commonAssets, "design-tokens.css"), "utf8");
 	const expected = {
-		"--color-canvas": "#0c0e12",
-		"--color-surface": "#12151b",
-		"--color-surface-raised": "#181c24",
-		"--color-surface-strong": "#202631",
-		"--color-surface-hover": "#262d39",
-		"--color-border-subtle": "#252b35",
-		"--color-border": "#313946",
-		"--color-border-strong": "#465163",
-		"--color-text": "#f2f4f7",
-		"--color-text-secondary": "#b8c0cc",
-		"--color-text-muted": "#7f8998",
-		"--color-text-disabled": "#596270",
-		"--color-text-inverse": "#0c0e12",
-		"--color-accent": "#7697e8",
-		"--color-accent-hover": "#89a7ee",
-		"--color-success": "#6fbd8c",
-		"--color-warning": "#d9a85f",
-		"--color-danger": "#d87878",
-		"--color-info": "#6eaed4",
-		"--color-scrim": "rgb(0 0 0 / 42%)",
+		"--color-canvas": "#090d14",
+		"--color-surface": "#111821",
+		"--color-surface-raised": "#17212c",
+		"--color-surface-strong": "#1e2a37",
+		"--color-surface-hover": "#243343",
+		"--color-border-subtle": "#22303e",
+		"--color-border": "#304255",
+		"--color-border-strong": "#496078",
+		"--color-text": "#f1f6fb",
+		"--color-text-secondary": "#b5c2cf",
+		"--color-text-muted": "#7f91a3",
+		"--color-text-disabled": "#596979",
+		"--color-text-inverse": "#071019",
+		"--color-accent": "#54b9f5",
+		"--color-accent-hover": "#78c9f8",
+		"--color-success": "#63c58b",
+		"--color-warning": "#e2ad55",
+		"--color-danger": "#ef7377",
+		"--color-info": "#65bde5",
+		"--color-scrim": "rgb(2 7 13 / 58%)",
 		"--header-height": "68px",
 		"--content-max-width": "1180px",
 		"--lane-width": "288px",
 		"--drawer-width": "464px",
 	};
 	for (const [name, value] of Object.entries(expected)) assert.equal(declaration(css, name), value, name);
-	for (const contract of ["--font-sans", "--font-mono", "--space-1", "--space-10", "--radius-sm", "--radius-pill", "--shadow-overlay", "--motion-fast", "--motion-normal", "--focus-ring"]) {
+	for (const contract of ["--color-canvas-soft", "--color-accent-strong", "--color-selected-well", "--color-top-edge", "--font-sans", "--font-mono", "--space-1", "--space-10", "--radius-sm", "--radius-pill", "--shadow-panel", "--shadow-directional", "--shadow-overlay", "--motion-fast", "--motion-normal", "--focus-ring"]) {
 		assert.ok(declaration(css, contract), contract);
 	}
 	assert.match(css, /:focus-visible/);

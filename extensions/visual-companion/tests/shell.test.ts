@@ -27,6 +27,10 @@ test("shell exposes accessible stable tabs and lazy viewer mount regions", async
 	assert.match(app, /ArrowRight/);
 	assert.match(app, /Mount lazily: a direct viewer route never initializes the other viewers/);
 	assert.match(app, /frame\.dataset\.mounted/, "switching tabs should retain mounted iframe state");
+	assert.match(app, /const retainedRoutes = new Map/); assert.match(app, /rememberRoute\(activeViewer\)/); assert.match(app, /retainedRoutes\.get\(id\) \?\? route/, "switching viewers should restore each viewer's deep route");
+	assert.match(app, /postMessage\(\{ type: ACTIVITY_MESSAGE, active \}, location\.origin\)/, "viewer activity messages must use the exact shell origin");
+	assert.match(app, /notifyActivity\(viewerId, selected\)/, "tab changes must notify mounted viewers");
+	assert.match(app, /notifyActivity\(id, id === activeViewer\)/, "iframe load must send its initial activity state");
 });
 
 test("home and deep viewer routes serve one shell while direct viewers remain selected", async () => {

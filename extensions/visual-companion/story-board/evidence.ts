@@ -1,9 +1,13 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
+import { parseStoryRuntimeState } from "../../workflow/story-runtime-store.js";
+import type { StoryRuntimeState } from "../../workflow/story-runtime-store.js";
 import type { Diagnostic, EvidenceMetadata } from "./models.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_CURRENT_STATE_BYTES = 2 * 1024 * 1024;
 const SUPPORTED = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".txt", ".md", ".json", ".yaml", ".yml", ".log"]);
 const MIME: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".txt": "text/plain", ".md": "text/markdown", ".json": "application/json", ".yaml": "application/yaml", ".yml": "application/yaml", ".log": "text/plain" };
 
@@ -94,4 +98,53 @@ export async function resolveEvidenceMember(repositoryRoot: string, storyId: str
 	const member = metadata.find((entry) => entry.path === projected);
 	if (!member?.manifestMember || !member.available) return undefined;
 	return join(resolve(repositoryRoot), projected);
+}
+
+/** Projects only the exact story-relative evidence references cited by current state.e2e. */
+export async function readCurrentEvidenceMetadata(repositoryRoot: string, storyId: string, evidenceRefs: readonly string[]): Promise<EvidenceMetadata[]> {
+	if (!ID.test(storyId)) return [];
+	const repository = resolve(repositoryRoot); const storyRoot = join(repository, "agent-artifacts", storyId); const displayRoot = `agent-artifacts/${storyId}`;
+	const [repositoryReal, storyReal] = await Promise.all([realpath(repository).catch(() => undefined), realpath(storyRoot).catch(() => undefined)]);
+	if (!repositoryReal || !storyReal || !inside(repositoryReal, storyReal)) return [];
+	return Promise.all(evidenceRefs.map(async (reference, index): Promise<EvidenceMetadata> => {
+		const id = `E2E-EV-${String(index + 1).padStart(3, "0")}`; const diagnostics: Diagnostic[] = [];
+		const safe = safeRelative(reference) && (reference === "evidence" || reference.startsWith("evidence/")); const extension = extname(reference).toLowerCase(); const supported = safe && SUPPORTED.has(extension);
+		let available = false; let member = safe;
+		if (!safe) diagnostics.push(diagnostic(`${displayRoot}/state.yaml`, "Cited evidence has an unsafe path"));
+		else {
+			const { info, real, invalid } = await regularMember(storyRoot, reference);
+			if (invalid || (info && (!info.isFile() || !real || !inside(storyReal, real)))) { member = false; diagnostics.push(diagnostic(`${displayRoot}/${reference}`, "Cited evidence is not a contained regular file")); }
+			else if (!info || !real) diagnostics.push(diagnostic(`${displayRoot}/${reference}`, "Cited evidence is missing"));
+			else available = true;
+		}
+		if (safe && !supported) diagnostics.push(diagnostic(`${displayRoot}/${reference}`, "Cited evidence media type is unsupported"));
+		return { id, ...(safe ? { path: `${displayRoot}/${reference}`, memberPath: reference } : {}), description: safe ? reference : "Invalid cited evidence", ...(MIME[extension] ? { mediaType: MIME[extension] } : {}), manifestMember: member, available, supported, diagnostics };
+	}));
+}
+
+/** Reads authoritative current state through one contained, no-follow, byte-bounded descriptor. */
+export async function readBoundedCurrentRuntimeState(repositoryRoot: string, storyId: string, storyRoot = join(resolve(repositoryRoot), "agent-artifacts", storyId)): Promise<{ bytes: Buffer; state: StoryRuntimeState }> {
+	if (!ID.test(storyId)) throw new Error("invalid story id");
+	const repository = resolve(repositoryRoot); const storyInfo = await lstat(storyRoot).catch(() => undefined);
+	const [repositoryReal, storyReal] = await Promise.all([realpath(repository).catch(() => undefined), realpath(storyRoot).catch(() => undefined)]);
+	if (!storyInfo?.isDirectory() || storyInfo.isSymbolicLink() || !repositoryReal || !storyReal || !inside(repositoryReal, storyReal)) throw new Error("story is not contained");
+	const stateMember = await regularMember(storyRoot, "state.yaml");
+	if (stateMember.invalid || !stateMember.info?.isFile() || !stateMember.real || !inside(storyReal, stateMember.real)) throw new Error("state is not contained");
+	const handle = await open(join(storyRoot, "state.yaml"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+	try {
+		const info = await handle.stat(); if (!info.isFile() || info.size > MAX_CURRENT_STATE_BYTES) throw new Error("state exceeds the supported size");
+		const bytes = await handle.readFile(); if (bytes.byteLength > MAX_CURRENT_STATE_BYTES) throw new Error("state exceeds the supported size");
+		return { bytes, state: parseStoryRuntimeState(parse(bytes.toString("utf8")), storyId) };
+	} finally { await handle.close(); }
+}
+
+/** Re-validates current state authority and the cited member without following symlinks in any path component. */
+export async function resolveCurrentEvidenceMember(repositoryRoot: string, storyId: string, memberPath: string): Promise<string | undefined> {
+	if (!ID.test(storyId) || !safeRelative(memberPath) || !memberPath.startsWith("evidence/")) return undefined;
+	const repository = resolve(repositoryRoot); const storyRoot = join(repository, "agent-artifacts", storyId); const storyInfo = await lstat(storyRoot).catch(() => undefined);
+	const [repositoryReal, storyReal] = await Promise.all([realpath(repository).catch(() => undefined), realpath(storyRoot).catch(() => undefined)]); if (!storyInfo?.isDirectory() || storyInfo.isSymbolicLink() || !repositoryReal || !storyReal || !inside(repositoryReal, storyReal)) return undefined;
+	let evidenceRefs: readonly string[]; try { evidenceRefs = (await readBoundedCurrentRuntimeState(repositoryRoot, storyId, storyRoot)).state.e2e.evidenceRefs; } catch { return undefined; }
+	if (!evidenceRefs.includes(memberPath)) return undefined;
+	const { info, real, invalid } = await regularMember(storyRoot, memberPath); if (invalid || !info?.isFile() || !real || !inside(storyReal, real)) return undefined;
+	return join(storyRoot, memberPath);
 }

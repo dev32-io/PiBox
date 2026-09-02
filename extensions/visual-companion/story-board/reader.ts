@@ -2,6 +2,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { parseLegacyTaskManifest, parseLegacyWorkItemIndex, type LegacyWorkItemIndex } from "./legacy-history.js";
+import { CurrentStoryReader } from "./current-reader.js";
 import { readEvidenceMetadata } from "./evidence.js";
 import type { DeliveryHistory, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, ReportDetail, ReportSummary, StorySummary, StoryWorkspace, TaskCard, TaskDetail } from "./models.js";
 import { documentGroup, orderDocuments, orderReports, orderStorySummaries, orderTaskCards, projectStorySummary, projectTaskCard } from "./projector.js";
@@ -53,9 +54,11 @@ interface IndexRead { value: RecordValue; strict?: LegacyWorkItemIndex; diagnost
 export class StoryBoardReader {
 	readonly repositoryRoot: string;
 	readonly artifactRoot: string;
-	constructor(repositoryRoot: string) { this.repositoryRoot = resolve(repositoryRoot); this.artifactRoot = join(this.repositoryRoot, "agent-artifacts"); }
+	readonly current: CurrentStoryReader;
+	constructor(repositoryRoot: string) { this.repositoryRoot = resolve(repositoryRoot); this.artifactRoot = join(this.repositoryRoot, "agent-artifacts"); this.current = new CurrentStoryReader(this.repositoryRoot); }
 
 	private storyRoot(id: string): string | undefined { return ID.test(id) ? join(this.artifactRoot, id) : undefined; }
+	async observeWorkspace(storyId: string) { return this.current.observeWorkspace(storyId); }
 	private async containedStoryRoot(id: string): Promise<string | undefined> {
 		const root = this.storyRoot(id); if (!root) return undefined;
 		const [repositoryReal, artifactReal, storyReal, artifactInfo, storyInfo] = await Promise.all([
@@ -126,7 +129,7 @@ export class StoryBoardReader {
 		const entries = await readdir(this.artifactRoot, { withFileTypes: true }).catch(() => []);
 		const ids = entries.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && ID.test(entry.name)).map((entry) => entry.name).sort();
 		const roots = await Promise.all(ids.map(async (id) => ({ id, root: await this.containedStoryRoot(id) })));
-		return orderStorySummaries(await Promise.all(roots.flatMap(({ id, root }) => root ? [this.summary(id, root)] : [])));
+		return orderStorySummaries(await Promise.all(roots.flatMap(({ id, root }) => root ? [this.current.isCurrent(root).then((current) => current ? this.current.summary(id, root) : this.summary(id, root))] : [])));
 	}
 
 	private catalogEntries(storyId: string, value: unknown, kind: "task" | "evaluation"): Array<{ id: string; path: string; diagnostics: Diagnostic[] }> {
@@ -202,6 +205,7 @@ export class StoryBoardReader {
 
 	async readWorkspace(storyId: string): Promise<StoryWorkspace | undefined> {
 		const root = await this.containedStoryRoot(storyId); if (!root) return undefined;
+		if (await this.current.isCurrent(root)) return this.current.readWorkspace(storyId, root);
 		const index = await this.readIndex(storyId, root); const story = await this.summary(storyId, root);
 		const reportEntries = this.catalogEntries(storyId, index.value.evaluations, "evaluation");
 		const reportReads = await Promise.all(reportEntries.map((entry) => this.readReportSummary(storyId, root, entry)));
@@ -216,8 +220,10 @@ export class StoryBoardReader {
 	}
 
 	async readTaskDetail(storyId: string, taskId: string): Promise<TaskDetail | undefined> {
-		if (!ID.test(taskId)) return undefined; const workspace = await this.readWorkspace(storyId); const card = workspace?.tasks.find((task) => task.id === taskId); if (!card) return undefined;
+		if (!ID.test(taskId)) return undefined;
 		const root = await this.containedStoryRoot(storyId); if (!root) return undefined;
+		if (await this.current.isCurrent(root)) return this.current.readTaskDetail(storyId, root, taskId);
+		const workspace = await this.readWorkspace(storyId); const card = workspace?.tasks.find((task) => task.id === taskId); if (!card) return undefined;
 		const entryPath = `tasks/${taskId}/task.yaml`; let raw: RecordValue = {};
 		const taskPath = join(root, entryPath);
 		if (await unsafeExistingTarget(taskPath, this.repositoryRoot)) return undefined;
@@ -234,8 +240,9 @@ export class StoryBoardReader {
 	}
 
 	async readDocumentDetail(storyId: string, documentId: string): Promise<DocumentDetail | undefined> {
-		const workspace = await this.readWorkspace(storyId); const summary = workspace?.documentGroups.flatMap((group) => group.documents).find((document) => document.id === documentId); if (!summary) return undefined;
 		const root = await this.containedStoryRoot(storyId); if (!root) return undefined;
+		if (await this.current.isCurrent(root)) return this.current.readDocumentDetail(storyId, root, documentId);
+		const workspace = await this.readWorkspace(storyId); const summary = workspace?.documentGroups.flatMap((group) => group.documents).find((document) => document.id === documentId); if (!summary) return undefined;
 		const path = join(this.repositoryRoot, summary.path);
 		if (summary.path && await unsafeExistingTarget(path, this.repositoryRoot)) return undefined;
 		if (!summary.path || !(await regularFile(path, root, this.repositoryRoot))) return { ...summary, available: false, diagnostics: [...summary.diagnostics, diagnostic(summary.path || `agent-artifacts/${storyId}/index.yaml`, "Document is missing or not a contained regular file")] };
@@ -244,6 +251,7 @@ export class StoryBoardReader {
 
 	async readReportDetail(storyId: string, reportId: string): Promise<ReportDetail | undefined> {
 		if (!ID.test(reportId)) return undefined; const root = await this.containedStoryRoot(storyId); if (!root) return undefined;
+		if (await this.current.isCurrent(root)) return this.current.readReportDetail(storyId, root, reportId);
 		const index = await this.readIndex(storyId, root); const entry = this.catalogEntries(storyId, index.value.evaluations, "evaluation").find((item) => item.id === reportId); if (!entry) return undefined;
 		const { summary, raw, evaluationRoot } = await this.readReportSummary(storyId, root, entry); if (!evaluationRoot) return undefined;
 		const evaluationManifest = join(root, entry.path); if (await invalidExistingFile(evaluationManifest, evaluationRoot, this.repositoryRoot)) return undefined;

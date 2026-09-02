@@ -3,6 +3,14 @@ const tabs = new Map(viewerIds.map((id) => [id, document.querySelector(`#tab-${i
 const panels = new Map(viewerIds.map((id) => [id, document.querySelector(`#panel-${id}`)]));
 let registered = new Set();
 let activeViewer;
+const retainedRoutes = new Map();
+const ACTIVITY_MESSAGE = "visual-companion:activity";
+
+function notifyActivity(id, active) {
+  const frame = panels.get(id).querySelector(".viewer-frame");
+  if (!frame.dataset.mounted || !frame.contentWindow) return;
+  frame.contentWindow.postMessage({ type: ACTIVITY_MESSAGE, active }, location.origin);
+}
 
 function routeViewer(url = new URL(location.href)) {
   const requested = url.searchParams.get("viewer");
@@ -11,13 +19,17 @@ function routeViewer(url = new URL(location.href)) {
   return viewerIds.includes(segment) ? segment : "story-board";
 }
 
+function rememberRoute(id, url = new URL(location.href)) {
+  const route = `/${id}`;
+  if (routeViewer(url) === id && (url.pathname === route || url.pathname.startsWith(`${route}/`))) retainedRoutes.set(id, `${url.pathname}${url.search}${url.hash}`);
+}
+
 function routeFor(id) {
   const current = new URL(location.href);
   const route = `/${id}`;
   const currentViewer = routeViewer(current);
-  // Retain viewer-owned deep paths while switching only when already in that viewer.
-  if (currentViewer === id && current.pathname.startsWith(`${route}/`)) return `${current.pathname}${current.search}${current.hash}`;
-  return route;
+  if (currentViewer === id && (current.pathname === route || current.pathname.startsWith(`${route}/`))) return `${current.pathname}${current.search}${current.hash}`;
+  return retainedRoutes.get(id) ?? route;
 }
 
 function setBoundary(id, message, state = "loading") {
@@ -40,6 +52,7 @@ function mount(id) {
   frame.addEventListener("load", () => {
     frame.hidden = false;
     panel.querySelector(".viewer-boundary").hidden = true;
+    notifyActivity(id, id === activeViewer);
   }, { once: true });
   frame.addEventListener("error", () => setBoundary(id, `Unable to load ${tabs.get(id).textContent}.`, "error"), { once: true });
   frame.src = `/v/${encodeURIComponent(id)}/`;
@@ -47,12 +60,14 @@ function mount(id) {
 
 function activate(id, { updateHistory = false } = {}) {
   if (!viewerIds.includes(id)) id = "story-board";
+  if (updateHistory && activeViewer) rememberRoute(activeViewer);
   activeViewer = id;
   for (const viewerId of viewerIds) {
     const selected = viewerId === id;
     tabs.get(viewerId).setAttribute("aria-selected", String(selected));
     tabs.get(viewerId).tabIndex = selected ? 0 : -1;
     panels.get(viewerId).hidden = !selected;
+    notifyActivity(viewerId, selected);
   }
   // Mount lazily: a direct viewer route never initializes the other viewers.
   mount(id);
@@ -78,16 +93,16 @@ for (const [id, tab] of tabs) {
   });
 }
 
-addEventListener("popstate", () => activate(routeViewer()));
+addEventListener("popstate", () => { const id = routeViewer(); rememberRoute(id); activate(id); });
 
 try {
   const response = await fetch("/api/viewers", { cache: "no-store" });
   if (!response.ok) throw new Error(`Viewer registry returned ${response.status}.`);
   const payload = await response.json();
   registered = new Set(payload.viewers ?? []);
-  activate(routeViewer());
+  const selected = routeViewer(); rememberRoute(selected); activate(selected);
 } catch (error) {
   const selected = routeViewer();
-  activate(selected);
+  rememberRoute(selected); activate(selected);
   setBoundary(selected, `Unable to load the viewer registry. ${error.message}`, "error");
 }

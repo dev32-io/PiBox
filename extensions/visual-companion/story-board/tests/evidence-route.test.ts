@@ -4,11 +4,37 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { createVisualCompanionBackend } from "../../backend.mjs";
 import { createStoryBoardViewer } from "../index.js";
+import { createAssistedFixtureRepository, CURRENT_STORY_ID } from "../fixtures.js";
 
 async function put(root: string, path: string, content: string | Buffer) { const target = join(root, path); await mkdir(dirname(target), { recursive: true }); await writeFile(target, content); }
+
+test("current evidence serves only authoritative flat and nested E2E references", async (t) => {
+	const fixture = await createAssistedFixtureRepository(); t.after(() => fixture.cleanup());
+	const backend = await createVisualCompanionBackend({ viewers: [createStoryBoardViewer({ repositoryRoot: fixture.repositoryRoot })] }); t.after(() => backend.close());
+	const base = `${backend.url}/v/story-board/api`; const route = `${base}/evidence?story=${CURRENT_STORY_ID}&evaluation=final-e2e&path=`;
+	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/summary.txt")}`)).status, 200);
+	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/nested/shot.png")}`)).status, 200);
+	const jsonEvidence = await fetch(`${route}${encodeURIComponent("evidence/data.json")}`); assert.equal(jsonEvidence.status, 200); assert.equal(await jsonEvidence.text(), '{"literal":"<tag>"}\n');
+	for (const denied of ["evidence/uncited.txt", "evidence/archive.zip", "../state.yaml", "state.yaml"]) assert.equal((await fetch(`${route}${encodeURIComponent(denied)}`)).status, 404);
+	const statePath = join(fixture.repositoryRoot, "agent-artifacts", CURRENT_STORY_ID, "state.yaml"); const state = parse(await readFile(statePath, "utf8")); state.e2e.evidenceRefs = state.e2e.evidenceRefs.filter((item: string) => item !== "evidence/summary.txt"); await writeFile(statePath, stringify(state));
+	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/summary.txt")}`)).status, 404, "state authority is revalidated even when report metadata is cached");
+	await writeFile(statePath, "x".repeat(2 * 1024 * 1024 + 1));
+	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/nested/shot.png")}`)).status, 404, "oversized state cannot authorize cached evidence metadata");
+	const workspace = await fetch(`${base}/workspace?story=${CURRENT_STORY_ID}`).then((response) => response.text());
+	assert.doesNotMatch(workspace, /private-session|private-process|private-activation|private\/integration|private\/worktrees|sha256:|activationOwner|contracts|integrationWorktree/);
+});
+
+test("current cited symlinks are denied without exposing their target", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "story-current-evidence-route-")); t.after(() => rm(root, { recursive: true, force: true })); const story = "current-story"; const base = `agent-artifacts/${story}`;
+	await put(root, `${base}/story.yaml`, stringify({ schemaVersion: 1, id: story, title: "Current", kind: "story", spec: "Spec", design: "Design", e2e: "E2E" }));
+	await put(root, `${base}/state.yaml`, stringify({ schemaVersion: 1, storyId: story, status: "completed", contracts: { story: `sha256:${"a".repeat(64)}`, plan: `sha256:${"b".repeat(64)}`, tasks: {} }, git: { canonicalBranch: "main", baseCommit: "base" }, stages: [], finalReview: { status: "completed", iteration: 1, repairCount: 0, currentFindings: [] }, e2e: { status: "completed", repairCount: 0, evidenceRefs: ["evidence/link.txt"] }, metrics: { workflowMs: 0, categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 }, incompleteIntervals: 0, incompleteCategories: [] } }));
+	await put(root, "outside.txt", "PRIVATE_TARGET"); await mkdir(join(root, base, "evidence"), { recursive: true }); await symlink(join(root, "outside.txt"), join(root, base, "evidence/link.txt"));
+	const backend = await createVisualCompanionBackend({ viewers: [createStoryBoardViewer({ repositoryRoot: root })] }); t.after(() => backend.close());
+	const response = await fetch(`${backend.url}/v/story-board/api/evidence?story=${story}&evaluation=final-e2e&path=evidence%2Flink.txt`); assert.equal(response.status, 404); assert.doesNotMatch(await response.text(), /PRIVATE_TARGET/);
+});
 
 test("evidence route requires canonical evaluation membership and contained manifest-listed files", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "story-evidence-route-")); t.after(() => rm(root, { recursive: true, force: true }));

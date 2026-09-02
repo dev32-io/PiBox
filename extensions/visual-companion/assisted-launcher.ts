@@ -70,7 +70,7 @@ export async function launchAssistedVisualCompanion(options: AssistedLaunchOptio
 			if (delayMs) await new Promise<void>((done) => { const timer = setTimeout(done, delayMs); timer.unref?.(); });
 			const result = await productionReader.readCatalog(); discovery = "complete"; return result;
 		},
-		readWorkspace: productionReader.readWorkspace.bind(productionReader), readTaskDetail: productionReader.readTaskDetail.bind(productionReader),
+		observeWorkspace: productionReader.observeWorkspace.bind(productionReader), readWorkspace: productionReader.readWorkspace.bind(productionReader), readTaskDetail: productionReader.readTaskDetail.bind(productionReader),
 		readDocumentDetail: productionReader.readDocumentDetail.bind(productionReader), readReportDetail: productionReader.readReportDetail.bind(productionReader),
 	};
 	const storyBoard = createStoryBoardViewer({ repositoryRoot, reader: delayedReader });

@@ -31,12 +31,13 @@ test("Story Board exposes non-color status text and modal focus, return, and nar
 	assert.match(app, /aria-label=\\?"Close detail/);
 	assert.match(app, /event\.key === "Escape"/);
 	assert.match(app, /event\.key !== "Tab"/);
-	assert.match(app, /focusWasInDrawer/, "async detail rendering must retain focus in the modal");
-	assert.match(app, /querySelector\(focusTarget\)\?\.focus/, "closing returns focus to the invoking card");
+	assert.match(app, /captureInteractionState/); assert.match(app, /restoreInteractionState/, "async rendering must retain exact focus and drawer scroll");
+	assert.match(app, /\.drawer \[data-action="close-detail"\]/, "modal rerenders fall back to a control inside the drawer");
+	assert.match(app, /focusTarget \? root\.querySelector\(focusTarget\)/, "closing returns focus to the invoking card or section fallback");
 	assert.match(app, /badge\(task\.status, "status"\)/);
 	assert.match(app, /Evidence missing|Unsupported evidence type/);
-	assert.match(css, /\.board[^}]+overflow-x:\s*auto/s);
-	assert.match(css, /grid-template-columns:\s*repeat\(3,\s*minmax\(82vw,\s*1fr\)\)/);
+	assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.board \{ grid-template-columns: 1fr; \}/, "task columns must stack without essential horizontal scrolling");
+	assert.doesNotMatch(css, /overflow-x:\s*auto/);
 	assert.match(css, /\.detail-sheet \{ inset: 0; width: 100%; height: 100%/);
 	assert.match(css, /var\(--color-scrim,\s*transparent\)/);
 	assert.doesNotMatch(css, /#[\da-f]{3,8}\b|rgba?\(/i, "Story Board must use shared palette tokens");
