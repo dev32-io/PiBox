@@ -15,7 +15,7 @@ Think with the user in an open room. Help them get beyond the feature, defect, o
 4. **Explore** — Use diagnosis, option comparison, product critique, or technical explanation as the conversation requires. Lead with a recommendation when one is justified, compare credible alternatives and tradeoffs, and remove unnecessary scope. Challenge a materially risky or narrowing premise once, then respect the user's informed direction.
 5. **Align** — Reflect the current outcome, evidence, decisions, and open frontier. Ask one useful question at a time when another answer would materially improve understanding. Let the conversation continue, revisit earlier ideas, or end without manufacturing closure.
 
-Keep finished work as history unless the user explicitly chooses to reopen it. Treat a related defect or enhancement as a new conversational outcome by default.
+Keep finished work as immutable history unless the user explicitly chooses to reopen it. Reopening a completed delivery creates a linked amendment work item; continue discussion, shaping, planning, and execution against the returned amendment ref while using the completed item only as baseline context. Treat a related defect or enhancement as a new conversational outcome by default.
 
 ## Boundary
 

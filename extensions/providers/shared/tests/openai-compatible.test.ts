@@ -28,6 +28,22 @@ test("maps OpenAI and Ollama model lists with conservative inferred capabilities
 	assert.deepEqual(inferModelCapabilities("deepseek-r1:70b"), { reasoning: true, images: false });
 });
 
+test("applies an opt-in provider thinking map only to reasoning models without a specific map", () => {
+	const models = toPiModels({ data: [{ id: "reasoning" }, { id: "specific" }, { id: "plain" }] }, {
+		providerId: "test-provider",
+		baseUrl: "https://example.test/v1",
+		defaultThinkingLevelMap: { minimal: null, low: "low", max: "max" },
+		modelMetadata: {
+			reasoning: { reasoning: true },
+			specific: { reasoning: true, thinkingLevelMap: { high: "fixed" } },
+			plain: { reasoning: false },
+		},
+	});
+	assert.deepEqual(models[0]?.thinkingLevelMap, { minimal: null, low: "low", max: "max" });
+	assert.deepEqual(models[1]?.thinkingLevelMap, { high: "fixed" });
+	assert.equal(models[2]?.thinkingLevelMap, undefined);
+});
+
 test("uses curated metadata as a fallback while preferring endpoint token limits", () => {
 	const models = toPiModels({
 		data: [

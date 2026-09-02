@@ -18,27 +18,32 @@
     "themes",
     "sound-themes",
     "skills",
+    "prompt",
     "services",
     "docs",
+    "examples",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "find extensions skills -name '*.test.ts' -print0 | xargs -0 tsx --test",
+    "test": "find extensions skills benchmarks -name '*.test.ts' -print0 | xargs -0 tsx --test",
     "verify": "npm run check && npm test",
-    "eval:workflow": "tsx extensions/workflow-scenarios/run-deterministic.ts",
-    "eval:workflow:model": "tsx extensions/workflow-scenarios/run-model-suite.ts",
-    "eval:workflow:model:score": "tsx extensions/workflow-scenarios/run-model-score.ts",
-    "eval:workflow:compare": "tsx extensions/workflow-scenarios/run-compare.ts"
+    "eval:prompt": "tsx benchmarks/prompt-scenarios/cli.ts",
+    "eval:workflow": "tsx extensions/workflow-scenarios/run-deterministic.ts"
   },
   "pi": {
     "extensions": [
       "./extensions/permissions/index.ts",
+      "./extensions/fast-mode/index.ts",
+      "./extensions/model-tier-list-profiles/index.ts",
       "./extensions/provider-fallback/index.ts",
+      "./extensions/profile/index.ts",
+      "./extensions/subagent/index.ts",
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
       "./extensions/rule/index.ts",
+      "./extensions/designer/index.ts",
       "./extensions/distill/index.ts",
       "./extensions/service-adapter/index.ts",
       "./extensions/memory-adapter/index.ts",
@@ -47,30 +52,31 @@
       "./extensions/providers/ollama-cloud/index.ts",
       "./extensions/providers/codex-usage/index.ts",
       "./extensions/providers/local-llm/index.ts",
+      "./extensions/tui/interactive-footer/index.ts",
       "./extensions/tui/chat-input/index.ts",
-      "./extensions/tui/effort/index.ts",
       "./extensions/tui/status-bar/index.ts",
       "./extensions/tui/styled-outputs/index.ts",
       "./extensions/tui/spinners/index.ts",
       "./extensions/tui/startup/index.ts"
     ],
     "skills": [
-      "./skills"
+      "./skills",
+      "!./skills/designer-handoff/SKILL.md"
     ],
     "themes": [
       "./themes/rattle.json"
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=0.84.3",
+    "@earendil-works/pi-coding-agent": ">=0.84.3",
+    "@earendil-works/pi-tui": ">=0.84.3",
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.84.1",
-    "@earendil-works/pi-coding-agent": "^0.84.1",
-    "@earendil-works/pi-tui": "^0.84.1",
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@earendil-works/pi-tui": "^0.84.3",
     "@types/node": "^24.10.0",
     "tsx": "^4.21.0",
     "typebox": "^1.3.12",

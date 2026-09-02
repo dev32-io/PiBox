@@ -1,12 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Api, Model, ThinkingLevelMap } from "@earendil-works/pi-ai";
-import { DEFAULT_HARNESS_CONFIG } from "../config.js";
+import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig } from "../config.js";
 import { normalizeExplicitModelOverride, resolveHarnessModel, supportsEffort } from "../model-resolver.js";
+import { activeModelTierLists } from "../../model-tier-list-profiles/profiles.js";
 
 function model(provider: string, id: string, reasoning = true, thinkingLevelMap?: ThinkingLevelMap): Model<Api> {
 	return { provider, id, reasoning, thinkingLevelMap } as unknown as Model<Api>;
 }
+
+test("keeps omitted dynamic routing on medium when a repository config also defines local", () => {
+	const files: Record<string, string> = {
+		"/repo/.pi/harness.yaml": "schemaVersion: 2\nmodelTiers:\n  local:\n    - local-llm/qwen3.8-27b-uncensored#medium\n",
+	};
+	const loaded = loadHarnessConfig("/repo", {
+		home: "/home",
+		exists: (path) => path in files,
+		readFile: (path) => files[path] ?? "",
+	});
+	assert.deepEqual(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.local, ["local-llm/qwen3.8-27b-uncensored#medium"]);
+	const result = resolveHarnessModel(loaded.config, [model("openai-codex", "gpt-5.6-sol", true, { medium: "medium" })], { tier: "medium" });
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-5.6-sol#medium");
+});
 
 test("resolves the configured model and effort pair from one tier", () => {
 	const available = [model("openai-codex", "gpt-5.6-sol")];
@@ -14,14 +30,14 @@ test("resolves the configured model and effort pair from one tier", () => {
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") {
 		assert.equal(result.model.id, "gpt-5.6-sol");
-		assert.equal(result.effort, "medium");
+		assert.equal(result.effort, "high");
 		assert.equal(result.fallbackUsed, false);
 	}
 });
 
 test("falls back visibly within the ordered model-effort list", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.high = ["openai-codex/gpt-5.6-luna#max", "openai-codex/gpt-5.6-sol#medium"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.high = ["openai-codex/gpt-5.6-luna#max", "openai-codex/gpt-5.6-sol#medium"];
 	const result = resolveHarnessModel(config, [model("openai-codex", "gpt-5.6-sol")], { tier: "high" });
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") {
@@ -41,7 +57,7 @@ test("normalizes compact model effort preferences", () => {
 
 test("preferred model is promoted ahead of the selected tier fallback list", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.high = ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.high = ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"];
 	const preference = normalizeExplicitModelOverride("deepseek-v4-pro#high");
 	const result = resolveHarnessModel(config, [model("openai-codex", "gpt-5.6-sol"), model("ollama-cloud", "deepseek-v4-pro")], {
 		tier: "high",
@@ -59,8 +75,9 @@ test("preferred model is promoted ahead of the selected tier fallback list", () 
 
 test("local routing cannot match or fall back to an identically named paid model", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.local = ["local-llm/qwen/qwen3.8-27b#high"];
-	config.modelTiers.high = ["openrouter/qwen/qwen3.8-27b#high"];
+	const tiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
+	tiers.local = ["local-llm/qwen/qwen3.8-27b#high"];
+	tiers.high = ["openrouter/qwen/qwen3.8-27b#high"];
 	const result = resolveHarnessModel(config, [
 		model("openrouter", "qwen/qwen3.8-27b"),
 		model("local-llm", "qwen/qwen3.8-27b"),
@@ -74,7 +91,7 @@ test("local routing cannot match or fall back to an identically named paid model
 
 test("an unknown explicit local model fails closed instead of using a configured fallback", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.local = ["local-llm/meta/muse-glimmer#high"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.local = ["local-llm/meta/muse-glimmer#high"];
 	const result = resolveHarnessModel(config, [
 		model("local-llm", "meta/muse-glimmer"),
 		model("openai-codex", "gpt-5.6-luna"),
@@ -85,7 +102,7 @@ test("an unknown explicit local model fails closed instead of using a configured
 
 test("an unsupported effort for an explicit local model fails without fallback", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.local = ["local-llm/meta/muse-glimmer#high", "local-llm/qwen3.8-27b-uncensored#medium"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.local = ["local-llm/meta/muse-glimmer#high", "local-llm/qwen3.8-27b-uncensored#medium"];
 	const result = resolveHarnessModel(config, [
 		model("local-llm", "meta/muse-glimmer"),
 		model("local-llm", "qwen3.8-27b-uncensored", true, { medium: null, high: "high" }),
@@ -96,7 +113,7 @@ test("an unsupported effort for an explicit local model fails without fallback",
 
 test("ordinary tiers never promote a matching local route", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.high = ["openrouter/qwen/qwen3.8-27b#high"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.high = ["openrouter/qwen/qwen3.8-27b#high"];
 	const result = resolveHarnessModel(config, [model("local-llm", "qwen/qwen3.8-27b")], {
 		tier: "high",
 		override: { model: "qwen/qwen3.8-27b" },
@@ -127,7 +144,7 @@ test("strict concrete selection exposes no runtime fallback candidates", () => {
 
 test("skips a configured pair when its effort is unsupported", () => {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
-	config.modelTiers.low = ["local/small#high", "openai-codex/gpt-5.6-luna#medium"];
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.low = ["local/small#high", "openai-codex/gpt-5.6-luna#medium"];
 	const result = resolveHarnessModel(config, [model("local", "small", false), model("openai-codex", "gpt-5.6-luna")], { tier: "low" });
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") assert.equal(result.model.id, "gpt-5.6-luna");

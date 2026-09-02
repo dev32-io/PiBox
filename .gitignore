@@ -6,3 +6,6 @@ dist/
 /.worktree/
 /.pibox/
 /.benchmark/
+/agent-artifacts/*/state.yaml
+/agent-artifacts/*/ledger.yaml
+/agent-artifacts/*/events.jsonl

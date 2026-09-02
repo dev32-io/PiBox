@@ -1,0 +1,155 @@
+schemaVersion: 1
+id: visual-story-board
+kind: story
+title: Visual Story Board
+phase: complete
+state: complete
+planning:
+  revision: 18
+artifacts:
+  - id: intent
+    type: intent
+    path: intent.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: story-board-behavior
+    type: spec
+    path: specs/story-board-behavior.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: story-board-design
+    type: design
+    path: design/story-board-design.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: visual-companion-design-system
+    type: design
+    path: design/visual-companion-design-system.md
+    status: draft
+    narrativeSchemaVersion: 2
+  - id: story-board-e2e
+    type: e2e-matrix
+    path: e2e-matrix/story-board-e2e.md
+    status: approved
+    narrativeSchemaVersion: 2
+  - id: outcome
+    type: outcome
+    path: outcome.md
+    status: complete
+tasks:
+  - id: build-companion-platform
+    path: tasks/build-companion-platform/task.yaml
+  - id: build-story-domain-reader
+    path: tasks/build-story-domain-reader/task.yaml
+  - id: build-shared-shell-and-architecture
+    path: tasks/build-shared-shell-and-architecture/task.yaml
+  - id: build-story-board-api
+    path: tasks/build-story-board-api/task.yaml
+  - id: build-story-board-browser
+    path: tasks/build-story-board-browser/task.yaml
+  - id: build-assisted-e2e-launcher
+    path: tasks/build-assisted-e2e-launcher/task.yaml
+  - id: polish-accessibility-and-regressions
+    path: tasks/polish-accessibility-and-regressions/task.yaml
+integrationUnits: []
+delivery:
+  workingBranch: feature/visual-story-board
+  createdFromCommit: dbb11f6c15637d3478fe2a87959d36181154498c
+  executionStartCommit: ae82979f9f89eadcafa7eba8826e7531ef1dd17e
+evaluations:
+  - id: final-branch-review
+    path: evaluations/final-branch-review/evaluation.yaml
+  - id: final-e2e
+    path: evaluations/final-e2e/evaluation.yaml
+executionStages:
+  - id: platform-and-domain-foundations
+    tasks:
+      - build-companion-platform
+      - build-story-domain-reader
+    checks:
+      - npm run check
+      - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+        extensions/visual-companion/tests/platform.test.ts
+        extensions/service-adapter/tests/registry.test.ts
+        skills/architecture-visualizer/tests/visualizer.test.ts
+        extensions/visual-companion/story-board/tests/reader-projector.test.ts
+        extensions/visual-companion/story-board/tests/evidence-model.test.ts
+      - git diff --check
+    mode: concurrent
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews. The
+        host/lifecycle and read-only domain seams use disjoint worktrees and
+        resource claims, integrate behind typed contracts, and run direct
+        lifecycle, compatibility, parser, projection, containment, and
+        immutability checks before the medium whole-branch review.
+  - id: shell-and-story-api
+    tasks:
+      - build-shared-shell-and-architecture
+      - build-story-board-api
+    checks:
+      - npm run check
+      - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+        extensions/visual-companion/tests/shell.test.ts
+        extensions/visual-companion/tests/design-tokens.test.ts
+        skills/architecture-visualizer/tests/visualizer.test.ts
+        extensions/visual-companion/story-board/tests/routes.test.ts
+        extensions/visual-companion/story-board/tests/cache.test.ts
+        extensions/visual-companion/story-board/tests/markdown-policy.test.ts
+        extensions/visual-companion/story-board/tests/evidence-route.test.ts
+      - git diff --check
+    mode: concurrent
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews.
+        Shell/Architecture assets and Story Board cache/routes have separate
+        ownership and focused checks for direct-open compatibility, semantic
+        tokens, lazy activation, concurrency, Markdown safety, evidence
+        containment, Refresh, and cleanup before the medium whole-branch review.
+  - id: story-board-browser
+    tasks:
+      - build-story-board-browser
+    checks:
+      - npm run check
+      - npx tsx --test
+        extensions/visual-companion/story-board/tests/browser-app.test.ts
+        extensions/visual-companion/story-board/tests/catalog-ui.test.ts
+        extensions/visual-companion/story-board/tests/board-ui.test.ts
+        extensions/visual-companion/story-board/tests/documents-reports-ui.test.ts
+        extensions/visual-companion/tests/shell.test.ts
+      - node --check extensions/visual-companion/story-board/assets/app.js
+      - git diff --check
+    mode: sequential
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews. One fresh agent
+        owns the coupled browser state, routing, rendering, and focused-test
+        loop; deterministic checks cover every catalog, board, document, report,
+        evidence, deep-link, loading, keyboard, and responsive contract before
+        whole-branch review.
+  - id: e2e-readiness-and-polish
+    tasks:
+      - build-assisted-e2e-launcher
+      - polish-accessibility-and-regressions
+    checks:
+      - npm run check
+      - npx tsx --test
+        extensions/visual-companion/tests/assisted-launcher.test.ts
+        extensions/visual-companion/story-board/tests/fixture-integrity.test.ts
+        extensions/visual-companion/tests/accessibility.test.ts
+        extensions/visual-companion/tests/design-tokens.test.ts
+        extensions/visual-companion/tests/shell.test.ts
+        extensions/visual-companion/story-board/tests/browser-app.test.ts
+        extensions/visual-companion/tests/backend.test.ts
+        skills/architecture-visualizer/tests/visualizer.test.ts
+      - npm test
+      - git diff --check
+    mode: concurrent
+    review:
+      mode: skip
+      rationale: The user explicitly requested no per-stage reviews. Launcher/fixture
+        process control and production accessibility/Architecture polish use
+        disjoint claims and comprehensive composition, lifecycle,
+        fixture-integrity, accessibility, responsive, compatibility, focused,
+        and full-suite checks before the medium whole-branch review and low-tier
+        six-case E2E.

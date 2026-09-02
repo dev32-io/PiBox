@@ -1,0 +1,37 @@
+schemaVersion: 1
+id: build-shared-shell-and-architecture
+title: Build the shared shell and migrate Architecture to design tokens
+status: merged
+dependsOn:
+  - build-companion-platform
+execution:
+  resourceClaims:
+    - extensions/visual-companion common shell and design-token assets
+    - skills/architecture-visualizer browser assets and adapter
+    - shell, token, and Architecture regression tests
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
+assembly:
+  stageId: shell-and-story-api
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/shell.test.ts
+      extensions/visual-companion/tests/design-tokens.test.ts
+      skills/architecture-visualizer/tests/visualizer.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-shared-shell-and-architecture
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-shared-shell-and-architecture
+  baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
+  lastRunId: ec8218cb-00c4-466f-bc9f-6bd51303a45b
+  completedCommit: 375fc336624ffa25e7aa41b4d17f27a47ba97982
+  mergedCommit: fa0a41dfdc23ba8d8b73d7b4e4c3ddb1cdf4b311

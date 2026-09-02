@@ -1,0 +1,37 @@
+schemaVersion: 1
+id: build-companion-platform
+title: Build the reusable Visual Companion platform
+status: merged
+dependsOn: []
+execution:
+  resourceClaims:
+    - extensions/visual-companion/backend.mjs and backend.d.mts
+    - extensions/visual-companion/index.ts lifecycle composition
+    - extensions/service-adapter visual-companion lifecycle tests
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
+assembly:
+  stageId: platform-and-domain-foundations
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/backend.test.ts
+      extensions/visual-companion/tests/platform.test.ts
+      extensions/service-adapter/tests/registry.test.ts
+      skills/architecture-visualizer/tests/visualizer.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-companion-platform
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-companion-platform
+  baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
+  lastRunId: 40615e9d-ede5-4a26-98e5-5d87c3261e1c
+  completedCommit: 765c4c94f6b12895dc979e3ee86926f5b1320a3b
+  mergedCommit: f29dcfa04157a0021679d4b6ed82a831d154072f

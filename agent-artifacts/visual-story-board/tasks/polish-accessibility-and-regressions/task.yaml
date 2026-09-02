@@ -1,0 +1,40 @@
+schemaVersion: 1
+id: polish-accessibility-and-regressions
+title: Polish accessibility, responsive behavior, and Architecture regressions
+status: merged
+dependsOn:
+  - build-story-board-browser
+execution:
+  resourceClaims:
+    - Visual Companion and Story Board production accessibility/responsive polish
+    - Architecture browser regression fixes
+    - accessibility, responsive, token, and Architecture regression tests
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
+assembly:
+  stageId: e2e-readiness-and-polish
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test extensions/visual-companion/tests/accessibility.test.ts
+      extensions/visual-companion/tests/design-tokens.test.ts
+      extensions/visual-companion/tests/shell.test.ts
+      extensions/visual-companion/story-board/tests/browser-app.test.ts
+      skills/architecture-visualizer/tests/visualizer.test.ts
+    - npm test
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/polish-accessibility-and-regressions
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/polish-accessibility-and-regressions
+  baseCommit: 2e6b9b5b2a768d0005dfe937a66f5b30d0f52503
+  lastRunId: e46838e5-5a29-4601-9c65-8d9e1a9b6c24
+  completedCommit: 1968bf942ae8d9eb0def1f13187ef6c2182c17de
+  mergedCommit: 3b10ddd7e3bd417bf8b4801a73d046b87dd7a58c

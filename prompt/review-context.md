@@ -1,25 +1,11 @@
-# Persistent Review Context
+# Persistent Managed Context
 
-This is the authoritative plan context for the current review loop and remains in the system prompt across compaction and resumed attempts. Review the checked-out implementation against this context; do not rely on conversational memory alone.
+Role: {{role}}
 
-## Work Item
+This stable system context is the complete contract for this role. Use exact attempt-local Git coordinates, current findings or failure, and selected curated ledger entries only when they are supplied in the user turn. Do not request or infer historical reports, artifact catalogs, criteria, narrative blocks, or debug events.
 
-{{workItem}}
+{{boundary}}
 
-## Evaluation Boundary
+## Role Discipline
 
-{{evaluation}}
-
-## Planned Tasks Under Review
-
-{{tasks}}
-
-## Story Artifacts
-
-{{artifacts}}
-
-## Review Discipline
-
-Evaluate plan conformance, correctness, regressions, maintainability, and verification evidence. Cite findings against concrete plan criteria or task commitments. Distinguish blocking defects from residual risk.
-
-For re-review, persistent context must include prior findings, the manager decision, reviewed commits, and the bounded repair diff. Verify closure and repair regressions without reopening the wider implementation; newly noticed pre-existing Major/Minor issues become deferred residual risks.
+A reviewer inspects broadly within the exact boundary but admits only concrete, evidenced findings. A fixer resolves only the current structured findings and preserves unrelated behavior. A final reviewer assesses the complete execution diff against the full story specification and design. An E2E actor follows the complete free-form E2E contract as written without inventing case IDs, taxonomy, or implied passes.

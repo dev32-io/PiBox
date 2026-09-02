@@ -84,9 +84,9 @@ test("workflow confirmation is extension-owned and does not change mode by itsel
 	assert.equal(currentPermissionMode(), "enforce");
 	assert.deepEqual(h.selections[0]?.options, [
 		"No — keep permissions enforced",
-		"Yes — switch to BYPASS and start workflow",
+		"Yes — switch to Bypass and start workflow",
 	]);
-	assert.match(h.selections[0]?.title ?? "", /\n\n⚠ Permissions: BYPASS\n\n/);
+	assert.match(h.selections[0]?.title ?? "", /\n\n⚠ Permissions: Bypass\n\n/);
 	assert.match(h.selections[0]?.title ?? "", /execute tools without allow, ask, or deny policy checks/i);
 	h.setConfirm(false);
 	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:checkout"), false);
@@ -104,6 +104,21 @@ test("workflow confirmation is rebound by the replacement extension after reload
 	afterReload.setConfirm(true);
 	assert.equal(await confirmWorkflowBypass(afterReload.ctx, "work-item:checkout"), true);
 	await afterReload.handlers.get("session_shutdown")?.({}, afterReload.ctx);
+});
+
+test("headless enforced sessions fail workflow bypass confirmation closed", async (t) => {
+	const previous = process.env.PIBOX_PERMISSION_MODE;
+	delete process.env.PIBOX_PERMISSION_MODE;
+	t.after(() => { if (previous === undefined) delete process.env.PIBOX_PERMISSION_MODE; else process.env.PIBOX_PERMISSION_MODE = previous; });
+	const h = await harness(t);
+	h.ctx.mode = "json";
+	h.ctx.hasUI = false;
+	await h.handlers.get("session_start")?.({}, h.ctx);
+	assert.equal(currentPermissionMode(), "enforce");
+	assert.equal(await confirmWorkflowBypass(h.ctx, "work-item:headless"), false);
+	assert.equal(h.selections.length, 0);
+	assert.equal(currentPermissionMode(), "enforce");
+	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });
 
 test("headless spawned sessions inherit the parent process permission mode", async (t) => {

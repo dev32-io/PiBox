@@ -1,0 +1,25 @@
+schemaVersion: 1
+evaluation: final-branch-review
+recordedAt: 2026-08-24T09:02:14.429Z
+entries:
+  - result: "PASS: HTTP 404; no other-story body."
+    description: Fresh cross-story evaluation-directory symlink reproduction.
+    path: files/003-1-visual-story-board-rereview2-cross-story.txt
+    checksum: sha256:d67b649f22fc9a1778102d24ece102a42430112fbeda1150cf9f0afb213d44f9
+  - result: "PASS: no absolute worktree or run identifier."
+    description: Fresh sanitized task-history projection proof.
+    path: files/003-2-visual-story-board-rereview2-runtime-proof.txt
+    checksum: sha256:76e24e6ddea8b016ed877ace6cf043f6bfb705fc5c806f80a8b591b88868cf4c
+  - result: PASS
+    description: TypeScript verification.
+    path: files/003-3-visual-story-board-rereview2-check.txt
+    checksum: sha256:d822170e373f21c1bfadde7a7d3c53c33213133961101da45c0be4f1c9201fb9
+  - result: PASS (15/15)
+    description: Repair-focused test output.
+    path: files/003-4-visual-story-board-rereview2-focused-tests.txt
+    checksum: sha256:b5851f1b1bdcf937eb03f3ddd78f8b8629f0800d65b93fd46d126c44781d1746
+  - result: One blank-line-at-EOF warning in persisted evaluation evidence; no
+      product-source warning.
+    description: Bounded repair diff hygiene output.
+    path: files/003-5-visual-story-board-rereview2-diff-check.txt
+    checksum: sha256:740f765d12e18354927a10d77305100e0b0b7e5e7a239141db775719dc3845d1

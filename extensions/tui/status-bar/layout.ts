@@ -6,8 +6,17 @@ import type { SessionMetrics } from "./metrics.js";
 import { renderPermissionMode } from "../../permissions/display.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
+import type { FastModeStatus } from "../../fast-mode/policy.js";
+import type { ModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
+import { currentSubagentIndicator, renderSubagentFooterProjection } from "../../subagent/display.js";
+import type { SubagentUiProjection } from "../../subagent/ui-projection.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
+
+export interface ServiceStatusSegment {
+	id: string;
+	text: string;
+}
 
 export interface StatusRenderData {
 	ctx: ExtensionContext;
@@ -15,11 +24,22 @@ export interface StatusRenderData {
 	theme: Theme;
 	thinkingLevel: string;
 	permissionMode: "enforce" | "bypass";
+	profile?: string;
+	tierProfile?: ModelTierProfileStatus;
+	fastMode?: FastModeStatus;
 	metrics: SessionMetrics;
 	git: GitSnapshot;
 	config: StatusBarConfig;
-	serviceStatuses?: string[];
-	subagentStatuses?: string[];
+	serviceStatuses?: Array<string | ServiceStatusSegment>;
+	subagents?: SubagentUiProjection;
+	selectedInteractiveId?: string;
+	/** Deterministic render clock for animation and elapsed live-agent time. */
+	now?: number;
+}
+
+export interface StatusBarLayout {
+	lines: string[];
+	interactiveRows: string[][];
 }
 
 export function layoutMode(width: number, config: StatusBarConfig): LayoutMode {
@@ -43,6 +63,14 @@ function hasNerdFonts(): boolean {
 
 function separator(theme: Theme): string {
 	return theme.fg("dim", "│");
+}
+
+function profileMark(data: StatusRenderData, mode: LayoutMode): string {
+	if (data.profile === "designer") {
+		const icon = hasNerdFonts() ? "󰏘" : "◇";
+		return mode === "narrow" ? data.theme.fg("accent", icon) : `${data.theme.fg("accent", icon)} ${data.theme.fg("muted", "designer")}`;
+	}
+	return data.theme.fg("accent", hasNerdFonts() ? "" : "π");
 }
 
 function buildRow(leftParts: string[], rightParts: string[], width: number): string {
@@ -147,13 +175,43 @@ function permissionSegment(data: StatusRenderData): string {
 	return renderPermissionMode(data.permissionMode, data.theme);
 }
 
-function thinkingSegment(data: StatusRenderData): string {
+function capitalize(value: string): string {
+	return value ? `${value[0]!.toUpperCase()}${value.slice(1).toLowerCase()}` : value;
+}
+
+function effortSegment(data: StatusRenderData): string {
 	const level = data.thinkingLevel || "off";
-	const labels: Record<string, string> = { off: "OFF", minimal: "MINIMAL", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "EXTRA HIGH", max: "MAX" };
+	const labels: Record<string, string> = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 	const colors: Record<string, "dim" | "muted" | "warning" | "success" | "thinkingHigh" | "thinkingXhigh" | "thinkingMax"> = {
 		off: "dim", minimal: "muted", low: "warning", medium: "success", high: "thinkingHigh", xhigh: "thinkingXhigh", max: "thinkingMax",
 	};
-	return `${data.theme.fg("dim", "Thinking:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? level.toUpperCase())}`;
+	return `${data.theme.fg("dim", "Effort:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? capitalize(level))}`;
+}
+
+function tierProfileSegment(data: StatusRenderData): string {
+	if (!data.tierProfile) return "";
+	return `${data.theme.fg("dim", "Tier:")} ${data.theme.fg("muted", capitalize(data.tierProfile.profile))}`;
+}
+
+function fastModeSegment(data: StatusRenderData): string {
+	const status = data.fastMode;
+	if (!status) return "";
+	const scopes: string[] = [];
+	if (status.mainEnabled) scopes.push("Main");
+	if (status.subagents !== "off") {
+		const labels = { low: "Low", medium: "Med", high: "High", max: "Max" } as const;
+		scopes.push(`Sub≤${labels[status.subagents]}`);
+	}
+	if (scopes.length === 0 && !status.mainAvailable) return "";
+	const value = scopes.length > 0 ? scopes.join("+") : "Off";
+	return `${data.theme.fg("dim", "Fast:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
+}
+
+function rowFits(leftParts: string[], rightParts: string[], width: number): boolean {
+	const contentWidth = Math.max(0, width - 2);
+	const left = leftParts.filter(Boolean).join(" ");
+	const right = rightParts.filter(Boolean).join(" ");
+	return visibleWidth(left) + visibleWidth(right) + (left && right ? 1 : 0) <= contentWidth;
 }
 
 function tokenSegment(data: StatusRenderData): string {
@@ -175,19 +233,99 @@ function costSegment(data: StatusRenderData): string {
 	return data.theme.fg("muted", `$${(data.metrics.cost ?? 0).toFixed(2)}`);
 }
 
-export function renderStatusBar(width: number, data: StatusRenderData): string[] {
-	if (width <= 0) return [];
+interface InteractiveSegment {
+	id: string;
+	text: string;
+}
+
+function decorateInteractiveSegment(segment: InteractiveSegment, data: StatusRenderData): string {
+	return segment.id === data.selectedInteractiveId ? `${data.theme.fg("accent", "›")} ${segment.text}` : segment.text;
+}
+
+function segmentTexts(segments: InteractiveSegment[], divider: string): string[] {
+	return segments.flatMap((segment, index) => index === 0 ? [segment.text] : [divider, segment.text]);
+}
+
+function fitLeftInteractiveSegments(segments: InteractiveSegment[], rightParts: string[], width: number, divider: string): InteractiveSegment[] {
+	const contentWidth = Math.max(0, width - 2);
+	const right = rightParts.filter(Boolean).join(" ");
+	if (visibleWidth(right) >= contentWidth) return [];
+	const available = Math.max(0, contentWidth - visibleWidth(right) - (right ? 1 : 0));
+	const fitted: InteractiveSegment[] = [];
+	let used = 0;
+	for (const segment of segments) {
+		// Reserve the two-column selection marker even while inactive so entering
+		// footer mode cannot make the selected element disappear.
+		const extra = (fitted.length > 0 ? visibleWidth(` ${divider} `) : 0) + visibleWidth(segment.text) + 2;
+		if (used + extra > available) break;
+		fitted.push(segment);
+		used += extra;
+	}
+	return fitted;
+}
+
+function fitServiceSegments(services: ServiceStatusSegment[], width: number, divider: string): ServiceStatusSegment[] {
+	const contentWidth = Math.max(0, width - 2);
+	const fitted: ServiceStatusSegment[] = [];
+	let used = 0;
+	for (const service of services) {
+		// Reserve the selection marker for every service so moving selection does
+		// not make an otherwise reachable trailing service disappear.
+		const extra = (fitted.length > 0 ? visibleWidth(` ${divider} `) : 0) + visibleWidth(service.text) + 2;
+		if (used + extra > contentWidth) break;
+		fitted.push(service);
+		used += extra;
+	}
+	// Keep the first service reachable when even one full segment cannot fit;
+	// buildRow will safely truncate that one visible segment.
+	return fitted.length > 0 ? fitted : services.slice(0, 1);
+}
+
+export function renderStatusBarLayout(width: number, data: StatusRenderData): StatusBarLayout {
+	if (width <= 0) return { lines: [], interactiveRows: [] };
 	const mode = layoutMode(width, data.config);
 	const divider = separator(data.theme);
-	const piMark = data.theme.fg("accent", hasNerdFonts() ? "" : "π");
+	const piMark = profileMark(data, mode);
 	const row1Left = [piMark, divider, modelSegment(data), divider, pathSegment(data, mode), gitSegment(data)];
 	const context = contextSegment(data, mode);
 	const quota = quotaSegment(data, mode, width, context);
 	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
-	const row2 = buildRow([permissionSegment(data), divider, thinkingSegment(data)], row2Right, width);
-	const rows = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
-	if (data.serviceStatuses?.length) rows.push(buildRow([data.serviceStatuses.join(` ${divider} `)], [], width));
-	for (const status of data.subagentStatuses ?? []) rows.push(buildRow([status], [], width));
-	return rows;
+	const baseSegments: InteractiveSegment[] = [
+		{ id: "permissions", text: permissionSegment(data) },
+		{ id: "effort", text: effortSegment(data) },
+	];
+	const tierProfile = tierProfileSegment(data);
+	const profileSegments = [...baseSegments, ...(tierProfile ? [{ id: "tier-profile", text: tierProfile }] : [])];
+	const fastMode = fastModeSegment(data);
+	const allSegments = [...profileSegments, ...(fastMode ? [{ id: "fast-mode", text: fastMode }] : [])];
+	const chosenSegments = mode !== "narrow" && rowFits(segmentTexts(allSegments, divider), row2Right, width)
+		? allSegments
+		: mode !== "narrow" && rowFits(segmentTexts(profileSegments, divider), row2Right, width) ? profileSegments : baseSegments;
+	const visibleSettings = fitLeftInteractiveSegments(chosenSegments, row2Right, width, divider);
+	const row2Left = segmentTexts(visibleSettings.map((segment) => ({ ...segment, text: decorateInteractiveSegment(segment, data) })), divider);
+	const row2 = buildRow(row2Left, row2Right, width);
+	const lines = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
+	const interactiveRows = visibleSettings.length > 0 ? [visibleSettings.map((segment) => segment.id)] : [];
+	if (data.serviceStatuses?.length) {
+		const services = data.serviceStatuses.map((status, index): ServiceStatusSegment => typeof status === "string" ? { id: `service:${index}`, text: status } : status);
+		const visibleServices = fitServiceSegments(services, width, divider);
+		lines.push(buildRow([visibleServices.map((service) => decorateInteractiveSegment(service, data)).join(` ${divider} `)], [], width));
+		interactiveRows.push(visibleServices.map((service) => service.id));
+	}
+	if (data.subagents) {
+		for (const agent of data.subagents.agents.filter((candidate) => !candidate.workflow)) {
+			const lifecycle = agent.state === "launching" ? "starting" : agent.state === "stopping" ? "stopping" : "running";
+			const tone = lifecycle === "starting" ? "muted" : lifecycle === "stopping" ? "warning" : "accent";
+			const now = data.now ?? Date.now();
+			const icon = data.theme.fg(tone, currentSubagentIndicator(lifecycle, now));
+			lines.push(buildRow([`${icon} ${renderSubagentFooterProjection(agent, data.theme, now)}`], [], width));
+		}
+		if (data.subagents.overflow > 0) lines.push(buildRow([data.theme.fg("dim", `… +${data.subagents.overflow} more subagent${data.subagents.overflow === 1 ? "" : "s"}`)], [], width));
+	}
+	return { lines, interactiveRows };
+}
+
+export function renderStatusBar(width: number, data: StatusRenderData): string[] {
+	return renderStatusBarLayout(width, data).lines;
 }

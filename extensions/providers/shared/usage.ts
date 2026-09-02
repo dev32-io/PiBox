@@ -80,6 +80,6 @@ export function formatReset(resetAt: number, now = Date.now()): string {
 export function formatUsageSnapshot(snapshot: UsageSnapshot, now = Date.now()): string {
 	const prefix = snapshot.stale ? "~" : "";
 	return snapshot.windows
-		.map((window) => `${prefix}${Math.round(window.usedPercent)}%${window.resetAt ? ` ${formatReset(window.resetAt, now)}` : ""}`)
+		.map((window) => `${prefix}${Math.round(100 - window.usedPercent)}%${window.resetAt ? ` ${formatReset(window.resetAt, now)}` : ""}`)
 		.join(" · ");
 }

@@ -2,207 +2,96 @@
 
 ## Purpose
 
-This document records the working principle PiBox is trying to build: a development agent should collaborate like a capable product and technical partner, preserve the freedom of an extended human conversation, progressively turn shared understanding into executable work, and use deterministic workflow machinery only when the work is ready for it.
-
-It is the reference point for future skill additions, prompt refactors, workflow changes, and behavioral evaluations. New mechanics should support this collaboration flow rather than forcing the conversation to match the mechanics.
-
-## Core Interaction Premise
-
-A user often begins with concrete ideas, requests, or issues they have observed. Those inputs are valuable, but they are not always a complete statement of the desired outcome:
-
-- the user may know exactly what they want;
-- the user may still be discovering what they want;
-- the visible feature or defect may narrow attention and hide a better framing;
-- important alternatives, constraints, and downstream effects may emerge only through conversation.
-
-The agent should therefore begin as if it is in a room with the user and other thoughtful collaborators. The conversation may range freely, revisit assumptions, compare ideas, investigate evidence, and continue for many turns. It does not need to produce a plan, artifact, or workflow merely to justify the discussion.
-
-The desired progression is:
+PiBox should feel like collaboration with a capable product and technical partner. Conversation stays free until the user chooses convergence; deterministic workflow machinery begins only after reviewed contracts exist.
 
 ```text
-freeform product discussion
-        ↓ when the user chooses convergence
-high-level story shaping
-        ↓ when the product contract is coherent
-technical delivery planning
-        ↓ user review, then an explicit request to run
-managed workflow execution
-        ↓
-evidence-backed outcome briefing
+free-form product discussion
+  → high-level story shaping
+  → explicit review of the first persisted story
+  → technical delivery planning
+  → explicit user request to run or resume
+  → managed execution
+  → outcome briefing
 ```
 
-Movement is not strictly one-way. New evidence may reopen product discussion or story shaping. The agent should move to the phase that owns the unresolved question rather than burying uncertainty downstream.
+New evidence may move work backward to the phase that owns the unresolved question.
 
-## Phase 1: Freeform Product Discussion
+## 1. Free-form product discussion
 
-### Purpose
+Start from the user's ideas and observed problems. Recover the outcome behind a proposed mechanism, inspect facts when useful, compare meaningful alternatives, and challenge material risk without taking authority away. The conversation can last many turns or end without any workflow artifact.
 
-Create room for useful thinking before formalization.
+Ordinary discussion does not authorize story persistence, planning, or execution. When common ground emerges, offer to shape the behavior and high-level design; do not bundle shaping and delivery planning into one invisible transition.
 
-### Expected collaboration
+## 2. Story shaping
 
-- Start from the user's ideas, requests, and observed issues.
-- Exchange ideas and questions naturally over as many turns as useful.
-- Respond substantively rather than turning immediately into an interview.
-- Look beyond the requested feature or immediate defect when the framing may be too narrow.
-- Recover the outcome behind a proposed mechanism.
-- Inspect repository or product evidence when facts would improve the discussion.
-- Compare alternatives, expose trade-offs, and challenge a materially risky premise without taking authority away from the user.
-- Allow the discussion to end with insight or a decision without requiring managed work.
+Collaboratively define the durable product/technical contract before task decomposition. The deliverable is one Markdown-rich story with a compact required structure:
 
-### Boundary
+- `spec`: Outcome, Scope, Behavior, and Acceptance;
+- `design`: Approach, Boundaries and Flow, and Failure and Verification;
+- `e2e`: global Scope, optional Exclusions, and independently addressable stable `E2E-NNN` cases with Exercise, Oracle, and Proof.
 
-Ordinary discussion does not create canonical workflow state by default. Substantial conversation is not itself authorization to draft a story, plan delivery, or execute work.
+These headings establish durable meaning without restoring criterion taxonomies, block IDs, dimensional artifacts, or verbose case metadata. Bodies remain free-form Markdown scaled to the story.
 
-### Natural promotion
+Before persistence, present the complete story checkpoint for user validation. Write semantic fields through flat `story_write` and per-case `e2e_write`, read them back, and call validation-only `workflow_compile`. After first successful compilation, present the story with its resource ref and stop. The user must explicitly review or request planning in a later turn. This remains true even when the initial request asked for an end-to-end plan.
 
-When common ground has emerged, the agent should offer story shaping in language fitted to the conversation, such as:
+Story shaping does not define tasks, stages, assignments, authored evaluations, reports, handoffs, or runtime repair policy.
 
-> We seem to have a coherent direction. Want me to shape this into a high-level story with scope, constraints, acceptance criteria, and design boundaries?
+## 3. Delivery planning
 
-This is an invitation, not pressure. If the user already requested end-to-end planning, the agent should carry that authorization forward rather than asking them to repeat it at every intermediate checkpoint.
+Planning begins only after explicit review of the persisted story. Inspect the repository and turn the story into coherent fresh-agent assignments.
 
-## Phase 2: High-Level Story Shaping
+Each task is one YAML context capsule with metadata and free-form `description`, `scope`, and `delivery`, plus deterministic `checks`. It contains no story/artifact/block references or narrative taxonomy. Coupled discovery, invariants, implementation, and focused proof stay together; proof-only/review-only/repair-only tasks are forbidden.
 
-### Purpose
+Arrange tasks in ordered stages:
 
-Turn shared understanding into a coherent product contract before technical task decomposition.
+- `sequential` stages run serially in one isolated stage workspace and pass prior commits forward before the integration barrier;
+- `concurrent` stages fan independent compatible tasks from one pinned base and integrate them through one barrier.
 
-### Expected collaboration
+A stage may add deterministic checks and optional `review.mode`/`review.focus`. The planner never authors evaluations, reports, handoffs, runtime repair tasks, or retry limits. Only harness `limits.repairRounds` controls repair attempts. The runtime owns whole-branch review and final E2E.
 
-- Make the goal and desired outcome progressively clearer.
-- Resolve or explicitly record important unknowns, alternatives, constraints, assumptions, non-goals, and edge cases.
-- Identify actors and observable success signals.
-- Define stable acceptance criteria around behavior rather than implementation trivia.
-- Write the high-level intent, specification, design boundaries, and consequential decisions supported by the workflow schema.
-- Draft and refine these artifacts with the user over multiple turns.
-- Surface new product issues for discussion instead of silently hardening assumptions.
+Write one flat task or stage at a time through `task_write` and `stage_write`; incomplete cross-resource relationships may remain during drafting. Call near-zero-argument `workflow_compile` when coherent so it can aggregate topology errors without receiving authored content. Present the successfully compiled plan for user review. Compilation or praise does not execute. The sole execution gate is a clear user request to start or resume.
 
-### Deliverable
+## 4. Managed execution
 
-A reviewable high-level story that explains:
+Start/resume uses the extension-owned permission-bypass confirmation before launching unattended children whenever the current session is not already in bypass. Cancellation launches nothing.
 
-- the problem and desired outcome;
-- included and excluded scope;
-- binding constraints and assumptions;
-- observable acceptance criteria;
-- relevant high-level design and product decisions.
+The runtime advances ordered stages through implementation/check repair, integration, stage checks, optional stage review/fix, whole-branch review/fix, and final E2E/fix. The main session does not reproduce the scheduler. It intervenes only for contradictory authority, material user-owned decisions, critical risk, unsafe/destructive recovery, unanswerable clarification, or exhausted retries.
 
-This phase deliberately does not define implementation tasks, model assignments, worktree isolation, execution stages, or detailed evaluations.
+Workers receive complete task description/scope/delivery in stable context. `task_clarify` is an exceptional bounded line-read/literal-search surface over story `spec` or `design`. Final E2E receives `e2e` directly.
 
-### Natural promotion
+Completion produces one `outcome.md` and a briefing covering delivered behavior, checks, review/E2E, deviations, residual risk, and branch state. There are no duplicate authored evaluations, reports, or handoffs.
 
-When the story is coherent, the agent should offer technical delivery planning, for example:
+## Authorization and continuity
 
-> The story now has a clear outcome, scope, acceptance criteria, and design boundary. Want me to turn it into an execution-ready delivery plan with tasks, sequencing, assignments, and verification?
+- Authorization belongs to phases, not acknowledgements.
+- First story persistence always returns to user review before planning.
+- Planning never authorizes execution.
+- Start and resume require a clear user request and any required bypass confirmation.
+- Material outcome, scope, policy, privacy/security, irreversible, destructive, or critical-risk decisions return to the user.
+- New evidence returns to the phase that owns it rather than being buried downstream.
 
-If end-to-end planning was already requested, continue into delivery planning unless a material checkpoint requires the user's decision.
+## Skill design principles
 
-## Phase 3: Technical Delivery Planning
+1. One primary job and deliverable per skill.
+2. Clear trigger boundaries between discussion, shaping, planning, and execution.
+3. Markdown-rich structured story prose; minimal task context; deterministic runtime state.
+4. Progressive disclosure rather than one giant always-loaded prompt.
+5. Preserve conversational momentum without leaking authorization across gates.
+6. Escalate uncertainty to its owner.
+7. Let mechanics enforce truth without replacing judgment.
+8. Remove obsolete compatibility instructions rather than teaching both models.
 
-### Purpose
+## Regression questions
 
-Make the high-level story executable in technical terms and optimize delivery through the workflow system.
-
-### Expected collaboration
-
-- Inspect the actual repository, architecture, tests, and integration boundaries.
-- Resolve technical feasibility and compatibility unknowns.
-- Aggressively decompose implementation tasks around focused contribution concerns, keeping each task's tests and checks embedded rather than creating proof-only tasks.
-- Sequential stages may contain compiling intermediate commits; the stage is the coherent review boundary. Concurrent-stage tasks remain independent, while setup and layers stay with the contribution that needs them.
-- Write the complete draft atomically with explicit identity: create a new plan when the user says new/fresh/separate/ignore previous, and update only an explicitly selected existing plan revision.
-- Encode execution as ordered stages with an explicit `mode: sequential | concurrent`; blockers live in earlier stages.
-- Use sequential stages for declared-order tasks on the canonical `feature/<work-item>` branch, integrating each task before the next starts.
-- Use concurrent stages for independent tasks in individual worktrees from one pinned common base, followed by one atomic merge barrier in declared order. If mode is omitted, legacy singleton stages resolve to sequential and legacy multi-task stages to concurrent; new plans should state the mode.
-- Define resource claims, intermediate states, integration expectations, and recovery boundaries only where they constrain safe execution.
-- Assign one semantic capability tier after decomposition; let harness configuration resolve its ordered concrete `provider/model#effort` pairs.
-- Map acceptance criteria to implementation contributions and the cheapest meaningful proof.
-- Add deterministic checks, independent review, regression coverage, and E2E evaluation where warranted.
-- Write the complete draft atomically, read the whole plan at the exact written revision back, then self-review once for criterion/constraint coverage, vague placeholders, and consistency across dependencies, stages, references, and interfaces.
-- If self-review finds issues, apply one revision-pinned surgical edit without rewriting unchanged plan resources; do not repeat the review.
-- Keep independent `plan-critic` review optional for explicit user requests rather than delaying every plan.
-- Continue refining with the user when planning reveals new constraints or product questions.
-
-### Deliverable
-
-A fully written, execution-ready story plan containing:
-
-- high-level product artifacts;
-- technical tasks and contribution boundaries;
-- ordered or parallel execution stages;
-- capability assignments and runtime-derived execution stages;
-- integration expectations;
-- verification and evaluation coverage;
-- known risks and assumptions.
-
-The goal is common ground with the user, not merely a syntactically complete manifest.
-
-### Natural promotion
-
-Submit the coherent plan for user review and offer refinement as an equal option. No separate approval command is required.
-
-The user’s explicit request to execute or resume the reviewed workflow is the sole execution gate.
-
-## Phase 4: Managed Workflow Execution
-
-### Purpose
-
-Deliver the reviewed plan after the user asks to run it, while the harness manages routine scheduling, isolation, merging, evaluation, and lifecycle state.
-
-### Expected collaboration
-
-- The main session starts and supervises the workflow rather than manually reproducing the scheduler.
-- Subagents execute bounded contributions under the reviewed contract revision.
-- The harness advances dependencies, stage-mode-specific execution, worktrees, merges, and evaluations.
-- Each assembled stage runs its required checks and runtime-owned review/fix loop before the next stage advances; final E2E and final branch review remain ordered runtime-owned gates.
-- The main session resolves material questions, amendments, and recovery decisions while preserving user authority.
-- Dirty or conflicting work is preserved rather than silently discarded.
-- Completion depends on fresh evidence and required verification gates.
-
-### Deliverable
-
-An evidence-backed report to the user describing delivered behavior, verification and review outcomes, deviations, residual risks or follow-up, retained worktrees, and branch state.
-
-## Authorization and Conversational Continuity
-
-Authorization belongs to phases, not isolated assistant messages.
-
-- A user may authorize an extended shaping or planning process once; the agent should retain that momentum across intermediate drafts and acknowledgements.
-- “Good” or a similar acknowledgement can confirm progress inside an already active phase.
-- An acknowledgement does not independently initiate planning or execution.
-- Creating an intermediate artifact must not reset prior planning authorization.
-- There is no separate workflow approval status or command.
-- Execution requires a clear user request to run the reviewed workflow.
-- Material changes to outcome, consequential policy, privacy, security, irreversible behavior, or explicit constraints return authority to the user.
-
-The agent should not strand the conversation with “I can do the next step” when the user has already asked it to complete that process. Conversely, it should not silently cross into a phase the user has not chosen.
-
-## Skill Design Principles
-
-Skills should mirror these collaboration phases or one focused reusable technique within them.
-
-1. **One primary job and deliverable.** A skill should not combine freeform discussion, canonical drafting, task decomposition, and execution control.
-2. **Clear trigger boundary.** Its description should identify the conversational condition that activates it and distinguish adjacent phases.
-3. **Explicit input and output.** State what must already be true, what the skill produces, and when it must move backward.
-4. **Natural next step.** Each phase should offer the next phase in suggestive user-facing language without making the workflow feel mandatory.
-5. **Progressive disclosure.** Keep routing compact; load phase procedure only when its trigger matches.
-6. **Preserve momentum.** Handoffs should carry settled context and prior authorization rather than restarting the conversation.
-7. **Escalate uncertainty to its owner.** Product uncertainty returns to story shaping or discussion; technical uncertainty stays in delivery planning; execution failures enter recovery.
-8. **Mechanics serve judgment.** Canonical tools and harness rules enforce safety and repeatability, but do not replace product or engineering judgment.
-
-## Refactoring and Evaluation Questions
-
-When changing prompts, skills, or workflow mechanics, check:
-
-- Can the user talk freely without being pushed prematurely into planning?
-- Does the agent challenge feature fixation and recover the underlying outcome when useful?
-- Is the transition into story shaping explicit and user-chosen?
-- Are high-level product artifacts coherent before technical decomposition begins?
-- Does delivery planning produce user-reviewed, aggressively decomposed implementation tasks with honest blockers, coherent sequential-stage boundaries, independent concurrent tasks, and runtime-derived execution mechanics?
-- Can new evidence move the collaboration back to the correct phase?
-- Does authorization persist across intermediate checkpoints without leaking into execution?
-- Does each skill have one clear deliverable and a natural next-step invitation?
-- Does the final plan represent common ground with the user?
-- Does execution finish with fresh evidence and an informative user briefing?
-
-If a proposed change weakens these properties, it is a regression even when the underlying workflow machinery still functions.
+- Can the user discuss freely without workflow pressure?
+- Is story shaping explicit, collaborative, structured, and still Markdown-rich?
+- Does first persistence stop for user story review?
+- Are story and plan separate review boundaries?
+- Are tasks minimal, complete fresh-agent contexts without narrative refs?
+- Are stages maximally safe concurrent or honestly sequential?
+- Are reviews risk-selected and retry limits harness-only?
+- Does planning avoid authored evaluations/reports/handoffs?
+- Does execution require explicit start/resume and bypass confirmation?
+- Does runtime authority remain state → curated ledger → debug-only journal?
+- Are quit/crash and fresh-attempt recovery described honestly?
+- Does completion rely on fresh authoritative evidence and one outcome?

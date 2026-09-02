@@ -1,0 +1,22 @@
+✔ board has exactly three semantic columns and preserves projected status text (7.065958ms)
+✔ task delivery history renders only allowlisted projected fields (0.28825ms)
+✔ task details are action-loaded and provide accessible drawer and focus return contracts (1.406042ms)
+✔ evidence projects manifest membership without reading or serving bytes (34.961667ms)
+✔ evidence rejects symlinks, directories, absent manifests, and malformed contracts (12.33ms)
+✔ evidence route requires canonical evaluation membership and contained manifest-listed files (83.269625ms)
+✔ empty repositories and deterministic active-before-complete catalogs (44.5725ms)
+✔ workspace isolates malformed children and links task-scoped reports (46.496625ms)
+✔ story, task, stage, final, and E2E reports retain independent scopes (9.0395ms)
+✔ all persisted statuses map exactly once while preserving exact text (0.191583ms)
+✔ bounded legacy recovery and reads leave source bytes unchanged (53.879042ms)
+✔ Story Board registration is idle and routes load progressively with single-flight (39.296458ms)
+✔ direct routes deny symlinked external stories and tasks while healthy siblings remain available (37.390083ms)
+✔ Refresh returns before replacement discovery and only invalidates Story Board projections (3.982541ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 393.87175

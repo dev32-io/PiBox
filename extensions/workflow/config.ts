@@ -1,52 +1,41 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { parse } from "yaml";
 import { HarnessError } from "./errors.js";
 import type {
-	CapabilityTier,
-	ModelTier,
 	ConfigDiagnostic,
 	HarnessConfig,
-	HarnessEffort,
 	LoadedHarnessConfig,
-	AgentConfig,
-	TierModelRouteConfig,
 } from "./types.js";
-import { discoverAgentDefinitions, discoverProjectAgents } from "./agent-definitions.js";
-import { BUILT_IN_AGENT_ROOT } from "./prompt-loader.js";
+import {
+	DEFAULT_MODEL_TIER_LIST_PROFILES,
+	normalizeLegacyModelTiers,
+	validateModelTierListProfiles,
+} from "../model-tier-list-profiles/profiles.js";
+import { discoverProjectAgents } from "../subagent/agent-definitions.js";
+import { DEFAULT_SUBAGENT_CATALOG_CONFIG, resolveAgentConfigs } from "../subagent/catalog.js";
 import { validateToolSelectors } from "./tool-groups.js";
-import { DEFAULT_REVIEW_FIX_ITERATIONS } from "./review-loop.js";
 
-const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const CAPABILITY_TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
-const MODEL_TIERS: ModelTier[] = [...CAPABILITY_TIERS, "local"];
-const LOCAL_PROVIDER_ID = "local-llm";
-const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTiers", "agents", "roles", "orchestrator", "limits"]);
-const ROUTE_KEYS = new Set(["provider", "model", "effort"]);
-const AGENT_KEYS = new Set(["extends", "description", "prompt", "skills", "tools", "model", "workspace", "canDelegate", "completionSchema", "tier", "deliberation"]); // deliberation is accepted only for legacy policy compatibility
+const TOP_LEVEL_KEYS = new Set(["schemaVersion", "modelTierListProfiles", "agents", "roles", "orchestrator", "limits", "verification"]);
 const ORCHESTRATOR_KEYS = new Set(["modelSwitching"]);
 const LIMIT_KEYS = new Set(["maxConcurrency", "maxActiveSubagentsPerSession", "maxSubagentDepth", "protocolNudges", "repairRounds"]);
-
-const builtInAgentDefinitions = discoverAgentDefinitions(BUILT_IN_AGENT_ROOT);
-if (builtInAgentDefinitions.diagnostics.length > 0) throw new Error(`Invalid built-in agent definitions:\n${builtInAgentDefinitions.diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n")}`);
+const VERIFICATION_KEYS = new Set(["defaultProfile", "profiles"]);
+const VERIFICATION_PROFILE_KEYS = new Set(["shell", "bootstrap", "requiredEnvironment"]);
+const PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/;
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
 	schemaVersion: 2,
-	modelTiers: {
-		max: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro#max"],
-		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"],
-		medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
-		low: ["openai-codex/gpt-5.6-luna#low", "ollama-cloud/deepseek-v4-flash#low"],
-		local: ["local-llm/meta/muse-glimmer#high"],
-	},
+	modelTierListProfiles: structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES),
+	modelTierProfile: DEFAULT_MODEL_TIER_LIST_PROFILES.defaultProfile,
 	agents: {
-		...builtInAgentDefinitions.agents,
-		implementer: { ...builtInAgentDefinitions.agents.implementer!, completionSchema: "implementer-v1" },
+		...structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG.agents),
+		implementer: { ...DEFAULT_SUBAGENT_CATALOG_CONFIG.agents.implementer!, completionSchema: "implementer-v1" },
 	},
 	orchestrator: { modelSwitching: "auto-visible" },
-	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: DEFAULT_REVIEW_FIX_ITERATIONS },
+	limits: { maxConcurrency: 4, maxActiveSubagentsPerSession: 16, maxSubagentDepth: 1, protocolNudges: 1, repairRounds: 8 },
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -72,12 +61,6 @@ function expectInteger(value: unknown, path: string, minimum = 0): number {
 	return value as number;
 }
 
-function expectEffort(value: unknown, path: string): HarnessEffort {
-	const effort = expectString(value, path) as HarnessEffort;
-	if (!EFFORTS.has(effort)) throw new HarnessError("CONFIG_INVALID", `${path} is unsupported`);
-	return effort;
-}
-
 function rejectUnknownKeys(value: UnknownRecord, allowed: Set<string>, path: string): void {
 	for (const key of Object.keys(value)) if (!allowed.has(key)) throw new HarnessError("CONFIG_INVALID", `Unknown configuration field: ${path}.${key}`);
 }
@@ -91,111 +74,65 @@ function ignoreHarnessAgentTools(value: UnknownRecord): void {
 	}
 }
 
-function parseRoute(value: unknown, path: string): TierModelRouteConfig {
-	if (typeof value === "string") {
-		const separator = value.lastIndexOf("#");
-		const providerSeparator = value.indexOf("/");
-		if (separator <= providerSeparator || providerSeparator <= 0 || separator === value.length - 1) throw new HarnessError("CONFIG_INVALID", `${path} must use provider/model#effort`);
-		const effort = expectEffort(value.slice(separator + 1), `${path} effort`);
-		return `${value.slice(0, separator)}#${effort}`;
-	}
-	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must use provider/model#effort`);
-	// Normalize the previous mapping form so existing repository policies remain loadable.
-	rejectUnknownKeys(value, ROUTE_KEYS, path);
-	const provider = expectString(value.provider, `${path}.provider`);
-	const model = expectString(value.model, `${path}.model`);
-	const legacyEffort = isRecord(value.effort) ? value.effort.standard : value.effort;
-	return `${provider}/${model}#${expectEffort(legacyEffort, `${path}.effort`)}`;
-}
-
-function parseAgent(value: unknown, path: string): AgentConfig {
-	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", `${path} must be a mapping`);
-	rejectUnknownKeys(value, AGENT_KEYS, path);
-	const agent: AgentConfig = {};
-	if (value.extends !== undefined) agent.extends = expectString(value.extends, `${path}.extends`);
-	if (value.description !== undefined) agent.description = expectString(value.description, `${path}.description`);
-	if (value.prompt !== undefined) agent.prompt = expectString(value.prompt, `${path}.prompt`);
-	if (value.skills !== undefined) {
-		if (!Array.isArray(value.skills)) throw new HarnessError("CONFIG_INVALID", `${path}.skills must be an array`);
-		agent.skills = value.skills.map((item, index) => expectString(item, `${path}.skills[${index}]`));
-	}
-	if (value.tools !== undefined) {
-		if (!Array.isArray(value.tools)) throw new HarnessError("CONFIG_INVALID", `${path}.tools must be an array`);
-		agent.tools = value.tools.map((item, index) => expectString(item, `${path}.tools[${index}]`));
-		try { validateToolSelectors(agent.tools); } catch (error) { throw new HarnessError("CONFIG_INVALID", `${path}.tools: ${error instanceof Error ? error.message : String(error)}`); }
-	}
-	if (value.model !== undefined) agent.model = expectString(value.model, `${path}.model`);
-	if (value.workspace !== undefined) {
-		const workspace = expectString(value.workspace, `${path}.workspace`);
-		if (workspace !== "repository" && workspace !== "worktree" && workspace !== "none") throw new HarnessError("CONFIG_INVALID", `${path}.workspace is unsupported`);
-		agent.workspace = workspace;
-	}
-	if (value.canDelegate !== undefined) {
-		if (typeof value.canDelegate !== "boolean") throw new HarnessError("CONFIG_INVALID", `${path}.canDelegate must be boolean`);
-		agent.canDelegate = value.canDelegate;
-	}
-	if (value.completionSchema !== undefined) agent.completionSchema = expectString(value.completionSchema, `${path}.completionSchema`);
-	if (value.tier !== undefined) {
-		const tier = expectString(value.tier, `${path}.tier`) as CapabilityTier;
-		if (!CAPABILITY_TIERS.includes(tier)) throw new HarnessError("CONFIG_INVALID", `${path}.tier is unsupported`);
-		agent.tier = tier;
-	}
-	if (value.deliberation !== undefined && !["standard", "deep"].includes(expectString(value.deliberation, `${path}.deliberation`))) throw new HarnessError("CONFIG_INVALID", `${path}.deliberation is unsupported`);
-	return agent;
-}
-
-export function validateHarnessConfig(value: unknown): HarnessConfig {
+export function validateHarnessConfig(value: unknown, requestedModelTierProfile?: string): HarnessConfig {
 	if (!isRecord(value)) throw new HarnessError("CONFIG_INVALID", "Workflow configuration must be a mapping");
-	for (const key of Object.keys(value)) if (!TOP_LEVEL_KEYS.has(key)) throw new HarnessError("CONFIG_INVALID", `Unknown top-level configuration field: ${key}`);
-	if (value.schemaVersion !== 2) throw new HarnessError("CONFIG_INVALID", "schemaVersion must be 2; migrate model aliases to modelTiers and roles to agents");
-	const rawAgents = isRecord(value.agents) ? value.agents : value.roles;
-	if (!isRecord(value.modelTiers) || !isRecord(rawAgents) || !isRecord(value.orchestrator) || !isRecord(value.limits)) throw new HarnessError("CONFIG_INVALID", "modelTiers, agents, orchestrator, and limits must be mappings");
+	const normalized = structuredClone(value);
+	normalizeLegacyModelTiers(normalized);
+	delete normalized.modelTierProfile; // Effective session state is derived, never repository policy.
+	for (const key of Object.keys(normalized)) if (!TOP_LEVEL_KEYS.has(key)) throw new HarnessError("CONFIG_INVALID", `Unknown top-level configuration field: ${key}`);
+	if (normalized.schemaVersion !== 2) throw new HarnessError("CONFIG_INVALID", "schemaVersion must be 2; migrate model aliases to modelTierListProfiles and roles to agents");
+	const rawAgents = isRecord(normalized.agents) ? normalized.agents : normalized.roles;
+	if (!isRecord(normalized.modelTierListProfiles) || !isRecord(rawAgents) || !isRecord(normalized.orchestrator) || !isRecord(normalized.limits)) throw new HarnessError("CONFIG_INVALID", "modelTierListProfiles, agents, orchestrator, and limits must be mappings");
+	let modelTierListProfiles;
+	try { modelTierListProfiles = validateModelTierListProfiles(normalized.modelTierListProfiles); }
+	catch (error) { throw new HarnessError("CONFIG_INVALID", error instanceof Error ? error.message : String(error)); }
+	const modelTierProfile = requestedModelTierProfile && modelTierListProfiles.profiles[requestedModelTierProfile]
+		? requestedModelTierProfile
+		: modelTierListProfiles.defaultProfile;
 
-	const modelTiers = {} as Record<ModelTier, TierModelRouteConfig[]>;
-	for (const tier of MODEL_TIERS) {
-		const raw = value.modelTiers[tier];
-		if (!Array.isArray(raw) || raw.length === 0) throw new HarnessError("CONFIG_INVALID", `modelTiers.${tier} must be a non-empty array`);
-		modelTiers[tier] = raw.map((route, index) => parseRoute(route, `modelTiers.${tier}[${index}]`));
-		if (tier === "local" && modelTiers.local.some((route) => !route.startsWith(`${LOCAL_PROVIDER_ID}/`))) {
-			throw new HarnessError("CONFIG_INVALID", `modelTiers.local routes must use the ${LOCAL_PROVIDER_ID} provider`);
-		}
-	}
-	for (const tier of Object.keys(value.modelTiers)) if (!MODEL_TIERS.includes(tier as ModelTier)) throw new HarnessError("CONFIG_INVALID", `Unknown model tier: ${tier}`);
+	let agents;
+	try { agents = resolveAgentConfigs(rawAgents, { validateTools: validateToolSelectors }); }
+	catch (error) { throw new HarnessError("CONFIG_INVALID", error instanceof Error ? error.message : String(error)); }
 
-	const parsedAgents: Record<string, AgentConfig> = {};
-	for (const [name, raw] of Object.entries(rawAgents)) parsedAgents[name] = parseAgent(raw, `agents.${name}`);
-	const agents: Record<string, AgentConfig> = {};
-	const resolveAgent = (name: string, stack: string[] = []): AgentConfig => {
-		if (agents[name]) return agents[name];
-		const agent = parsedAgents[name];
-		if (!agent) throw new HarnessError("CONFIG_INVALID", `Unknown extended agent: ${name}`);
-		if (stack.includes(name)) throw new HarnessError("CONFIG_INVALID", `Agent inheritance cycle: ${[...stack, name].join(" -> ")}`);
-		const parent = agent.extends ? resolveAgent(agent.extends, [...stack, name]) : {};
-		const resolved = mergeConfigValues(parent, agent) as AgentConfig;
-		delete resolved.extends;
-		if (!resolved.tier) throw new HarnessError("CONFIG_INVALID", `Agent ${name} must resolve a tier default`);
-		agents[name] = resolved;
-		return resolved;
-	};
-	for (const name of Object.keys(parsedAgents)) resolveAgent(name);
-
-	rejectUnknownKeys(value.orchestrator, ORCHESTRATOR_KEYS, "orchestrator");
-	rejectUnknownKeys(value.limits, LIMIT_KEYS, "limits");
-	const switching = expectString(value.orchestrator.modelSwitching, "orchestrator.modelSwitching");
+	rejectUnknownKeys(normalized.orchestrator, ORCHESTRATOR_KEYS, "orchestrator");
+	rejectUnknownKeys(normalized.limits, LIMIT_KEYS, "limits");
+	const switching = expectString(normalized.orchestrator.modelSwitching, "orchestrator.modelSwitching");
 	if (switching !== "off" && switching !== "suggest" && switching !== "auto-visible") throw new HarnessError("CONFIG_INVALID", "orchestrator.modelSwitching is unsupported");
+
+	let verification: HarnessConfig["verification"];
+	if (normalized.verification !== undefined) {
+		if (!isRecord(normalized.verification)) throw new HarnessError("CONFIG_INVALID", "verification must be a mapping");
+		rejectUnknownKeys(normalized.verification, VERIFICATION_KEYS, "verification");
+		if (!isRecord(normalized.verification.profiles) || Object.keys(normalized.verification.profiles).length === 0) throw new HarnessError("CONFIG_INVALID", "verification.profiles must define at least one profile");
+		const profiles: NonNullable<HarnessConfig["verification"]>["profiles"] = {};
+		for (const [name, raw] of Object.entries(normalized.verification.profiles)) {
+			if (!PROFILE_NAME.test(name) || !isRecord(raw)) throw new HarnessError("CONFIG_INVALID", `Invalid verification profile: ${name}`);
+			rejectUnknownKeys(raw, VERIFICATION_PROFILE_KEYS, `verification.profiles.${name}`);
+			const shell = expectString(raw.shell, `verification.profiles.${name}.shell`);
+			if (!isAbsolute(shell)) throw new HarnessError("CONFIG_INVALID", `verification.profiles.${name}.shell must be absolute`);
+			if (raw.bootstrap !== undefined && (typeof raw.bootstrap !== "string" || !raw.bootstrap.trim())) throw new HarnessError("CONFIG_INVALID", `verification.profiles.${name}.bootstrap must be a non-empty string`);
+			if (raw.requiredEnvironment !== undefined && (!Array.isArray(raw.requiredEnvironment) || raw.requiredEnvironment.some((entry) => typeof entry !== "string" || !ENVIRONMENT_NAME.test(entry)))) throw new HarnessError("CONFIG_INVALID", `verification.profiles.${name}.requiredEnvironment contains an invalid name`);
+			profiles[name] = { shell, ...(raw.bootstrap ? { bootstrap: raw.bootstrap.trim() } : {}), requiredEnvironment: [...new Set((raw.requiredEnvironment ?? []) as string[])] };
+		}
+		const defaultProfile = normalized.verification.defaultProfile;
+		if (defaultProfile !== undefined && (typeof defaultProfile !== "string" || !profiles[defaultProfile])) throw new HarnessError("CONFIG_INVALID", "verification.defaultProfile must name a configured profile");
+		verification = { profiles, ...(typeof defaultProfile === "string" ? { defaultProfile } : {}) };
+	}
 
 	return {
 		schemaVersion: 2,
-		modelTiers,
+		modelTierListProfiles,
+		modelTierProfile,
 		agents,
 		orchestrator: { modelSwitching: switching },
 		limits: {
-			maxConcurrency: expectInteger(value.limits.maxConcurrency, "limits.maxConcurrency", 1),
-			maxActiveSubagentsPerSession: expectInteger(value.limits.maxActiveSubagentsPerSession, "limits.maxActiveSubagentsPerSession", 1),
-			maxSubagentDepth: expectInteger(value.limits.maxSubagentDepth, "limits.maxSubagentDepth"),
-			protocolNudges: expectInteger(value.limits.protocolNudges, "limits.protocolNudges"),
-			repairRounds: expectInteger(value.limits.repairRounds, "limits.repairRounds"),
+			maxConcurrency: expectInteger(normalized.limits.maxConcurrency, "limits.maxConcurrency", 1),
+			maxActiveSubagentsPerSession: expectInteger(normalized.limits.maxActiveSubagentsPerSession, "limits.maxActiveSubagentsPerSession", 1),
+			maxSubagentDepth: expectInteger(normalized.limits.maxSubagentDepth, "limits.maxSubagentDepth"),
+			protocolNudges: expectInteger(normalized.limits.protocolNudges, "limits.protocolNudges"),
+			repairRounds: expectInteger(normalized.limits.repairRounds, "limits.repairRounds"),
 		},
+		...(verification ? { verification } : {}),
 	};
 }
 
@@ -205,7 +142,7 @@ function digestConfig(config: HarnessConfig): string {
 
 export function loadHarnessConfig(
 	repositoryRoot: string,
-	options: { home?: string; readFile?: (path: string) => string; exists?: (path: string) => boolean } = {},
+	options: { home?: string; readFile?: (path: string) => string; exists?: (path: string) => boolean; modelTierProfile?: string } = {},
 ): LoadedHarnessConfig {
 	const home = options.home ?? homedir();
 	const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
@@ -220,7 +157,8 @@ export function loadHarnessConfig(
 		try {
 			const parsed = parse(readFile(source));
 			if (!isRecord(parsed)) throw new HarnessError("CONFIG_INVALID", "Configuration file must contain a mapping");
-			if (parsed.schemaVersion === 1 || "models" in parsed) throw new HarnessError("CONFIG_INVALID", "Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTiers");
+			if (parsed.schemaVersion === 1 || "models" in parsed) throw new HarnessError("CONFIG_INVALID", "Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTierListProfiles");
+			normalizeLegacyModelTiers(parsed);
 			ignoreHarnessAgentTools(parsed);
 			if (isRecord(parsed.roles) && !isRecord(parsed.agents)) parsed.agents = parsed.roles;
 			delete parsed.roles;
@@ -232,8 +170,8 @@ export function loadHarnessConfig(
 	}
 
 	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new HarnessError("CONFIG_INVALID", diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"), { diagnostics });
-	const config = validateHarnessConfig(merged);
-	const projectAgents = discoverProjectAgents(repositoryRoot);
+	const config = validateHarnessConfig(merged, options.modelTierProfile);
+	const projectAgents = discoverProjectAgents(repositoryRoot, { validateTools: validateToolSelectors });
 	for (const [name, definition] of Object.entries(projectAgents.agents)) config.agents[name] = definition;
 	diagnostics.push(...projectAgents.diagnostics);
 	if (Object.keys(projectAgents.agents).length > 0) sources.push(join(repositoryRoot, ".pi", "agents"));

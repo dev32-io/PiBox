@@ -232,7 +232,7 @@ Conceptual layout:
 
 ```text
 PiBox │ GPT-5.6 Sol (OpenAI) │ ~/Development/PiBox │ main +2 ?1     ▋▋▋▋▋▋░░░░ 38% / 400k
-◆ Permissions: ENFORCED │ Thinking: MEDIUM                  ↑ 124k ↓ 8.2k │ cache 71% │ $0.042
+◆ Permissions: Enforced │ Effort: Medium                    ↑ 124k ↓ 8.2k │ cache 71% │ $0.042
 ```
 
 The exact PiBox mark and separators will be selected during implementation. The status bar should not require Nerd Font glyphs to remain understandable.
@@ -240,7 +240,7 @@ The exact PiBox mark and separators will be selected during implementation. The 
 ### 6.3 Medium layout
 
 ```text
-GPT-5.6 Sol · MEDIUM │ PiBox · main +2 ?1                 ▋▋▋▋▋▋░░░░ 38%
+GPT-5.6 Sol · Medium │ PiBox · main +2 ?1                 ▋▋▋▋▋▋░░░░ 38%
 ↑124k ↓8.2k · cache 71% · $0.042
 ```
 
@@ -668,7 +668,7 @@ The first visual phase may show:
 - Native command hint
 - Native Bash hint
 - Model-cycle shortcut
-- Permission-mode shortcut (`Shift+Tab`); effort selection remains available through `/effort`
+- Permission-mode shortcut (`Shift+Tab`); thinking-level selection remains available through Pi's native `/thinking` command
 
 Do not show or advertise features that PiBox has not implemented, such as skills, MCP, plan mode, or chat mode.
 

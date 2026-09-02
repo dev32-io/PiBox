@@ -7,9 +7,9 @@ import { open, readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomicWriteFile, discoverRepository, isGitPathIgnored, readTextIfExists } from "../workflow/repository.js";
-import { WorkflowMutex } from "../workflow-runtime/storage.js";
+import { RepositoryMutex } from "../workflow/canonical-mutation.js";
 import {
-	MAX_ARTIFACT_CHARS, assessInstruction, assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, listDistillRuns, resolveDistillScope, sanitizeDistillText, subagentInputDigest,
+	MAX_ARTIFACT_CHARS, assessInstruction, assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, listDistillRuns, resolveDistillScope, sanitizeDistillText,
 	type DistillScopeInput, type GitRunner, type ResolvedDistillScope,
 } from "./core.js";
 import {
@@ -29,7 +29,6 @@ const SCOPE_FIELDS = {
 	sessionStartEntry: Type.Optional(Type.String({ maxLength: 200 })),
 	sessionEndEntry: Type.Optional(Type.String({ maxLength: 200 })),
 	knowledgeProviders: Type.Optional(Type.Array(Type.String({ maxLength: 128 }), { maxItems: 8 })),
-	rawSubagents: Type.Optional(StringEnum(["none", "exceptional", "all"] as const)),
 	focus: Type.Optional(Type.Array(StringEnum(["knowledge", "architecture", "failure-modes", "instructions", "contradictions", "process", "release-summary", "current-state"] as const), { maxItems: 8 })),
 };
 
@@ -105,8 +104,8 @@ export async function selectedSessionEntries(ctx: ExtensionContext, scope: Resol
 	return options.applyRange === false ? output : sliceEntryRange(output, scope);
 }
 
-function combinedInputDigest(reportDigest: string, historicalEntries: any[]): string {
-	return createHash("sha256").update(JSON.stringify({ reportDigest, historicalEntries })).digest("hex");
+function sessionInputDigest(historicalEntries: any[]): string {
+	return createHash("sha256").update(JSON.stringify({ historicalEntries })).digest("hex");
 }
 
 function sessionId(ctx: ExtensionContext): string {
@@ -170,15 +169,14 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			const requestedProviders = params.knowledgeProviders ?? [...providers.values()].filter((provider) => provider.locality === "local").map((provider) => provider.id);
 			for (const id of requestedProviders) if (!providers.has(id)) throw new Error(`Unknown distillation knowledge provider: ${id}`);
 			const requestedSessions = params.includeSession === false ? [] : params.sessionIds?.length ? params.sessionIds : params.workItems?.length ? [] : [sessionId(ctx)];
-			const reportDigest = await subagentInputDigest(identity.privateRoot, requestedSessions, params.workItems ?? []);
 			const knowledgeProviderFingerprint = requestedProviders.map((id) => ({ id, locality: providers.get(id)!.locality }));
 			const scopeInput: DistillScopeInput = {
 				...(params as DistillScopeInput), sessionIds: requestedSessions, knowledgeProviders: requestedProviders, knowledgeProviderFingerprint,
 				...(params.includeSession !== false && requestedSessions.includes(sessionId(ctx)) ? { sessionKey: sessionScopeKey(ctx) } : {}),
 			};
-			let scope = await resolveDistillScope(gitFor(pi, identity.root), { ...scopeInput, externalInputDigest: reportDigest });
+			let scope = await resolveDistillScope(gitFor(pi, identity.root), scopeInput);
 			const historicalEntries = await selectedSessionEntries(ctx, scope, { includeCurrent: false, applyRange: false });
-			scope = await resolveDistillScope(gitFor(pi, identity.root), { ...scopeInput, externalInputDigest: combinedInputDigest(reportDigest, historicalEntries) });
+			scope = await resolveDistillScope(gitFor(pi, identity.root), { ...scopeInput, externalInputDigest: sessionInputDigest(historicalEntries) });
 			if (scope.sessionStartEntry || scope.sessionEndEntry) await selectedSessionEntries(ctx, scope);
 			previews.set(scope.previewToken, { scope, repositoryId: identity.id, repositoryRoot: identity.root });
 			const preview = {
@@ -186,7 +184,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 				time: { since: scope.since ?? null, until: scope.until ?? null }, paths: scope.paths, workItems: scope.workItems,
 				commitCount: scope.commitCount, changedFiles: scope.changedFiles, dirty: scope.dirty, includeDirty: scope.includeDirty,
 				includeSession: scope.includeSession, sessionIds: scope.sessionIds, sessionEntries: { start: scope.sessionStartEntry ?? null, end: scope.sessionEndEntry ?? null },
-				rawSubagents: scope.rawSubagents, focus: scope.focus, knowledgeProviders: scope.knowledgeProviders,
+				focus: scope.focus, knowledgeProviders: scope.knowledgeProviders,
 				availableKnowledgeProviders: [...providers.values()].map((provider) => ({ id: provider.id, locality: provider.locality, description: provider.description })), estimatedPartitions: scope.estimatedPartitions,
 			};
 			return result(`Distillation scope resolved. Review it with the user before collection.\n${JSON.stringify(preview, null, 2)}`, preview);
@@ -207,13 +205,12 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			if (!await isGitPathIgnored(identity.root, ".pibox")) throw new Error("Refusing to collect distillation artifacts because .pibox is not ignored.");
 			const git = gitFor(pi, identity.root);
 			await assertSafeArtifactPath(identity.privateRoot, scope.runId, "manifest.json");
-			const mutex = new WorkflowMutex(join(identity.privateRoot, "distill", scope.runId));
+			const mutex = new RepositoryMutex(join(identity.privateRoot, "distill", scope.runId));
 			const collected = await mutex.run(`distill:${scope.previewToken}`, async () => {
 				const currentTarget = await git(["rev-parse", "--verify", `${scope.target.ref}^{commit}`]);
 				if (currentTarget.code !== 0 || currentTarget.stdout.trim() !== (scope.target.tipCommit ?? scope.target.commit)) throw new Error("The target ref moved after preview. Run distill_prepare again.");
-				const currentReportDigest = await subagentInputDigest(identity.privateRoot, scope.sessionIds, scope.workItems);
 				const historicalEntries = await selectedSessionEntries(ctx, scope, { includeCurrent: false, applyRange: false });
-				if (combinedInputDigest(currentReportDigest, historicalEntries) !== scope.externalInputDigest) throw new Error("Workflow, subagent, or historical session evidence changed after preview. Run distill_prepare again.");
+				if (sessionInputDigest(historicalEntries) !== scope.externalInputDigest) throw new Error("Historical session evidence changed after preview. Run distill_prepare again.");
 				const dirtySnapshot = scope.includeDirty ? await currentDirtySnapshot(git, scope.paths) : undefined;
 				if (dirtySnapshot && dirtySnapshot.digest !== scope.dirtyDigest) throw new Error("The dirty checkout changed after preview. Run distill_prepare again.");
 				return collectDistillRun(git, {

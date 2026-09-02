@@ -5,136 +5,74 @@ description: Use when converting a coherent high-level story into an execution-r
 
 # Plan Delivery
 
-Turn a coherent story into a small set of self-contained implementation tickets. Each task should be understandable and executable by one fresh worker without reconstructing its assignment from artifact references.
+Turn a reviewed story into self-contained fresh-agent assignments arranged in ordered stages. Story review, plan review, and execution start remain separate authority boundaries.
 
 ## Enter Deliberately
 
-Enter only after the user has reviewed the persisted story checkpoint and explicitly asks to plan or continue. A prior end-to-end request does not skip that review gate.
+Enter only after the user has reviewed the first persisted story and explicitly asks to plan or continue. A prior end-to-end request does not skip that review gate.
 
-Read the compact work item, then read each intent, specification, design, decision, and `e2e-matrix` child ref with `resource_read`. Treat those resources as the product contract: the approved E2E matrix is binding verification context. Planning normally reads them and writes implementation tasks plus ordered execution stages. Planners never create evaluation resources. If repository evidence exposes a product-contract problem, discuss it with the user and update only the affected story resource before continuing.
+Read the complete rendered story and E2E matrix. Treat their Markdown as binding context. If repository evidence exposes a product-contract problem, return to `shape-story` and update only the affected story section or E2E case before continuing.
 
 ## Execution Model
 
-Plans use ordered stages. Every new stage must explicitly set `mode` to `sequential` or `concurrent`; omitted mode is retained only for legacy plans (singleton stages resolve sequentially, multi-task stages concurrently). Sequential tasks run serially in declared order on the canonical working branch and see prior task commits. Concurrent independent tasks run in per-task worktrees from one base and cross one merge barrier. After a stage's checks, the runtime runs its required review/fix loop; after all stages it runs final E2E, then final branch review/fix. The planner authors tasks, stages, checks, and review policy, but never evaluations.
+A plan is an ordered stage train. Every stage declares `mode: sequential` or `mode: concurrent`.
+
+- A **concurrent stage** fans independent tasks into per-task worktrees from one pinned base, then integrates them through one barrier. Its tasks cannot depend on one another or claim incompatible shared resources.
+- A **sequential stage** runs tasks serially in one isolated stage workspace, so each fresh agent sees prior task commits before one integration barrier.
+
+Within a stage, the runtime owns implementation, task checks and repairs, deterministic integration, stage checks, and any planned review/fix loop. Later stages wait for the current stage to settle. After all stages, the runtime performs whole-branch review and final E2E from the approved matrix.
+
+Tasks are fresh-agent boundaries, not implementation steps. A multi-task sequential stage is an exceptional baton pass. The planner authors tasks, stages, deterministic checks, and optional stage review policy—never evaluations, reports, handoffs, repair tasks, or retry limits.
 
 ## Plan the Delivery
 
-1. **Map the seams first** — Inspect the repository before naming tickets. Record the relevant module/file responsibilities, current entry points, data/control flow, compatibility constraints, migration needs, and meaningful proof seams in your planning notes. This map is an input to decomposition, not a ticket for reconnaissance. Confirm the work item's immutable `workingBranch` binding and remain on it; delivery planning never creates, switches, or rewrites branches.
-2. **Aggressively decompose implementation changes** — Optimize task size for fresh medium/smaller workers, not for an abstract vertical slice. Split by default:
-   - every conjunction or independently reviewable outcome;
-   - data, model, schema, migration, policy, integration, and platform changes;
-   - interfaces and data contracts, routing, and policy rules;
-   - each CRUD operation (create, read, update, delete);
-   - each algorithm case or state-machine branch (for example, recurrence cases);
-   - visibility/authorization rules and write gates.
-   Keep tests and focused checks inside the implementation ticket they constrain. Never create proof-only, test-only, review-only, or verification-only tasks. A task may be compiling intermediate work inside a sequential stage; stage coherence and ordered integration replace per-task user-visible completeness. Combine adjacent changes only when separating them would break compilation or make one commit meaningless. The first greenfield task may combine setup with the smallest useful behavior when that is the only meaningful seam; prefactor-only and expand–migrate–contract tasks remain exceptions when a safe ordered intermediate state is required.
+1. **Map the seams first** — Inspect repository responsibilities, entry points, data/control flow, compatibility constraints, migrations, and proof seams. Confirm the story's canonical working branch and do not switch branches during planning.
+2. **Choose fresh-agent boundaries** — Keep coupled discovery, invariants, implementation, and focused proof together. Split only at coherent independent seams, durable predecessor outputs, or unrelated problem domains. Never create proof-only, review-only, repair-only, or verification-only tasks.
+3. **Write minimal complete tasks** — Each task has metadata plus Markdown-rich `description`, `scope`, and `delivery`, and deterministic `checks`. The complete assignment must fit one fresh agent without dereferencing story artifacts or narrative block references:
+   - `description` explains the contribution and necessary technical context;
+   - `scope` states included ownership, exclusions, dependencies/interfaces, and integration boundary;
+   - `delivery` states required implementation, observable result, focused proof, and expected repository state;
+   - `checks` lists executable deterministic commands owned by the harness.
+4. **Arrange ordered stages** — Put every independent, resource-compatible task that can start from one base in the same concurrent stage. Add a later stage only for a true dependency on integrated output. Use a multi-task sequential stage only when each task warrants a fresh context but must consume prior commits or cannot safely run concurrently.
+5. **Route capability after decomposition** — Use `medium` by default and `low` only for mechanical low-risk work. `local` requires current explicit user permission recorded in `rationale`. High/max require `tierJustification` explaining why medium is insufficient and further decomposition would damage the seam.
+6. **Plan deterministic proof and review risk** — Reconcile task/stage checks and final E2E with the complete story. Require stage review for material security/privacy, identity, persistence/data-integrity, concurrency/lifecycle, public compatibility, platform, irreversible, or weakly observable boundaries. Skip only when direct deterministic checks completely cover a local, reversible boundary. `.pi/harness.yaml` `limits.repairRounds` remains the sole retry-limit authority.
 
-   **Compressed/decompressed example:** “Add calendar resources, API, persistence, recurrence, visibility, and writes” is too broad. Decompress it into this foundation sequence: (1) resource class values; (2) event data contracts; (3) private routing; (4) household routing; (5) schema DDL; (6) migration ladder; (7) store factory/class/path guards; (8) create; (9) lookup; (10) list/filter; (11) update; (12) delete; (13) exception persistence; (14) recurrence cases—daily, weekly/BYDAY, monthly, yearly, COUNT/UNTIL, EXDATE, exception application, all-day, and DST; (15) visibility; (16) household write gate. Each ticket owns its implementation and embedded tests/checks; tests/checks are never proof tasks. Combine only where compilation or a meaningful commit requires it.
-3. **Write complete tickets for one fresh worker** — Each ticket must be executable in one fresh worker context without reconstructing its assignment from artifact references. Give it one contribution goal, context, included and excluded boundary, and explicit ordered concrete implementation/test steps in `requiredWork` (or the equivalent structured required-work field). State interfaces consumed and produced, constraints, observable acceptance, the proof seam that demonstrates it, checks, and integration expectation. Include relevant requirements directly; `task_clarify` is an escape hatch for a genuine uncertainty, not a substitute for a complete contract.
-4. **Arrange delivery for parallelism** — Parallel is the default: put independent tasks in the same concurrent stage and declare only true blockers in `dependsOn` (a required predecessor/interface, compatibility migration order, or unavoidable shared resource). Do not serialize work for convenience or model strength. Ordered tasks may instead share a sequential stage when prior compiling commits are their intended interfaces; concurrent tasks must not depend on each other or claim incompatible shared resources.
-5. **Route capability after decomposition** — Choose one tier only after boundaries and stages are settled. Use `medium` by default; `medium` is the hard default for managed tasks and dynamic subagents; use `low` only for genuinely mechanical low-risk work. High/max require a substantive justification answering all three questions: why medium is insufficient for this specific bounded task, what irreducible ambiguity or complexity remains, and why further decomposition would be unsafe, incoherent, or destroy the required seam. `max` is exceptional and user-requested, reserved for architecture, security, privacy, irreversible, or unusually high-blast-radius work. Record the justification in the assignment when high/max is selected. Each tier is an ordered list of concrete `provider/model#effort` pairs resolved by the harness.
-6. **Plan proof** — Preserve every approved E2E matrix case exactly, map planned work and proof seams to each case, and ensure every binding story criterion is implemented and verified somewhere in the task set. The matrix is verification context, not a planner-authored gate. Put focused deterministic, regression, or migration commands in task or stage `checks`. Every stage receives one required harness-generated review. Its review tier defaults to `medium`; use `high` only with both substantive rationale and concrete review focus. `max` is unavailable for stage review. The runtime also owns final whole-branch journey verification and final branch review. Never create an evaluation resource.
-7. **Write resources** — Use `resource_write` to create or update tasks and stages. Tasks use `stageId`; stages declare their ordered task membership, checks, and optional review policy. Creation uses `type`, `parent`, and `value`; updates use `ref` and `value`. Do not create evaluations, read a separate schema, or resend unchanged story resources.
-8. **Review the durable plan** — Use `resource_list` to inventory the assembled plan and `resource_read` to inspect each complete task. Check coverage, vagueness, consistency, dependency order, parallel safety, and whether every ticket fits one fresh worker context. Correct only the affected resource with `resource_write`.
-9. **Submit for review** — Call `workflow_transition` with `submit` only after the durable resources are coherent. Submission is a user review handoff, not execution authorization. A separate planning critique is optional and runs only when the user explicitly requests it; use `subagent_spawn` with `plan-critic` without delaying ordinary plans.
+Keep the prose fields proportional to complexity. Use subheadings, lists, or code references when they make a fresh-agent assignment clearer, but do not inflate a bounded task or repeat the same requirements in every field.
 
-## Resource Examples
+## Write Flat Draft Resources
 
-The work item's `workingBranch` was established during initial story creation. Do not write branch lifecycle fields during planning.
+- Work on the story's clean bound branch; flat writers own harness commits. Create a task without `ref` with `story`, `id`, `title`, `description`, `scope`, and `delivery`; create a stage with `story`, `id`, and `mode`. Membership may be empty only while drafting.
+- Update by canonical `ref` and send only changed fields. `dependsOn`, `checks`, and stage `tasks` replace their complete arrays, so resend every retained entry. A supplied `id` or `story` must match the ref.
+- Dangling dependencies and incomplete membership are valid drafts. `workflow_compile` requires at least one non-empty stage, assigns every task exactly once, and validates dependency order, routes, checks, and review policy.
+- `reviewMode` persists `required` or `skip`; `none` removes the policy. `reviewFocus` requires a review mode.
 
-Create one self-contained task. Use this shape as a guide and omit optional fields that add no information:
+Example task: description “Connect checkout through the existing command boundary”; scope “Own the adapter and focused tests; exclude settlement”; delivery “Create one order for valid input, preserve typed rejection, and prove success, rejection, and duplicate submission”; check `npm test -- checkout-command`.
 
-```json
-{
-  "type": "task",
-  "parent": "work-item:checkout",
-  "value": {
-    "id": "submit-checkout",
-    "title": "Submit checkout",
-    "goal": "Customers can submit a valid checkout and receive the resulting order.",
-    "context": [
-      "The existing checkout command owns validation and order creation."
-    ],
-    "included": [
-      "Connect checkout submission through the existing command boundary",
-      "Return the created order or the command's typed validation failure",
-      "Add focused tests for successful and rejected submission"
-    ],
-    "requiredWork": [
-      "1. Trace the existing checkout command and preserve its input/result interface.",
-      "2. Connect valid submission to order creation and return the created identifier.",
-      "3. Preserve typed validation failure without creating an order.",
-      "4. Add and run focused success and rejection tests."
-    ],
-    "excluded": [
-      "Payment settlement and receipt delivery"
-    ],
-    "interfaces": [
-      "Consumes the existing CheckoutCommand input and validation result; produces the created order identifier or typed failure.",
-      "Proof seam: the command boundary and focused tests demonstrate both outcomes."
-    ],
-    "acceptance": [
-      "A valid checkout creates one order and returns its identifier",
-      "Invalid input returns the existing validation failure without creating an order"
-    ],
-    "proof": [
-      "Focused command tests cover successful and rejected submission"
-    ],
-    "checks": [
-      "npm test -- checkout-command"
-    ],
-    "dependsOn": [],
-    "assignment": {
-      "tier": "medium"
-    }
-  }
-}
-```
-
-Create the stage and put focused proof at that boundary:
-
-```json
-{
-  "type": "stage",
-  "parent": "work-item:checkout",
-  "value": {
-    "id": "checkout-delivery",
-    "mode": "sequential",
-    "tasks": ["submit-checkout"],
-    "checks": ["npm test -- checkout-idempotency"],
-    "review": {
-      "tier": "medium",
-      "focus": ["Checkout idempotency and typed validation failures"]
-    }
-  }
-}
-```
-
-The harness supplies lifecycle defaults, generated titles where possible, assignment defaults, singleton stages, execution isolation, and runtime state. A worker receives the complete rendered task contract in persistent context. `task_clarify` remains available when a concrete uncertainty genuinely requires additional intent, specification, design, decision, or neighboring-task context; it is an escape hatch, not a substitute for a complete ticket.
+Inspect completed resources and correct only the affected one. Do not write raw YAML or use generic/nested authoring tools.
 
 ## Readiness Check
 
-Before submission, verify:
+Before compiling, verify:
 
-- every task has one narrow implementation contribution and its embedded proof, rather than an arbitrary horizontal bundle;
-- sequential stages may contain compiling intermediate tasks, while stage ordering preserves a coherent assembled behavior;
-- its context and acceptance are self-contained and contain no `artifact#AC-NNN` instructions;
-- included, excluded, and interface boundaries prevent accidental scope growth;
-- dependencies point only to earlier stages;
-- parallel tasks have compatible resource claims;
-- task and stage checks provide the cheapest meaningful focused proof;
-- all binding story behavior has an owner and verification path;
-- no product decision is hidden in a task assumption;
-- no task relies on model strength or `task_clarify` to compensate for a vague contract.
+- every task is a complete, bounded fresh-agent context without narrative pointers;
+- every task belongs to one stage, dependencies resolve, and concurrent peers are independent;
+- executable checks sit at the cheapest boundary and review policy matches risk; and
+- all story behavior has an owner and proof path, with no authored evaluations, handoffs, repair work, or retry counts.
 
-## Review Handoff
+## Compile for Plan Review
 
-Present the work-item ID, technical approach, contribution stages, parallelism, capability choices, verification, and residual risks. The user can say “start the workflow” or otherwise explicitly request execution; that clear request is the sole execution gate. No separate approval command is required, and planning alone never starts execution.
+Call near-zero-argument `workflow_compile` without resending authored content. It aggregates deterministic findings and mutates nothing. Fix named resources and recompile. Success yields the content for plan review; it creates no handoff artifact and does not start execution.
 
-## Deliverable
+## Plan Review and Start Authority
+
+Present the story identity, technical approach, ordered stages, concurrency, capability choices, checks, review decisions, final E2E coverage, and residual risks. Then wait for explicit plan review. Planning and successful compilation do not inherit authority from story approval and do not authorize execution.
+
+Only a later explicit request such as “start the workflow” enters `workflow-run` and authorizes the separate start gate. A request to revise the plan remains in `plan-delivery`.
+
+## Exit States
 
 End with exactly one result:
 
-1. a submitted execution-ready plan and review handoff;
-2. one material decision blocking submission; or
-3. an explicit return to `shape-story` with the contract issue that must be resolved.
+1. a compiled execution-ready plan and review handoff;
+2. one material decision blocking compilation; or
+3. an explicit return to `shape-story` with the contract issue to resolve.

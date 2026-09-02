@@ -4,15 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Architecture Visualizer</title>
+  <link rel="stylesheet" href="/assets/design-tokens.css">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <header>
+  <header class="viewer-toolbar">
     <div class="brand">
-      <span class="mark">◇</span>
+      <span class="mark" aria-hidden="true">◇</span>
       <div><h1 id="title">Architecture Visualizer</h1><p id="description"></p></div>
     </div>
-    <div class="controls">
+    <div class="controls" role="group" aria-label="Graph controls">
       <label>View <select id="view"></select></label>
       <label>Layout
         <select id="layout">
@@ -23,17 +24,20 @@
         </select>
       </label>
       <label class="check"><input id="groups" type="checkbox" checked> Groups</label>
-      <button id="fit" type="button">Fit</button>
+      <button id="fit" type="button" aria-label="Fit graph to viewport">Fit</button>
+      <button id="refresh" type="button">Refresh</button>
     </div>
   </header>
   <main>
-    <section class="canvas-wrap">
+    <section class="canvas-wrap" aria-label="Architecture graph">
       <div id="status" role="status"></div>
-      <div id="canvas"></div>
-      <div class="legend"><span><i class="node-dot"></i> Concept</span><span><i class="note-dot"></i> Note</span><span><i class="edge-dot"></i> Relationship</span></div>
+      <p id="canvas-help" class="sr-only">Use Left and Right Arrow keys to select graph elements and Enter to inspect the selection.</p>
+      <div id="canvas" tabindex="0" role="region" aria-label="Interactive architecture graph" aria-describedby="canvas-help"></div>
+      <div class="legend" aria-label="Graph legend"><span><i class="node-dot"></i> Concept</span><span><i class="note-dot"></i> Note</span><span><i class="edge-dot"></i> Relationship</span></div>
     </section>
-    <aside id="details">
-      <div class="empty"><strong>Select an element</strong><p>Click a node or relationship to inspect the agent-authored details.</p></div>
+    <aside id="details" aria-label="Selected element details" aria-live="polite" tabindex="-1" data-open="false">
+      <button id="close-details" class="close-details" type="button" aria-label="Close element details">Close</button>
+      <div id="detail-content"><div class="empty"><strong>Select an element</strong><p>Click a node or relationship to inspect the agent-authored details.</p></div></div>
     </aside>
   </main>
   <script src="./vendor/cytoscape.js"></script>

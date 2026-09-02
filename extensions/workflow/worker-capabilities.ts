@@ -1,209 +1,130 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { Type } from "typebox";
-import { stringify } from "yaml";
-import { SessionAgentRegistry } from "../workflow-runtime/agent-registry.js";
 import { describeHarnessError, HarnessError } from "./errors.js";
-import { discoverRepository, runGit } from "./repository.js";
-import { HarnessRunStore, type TaskHandoff } from "./run-store.js";
+import { discoverRepository } from "./repository.js";
 import { WorkItemStore } from "./work-items.js";
 
-interface WorkerScope {
-	runId: string;
-	workItemId: string;
-	taskId: string;
-	credential: string;
-}
+const MAX_CLARIFICATION_BYTES = 16 * 1024;
+const DEFAULT_LINE_COUNT = 200;
+const MAX_LINE_COUNT = 200;
+const DEFAULT_CONTEXT_LINES = 4;
+const MAX_CONTEXT_LINES = 12;
+const DEFAULT_MATCHES = 8;
+const MAX_MATCHES = 8;
 
-function scopeFromEnvironment(): WorkerScope {
-	const runId = process.env.PIBOX_HARNESS_RUN_ID;
-	const workItemId = process.env.PIBOX_HARNESS_WORK_ITEM;
-	const taskId = process.env.PIBOX_HARNESS_TASK;
-	const credential = process.env.PIBOX_HARNESS_CREDENTIAL;
-	if (!runId || !workItemId || !taskId || !credential) throw new HarnessError("CAPABILITY_DENIED", "Worker capability requires a supervised harness run");
-	return { runId, workItemId, taskId, credential };
-}
+const sectionSchema = Type.Union([Type.Literal("spec"), Type.Literal("design")]);
+const readRequestSchema = Type.Object({
+	section: sectionSchema,
+	startLine: Type.Optional(Type.Integer({ minimum: 1 })),
+	lineCount: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_LINE_COUNT })),
+}, { additionalProperties: false });
+const searchRequestSchema = Type.Object({
+	section: sectionSchema,
+	findText: Type.String({ minLength: 1, maxLength: 256 }),
+	contextLines: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_CONTEXT_LINES })),
+	maxMatches: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_MATCHES })),
+}, { additionalProperties: false });
 
-async function authorized(ctx: ExtensionContext) {
-	const scope = scopeFromEnvironment();
-	const identity = await discoverRepository(ctx.cwd);
-	const runs = new HarnessRunStore(identity.privateRoot, scope.workItemId);
-	const run = await runs.authorize(scope.runId, scope.credential);
-	if (run.taskId !== scope.taskId || run.workItemId !== scope.workItemId || run.workspace !== ctx.cwd) {
-		throw new HarnessError("CAPABILITY_DENIED", "Run scope does not match this task workspace");
+export type TaskClarificationRequest =
+	| { section: "spec" | "design"; startLine?: number; lineCount?: number }
+	| { section: "spec" | "design"; findText: string; contextLines?: number; maxMatches?: number };
+
+const result = (text: string) => ({ content: [{ type: "text" as const, text }], details: null });
+
+function truncateUtf8(value: string, maxBytes: number): string {
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	let bytes = 0;
+	let output = "";
+	for (const character of value) {
+		const width = Buffer.byteLength(character, "utf8");
+		if (bytes + width > maxBytes) break;
+		output += character;
+		bytes += width;
 	}
-	return { scope, identity, runs, run, workItems: new WorkItemStore(identity.root) };
+	return output;
 }
 
-const result = (text: string, details: unknown = null) => ({ content: [{ type: "text" as const, text }], details });
+function boundedOutput(header: string[], content: string): string {
+	const prefix = `${header.join("\n")}\n---\n`;
+	const marker = "\n[… output truncated at the 16 KiB task clarification limit]";
+	const available = Math.max(0, MAX_CLARIFICATION_BYTES - Buffer.byteLength(prefix, "utf8"));
+	if (Buffer.byteLength(content, "utf8") <= available) return `${prefix}${content}`;
+	const bodyBudget = Math.max(0, available - Buffer.byteLength(marker, "utf8"));
+	return `${prefix}${truncateUtf8(content, bodyBudget)}${marker}`;
+}
 
-export function isWorkerProcess(): boolean {
-	return Boolean(process.env.PIBOX_HARNESS_TASK);
+function readLines(section: "spec" | "design", value: string, request: Extract<TaskClarificationRequest, { startLine?: number }>): string {
+	const lines = value.split("\n");
+	const startLine = request.startLine ?? 1;
+	const lineCount = request.lineCount ?? DEFAULT_LINE_COUNT;
+	if (startLine > lines.length) throw new HarnessError("INVALID_ARTIFACT", `${section} has ${lines.length} lines; startLine ${startLine} is out of range`);
+	const endLine = Math.min(lines.length, startLine + lineCount - 1);
+	const content = lines.slice(startLine - 1, endLine).join("\n");
+	return boundedOutput([
+		`section: ${section}`,
+		`lines: ${startLine}-${endLine} of ${lines.length}`,
+		`moreLines: ${endLine < lines.length ? "true" : "false"}`,
+	], content);
+}
+
+function searchLines(section: "spec" | "design", value: string, request: Extract<TaskClarificationRequest, { findText: string }>): string {
+	if (!request.findText.trim()) throw new HarnessError("INVALID_ARTIFACT", "task_clarify findText must contain a non-whitespace literal");
+	if (/\r|\n/.test(request.findText)) throw new HarnessError("INVALID_ARTIFACT", "task_clarify findText must be a single-line literal");
+	const lines = value.split("\n");
+	const needle = request.findText.toLowerCase();
+	const matchingLines = lines.flatMap((line, index) => line.toLowerCase().includes(needle) ? [index] : []);
+	const maxMatches = request.maxMatches ?? DEFAULT_MATCHES;
+	const selected = matchingLines.slice(0, maxMatches);
+	const context = request.contextLines ?? DEFAULT_CONTEXT_LINES;
+	const ranges: Array<{ start: number; end: number }> = [];
+	for (const index of selected) {
+		const start = Math.max(0, index - context);
+		const end = Math.min(lines.length - 1, index + context);
+		const previous = ranges.at(-1);
+		if (previous && start <= previous.end + 1) previous.end = Math.max(previous.end, end);
+		else ranges.push({ start, end });
+	}
+	const content = ranges.length
+		? ranges.map((range) => [`[lines ${range.start + 1}-${range.end + 1}]`, lines.slice(range.start, range.end + 1).join("\n")].join("\n")).join("\n\n")
+		: "No matching lines.";
+	return boundedOutput([
+		`section: ${section}`,
+		`findText: ${JSON.stringify(request.findText)}`,
+		`matchingLines: ${matchingLines.length}`,
+		`shownMatches: ${selected.length}`,
+		`moreMatches: ${matchingLines.length > selected.length ? "true" : "false"}`,
+	], content);
+}
+
+export async function readTaskClarification(store: WorkItemStore, storyId: string, request: TaskClarificationRequest): Promise<string> {
+	if (request.section !== "spec" && request.section !== "design") throw new HarnessError("INVALID_ARTIFACT", "task_clarify accepts only the story spec or design field");
+	const value = (await store.readStory(storyId))[request.section];
+	return "findText" in request ? searchLines(request.section, value, request) : readLines(request.section, value, request);
+}
+
+export function isTargetTaskProcess(): boolean {
+	return Boolean(process.env.PIBOX_WORKFLOW_STORY_ID && process.env.PIBOX_WORKFLOW_TASK_ID && process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN);
+}
+
+async function targetTaskStore(ctx: ExtensionContext): Promise<{ store: WorkItemStore; storyId: string }> {
+	const storyId = process.env.PIBOX_WORKFLOW_STORY_ID;
+	const taskId = process.env.PIBOX_WORKFLOW_TASK_ID;
+	if (!storyId || !taskId || !isTargetTaskProcess()) throw new HarnessError("CAPABILITY_DENIED", "Task clarification requires a current managed target task attempt");
+	const identity = await discoverRepository(ctx.cwd);
+	const store = new WorkItemStore(identity.root);
+	await store.readAuthoredTask(storyId, taskId);
+	return { store, storyId };
 }
 
 export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "task_clarify",
 		label: "Task Clarification",
-		description: "Resolve a specific uncertainty about the assigned task by consulting additional canonical context from the current story or change. Use only when the persistent task context and repository are insufficient—for example, to understand broader product intent, inspect a related requirement or design decision, evaluate an alternative, or support a change request. Do not call at startup, during routine implementation, or to re-read context already provided. Identify the missing question first, then read only the relevant resource. List resources only when you do not know which one can answer it.",
-		parameters: Type.Object({
-			action: Type.Union([
-				Type.Literal("list", { description: "List additional resources only when a concrete uncertainty exists and the relevant resource is unknown." }),
-				Type.Literal("read", { description: "Read one known resource needed to resolve the concrete uncertainty." }),
-			]),
-			ref: Type.Optional(Type.String({ description: "Specific canonical resource to read, such as artifact:checkout-design, task:api:acceptance, integration-unit:checkout, or evaluation:checkout-review." })),
-		}, { additionalProperties: false }),
+		description: "Exceptionally search or read a bounded line range from the free-form story spec or design when the assigned task and repository leave a concrete ambiguity. Search uses a case-insensitive literal and returns bounded matching passages. This tool cannot list or mutate resources.",
+		parameters: Type.Union([readRequestSchema, searchRequestSchema]),
 		async execute(_id, params, _signal, _update, ctx) {
-			try {
-				const auth = await authorized(ctx);
-				const item = await auth.workItems.read(auth.scope.workItemId);
-				if (params.action === "list") {
-					const refs = [
-						...item.artifacts.map((artifact) => `artifact:${artifact.id} (${artifact.type})`),
-						...item.tasks.flatMap((task) => [`task:${task.id}:manifest`, `task:${task.id}:brief`, `task:${task.id}:acceptance`]),
-						...item.integrationUnits.map((unit) => `integration-unit:${unit.id}`),
-						...item.evaluations.map((evaluation) => `evaluation:${evaluation.id}`),
-					];
-					return result(["Additional canonical context:", ...refs.map((ref) => `- ${ref}`)].join("\n"));
-				}
-				if (!params.ref) throw new HarnessError("INVALID_ARTIFACT", "ref is required for task_clarify read");
-				const root = auth.workItems.workItemRoot(auth.scope.workItemId);
-				let content: string;
-				if (params.ref.startsWith("artifact:")) {
-					const id = params.ref.slice("artifact:".length);
-					content = (await auth.workItems.readArtifact(item.id, id)).content;
-				} else if (params.ref.startsWith("task:")) {
-					const match = /^task:([a-z0-9]+(?:-[a-z0-9]+)*):(manifest|brief|acceptance)$/.exec(params.ref);
-					if (!match || !item.tasks.some((task) => task.id === match[1])) throw new HarnessError("INVALID_ARTIFACT", `Unknown task context: ${params.ref}`);
-					content = await readFile(join(root, "tasks", match[1]!, match[2] === "manifest" ? "task.yaml" : `${match[2]}.md`), "utf8");
-				} else if (params.ref.startsWith("integration-unit:")) {
-					const id = params.ref.slice("integration-unit:".length);
-					const unit = item.integrationUnits.find((candidate) => candidate.id === id);
-					if (!unit) throw new HarnessError("INVALID_ARTIFACT", `Unknown integration unit: ${id}`);
-					content = stringify(unit);
-				} else if (params.ref.startsWith("evaluation:")) {
-					const id = params.ref.slice("evaluation:".length);
-					content = stringify(await auth.workItems.readEvaluation(item.id, id));
-				} else throw new HarnessError("INVALID_ARTIFACT", `Unknown task clarification reference: ${params.ref}`);
-				return result(content);
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	pi.registerTool({
-		name: "task_checkpoint",
-		label: "Task Checkpoint",
-		description: "Persist a meaningful supervised task checkpoint for recovery or steering.",
-		parameters: Type.Object({
-			completed: Type.Array(Type.String()),
-			nextSteps: Type.Array(Type.String()),
-			risks: Type.Optional(Type.Array(Type.String())),
-			commits: Type.Optional(Type.Array(Type.String())),
-		}),
-		async execute(_id, params, _signal, _update, ctx) {
-			try {
-				const auth = await authorized(ctx);
-				await auth.runs.writeCheckpoint(auth.scope.runId, { ...params, at: new Date().toISOString() });
-				return result("Checkpoint persisted.");
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
-		},
-	});
-
-	for (const name of ["task_request_change", "task_report_decision", "task_blocked"] as const) {
-		pi.registerTool({
-			name,
-			label: name.split("_").map((part) => part[0]?.toUpperCase() + part.slice(1)).join(" "),
-			description: name === "task_report_decision"
-				? "Persist a non-blocking delegated decision for the orchestrator and final handoff."
-				: name === "task_request_change"
-					? "Persist a blocking task-contract change request and end this process attempt. First consult the one relevant canonical source; identify the conflicting clauses, cite source observations in evidence, and recommend the smallest safe amendment. The orchestrator will classify authority, amend atomically when settled, or escalate a genuinely user-owned decision."
-					: "Persist an external blocker that cannot be resolved through a task-contract amendment, checkpoint safe work, and end this process attempt.",
-			parameters: Type.Object({ summary: Type.String(), rationale: Type.String(), evidence: Type.Optional(Type.Array(Type.Object({ source: Type.String(), observation: Type.String() }))), options: Type.Optional(Type.Array(Type.String())), recommendation: Type.Optional(Type.String()) }),
-			async execute(toolCallId, params, _signal, _update, ctx) {
-				try {
-					const auth = await authorized(ctx);
-					await auth.runs.appendEvent(auth.scope.runId, name.replaceAll("_", "."), params);
-					const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
-					const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
-					const agentId = process.env.PIBOX_SUBAGENT_ID;
-					let message: unknown;
-					if (privateRoot && sessionId && agentId) {
-						const registry = new SessionAgentRegistry(privateRoot, sessionId);
-						message = await registry.recordMessage(agentId, {
-							operationId: toolCallId,
-							type: name === "task_report_decision" ? "decision_report" : name === "task_request_change" ? "change_request" : "blocked",
-							blocking: name !== "task_report_decision",
-							summary: params.summary,
-							rationale: params.rationale,
-							evidence: params.evidence ?? [],
-							...(params.options ? { options: params.options } : {}),
-							...(params.recommendation ? { recommendation: params.recommendation } : {}),
-						});
-					}
-					if (name === "task_blocked") await auth.runs.update(auth.scope.runId, { state: "interrupted", error: params.summary }, "run.blocked");
-					return result(name === "task_report_decision" ? "Decision report persisted; continue within delegated scope." : "Blocking message persisted; checkpoint safe work and end this attempt.", message);
-				} catch (error) {
-					throw new Error(describeHarnessError(error));
-				}
-			},
-		});
-	}
-
-	pi.registerTool({
-		name: "task_complete",
-		label: "Complete Task Contribution",
-		description: "Submit the required terminal implementation handoff. Git state and artifact restrictions are validated deterministically.",
-		parameters: Type.Object({
-			summary: Type.String(),
-			commits: Type.Array(Type.String({ description: "Full 40-character commit SHA(s) from the task branch; abbreviated hashes are rejected." })),
-			checks: Type.Array(Type.Object({ command: Type.String(), result: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("skipped")]), output: Type.Optional(Type.String()) })),
-			expectedFailures: Type.Optional(Type.Array(Type.String())),
-			risks: Type.Optional(Type.Array(Type.String())),
-		}),
-		async execute(_id, params, _signal, _update, ctx) {
-			try {
-				const auth = await authorized(ctx);
-				const privateRoot = process.env.PIBOX_SUBAGENT_STORE_ROOT;
-				const sessionId = process.env.PIBOX_WORKFLOW_SESSION_ID;
-				const agentId = process.env.PIBOX_SUBAGENT_ID;
-				if (privateRoot && sessionId && agentId) {
-					const agent = await new SessionAgentRegistry(privateRoot, sessionId).get(agentId);
-					if (agent.state !== "running") throw new HarnessError("INVALID_HANDOFF", `Task cannot complete while its logical agent is ${agent.state}`);
-				}
-				const item = await auth.workItems.read(auth.scope.workItemId);
-				if (auth.run.planningRevision !== undefined && item.planning.revision !== auth.run.planningRevision) throw new HarnessError("CONTEXT_REFRESH_REQUIRED", `Task planning advanced from revision ${auth.run.planningRevision} to ${item.planning.revision}`);
-				const status = await runGit(ctx.cwd, ["status", "--porcelain=v1", "--untracked-files=all"]);
-				if (status) throw new HarnessError("INVALID_HANDOFF", "Task worktree must be clean before completion", { status });
-				const head = await runGit(ctx.cwd, ["rev-parse", "HEAD"]);
-				const actualCommits = (await runGit(ctx.cwd, ["rev-list", "--reverse", `${auth.run.baseCommit}..HEAD`])).split("\n").filter(Boolean);
-				if (actualCommits.length === 0) throw new HarnessError("INVALID_HANDOFF", "Task contribution has no commits");
-				if (!params.commits.includes(head) || params.commits.some((commit) => !actualCommits.includes(commit))) {
-					throw new HarnessError("INVALID_HANDOFF", "Reported commits do not match the task branch", { head, actualCommits });
-				}
-				const artifactChanges = await runGit(ctx.cwd, ["diff", "--name-only", `${auth.run.baseCommit}..HEAD`, "--", "agent-artifacts"]);
-				if (artifactChanges) throw new HarnessError("CAPABILITY_DENIED", "Workers cannot modify agent-artifacts", { artifactChanges });
-				const handoff: TaskHandoff = {
-					schemaVersion: 1,
-					type: "task_complete",
-					runId: auth.scope.runId,
-					taskId: auth.scope.taskId,
-					summary: params.summary,
-					commits: params.commits,
-					checks: params.checks,
-					expectedFailures: params.expectedFailures ?? [],
-					risks: params.risks ?? [],
-					completedAt: new Date().toISOString(),
-				};
-				await auth.runs.writeHandoff(auth.scope.runId, handoff);
-				return result("Terminal task handoff accepted.", handoff);
-			} catch (error) {
-				throw new Error(describeHarnessError(error));
-			}
+			try { const target = await targetTaskStore(ctx); return result(await readTaskClarification(target.store, target.storyId, params)); }
+			catch (error) { throw new Error(describeHarnessError(error)); }
 		},
 	});
 }

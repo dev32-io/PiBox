@@ -97,17 +97,6 @@ function tokenCount(value: number): string {
 	return value.toLocaleString("en-US");
 }
 
-function estimateAddedContextTokens(previous: string | undefined, current: string, tokensPerCharacter: number): number {
-	// Contexts normally grow by appending finalized messages. Count only that
-	// suffix; this deliberately avoids treating the retained conversation as
-	// new input on every model request.
-	if (previous === undefined) return 0;
-	let shared = 0;
-	const length = Math.min(previous.length, current.length);
-	while (shared < length && previous[shared] === current[shared]) shared++;
-	return Math.ceil((current.length - shared) / tokensPerCharacter);
-}
-
 function liveUsageDetail(startedAt: number, characters: number, inputEstimate: number, tokensPerCharacter: number): string {
 	const elapsedMs = Math.max(0, Date.now() - startedAt);
 	const outputTokens = Math.round(characters / tokensPerCharacter);
@@ -142,7 +131,8 @@ export default function spinners(pi: ExtensionAPI): void {
 	let startedAt = 0;
 	let requestStartedAt = 0;
 	let inputEstimate = 0;
-	let previousContext: string | undefined;
+	let previousContextTokens: number | undefined;
+	let previousContextSignature: string | undefined;
 	let characters = 0;
 	let currentMessage = "Analyzing";
 	let hasLiveThinking = false;
@@ -195,6 +185,8 @@ export default function spinners(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		previousContextTokens = undefined;
+		previousContextSignature = undefined;
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setWorkingIndicator({
 			frames: ["◒", "◐", "◓", "◑"].map((glyph) => ctx.ui.theme.fg("accent", glyph)),
@@ -227,13 +219,20 @@ export default function spinners(pi: ExtensionAPI): void {
 	pi.on("turn_start", () => {
 		hasLiveThinking = false;
 	});
-	pi.on("context", (event) => {
-		const currentContext = event.messages.map((message) => JSON.stringify(message)).join("\n");
+	pi.on("context", (event, ctx) => {
+		// This is presentation-only work. Headless agents must not inspect or retain
+		// their context, and TUI sessions reuse Pi's existing token estimate instead
+		// of serializing the complete message graph on every tool turn.
+		if (!activeContext || ctx.mode !== "tui") return;
+		const reportedTokens = ctx.getContextUsage()?.tokens;
+		const tokens = typeof reportedTokens === "number" ? reportedTokens : undefined;
+		const signature = `${event.messages.length}:${tokens ?? "unknown"}`;
 		// Some providers build/inspect context more than once before sending. An
 		// unchanged snapshot is not a new request and must not restart the meter.
-		if (currentContext === previousContext) return;
-		inputEstimate = estimateAddedContextTokens(previousContext, currentContext, config.tokensPerCharacter);
-		previousContext = currentContext;
+		if (signature === previousContextSignature) return;
+		inputEstimate = tokens === undefined || previousContextTokens === undefined ? 0 : Math.max(0, tokens - previousContextTokens);
+		previousContextTokens = tokens;
+		previousContextSignature = signature;
 		requestStartedAt = Date.now();
 		characters = 0;
 		update();
@@ -260,6 +259,8 @@ export default function spinners(pi: ExtensionAPI): void {
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stop();
+		previousContextTokens = undefined;
+		previousContextSignature = undefined;
 		if (ctx.mode === "tui") {
 			ctx.ui.setWorkingIndicator();
 			ctx.ui.setHiddenThinkingLabel();

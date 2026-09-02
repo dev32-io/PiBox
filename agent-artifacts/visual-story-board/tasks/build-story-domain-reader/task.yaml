@@ -1,0 +1,35 @@
+schemaVersion: 1
+id: build-story-domain-reader
+title: Build the read-only Story Board domain reader
+status: merged
+dependsOn: []
+execution:
+  resourceClaims:
+    - extensions/visual-companion/story-board domain models and canonical readers
+    - extensions/visual-companion/story-board reader fixtures and projector tests
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
+assembly:
+  stageId: platform-and-domain-foundations
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test
+      extensions/visual-companion/story-board/tests/reader-projector.test.ts
+      extensions/visual-companion/story-board/tests/evidence-model.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-story-domain-reader
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-story-domain-reader
+  baseCommit: aac54ad2bdbf47f7a958631c981574ca435b09cd
+  lastRunId: 5363f596-bbad-40bd-acec-faaa1c2f7432
+  completedCommit: 06a6a5568e078c7b7824b01ceae4d021b8905c50
+  mergedCommit: f29dcfa04157a0021679d4b6ed82a831d154072f

@@ -1,2 +1,0 @@
-Authoritative orchestrator responses:
-{{responses}}

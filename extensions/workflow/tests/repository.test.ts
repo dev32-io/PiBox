@@ -5,13 +5,56 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { discoverRepository } from "../repository.js";
+import { discoverRepository, runGit } from "../repository.js";
 
 const exec = promisify(execFile);
 
 async function git(cwd: string, ...args: string[]): Promise<void> {
 	await exec("git", args, { cwd });
 }
+
+test("Git failures surface stdout when stderr is empty", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-error-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await git(root, "init", "--quiet");
+	await git(root, "config", "user.name", "Harness Test");
+	await git(root, "config", "user.email", "harness@example.test");
+	await writeFile(join(root, "README.md"), "fixture\n");
+	await git(root, "add", "README.md");
+	await git(root, "commit", "--quiet", "-m", "initial");
+
+	await assert.rejects(runGit(root, ["commit", "-m", "duplicate"]), /nothing to commit/i);
+});
+
+test("retries brief Git index lock contention", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-lock-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await git(root, "init", "--quiet");
+	await writeFile(join(root, "README.md"), "fixture\n");
+	const lock = join(root, ".git", "index.lock");
+	await writeFile(lock, "");
+	const release = new Promise<void>((resolve, reject) => {
+		setTimeout(() => { void rm(lock, { force: true }).then(resolve, reject); }, 75);
+	});
+
+	await runGit(root, ["add", "README.md"]);
+	await release;
+	assert.equal(await runGit(root, ["diff", "--cached", "--name-only"]), "README.md");
+});
+
+test("abortable Git operations terminate a live child and preserve cancellation", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-harness-git-abort-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	await git(root, "init", "--quiet");
+	const controller = new AbortController();
+	const startedAt = Date.now();
+	setTimeout(() => controller.abort(), 25);
+	await assert.rejects(
+		runGit(root, ["hash-object", "--stdin"], { signal: controller.signal }),
+		(error: unknown) => error instanceof Error && error.name === "AbortError",
+	);
+	assert.ok(Date.now() - startedAt < 1_000, "cancellation does not wait for the Git child to finish naturally");
+});
 
 test("uses one stable repository identity across linked worktrees", async (t) => {
 	const parent = await mkdtemp(join(tmpdir(), "pibox-harness-repo-"));

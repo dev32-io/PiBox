@@ -5,34 +5,76 @@ description: Use when the user asks to start or resume a reviewed workflow, or w
 
 # Workflow Run
 
-## Run
+## Start or Resume
 
-1. A clear user request to execute the reviewed workflow is the sole execution gate; call `workflow_start` directly and do not ask for a separate approval command or manually sequence routine tasks. A new bug report, “address this,” feature/fix discussion, planning acknowledgement, or review comment does not authorize starting, stopping, resuming, or amending an existing workflow.
+A clear user request to execute or resume the reviewed workflow is the sole execution gate. A bug report, “address this,” discussion, acknowledgement, review comment, or completed plan does not authorize starting, stopping, resuming, or amending execution.
+
+For start, call `workflow_start` directly. The extension validates topology, branch, and prerequisites, then presents its own explicit confirmation that unattended execution requires visible permission bypass. Cancellation launches nothing and does not mutate execution state.
+
+Any resume that would launch children uses the same centralized bypass guard when the current session is not already in bypass mode. A new activation never resumes silently in enforced mode. The permission extension switches modes only after explicit confirmation; bypass does not bypass workflow authority, Git isolation, reviews, verification, or recovery controls.
 
 ## Execution Model
 
-2. The runner follows the assembled execution model: ordered stages advance only after their gates settle; sequential tasks run serially in declared order on the canonical working branch and see prior commits; concurrent tasks run in independent per-task worktrees from one pinned base and cross one merge barrier. Each stage then receives its runtime-owned checks and review/fix loop, followed in order by final whole-branch E2E and final branch review/fix.
-3. Managed execution has a strict ownership boundary. The orchestrator never edits source or task worktrees, never installs dependencies, never performs Git changes (including commits, merges, checkouts, resets, or conflict resolution), never launches replacement implementers, reviewers, or E2E agents, never calls `evaluation_record` for runtime-owned reviews, never accepts based on ad hoc checks, never edits unrelated artifacts, and never uses `resume` to force a checkpoint or advance a run. Let the harness and its workers perform those actions through their managed controls.
-4. If checkpoint, fixer, or reviewer settlement fails, inspect the canonical recorded evidence once, use the one matching managed action (for example, the checkpoint action or the recorded worker response), then pause and surface the persistent failure. Do not take over manually, retry unchanged failure, substitute a worker, or bypass a required gate.
-5. Require the clean recorded `workingBranch`; shaping already created and bound it before the first durable story write. Workflow start and resume validate that branch and never create, switch, or synchronize a delivery branch.
-6. Let the runtime enforce stages, dependencies, resource claims, isolation, task merges/checks, generated stage reviews, and final gates. Successful task settlement, integration, review, and an available next step are routine advancement: do not call `task_integrate`, manipulate Git/task state, or wait for user confirmation. The runtime must refresh and continue automatically. After routine work is handed to the runtime, end the turn. Never use `sleep`, polling loops, repeated delayed `workflow_status`, or shell wait scripts to await managed agents, repairs, merges, checks, or evaluations. React only to automatically delivered workflow events, blocking worker messages, or a new user request; one evidence/status inspection in response to an actionable event is allowed, but never wait by polling. Intervene only when an actionable attention event remains after settlement, a blocking worker message exists, or the runtime explicitly pauses. Monitor routine events without narrating every transition.
-7. Treat reviewer output as evidence and recommendation, not unilateral merge authority. The main session must inspect the canonical report and choose `workflow_checkpoint` `approve` or `request_changes`; approval may selectively name Major/Minor findings in structured `acceptedRisks` with rationale. Critical risk requires explicit user confirmation and returns user-decision-required in headless mode. Required reviews cannot be skipped. Reviewer/fixer identities, automatic re-review, and iteration limits are harness-owned; no separate resume call is needed after `request_changes`. Never chase newly discovered non-critical issues indefinitely during re-review; preserve them as residual risk.
-8. On interruption or failure, trust recorded branch, worktree, checkpoint, run, and evidence state over chat memory. Preserve dirty/conflicting work; never stash, reset, discard, retry unchanged failure, or resolve conflicts invisibly. Diagnose ownership and offer safe recovery choices.
-9. Evaluate at the smallest planned coherent boundary. Record checks, independent verdicts, findings, repairs, reruns, and residual risk. Complete only when every required gate passes.
+1. The reviewed plan runs as ordered stages. Sequential tasks share one isolated stage workspace and see prior task commits before one integration barrier; concurrent tasks run in per-task worktrees from one pinned base and cross one integration barrier.
+2. Within each stage the runtime automatically advances implementation and task checks/repairs, integration, stage checks, and the optional planned review/fix loop. It then performs whole-branch review and final E2E using the story's complete `e2e` field.
+3. Runtime-generated CI repair, integration repair, stage review/fix, whole-branch review/fix, and E2E/fix attempts are state slots, not authored tasks, evaluations, reports, or handoffs. `.pi/harness.yaml` `limits.repairRounds` is the only repair-limit authority.
+4. Managed execution owns source/worktree edits, dependency installation, Git operations, worker launches, checks, repairs, reviews, and gates. Do not manually reproduce scheduler transitions or edit task/runtime state.
+5. Routine settlement is automatic. After handing work to the runtime, end the turn. Never poll with `sleep`, loops, repeated delayed `workflow_status`, or shell wait scripts. React only to delivered workflow events, blocking messages, explicit pauses, or a new user request.
+6. The orchestrator intervenes only for contradictory authority, material product/policy/privacy/security/irreversible decisions, critical risk acceptance, unsafe or destructive recovery, unanswerable clarification, or exhausted configured retries.
+7. Preserve dirty or conflicting work. Never stash, reset, discard, switch branches routinely, retry unchanged failure, or resolve conflicts invisibly.
 
-## Management Protocol
+## Context and Authority
 
-When a worker opens a blocking message, inspect it with `subagent_status` and preserve the exact agent and message IDs. Classify the decision before acting:
+Each worker receives the complete task `description`, `scope`, and `delivery` in persistent system context. Checks remain harness-owned. A worker may use `task_clarify` only for a concrete uncertainty; it searches or reads a bounded line range from story `spec` or `design`, not a narrative block, criterion, artifact catalog, task reference, authored evaluation, or report.
 
-1. **Settled by canonical authority.** A reviewed intent, specification, design, or decision unambiguously resolves a contradictory subordinate task clause. If the correction is narrow, reversible, limited to undelivered work, and introduces no new product, policy, privacy/security, destructive, or irreversible choice, amend rather than escalating.
-2. **Answerable without amendment.** The task remains valid and the worker only needs a focused factual answer. Respond with `subagent_respond` and let the same logical worker resume.
-3. **Genuinely user-owned.** Canonical sources conflict or leave a material outcome, scope, policy, privacy/security, destructive, irreversible, or consequential trade-off unresolved. Preserve the blocked state and ask the user one precise question with the conflicting evidence and viable options.
-4. **Insufficient evidence.** Ask the same worker for the smallest targeted clarification; do not guess, launch a replacement worker, or broaden scope.
+The runtime may give reviewers and fixers the scoped task contracts, current finding or failure, relevant curated ledger entries, optional review focus, and the complete story context needed for that boundary. Final E2E actors receive the complete story `e2e` field directly. No actor receives the debug journal.
 
-For a settled task-contract defect, use one atomic `workflow_apply_change` call: patch only the contradictory task fields; cite the authoritative artifact in `authority.sources`; explain why the amendment restores the reviewed outcome; set `executionDisposition` to `resume-requesting-agent` when retained work remains valid or `restart-affected` when it does not; and include the tool's `response` object with the exact agent/message IDs so the requesting logical worker resumes from the amended contract. Do not make a separate `subagent_respond` call when the atomic response is available. Do not count a safe clarification attempt as a repair iteration, manually resume the workflow, or disturb unrelated ready work.
+When authority is contradictory or incomplete:
 
-Escalate if the proposed change weakens reviewed acceptance rather than reconciling it, changes user-visible scope, affects delivered work without a safe restart boundary, repeats after amendment, or cannot establish a single authoritative answer. Record the amendment and source trail; never silently reinterpret the task or implement an impossible compromise.
+1. Never edit authored story, plan, or task resources after runtime state pins their digests.
+2. If the story settles a subordinate defect or factual clarification, resolve the authoritative attention slot with the smallest exact guidance; the runtime launches a fresh attempt.
+3. If the reviewed contract must change, preserve pause and ask whether to stop; this version has no in-place replan, so only an explicit stop followed by a new target story can replace it.
+4. If evidence is insufficient, request the smallest targeted investigation rather than guessing or broadening scope.
+
+Do not count clarification as a repair round, respond live to a settled child, or manually force advancement.
+
+## Attention Decisions
+
+A plain `workflow_control resume` never clears attention. After the user decides, call `workflow_control request_changes` with exact guidance, or `workflow_control approve` with a rationale for every unresolved finding. Accepting a critical-risk finding additionally requires explicit user ownership and a separate extension-owned confirmation, even in bypass. Attention resolution validates first, obtains confirmations, persists the decision in `state.yaml`, and only then launches fresh work. Repair requests remain limited by `limits.repairRounds`; never reset an exhausted budget. If requested changes cannot launch, keep attention and ask the user whether to accept with rationale or stop.
+
+## State, Continuity, and Diagnostics
+
+Trust story-local durable state over chat memory:
+
+```text
+agent-artifacts/<story>/
+  story.yaml
+  plan.yaml
+  tasks/<task>.yaml
+  state.yaml
+  ledger.yaml
+  events.jsonl
+  outcome.md
+  evidence/
+```
+
+- `state.yaml` is the sole authority for scheduling, ownership, attempts, retries, Git coordinates, metrics, resume, and outcome status.
+- `ledger.yaml` is the small rewritten set of currently relevant non-obvious findings and evidence. It is the only rolling handoff context; routine status never belongs there.
+- `events.jsonl` is coarse, content-free debug/analytics logging. It is never replayed, never used to derive state or metrics, and never included in normal tools, prompts, status, or TUI rendering. Read it only through an explicit bounded filtered diagnostic surface.
+- One serialized workflow writer owns all three files. Children never write them.
+
+There is no replay recovery. State is applied atomically before a best-effort debug append; a missing final debug event is acceptable, missing state is not.
+
+## Reload, Quit, and Crash Recovery
+
+`/reload` is the only same-activation rebind path. A reloaded runner may rebind matching active attempts from the process-global `SubagentService` using workflow/attempt metadata and bounded current/terminal delivery; it does not replay files.
+
+Treat session quit exactly like a process crash. Do not promise graceful settlement, detached survival, or continued handoff writing, and tell users not to quit while work is running. On owner loss the lifetime wrapper terminates children, though the exact exit time/event may be absent.
+
+During startup of the next activation, before any resume or child launch, compare durable ownership, mark old running slots interrupted, permanently fence their attempt tokens, pause the workflow, preserve Git/worktree state, and mark incomplete metric time. Never adopt old children, replay `events.jsonl`, inspect PIDs, tail files, add heartbeats, or infer completion from old process output.
+
+Recovery launches only fresh attempts and only after an explicit user request to resume. If that resume would launch children outside bypass mode, show the bypass confirmation first; cancellation launches nothing.
 
 ## Finish
 
-After every required step and gate settles, call `work_item_complete` with the bare work-item ID; this completion gate creates `outcome.md` when it does not already exist. Do not report the expected pre-gate absence of `outcome.md` as a deviation. Read the resulting outcome and observed lifecycle evidence, then brief the user on delivered behavior, verification/review, genuine deviations, residual risks or follow-up, and the recorded working-branch state. Report that working branch as ready for the user's normal merge/PR process without switching or merging it. Continue conversationally if follow-up is needed.
+Completion is runtime-owned after every stage, whole-branch review, and E2E gate settles. Read `outcome.md` and current authoritative state, then brief the user on delivered behavior, deterministic checks, review/E2E results, genuine deviations, residual risks, and the recorded working branch. Do not author a separate evaluation, report, handoff, or duplicate outcome projection. Report the branch as ready for the user's normal merge/PR process without switching or merging it.

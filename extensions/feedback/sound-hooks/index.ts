@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { WORKFLOW_FEEDBACK_EVENT, type WorkflowFeedbackEvent } from "../../workflow-runtime/api.js";
+import { WORKFLOW_LIFECYCLE_EVENT, type WorkflowLifecycleEvent } from "../../workflow-runtime/api.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import {
 	resolveSoundFile,
 	RESPONSE_COMPLETE_EVENT,
 	WORKFLOW_ERROR_EVENT,
-	WORKFLOW_TASK_COMPLETED_EVENT,
+	WORKFLOW_STAGE_COMPLETED_EVENT,
 	soundHooksConfig,
 	type SoundTheme,
 } from "./config.js";
@@ -20,8 +20,8 @@ export function isSuccessfulAssistantStop(stopReason: string | undefined): boole
 	return stopReason !== "aborted" && stopReason !== "error";
 }
 
-export function feedbackEventForWorkflow(event: WorkflowFeedbackEvent): typeof WORKFLOW_TASK_COMPLETED_EVENT | typeof WORKFLOW_ERROR_EVENT | undefined {
-	if (event.type === "task-completed") return WORKFLOW_TASK_COMPLETED_EVENT;
+export function feedbackEventForWorkflow(event: WorkflowLifecycleEvent): typeof WORKFLOW_STAGE_COMPLETED_EVENT | typeof WORKFLOW_ERROR_EVENT | undefined {
+	if (event.type === "stage-completed") return WORKFLOW_STAGE_COMPLETED_EVENT;
 	if (event.type === "error") return WORKFLOW_ERROR_EVENT;
 	return undefined;
 }
@@ -43,14 +43,14 @@ export default function soundHooks(pi: ExtensionAPI): void {
 		if (!interactive || !theme) return undefined;
 		const config = soundHooksConfig();
 		if (!config.enabled || config.theme !== theme.id) return undefined;
-		const event = kind === "response" ? RESPONSE_COMPLETE_EVENT : kind === "success" ? WORKFLOW_TASK_COMPLETED_EVENT : WORKFLOW_ERROR_EVENT;
+		const event = kind === "response" ? RESPONSE_COMPLETE_EVENT : kind === "success" ? WORKFLOW_STAGE_COMPLETED_EVENT : WORKFLOW_ERROR_EVENT;
 		const soundFile = resolveSoundFile(config.soundRoot, theme, event);
 		if (!soundFile || !existsSync(soundFile)) return undefined;
 		return startSound(soundFile, process.platform);
 	}, { setTimeout: (callback, delay) => setTimeout(callback, delay), clearTimeout: (handle) => clearTimeout(handle as NodeJS.Timeout) });
 
-	const playFeedback = (event: typeof RESPONSE_COMPLETE_EVENT | typeof WORKFLOW_TASK_COMPLETED_EVENT | typeof WORKFLOW_ERROR_EVENT, key?: string) => {
-		const kind: AudioKind = event === RESPONSE_COMPLETE_EVENT ? "response" : event === WORKFLOW_TASK_COMPLETED_EVENT ? "success" : "error";
+	const playFeedback = (event: typeof RESPONSE_COMPLETE_EVENT | typeof WORKFLOW_STAGE_COMPLETED_EVENT | typeof WORKFLOW_ERROR_EVENT, key?: string) => {
+		const kind: AudioKind = event === RESPONSE_COMPLETE_EVENT ? "response" : event === WORKFLOW_STAGE_COMPLETED_EVENT ? "success" : "error";
 		arbiter.request(kind, key ?? event);
 	};
 
@@ -73,9 +73,8 @@ export default function soundHooks(pi: ExtensionAPI): void {
 		if (completedSuccessfully) playFeedback(RESPONSE_COMPLETE_EVENT, "turn");
 	});
 
-	pi.events.on(WORKFLOW_FEEDBACK_EVENT, (value: unknown) => {
-		const workflowEvent = value as WorkflowFeedbackEvent;
-		if (workflowEvent.type === "task-completed" && workflowEvent.terminal !== true) return;
+	pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (value: unknown) => {
+		const workflowEvent = value as WorkflowLifecycleEvent;
 		const feedbackEvent = feedbackEventForWorkflow(workflowEvent);
 		if (feedbackEvent) playFeedback(feedbackEvent, workflowEvent.correlationId ?? workflowEvent.workflowRef);
 	});

@@ -1,3 +1,5 @@
-# Managed Repair Protocol
+# Managed Fix Protocol
 
-The persistent review context and manager direction define the accepted repair boundary. Preserve unrelated behavior, commit focused changes, run affected checks, and leave the feature branch clean. Report contradictions rather than broadening scope silently.
+The persistent fixer context contains only the relevant story specification and design plus scoped task contracts. The attempt-local turn contains the current structured findings or latest failure, exact repository coordinates, and any bounded curated ledger entries selected for this repair.
+
+Fix only the supplied findings or failure. Preserve unrelated behavior, avoid speculative hardening, and do not consult `events.jsonl`, historical reports, artifact catalogs, narrative blocks, criteria, or legacy handoffs. Treat deterministic checks as harness-owned. Commit the focused repair, leave the assigned workspace clean, and finish with a concise summary; do not use legacy handoff or completion tools.

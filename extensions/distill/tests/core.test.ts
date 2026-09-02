@@ -106,15 +106,10 @@ test("empty dated scopes produce empty change evidence", async (t) => {
 	assert.doesNotMatch(changes, /app\.ts|feature change/);
 });
 
-test("collects bounded sanitized Git, workflow, guidance, transcript, and report artifacts", async (t) => {
+test("collects bounded sanitized Git, workflow, guidance, and main-session artifacts", async (t) => {
 	const f = await fixture(t);
 	const privateRoot = join(f.root, ".pibox");
-	const sessionId = "session-test";
-	await mkdir(join(privateRoot, "sessions", sessionId), { recursive: true });
-	await writeFile(join(privateRoot, "sessions", sessionId, "agents.yaml"), `schemaVersion: 1\nagents:\n  - id: child-1\n    role: implementer\n    state: completed\n    workItemId: demo\n    summary: Final task report\n    attempts:\n      - id: attempt\n        state: exited\n`);
-	await mkdir(join(privateRoot, "sessions", "older-session"), { recursive: true });
-	await writeFile(join(privateRoot, "sessions", "older-session", "agents.yaml"), `schemaVersion: 1\nagents:\n  - id: reviewer-1\n    role: code-reviewer\n    state: failed\n    workItemId: demo\n    summary: Review exposed a durable failure mode\n    attempts:\n      - id: attempt-1\n        state: exited\n      - id: attempt-2\n        state: exited\n`);
-	const scope = await resolveDistillScope(f.runner, { target: "HEAD", workItems: ["demo"], rawSubagents: "exceptional" });
+	const scope = await resolveDistillScope(f.runner, { target: "HEAD", workItems: ["demo"] });
 	const collected = await collectDistillRun(f.runner, {
 		repositoryRoot: f.root, privateRoot, scope,
 		entries: [
@@ -128,11 +123,7 @@ test("collects bounded sanitized Git, workflow, guidance, transcript, and report
 	assert.doesNotMatch(transcript, /super-secret-value|private reasoning/);
 	const workflow = await readFile(join(collected.runRoot, "workflow.md"), "utf8");
 	assert.match(workflow, /Delivered version two/);
-	const reports = await readFile(join(collected.runRoot, "subagents.md"), "utf8");
-	assert.match(reports, /Final task report/);
-	assert.match(reports, /Review exposed a durable failure mode/);
-	assert.match(reports, /\.pibox\/sessions\/older-session\/agents\/reviewer-1\/pi-session\.jsonl/);
-	assert.doesNotMatch(reports.split("## code-reviewer")[0] ?? "", /Raw-session drill-down candidate/, "successful one-attempt reports do not open raw sessions");
+	await assert.rejects(readFile(join(collected.runRoot, "subagents.md")), /ENOENT/);
 	const guidance = await readFile(join(collected.runRoot, "guidance.md"), "utf8");
 	assert.match(guidance, /Characters: \d+[\s\S]*Estimated tokens: \d+/);
 	const manifest = JSON.parse(await readFile(join(collected.runRoot, "manifest.json"), "utf8"));

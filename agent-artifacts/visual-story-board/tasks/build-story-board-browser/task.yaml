@@ -1,0 +1,42 @@
+schemaVersion: 1
+id: build-story-board-browser
+title: Build the complete Story Board browser application
+status: merged
+dependsOn:
+  - build-shared-shell-and-architecture
+  - build-story-board-api
+execution:
+  resourceClaims:
+    - extensions/visual-companion/story-board browser assets and browser-state
+      modules
+    - Story Board catalog, board, documents, reports, and browser-app tests
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
+assembly:
+  stageId: story-board-browser
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test
+      extensions/visual-companion/story-board/tests/browser-app.test.ts
+      extensions/visual-companion/story-board/tests/catalog-ui.test.ts
+      extensions/visual-companion/story-board/tests/board-ui.test.ts
+      extensions/visual-companion/story-board/tests/documents-reports-ui.test.ts
+      extensions/visual-companion/tests/shell.test.ts
+    - node --check extensions/visual-companion/story-board/assets/app.js
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: repository
+  branch: feature/visual-story-board
+  worktree: /Users/kevinye/Development/PiBox
+  baseCommit: dda0fd4d3b3372a6b5f1ce5a383ef55cfd6c7c6c
+  lastRunId: e8bfb25a-1b5d-4ddf-97c0-cd26d88e5bd0
+  completedCommit: a26aef79516413b7b89d8bdf6960f5d2df9e07d8
+  mergedCommit: 7e2d5ee1559827dccc4d958071ce839e12fdd6c3

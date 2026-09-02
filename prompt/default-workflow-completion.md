@@ -1,1 +1,0 @@
-Workflow {{workflowRef}} completed. Brief the user on what was delivered, verification outcomes, deviations, residual risks, and the branch or next action. Inspect the workflow's canonical outcome artifact when available and combine it with lifecycle evidence already observed; do not reply silently.

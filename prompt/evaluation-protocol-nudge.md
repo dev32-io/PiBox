@@ -1,1 +1,0 @@
-No valid evaluation_complete handoff was recorded. Reinspect the assigned boundary as needed and call evaluation_complete.

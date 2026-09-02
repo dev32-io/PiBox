@@ -1,0 +1,11 @@
+{
+  "name": "pibox-visual-diff-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "visual-diff": "node visual-diff.mjs"
+  },
+  "dependencies": {
+    "odiff-bin": "4.5.0"
+  }
+}

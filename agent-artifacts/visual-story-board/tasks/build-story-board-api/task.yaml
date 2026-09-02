@@ -1,0 +1,42 @@
+schemaVersion: 1
+id: build-story-board-api
+title: Build the lazy Story Board API and cache
+status: merged
+dependsOn:
+  - build-companion-platform
+  - build-story-domain-reader
+execution:
+  resourceClaims:
+    - extensions/visual-companion/story-board viewer registration, cache, and
+      HTTP routes
+    - Story Board Markdown policy and evidence serving
+    - Story Board route, cache, Markdown, and containment tests
+  assignment:
+    agent: implementer
+    tier: medium
+    rationale: The user explicitly requested retiering this unfinished task from
+      local to medium before restarting the stopped workflow.
+assembly:
+  stageId: shell-and-story-api
+  intermediateState: complete
+verification:
+  timing: task
+  methods: []
+  taskChecks:
+    - npm run check
+    - npx tsx --test
+      extensions/visual-companion/story-board/tests/routes.test.ts
+      extensions/visual-companion/story-board/tests/cache.test.ts
+      extensions/visual-companion/story-board/tests/markdown-policy.test.ts
+      extensions/visual-companion/story-board/tests/evidence-route.test.ts
+      extensions/visual-companion/tests/backend.test.ts
+    - git diff --check
+  rationale: Verify the contribution at its declared task boundary.
+runtime:
+  executionMode: worktree
+  branch: harness/visual-story-board/build-story-board-api
+  worktree: /Users/kevinye/Development/PiBox/.worktree/pibox/visual-story-board/build-story-board-api
+  baseCommit: a8c07d7532677556c708d463b5e9a8fd850a0de3
+  lastRunId: c3b64b6d-7861-4eed-8a02-117faf27d8e7
+  completedCommit: c14d54176ab7e93ac009d7ad15d72550215d2346
+  mergedCommit: fa0a41dfdc23ba8d8b73d7b4e4c3ddb1cdf4b311

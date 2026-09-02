@@ -3,9 +3,11 @@ import { evaluateToolCall, loadPermissionPolicy } from "./policy.js";
 import { renderPermissionMode } from "./display.js";
 import { installPermissionRuntime } from "./runtime.js";
 import type { LoadedPermissionPolicy, PermissionMode } from "./types.js";
+import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
+import type { InteractiveFooterRegistration } from "../tui/interactive-footer/types.js";
 
 const WORKFLOW_BYPASS_CANCEL = "No — keep permissions enforced";
-const WORKFLOW_BYPASS_CONFIRM = "Yes — switch to BYPASS and start workflow";
+const WORKFLOW_BYPASS_CONFIRM = "Yes — switch to Bypass and start workflow";
 const CRITICAL_RISK_CANCEL = "No — keep review unresolved";
 const CRITICAL_RISK_CONFIRM = "Yes — accept Critical risk";
 
@@ -32,17 +34,19 @@ export default function permissions(pi: ExtensionAPI): void {
 	let mode: PermissionMode = "enforce";
 	let policy: LoadedPermissionPolicy | undefined;
 	let sessionCtx: ExtensionContext | undefined;
+	let interactiveRegistration: InteractiveFooterRegistration | undefined;
 
 	const renderStatus = () => {
 		if (sessionCtx?.hasUI) sessionCtx.ui.setStatus(STATUS_KEY, mode);
 	};
 
-	const setMode = (next: PermissionMode, source: "shortcut" | "command" | "workflow") => {
+	const setMode = (next: PermissionMode, source: "shortcut" | "command" | "workflow" | "footer") => {
 		if (mode === next) { renderStatus(); return; }
 		mode = next;
 		process.env[MODE_ENV] = next;
 		pi.appendEntry(ENTRY_TYPE, { mode: next, source, changedAt: new Date().toISOString() });
 		renderStatus();
+		interactiveRegistration?.changed();
 		if (sessionCtx?.hasUI) sessionCtx.ui.notify(next === "bypass" ? "Permission mode: BYPASS — repository tool permissions are not enforced." : "Permission mode: ENFORCED", next === "bypass" ? "warning" : "info");
 	};
 
@@ -51,7 +55,7 @@ export default function permissions(pi: ExtensionAPI): void {
 		setMode,
 		async confirmCriticalRisk(ctx, ref, findingIds) {
 			if (ctx.mode !== "tui" || !ctx.hasUI) return false;
-			const choice = await ctx.ui.select(`Accept Critical review risk?\n\n${ref}\n\nThis is explicit user authority to merge unresolved Critical findings: ${findingIds.join(", ")}.`, [CRITICAL_RISK_CANCEL, CRITICAL_RISK_CONFIRM]);
+			const choice = await ctx.ui.select(`Accept Critical review risk?\n\n${ref}\n\nThis is explicit user authority to continue with unresolved Critical findings: ${findingIds.join(", ")}.`, [CRITICAL_RISK_CANCEL, CRITICAL_RISK_CONFIRM]);
 			return choice === CRITICAL_RISK_CONFIRM;
 		},
 		async confirmWorkflowStart(ctx, ref) {
@@ -97,6 +101,34 @@ export default function permissions(pi: ExtensionAPI): void {
 		policy = loadPermissionPolicy(ctx.cwd);
 		mode = restoredMode(ctx);
 		process.env[MODE_ENV] = mode;
+		interactiveRegistration?.unregister();
+		interactiveRegistration = registerInteractiveFooterItem({
+			id: "permissions",
+			section: "settings",
+			order: 10,
+			status: () => ({
+				label: "Permissions",
+				value: mode === "bypass" ? "Bypass" : "Enforced",
+				marker: mode === "bypass" ? "⚠" : "◆",
+				tone: mode === "bypass" ? "warning" : "success",
+				valueTone: mode === "bypass" ? "warning" : "success",
+			}),
+			dialog: () => ({
+				title: "Repository permissions",
+				description: "Enforced applies repository allow/ask/deny policy. Bypass disables those checks for this session and spawned subagents; workflow and Git safeguards remain active.",
+				rows: [
+					{ kind: "detail", label: "Policy", value: () => policy?.path ?? "No policy loaded" },
+					{
+						kind: "setting",
+						id: "mode",
+						label: "Mode",
+						value: () => mode === "bypass" ? "Bypass" : "Enforced",
+						values: ["Enforced", "Bypass"],
+						setValue: (value) => setMode(value === "Bypass" ? "bypass" : "enforce", "footer"),
+					},
+				],
+			}),
+		});
 		renderStatus();
 		if (policy.issues.length > 0 && ctx.hasUI) ctx.ui.notify(`Permission policy is invalid and has failed closed: ${policy.issues.join("; ")}`, "error");
 	});
@@ -119,6 +151,8 @@ export default function permissions(pi: ExtensionAPI): void {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 		sessionCtx = undefined;
 		policy = undefined;
+		interactiveRegistration?.unregister();
+		interactiveRegistration = undefined;
 		uninstallRuntime();
 	});
 }

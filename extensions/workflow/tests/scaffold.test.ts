@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { loadHarnessConfig } from "../config.js";
+import { activeModelTierLists } from "../../model-tier-list-profiles/profiles.js";
 import { HarnessError } from "../errors.js";
 import { initializeHarnessRepository, scaffoldHarness } from "../scaffold.js";
 
@@ -44,7 +45,7 @@ test("bootstraps an empty directory as a develop repository without staging outs
 		assert.equal(result.developCreated, true);
 		assert.equal(await git(root, "branch", "--show-current"), "develop");
 		assert.equal(await git(root, "status", "--porcelain"), "");
-		assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /modelTiers:/);
+		assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /modelTierListProfiles:/);
 	} finally {
 		for (const [key, value] of Object.entries({
 			GIT_AUTHOR_NAME: previous.authorName,
@@ -86,13 +87,9 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(await git(root, "status", "--porcelain"), "");
 	const loaded = loadHarnessConfig(root, { home: join(root, "unused-home") });
 	assert.equal(loaded.config.schemaVersion, 2);
-	assert.deepEqual(loaded.config.modelTiers, {
-		max: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro#max"],
-		high: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-pro#high"],
-		medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
-		low: ["openai-codex/gpt-5.6-luna#low", "ollama-cloud/deepseek-v4-flash#low"],
-		local: ["local-llm/meta/muse-glimmer#high"],
-	});
+	assert.equal(loaded.config.modelTierProfile, "performance");
+	assert.equal(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium[0], "openai-codex/gpt-5.6-sol#medium");
+	assert.equal(loaded.config.modelTierListProfiles.profiles["token-conservative"]?.medium[0], "openai-codex/gpt-5.6-luna#max");
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "medium");
 	assert.equal(loaded.config.limits.repairRounds, 8, "economy changes concurrency, not the bounded review/fix opportunity count");
@@ -100,16 +97,18 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.match(policy, /Scaffold profile: economy/);
 	assert.doesNotMatch(policy, /\nroles:\n/);
 	assert.doesNotMatch(policy, /^\s+tools:/m, "repository harness policy must not duplicate agent frontmatter tools");
-	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.worktree/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
+	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/state.yaml"), "agent-artifacts/story/state.yaml");
+	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/ledger.yaml"), "agent-artifacts/story/ledger.yaml");
+	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/events.jsonl"), "agent-artifacts/story/events.jsonl");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".pibox/probe"), ".pibox/probe");
-	await assert.rejects(git(root, "check-ignore", "--no-index", ".pibox/verification.yaml"), /Command failed/);
 	assert.equal((await scaffoldHarness(root, "standard")).created, false);
 });
 
 test("prepares the worktree ignore for an existing harness policy", async (t) => {
 	const root = await emptyRepository(t);
-	await writeFile(join(root, ".gitignore"), "dist/\n");
+	await writeFile(join(root, ".gitignore"), "dist/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
 	await mkdir(join(root, ".pi"), { recursive: true });
 	await writeFile(join(root, ".pi", "harness.yaml"), "schemaVersion: 2\n");
 	await git(root, "add", ".gitignore", ".pi/harness.yaml");
@@ -119,7 +118,7 @@ test("prepares the worktree ignore for an existing harness policy", async (t) =>
 	const result = await scaffoldHarness(root, "standard");
 	assert.equal(result.created, false);
 	assert.equal(result.worktreeIgnoreAdded, true);
-	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.worktree/\n/.pibox/\n!/.pibox/\n/.pibox/*\n!/.pibox/verification.yaml\n");
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
 	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): ignore repository-local worktrees");
 });
 

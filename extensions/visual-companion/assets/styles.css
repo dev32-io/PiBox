@@ -1,0 +1,74 @@
+html, body { height: 100%; overflow: hidden; }
+body {
+  grid-template-rows: var(--header-height, 68px) minmax(0, 1fr);
+  background: var(--color-canvas, Canvas);
+  color: var(--color-text, CanvasText);
+}
+.shell-header {
+  min-width: 0;
+  min-height: var(--header-height, 68px);
+  justify-content: space-between;
+  gap: var(--space-6, 24px);
+  padding-inline: var(--space-5, 20px);
+  border-color: var(--color-border-subtle, ButtonBorder);
+  background: var(--gradient-header, Canvas);
+  box-shadow: var(--shadow-surface, none);
+}
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--color-text, CanvasText);
+  font-size: var(--font-size-lg, 16px);
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.shell-mark { color: var(--color-accent, Highlight); font-size: 28px; line-height: 1; }
+.shell-tabs { align-self: stretch; display: flex; align-items: stretch; gap: var(--space-1, 4px); }
+.shell-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-4, 16px);
+  border-radius: var(--radius-md, 6px) var(--radius-md, 6px) 0 0;
+  color: var(--color-text-secondary, CanvasText);
+  text-decoration: none;
+  transition: color var(--motion-fast, 0s) var(--motion-ease, ease), background var(--motion-fast, 0s) var(--motion-ease, ease);
+}
+.shell-tab:hover { color: var(--color-text, CanvasText); background: var(--color-surface-hover, ButtonFace); }
+.shell-tab[aria-selected="true"] { color: var(--color-text, CanvasText); background: var(--color-accent-soft, ButtonFace); }
+.shell-tab[aria-selected="true"]::after {
+  position: absolute;
+  right: var(--space-3, 12px);
+  bottom: 0;
+  left: var(--space-3, 12px);
+  height: 2px;
+  background: var(--color-accent, Highlight);
+  content: "";
+}
+.shell-content { min-width: 0; min-height: 0; position: relative; overflow: hidden; }
+.viewer-panel { position: absolute; inset: 0; overflow: hidden; background: var(--color-canvas, Canvas); }
+.viewer-panel:focus-visible { outline-offset: -4px; }
+.viewer-frame { display: block; background: var(--color-canvas, Canvas); }
+.viewer-boundary {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6, 24px);
+  color: var(--color-text-secondary, CanvasText);
+  background: var(--color-canvas, Canvas);
+  text-align: center;
+}
+.viewer-boundary[data-state="error"] { color: var(--color-danger, CanvasText); }
+.viewer-boundary[hidden] { display: none; }
+
+@media (max-width: 600px) {
+  .shell-header { align-items: stretch; flex-direction: column; justify-content: center; gap: 0; padding-inline: var(--space-3, 12px); }
+  .shell-brand { display: none; }
+  .shell-tabs { width: 100%; }
+  .shell-tab { flex: 1; justify-content: center; }
+}

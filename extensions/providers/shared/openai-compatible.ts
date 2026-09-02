@@ -15,6 +15,8 @@ export interface DiscoveryOptions {
 	signal: AbortSignal;
 	defaultContextWindow?: number;
 	defaultMaxTokens?: number;
+	/** Provider-wide map applied only to reasoning models without a model-specific map. */
+	defaultThinkingLevelMap?: ThinkingLevelMap;
 	modelMetadata?: Readonly<Record<string, DiscoveredModelMetadata>>;
 }
 
@@ -128,6 +130,7 @@ export function toPiModels(
 				?? 16_384,
 			contextWindow,
 		);
+		const thinkingLevelMap = metadata?.thinkingLevelMap ?? (reasoning ? options.defaultThinkingLevelMap : undefined);
 		models.push({
 			id,
 			name: typeof remote.name === "string" && remote.name.trim() ? remote.name.trim() : id,
@@ -135,7 +138,7 @@ export function toPiModels(
 			provider: options.providerId,
 			baseUrl: options.baseUrl,
 			reasoning,
-			...(metadata?.thinkingLevelMap ? { thinkingLevelMap: { ...metadata.thinkingLevelMap } } : {}),
+			...(thinkingLevelMap ? { thinkingLevelMap: { ...thinkingLevelMap } } : {}),
 			input: images ? ["text", "image"] : ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow,
@@ -163,6 +166,7 @@ export async function discoverOpenAIModels(options: DiscoveryOptions): Promise<M
 				baseUrl: candidate.apiBaseUrl,
 				...(options.defaultContextWindow ? { defaultContextWindow: options.defaultContextWindow } : {}),
 				...(options.defaultMaxTokens ? { defaultMaxTokens: options.defaultMaxTokens } : {}),
+				...(options.defaultThinkingLevelMap ? { defaultThinkingLevelMap: options.defaultThinkingLevelMap } : {}),
 				...(options.modelMetadata ? { modelMetadata: options.modelMetadata } : {}),
 			});
 			if (models.length === 0) throw new Error("the endpoint returned no model IDs");
