@@ -333,7 +333,11 @@ function stageTarget(stage: StageRuntimeState, kind: WorkflowActionKind): Integr
 }
 
 function settleStageTarget(state: StoryRuntimeState, stage: StageRuntimeState, kind: WorkflowActionKind, settlement: ActionSettlement, budget: number): void {
-	if (kind === "review" || kind === "review-fix") { settleReview(state, stage.review, kind === "review-fix", settlement, budget); return; }
+	if (kind === "review" || kind === "review-fix") {
+		settleReview(state, stage.review, kind === "review-fix", settlement, budget);
+		if (kind === "review-fix" && settlement.result === "passed" && settlement.integratedCommit) stage.integration.integratedCommit = settlement.integratedCommit;
+		return;
+	}
 	const target = kind === "integration" || kind === "integration-repair" ? stage.integration : stage.verification;
 	if (target === stage.verification && kind === "verification") finalizeChecks(stage.verification.checks, settlement);
 	const repairing = kind === "integration-repair" || kind === "verification-repair";
@@ -346,7 +350,7 @@ function settleStageTarget(state: StoryRuntimeState, stage: StageRuntimeState, k
 	target.result = success(settlement);
 	if (target === stage.verification && repairing) target.status = "pending";
 	else target.status = "completed";
-	if (target === stage.integration && settlement.integratedCommit) stage.integration.integratedCommit = settlement.integratedCommit;
+	if ((target === stage.integration || kind === "verification-repair") && settlement.integratedCommit) stage.integration.integratedCommit = settlement.integratedCommit;
 }
 
 function settleReview(state: StoryRuntimeState, review: ReviewRuntimeState, fixing: boolean, settlement: ActionSettlement, budget: number): void {

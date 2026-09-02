@@ -350,6 +350,43 @@ test("production Git executor shares a sequential stage workspace and pins concu
 		assert.equal(bases[0], (await exec("git", ["rev-parse", "HEAD~3"], { cwd: f.root })).stdout.trim(), "both task branches pin the pre-integration base");
 		assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
 	});
+
+	await t.test("the next concurrent stage pins a predecessor verification repair", async (t) => {
+		const f = await fixture(t, {
+			plan: { schemaVersion: 1, stages: [
+				{ id: "foundation", tasks: ["a"], mode: "sequential", checks: [{ id: "repaired", command: "test -f repaired.flag" }], review: { mode: "skip" } },
+				{ id: "parallel", tasks: ["b", "c"], mode: "concurrent", checks: [], review: { mode: "skip" } },
+			] },
+			tasks: [task("a"), task("b"), task("c")],
+		});
+		let repairedHead = "";
+		const secondStageBases: string[] = [];
+		useProductionExecutor(f, async (input) => {
+			if (input.action === "verification-repair") {
+				await writeFile(join(input.cwd, "repaired.flag"), "repaired\n");
+				await exec("git", ["add", "repaired.flag"], { cwd: input.cwd });
+				await exec("git", ["commit", "-qm", "repair stage verification"], { cwd: input.cwd });
+				repairedHead = (await exec("git", ["rev-parse", "HEAD"], { cwd: input.cwd })).stdout.trim();
+				return { text: "verification repaired" };
+			}
+			if (input.taskId) {
+				if (input.taskId !== "a") secondStageBases.push((await exec("git", ["rev-parse", "HEAD"], { cwd: input.cwd })).stdout.trim());
+				await writeFile(join(input.cwd, `${input.taskId}.txt`), `${input.taskId}\n`);
+				await exec("git", ["add", `${input.taskId}.txt`], { cwd: input.cwd });
+				await exec("git", ["commit", "-qm", `implement ${input.taskId}`], { cwd: input.cwd });
+				return { text: `${input.taskId} complete` };
+			}
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+		});
+		const adapter = f.create();
+		await start(adapter, f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"), 12_000);
+		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
+		assert.ok(repairedHead);
+		assert.equal(runtime.stages[0]?.integration.integratedCommit, repairedHead);
+		assert.deepEqual(secondStageBases, [repairedHead, repairedHead], "both concurrent tasks share the durable post-repair stage head");
+		assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
+	});
 });
 
 test("invalid worker commits remain isolated and never reach canonical integration", async (t) => {

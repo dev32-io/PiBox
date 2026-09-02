@@ -130,8 +130,9 @@ test("integration conflicts and deterministic verification failures repair autom
 	assert.equal(state.stages[0]?.integration.integratedCommit, "merged");
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification"), "repairable", { checks: [{ id: "check", status: "failed" }] });
 	assert.equal(action(state, value).kind, "verification-repair");
-	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification-repair"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification-repair"), "passed", { integratedCommit: "verified-repair" });
 	assert.equal(state.stages[0]?.verification.repairCount, 1);
+	assert.equal(state.stages[0]?.integration.integratedCommit, "verified-repair", "the following stage pins the repaired canonical head");
 	assert.equal(action(state, value).kind, "verification");
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification"), "passed", { checks: [{ id: "check", status: "passed" }] });
 	assert.equal(state.stages[0]?.verification.checks[0]?.status, "passed");
@@ -155,7 +156,8 @@ test("review fixer returns to reviewer with structured current findings", () => 
 	const finding = { id: "finding-a", severity: "major" as const, code: "bug", summary: "bounded bug", path: "src/a.ts", line: 4 };
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "review"), "repairable", { findings: [finding] });
 	assert.deepEqual(state.stages[0]?.review.currentFindings, [finding]);
-	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "review-fix"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "review-fix"), "passed", { integratedCommit: "review-repair" });
+	assert.equal(state.stages[0]?.integration.integratedCommit, "review-repair", "a stage review repair becomes the next stage's durable base");
 	assert.equal(action(state, value).kind, "review");
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "review"));
 	assert.equal(state.stages[0]?.review.iteration, 2);
