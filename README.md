@@ -17,6 +17,22 @@ PiBox is a small extension pack for the [Pi coding agent](https://github.com/bad
 - **Repository memory** — explicit curated Mem0 writes, bounded recall, and an advisory `/memory-audit` with no silent mutation.
 - **Knowledge distillation** — `/distill` resolves arbitrary code/time/workflow/session ranges into local evidence packets and user-reviewed promotion or demotion proposals without depending on one memory backend.
 
+## Workflow: from idea to working product
+
+[![Static preview of an active Aero Todo workflow with 12 of 13 tasks complete; select it to play the accelerated terminal demo](docs/assets/workflow-demo/workflow-demo-poster.png)](docs/assets/workflow-demo/workflow-demo.gif)
+
+[Watch the 18-second accelerated terminal demo.](docs/assets/workflow-demo/workflow-demo.gif)
+
+> **Accelerated reenactment based on a real PiBox workflow run.** Playback is opt-in; the terminal scenes faithfully compress its lifecycle and the final screen is the Aero Todo application delivered by that run.
+
+PiBox turns an open-ended request into an explicit product contract before implementation begins. You brainstorm with the main agent, shape a Markdown-rich story with specification, design, and outside-in E2E cases, then review a separate implementation plan. Nothing executes until you explicitly start the reviewed workflow.
+
+![PiBox lifecycle from idea and brainstorming through story shaping, implementation planning, guarded long-horizon execution, and a fully working product](docs/assets/workflow-demo/workflow-lifecycle.png)
+
+Once started, the workflow is designed for **unattended long-horizon execution within a live Pi activation**. It schedules sequential and concurrent stages in isolated Git worktrees, runs deterministic checks, integrates only verified contributions, and performs scoped and whole-branch review. Ordinary defects stay inside bounded **review ↔ fix** and **E2E ↔ fix** loops; material decisions, critical risk, and exhausted recovery return to the user instead of letting implementation silently drift.
+
+The result is not merely completed tasks: it is a working branch that has crossed its authored checks, review guardrails, and complete E2E contract. See [Workflow setup and execution](#workflow-setup-and-execution) and [docs/workflow.md](docs/workflow.md) for the operational model.
+
 ## Install and verify
 
 ```bash
@@ -118,7 +134,7 @@ The default EVE Online manifest maps three feedback boundaries:
 
 Audio is not distributed with PiBox. Install user-supplied files under `~/.pi/agent/pibox/sounds/eve-online/`; see [extensions/feedback/sound-hooks/README.md](extensions/feedback/sound-hooks/README.md) for filenames, configuration, and the local-copy example. Copyrighted media must remain untracked.
 
-## Workflow
+## Workflow setup and execution
 
 ```text
 /harness init [standard|economy]
