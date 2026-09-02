@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import type { RuntimeOwner } from "../../subagent/api.js";
 import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { StoryRuntimeStore } from "../story-runtime-store.js";
-import { createHarnessWorkflowAdapter, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
+import { createE2eScratchDirectory, createHarnessWorkflowAdapter, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 
@@ -574,6 +574,21 @@ test("production state drives task-check repair, integration, verification, revi
 	assert.match(await readFile(join(f.root, "agent-artifacts", "example", "outcome.md"), "utf8"), /Final review: passed/);
 });
 
+test("E2E scratch falls back outside the repository when the preferred temporary root is local", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-e2e-scratch-root-"));
+	const localTemporaryRoot = join(root, "tmp");
+	let scratch = "";
+	try {
+		await mkdir(localTemporaryRoot);
+		scratch = await createE2eScratchDirectory(root, localTemporaryRoot);
+		assert.equal(scratch === root || scratch.startsWith(`${root}${sep}`), false);
+		assert.equal((await stat(scratch)).isDirectory(), true);
+	} finally {
+		if (scratch) await rm(scratch, { recursive: true, force: true });
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("production completion validates evidence and commits only evidence plus the complete outcome", async (t) => {
 	const f = await fixture(t, {
 		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: "required", focus: "Inspect delivery." } }] },
@@ -583,6 +598,7 @@ test("production completion validates evidence and commits only evidence plus th
 	await new StoryRuntimeStore(f.root, "example").upsertLedger({ id: "risk", updatedAt: new Date().toISOString(), sourceRole: "implementer", summary: "Curated integration risk", evidence: ["src/risk.ts"] });
 	const evaluatorPrompts: string[] = [];
 	let e2eStablePrompt = "";
+	let e2eScratchDirectory = "";
 	useProductionExecutor(f, async (input) => {
 		if (input.taskId) {
 			await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
@@ -593,6 +609,11 @@ test("production completion validates evidence and commits only evidence plus th
 		evaluatorPrompts.push(input.attemptUserPrompt);
 		if (input.role === "e2e-tester") {
 			e2eStablePrompt = input.stableSystemContext;
+			e2eScratchDirectory = input.env.PIBOX_E2E_SCRATCH_DIR;
+			assert.equal(e2eScratchDirectory === f.root || e2eScratchDirectory.startsWith(`${f.root}${sep}`), false);
+			assert.equal(input.env.PLAYWRIGHT_MCP_OUTPUT_DIR, e2eScratchDirectory, "configured tool output is contained outside the repository");
+			assert.equal((await stat(e2eScratchDirectory)).isDirectory(), true);
+			await writeFile(join(e2eScratchDirectory, "automatic-tool-output.log"), "transient\n");
 			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "journey.txt");
 			await mkdir(join(evidence, ".."), { recursive: true });
 			await writeFile(evidence, "journey passed\n");
@@ -606,10 +627,15 @@ test("production completion validates evidence and commits only evidence plus th
 	const committed = (await exec("git", ["show", "--pretty=format:", "--name-only", "HEAD"], { cwd: f.root })).stdout.trim().split("\n").filter(Boolean).sort();
 	assert.deepEqual(committed, ["agent-artifacts/example/evidence/journey.txt", "agent-artifacts/example/outcome.md"]);
 	assert.match(e2eStablePrompt, /working directory is the repository root/);
+	assert.match(e2eStablePrompt, /\$PIBOX_E2E_SCRATCH_DIR/);
+	assert.match(e2eStablePrompt, /tool-generated or intermediate output that is not retained evidence/);
+	assert.match(e2eStablePrompt, /repository changes consist exclusively of the cited evidence files/);
 	assert.match(e2eStablePrompt, /beneath agent-artifacts\/example\/evidence\//);
 	assert.match(e2eStablePrompt, /do not create a top-level evidence\/ directory/);
 	assert.match(e2eStablePrompt, /story-relative evidenceRefs such as evidence\/result\.json/);
 	assert.match(e2eStablePrompt, /without the agent-artifacts\/example\/ prefix/);
+	assert.doesNotMatch(e2eStablePrompt, /playwright|browser|mobile|desktop|hardware/i, "the E2E contract stays platform-neutral");
+	await assert.rejects(access(e2eScratchDirectory), /ENOENT/, "disposable tool output is removed after the E2E attempt");
 	assert.ok(evaluatorPrompts.length >= 3, "stage review, final review, and E2E receive dynamic attempts");
 	for (const prompt of evaluatorPrompts) {
 		assert.match(prompt, new RegExp(`Base commit: ${base}`));

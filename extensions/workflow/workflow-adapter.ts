@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
-import { delimiter, join, relative, resolve, sep } from "node:path";
+import { access, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type {
 	WorkflowAdapter,
@@ -42,7 +43,7 @@ import { normalizeChecks, verificationCommand, type NormalizedVerificationCheck 
 import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { DEFAULT_SUBAGENT_TOOLS, resolveToolSelectors } from "./tool-groups.js";
-import { mcpLaunchEnvironment } from "../subagent/mcp-capabilities.js";
+import { mcpLaunchEnvironment, mcpServerAllowlist } from "../subagent/mcp-capabilities.js";
 import { isSubagentFastActive } from "../fast-mode/runtime.js";
 import type {
 	AuthoredTaskDocument,
@@ -329,6 +330,21 @@ function failure(code: string, summary: string): FailureSummary {
 	return { code, summary: summary.slice(0, 2_000) };
 }
 
+function isContainedPath(parent: string, candidate: string): boolean {
+	const child = relative(parent, candidate);
+	return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
+}
+
+export async function createE2eScratchDirectory(repositoryRoot: string, preferredTemporaryRoot = tmpdir()): Promise<string> {
+	const canonicalRepository = await realpath(repositoryRoot);
+	const canonicalTemporaryRoot = await realpath(preferredTemporaryRoot);
+	const scratchRoot = isContainedPath(canonicalRepository, canonicalTemporaryRoot)
+		? await realpath(resolve(canonicalRepository, ".."))
+		: canonicalTemporaryRoot;
+	if (isContainedPath(canonicalRepository, scratchRoot)) throw new Error("E2E scratch output cannot be isolated outside the repository");
+	return mkdtemp(join(scratchRoot, ".pibox-e2e-"));
+}
+
 async function exists(path: string): Promise<boolean> {
 	return access(path).then(() => true, () => false);
 }
@@ -488,7 +504,7 @@ class OwnerLostTerminal extends Error {
 	constructor() { super("Subagent owner activation was lost"); this.name = "OwnerLostTerminal"; }
 }
 
-async function launchAgent(context: StoryWorkflowActionContext, role: string, stableContext: string, attemptPrompt: string, cwd: string): Promise<{ text: string; exitCode: number; stderr: string; terminalReason: "completed" | "failure" | "explicit_stop" | "owner_lost" }> {
+async function launchAgent(context: StoryWorkflowActionContext, role: string, stableContext: string, attemptPrompt: string, cwd: string, scratchDirectory?: string): Promise<{ text: string; exitCode: number; stderr: string; terminalReason: "completed" | "failure" | "explicit_stop" | "owner_lost" }> {
 	if (!context.runtime.launcher?.service) throw new Error("Production workflow execution requires an injected SubagentService");
 	const definition = context.runtime.config.agents[role];
 	if (!definition) throw new Error(`Missing workflow agent definition: ${role}`);
@@ -498,6 +514,10 @@ async function launchAgent(context: StoryWorkflowActionContext, role: string, st
 	if (route.status === "waiting_model") throw new Error(`No ${tier} model is available for ${role}`);
 	const selectors = definition.tools ?? DEFAULT_SUBAGENT_TOOLS;
 	const tools = resolveToolSelectors(selectors);
+	const scratchEnvironment = scratchDirectory ? {
+		PIBOX_E2E_SCRATCH_DIR: scratchDirectory,
+		...(mcpServerAllowlist(selectors).includes("playwright") ? { PLAYWRIGHT_MCP_OUTPUT_DIR: scratchDirectory } : {}),
+	} : {};
 	if (context.action.taskId && (context.action.kind === "task-launch" || context.action.kind === "task-repair") && !tools.includes("task_clarify")) tools.push("task_clarify");
 	const slotKind = context.action.kind === "integration-repair" ? "integration"
 		: context.action.kind === "verification-repair" ? "verification"
@@ -520,7 +540,7 @@ async function launchAgent(context: StoryWorkflowActionContext, role: string, st
 		tools,
 		fast: isSubagentFastActive(tier, { provider: route.model.provider, model: route.model.id }),
 		...(context.action.taskId ? { taskId: context.action.taskId } : {}),
-		env: mcpLaunchEnvironment(selectors),
+		env: { ...mcpLaunchEnvironment(selectors), ...scratchEnvironment },
 		signal: context.signal,
 	});
 	return { text: launched.text, exitCode: launched.exitCode, stderr: launched.stderr, terminalReason: launched.terminalReason };
@@ -808,22 +828,27 @@ async function productionExecutor(context: StoryWorkflowActionContext): Promise<
 		const role = context.runtime.config.agents["e2e-tester"] ? "e2e-tester" : "code-reviewer";
 		const stable = [
 			"# Complete final E2E contract", context.story.e2e,
-			`Exercise the complete contract against the integrated branch. Your working directory is the repository root. Write every retained evidence file beneath agent-artifacts/${context.story.id}/evidence/; do not create a top-level evidence/ directory. In the returned JSON, cite those files with story-relative evidenceRefs such as evidence/result.json (without the agent-artifacts/${context.story.id}/ prefix). Evidence must contain no sensitive content. Return only JSON with result, summary, optional findings, and evidenceRefs.`,
+			`Exercise the complete contract against the integrated branch. Your working directory is the repository root. Use the disposable directory named by $PIBOX_E2E_SCRATCH_DIR for tool-generated or intermediate output that is not retained evidence. Write every retained evidence file beneath agent-artifacts/${context.story.id}/evidence/; do not create a top-level evidence/ directory. Before returning, remove only transient repository files created by this attempt and verify that repository changes consist exclusively of the cited evidence files. In the returned JSON, cite those files with story-relative evidenceRefs such as evidence/result.json (without the agent-artifacts/${context.story.id}/ prefix). Evidence must contain no sensitive content. Return only JSON with result, summary, optional findings, and evidenceRefs.`,
 		].join("\n\n");
 		await assertCleanRepository(context.runtime.identity.root);
 		const coordinates = await reviewCoordinates(context);
-		const terminal = await launchAgent(context, role, stable, `Run the complete final E2E contract.\n${coordinates.prompt}\nReturn the required structured JSON only.`, context.runtime.identity.root);
-		assertOwnedTerminal(terminal);
-		if (terminal.exitCode !== 0) return { result: "repairable", failure: failure("e2e_worker_failed", terminal.stderr || terminal.text || "E2E worker failed") };
-		const parsed = parsedAgentResult(terminal.text, "E2E did not produce a verdict");
-		const raw = parseObject(terminal.text);
+		const scratchDirectory = await createE2eScratchDirectory(context.runtime.identity.root);
 		try {
-			if (await runGit(context.runtime.identity.root, ["rev-parse", "HEAD"]) !== coordinates.head) throw new Error("E2E execution mutated canonical Git history");
-			const evidenceRefs = await validateEvidenceReferences(context.runtime.identity.root, context.story.id, raw?.evidenceRefs ?? []);
-			await assertOnlyEvidenceDirty(context.runtime.identity.root, context.story.id, evidenceRefs);
-			return { ...parsed, evidenceRefs };
-		} catch (error) {
-			return { result: "critical", failure: failure("evidence_invalid", error instanceof Error ? error.message : String(error)), ...(parsed.findings ? { findings: parsed.findings } : {}) };
+			const terminal = await launchAgent(context, role, stable, `Run the complete final E2E contract.\n${coordinates.prompt}\nReturn the required structured JSON only.`, context.runtime.identity.root, scratchDirectory);
+			assertOwnedTerminal(terminal);
+			if (terminal.exitCode !== 0) return { result: "repairable", failure: failure("e2e_worker_failed", terminal.stderr || terminal.text || "E2E worker failed") };
+			const parsed = parsedAgentResult(terminal.text, "E2E did not produce a verdict");
+			const raw = parseObject(terminal.text);
+			try {
+				if (await runGit(context.runtime.identity.root, ["rev-parse", "HEAD"]) !== coordinates.head) throw new Error("E2E execution mutated canonical Git history");
+				const evidenceRefs = await validateEvidenceReferences(context.runtime.identity.root, context.story.id, raw?.evidenceRefs ?? []);
+				await assertOnlyEvidenceDirty(context.runtime.identity.root, context.story.id, evidenceRefs);
+				return { ...parsed, evidenceRefs };
+			} catch (error) {
+				return { result: "critical", failure: failure("evidence_invalid", error instanceof Error ? error.message : String(error)), ...(parsed.findings ? { findings: parsed.findings } : {}) };
+			}
+		} finally {
+			await rm(scratchDirectory, { recursive: true, force: true, maxRetries: 3, retryDelay: 20 });
 		}
 	}
 	throw new Error(`Unsupported workflow action: ${action.kind}`);
