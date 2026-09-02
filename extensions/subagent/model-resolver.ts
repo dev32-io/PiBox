@@ -3,7 +3,7 @@ import { activeModelTierLists } from "../model-tier-list-profiles/profiles.js";
 import type { HarnessEffort, ModelRoutingConfig, ModelTier, TierModelRouteConfig } from "./types.js";
 
 export interface ExplicitModelOverride {
-	/** Configured concrete model id, optionally prefixed with provider/. */
+	/** Concrete model id, optionally prefixed with provider/. */
 	model: string;
 	effort?: HarnessEffort;
 }
@@ -12,13 +12,15 @@ export interface ModelResolutionRequest {
 	tier: ModelTier;
 	override?: ExplicitModelOverride;
 	strict?: boolean;
+	/** Direct user launches may select any uniquely matching registered model. */
+	allowUnconfiguredOverride?: boolean;
 }
 
 export interface ModelAttempt {
 	provider?: string;
 	model: string;
 	effort?: ModelThinkingLevel;
-	status: "override_not_configured" | "model_missing" | "effort_unsupported" | "selected";
+	status: "override_not_configured" | "model_ambiguous" | "model_missing" | "effort_unsupported" | "selected";
 }
 
 interface ParsedRoute {
@@ -121,7 +123,7 @@ export function resolveSubagentModel(
 	const attempts: ModelAttempt[] = [];
 	const resolvedCandidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }> = [];
 	const requested = { tier: request.tier, ...(request.override ? { override: request.override } : {}) };
-	const configured = candidates(config, request);
+	let selectedCandidates = candidates(config, request);
 	const modelTiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
 	const overrideSearchRoutes = request.tier === "local"
 		? modelTiers.local
@@ -129,10 +131,33 @@ export function resolveSubagentModel(
 	const overrideConfigured = request.override
 		? overrideSearchRoutes.map(parseRoute).some((route) => routeMatchesOverride(route, request.override!.model))
 		: true;
-	if (request.override && !overrideConfigured) attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "override_not_configured" });
+	if (request.override && !overrideConfigured) {
+		const availableOverrideModels = request.allowUnconfiguredOverride
+			? availableModels.filter((model) => {
+				if (request.tier === "local" ? model.provider !== "local-llm" : model.provider === "local-llm") return false;
+				return model.id === request.override!.model || `${model.provider}/${model.id}` === request.override!.model;
+			})
+			: [];
+		if (availableOverrideModels.length === 1) {
+			const selected = availableOverrideModels[0]!;
+			const effort = request.override.effort ?? "off";
+			const route: ParsedRoute = {
+				configured: `${selected.provider}/${selected.id}#${effort}`,
+				provider: selected.provider,
+				model: selected.id,
+				effort,
+			};
+			const explicit = { route, effort, override: true };
+			selectedCandidates = request.strict || request.tier === "local" ? [explicit] : [explicit, ...selectedCandidates];
+		} else if (availableOverrideModels.length > 1) {
+			attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "model_ambiguous" });
+		} else {
+			attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: request.allowUnconfiguredOverride ? "model_missing" : "override_not_configured" });
+		}
+	}
 
-	for (let index = 0; index < configured.length; index += 1) {
-		const candidate = configured[index]!;
+	for (let index = 0; index < selectedCandidates.length; index += 1) {
+		const candidate = selectedCandidates[index]!;
 		const { route, effort } = candidate;
 		const model = availableModels.find((item) => item.provider === route.provider && item.id === route.model);
 		if (!model) {
@@ -145,7 +170,7 @@ export function resolveSubagentModel(
 		}
 		attempts.push({ provider: route.provider, model: route.model, effort, status: "selected" });
 		resolvedCandidates.push({ provider: route.provider, model: route.model, effort });
-		for (const remaining of configured.slice(index + 1)) {
+		for (const remaining of selectedCandidates.slice(index + 1)) {
 			const alternate = availableModels.find((item) => item.provider === remaining.route.provider && item.id === remaining.route.model);
 			if (alternate && supportsEffort(alternate, remaining.effort)) resolvedCandidates.push({ provider: remaining.route.provider, model: remaining.route.model, effort: remaining.effort });
 		}

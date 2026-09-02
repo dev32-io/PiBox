@@ -1,7 +1,7 @@
 import { createProvider, openAICompletionsApi, type ApiKeyCredential, type Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverOpenAIModels } from "../shared/openai-compatible.js";
-import { OLLAMA_CLOUD_MODEL_METADATA } from "./model-metadata.js";
+import { OLLAMA_CLOUD_MODEL_METADATA, OLLAMA_CLOUD_THINKING_LEVEL_MAP } from "./model-metadata.js";
 import { clearUsage, publishUsage } from "../shared/usage.js";
 
 const PROVIDER_ID = "ollama-cloud";
@@ -54,6 +54,7 @@ export default function ollamaCloudProvider(pi: ExtensionAPI): void {
 							signal: interaction.signal,
 							defaultContextWindow: 128_000,
 							defaultMaxTokens: 32_768,
+							defaultThinkingLevelMap: OLLAMA_CLOUD_THINKING_LEVEL_MAP,
 							modelMetadata: OLLAMA_CLOUD_MODEL_METADATA,
 						});
 						loginModels.splice(0, loginModels.length, ...models);
@@ -82,6 +83,7 @@ export default function ollamaCloudProvider(pi: ExtensionAPI): void {
 					signal: context.signal,
 					defaultContextWindow: 128_000,
 					defaultMaxTokens: 32_768,
+					defaultThinkingLevelMap: OLLAMA_CLOUD_THINKING_LEVEL_MAP,
 					modelMetadata: OLLAMA_CLOUD_MODEL_METADATA,
 				});
 			},

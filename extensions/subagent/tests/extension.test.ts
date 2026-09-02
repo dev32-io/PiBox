@@ -160,8 +160,8 @@ class FakeService implements SubagentService {
 	}
 }
 
-function model(provider = "openai-codex", id = "gpt-5.6-sol"): Model<Api> {
-	return { provider, id, reasoning: true, api: "openai-codex-responses" } as unknown as Model<Api>;
+function model(provider = "openai-codex", id = "gpt-5.6-sol", reasoning = true): Model<Api> {
+	return { provider, id, reasoning, api: "openai-codex-responses" } as unknown as Model<Api>;
 }
 
 function catalog() {
@@ -186,6 +186,7 @@ function harness(options: {
 	sessionId?: string;
 	trusted?: boolean;
 	availableModels?: Model<Api>[];
+	refreshedModels?: Model<Api>[];
 	scopedModels?: Array<{ model: Model<Api> }>;
 	loadCatalog?: SubagentExtensionDependencies["loadCatalog"];
 } = {}) {
@@ -196,6 +197,8 @@ function harness(options: {
 	const notices: string[] = [];
 	const services: FakeService[] = [];
 	const catalogOptions: any[] = [];
+	const modelRefreshes: unknown[] = [];
+	let availableModels = options.availableModels ?? [model()];
 	let sessionId = options.sessionId ?? "session-1";
 	const pi = {
 		registerTool(definition: any) { tools.set(definition.name, definition); },
@@ -213,7 +216,14 @@ function harness(options: {
 		mode: "tui",
 		isProjectTrusted: () => options.trusted ?? true,
 		sessionManager: { getSessionId: () => sessionId },
-		modelRegistry: { getAvailable: () => options.availableModels ?? [model()] },
+		modelRegistry: {
+			getAvailable: () => availableModels,
+			async refresh(request: unknown) {
+				modelRefreshes.push(request);
+				if (options.refreshedModels) availableModels = options.refreshedModels;
+				return { aborted: false, errors: new Map() };
+			},
+		},
 		scopedModels: options.scopedModels ?? [],
 		ui: { notify(message: string) { notices.push(message); } },
 	} as unknown as ExtensionContext;
@@ -233,7 +243,7 @@ function harness(options: {
 		for (const handler of handlers.get(name) ?? []) returned = await handler(event, ctx) ?? returned;
 		return returned;
 	};
-	return { pi, ctx, tools, handlers, sent, notices, services, catalogOptions, dependencies, fire, setSessionId(value: string) { sessionId = value; } };
+	return { pi, ctx, tools, handlers, sent, notices, services, catalogOptions, modelRefreshes, dependencies, fire, setSessionId(value: string) { sessionId = value; } };
 }
 
 async function settleForeground(f: ReturnType<typeof harness>, operation: Promise<any>, text = "done") {
@@ -493,6 +503,69 @@ for (const lifecycle of ["new", "resume", "fork"] as const) {
 	});
 }
 
+test("standalone user model override launches an unconfigured registered model", async () => {
+	const f = harness({ availableModels: [model(), model("ollama-cloud", "glm-5.3-flash")] });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", {
+		agent: "general-purpose",
+		task: "Override",
+		mode: "background",
+		model: "ollama-cloud/glm-5.3-flash#off",
+	}, undefined, undefined, f.ctx);
+	assert.equal(f.services[0]!.launches[0]!.provider, "ollama-cloud");
+	assert.equal(f.services[0]!.launches[0]!.model, "glm-5.3-flash");
+	assert.equal(f.services[0]!.launches[0]!.effort, "off");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("standalone user model override ignores a stale scoped-model snapshot", async () => {
+	const current = model("ollama-cloud", "glm-5.3-flash", true);
+	const stale = model("ollama-cloud", "glm-5.3-flash", false);
+	const f = harness({ availableModels: [model(), current], scopedModels: [{ model: stale }] });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", {
+		agent: "general-purpose",
+		task: "Override",
+		mode: "background",
+		model: "ollama-cloud/glm-5.3-flash#high",
+	}, undefined, undefined, f.ctx);
+	assert.equal(f.services[0]!.launches[0]!.provider, "ollama-cloud");
+	assert.equal(f.services[0]!.launches[0]!.effort, "high");
+	assert.equal(f.modelRefreshes.length, 0);
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("standalone user model override refreshes stale provider metadata before fallback", async () => {
+	const stale = model("ollama-cloud", "glm-5.3-flash", false);
+	const refreshed = model("ollama-cloud", "glm-5.3-flash", true);
+	const f = harness({ availableModels: [model(), stale], refreshedModels: [model(), refreshed] });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", {
+		agent: "general-purpose",
+		task: "Refresh",
+		mode: "background",
+		model: "ollama-cloud/glm-5.3-flash#high",
+	}, undefined, undefined, f.ctx);
+	assert.deepEqual(f.modelRefreshes, [{ providers: ["ollama-cloud"] }]);
+	assert.equal(f.services[0]!.launches[0]!.provider, "ollama-cloud");
+	assert.equal(f.services[0]!.launches[0]!.effort, "high");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("standalone user model override falls back to the configured same-tier list", async () => {
+	const f = harness({ availableModels: [model()] });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", {
+		agent: "general-purpose",
+		task: "Fallback",
+		mode: "background",
+		model: "ollama-cloud/missing#off",
+	}, undefined, undefined, f.ctx);
+	assert.equal(f.services[0]!.launches[0]!.provider, "openai-codex");
+	assert.equal(f.services[0]!.launches[0]!.model, "gpt-5.6-sol");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
 test("standalone model resolution treats nonempty scoped models as the complete available set", async () => {
 	const f = harness({
 		availableModels: [model()],
@@ -501,7 +574,7 @@ test("standalone model resolution treats nonempty scoped models as the complete 
 	await f.fire("session_start", { reason: "startup" });
 	await assert.rejects(
 		f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Scoped" }, undefined, undefined, f.ctx),
-		/No configured subagent model is available/,
+		/No available subagent model could satisfy the request/,
 	);
 	assert.equal(f.services[0]!.launches.length, 0);
 	await f.fire("session_shutdown", { reason: "quit" });

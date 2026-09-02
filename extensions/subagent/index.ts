@@ -272,13 +272,13 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions" }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
 			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const)),
-			model: Type.Optional(Type.String({ description: "Configured model or provider/model, optionally suffixed with #effort" })),
+			model: Type.Optional(Type.String({ description: "Registered model or provider/model override, optionally suffixed with #effort" })),
 			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
 		}, { additionalProperties: false }),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const current = requireBinding();
 			if (ctx.sessionManager.getSessionId() !== current.owner.sessionId) throw new Error("Subagent launch context belongs to a replacement session");
-			const resolved = resolveLaunch(current, params, fastModePolicy, ctx);
+			const resolved = await resolveLaunch(current, params, fastModePolicy, ctx, signal);
 			const launched = await current.service.launch(resolved.spec);
 			const agentId = launched.handle.agentId;
 			const mode = params.mode ?? "foreground";
@@ -500,12 +500,13 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	});
 }
 
-function resolveLaunch(
+async function resolveLaunch(
 	binding: SessionBinding,
 	params: { agent: string; task: string; tier?: ModelTier; model?: string; effort?: HarnessEffort },
 	fastModePolicy: FastModePolicy,
 	ctx: ExtensionContext,
-): { tier: ModelTier; spec: Parameters<SubagentService["launch"]>[0] } {
+	signal?: AbortSignal,
+): Promise<{ tier: ModelTier; spec: Parameters<SubagentService["launch"]>[0] }> {
 	const agent = binding.catalog.config.agents[params.agent];
 	if (!agent) throw new Error(`Unknown subagent definition: ${params.agent}. Available: ${Object.keys(binding.catalog.config.agents).sort().join(", ")}`);
 	let tier: ModelTier = params.tier ?? (params.model?.trim().startsWith("local-llm/") ? "local" : agent.tier ?? "medium");
@@ -523,9 +524,33 @@ function resolveLaunch(
 	}
 	const override = preferredModel ? normalizeExplicitModelOverride(preferredModel, params.effort) : undefined;
 	if (preferredModel?.startsWith("local-llm/")) tier = "local";
-	const availableModels = ctx.scopedModels.length > 0 ? ctx.scopedModels.map((entry) => entry.model) : ctx.modelRegistry.getAvailable();
-	const resolution = resolveSubagentModel(routingConfig, availableModels, { tier, ...(override ? { override, strict: true } : {}) });
-	if (resolution.status !== "resolved") throw new Error(`No configured subagent model is available: ${JSON.stringify(resolution.attempts)}`);
+	const userSelectedModel = params.model !== undefined;
+	let availableModels = userSelectedModel
+		? ctx.modelRegistry.getAvailable()
+		: ctx.scopedModels.length > 0
+			? ctx.scopedModels.map((entry) => entry.model)
+			: ctx.modelRegistry.getAvailable();
+	const resolveModel = () => resolveSubagentModel(routingConfig, availableModels, {
+		tier,
+		...(override ? {
+			override,
+			strict: !userSelectedModel,
+			allowUnconfiguredOverride: userSelectedModel,
+		} : {}),
+	});
+	let resolution = resolveModel();
+	const providerSeparator = override?.model.indexOf("/") ?? -1;
+	const requestedProvider = providerSeparator > 0 ? override!.model.slice(0, providerSeparator) : undefined;
+	if (userSelectedModel && requestedProvider && (resolution.status !== "resolved" || resolution.fallbackUsed)) {
+		try {
+			await ctx.modelRegistry.refresh({ providers: [requestedProvider], ...(signal ? { signal } : {}) });
+			availableModels = ctx.modelRegistry.getAvailable();
+			resolution = resolveModel();
+		} catch (error) {
+			if (signal?.aborted) throw error;
+		}
+	}
+	if (resolution.status !== "resolved") throw new Error(`No available subagent model could satisfy the request: ${JSON.stringify(resolution.attempts)}`);
 	const selectors = agent.tools ?? [...DEFAULT_SUBAGENT_TOOLS];
 	const promptPath = resolveConfiguredPath(binding.repositoryRoot, agent.prompt);
 	if (!promptPath) throw new Error(`Subagent ${params.agent} has no readable prompt definition`);

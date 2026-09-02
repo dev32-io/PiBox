@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { loadSubagentCatalog } from "../catalog.js";
+import { loadSubagentCatalog, DEFAULT_SUBAGENT_CATALOG_CONFIG } from "../catalog.js";
+import { activeModelTierLists } from "../../model-tier-list-profiles/profiles.js";
 import { mcpLaunchEnvironment, PIBOX_ALLOWED_MCP_SERVERS_ENV } from "../mcp-capabilities.js";
 import { resolveSubagentModel } from "../model-resolver.js";
 import {
@@ -17,6 +18,43 @@ import {
 function model(provider: string, id: string, reasoning = false): Model<Api> {
 	return { provider, id, reasoning } as unknown as Model<Api>;
 }
+
+test("a direct user override may select an unconfigured registered model before same-tier fallbacks", () => {
+	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium = ["openai-codex/fallback#off"];
+	const result = resolveSubagentModel(config, [model("ollama-cloud", "glm-5.3-flash"), model("openai-codex", "fallback")], {
+		tier: "medium",
+		override: { model: "ollama-cloud/glm-5.3-flash", effort: "off" },
+		allowUnconfiguredOverride: true,
+	});
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") {
+		assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "ollama-cloud/glm-5.3-flash#off");
+		assert.deepEqual(result.candidates, [
+			{ provider: "ollama-cloud", model: "glm-5.3-flash", effort: "off" },
+			{ provider: "openai-codex", model: "fallback", effort: "off" },
+		]);
+	}
+});
+
+test("an unusable direct user override falls back in same-tier route order", () => {
+	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium = [
+		"openai-codex/missing#off",
+		"openai-codex/fallback#off",
+	];
+	const result = resolveSubagentModel(config, [model("ollama-cloud", "glm-5.3-flash"), model("openai-codex", "fallback")], {
+		tier: "medium",
+		override: { model: "ollama-cloud/glm-5.3-flash", effort: "high" },
+		allowUnconfiguredOverride: true,
+	});
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") {
+		assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/fallback#off");
+		assert.equal(result.fallbackUsed, true);
+		assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["effort_unsupported", "model_missing", "selected"]);
+	}
+});
 
 test("loads standalone built-in, harness routing, and trusted project agent policy", () => {
 	const root = mkdtempSync(join(tmpdir(), "pibox-subagent-catalog-"));
