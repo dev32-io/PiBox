@@ -65,10 +65,15 @@ test("hides quota when it cannot fit or no reliable windows exist", () => {
 	);
 });
 
-test("designer profile replaces the Pi mark with a visible designer identity", () => {
-	const designer = renderStatusBar(160, { ...data, profile: "designer" })[1] ?? "";
-	assert.match(designer, /designer/);
-	assert.doesNotMatch(renderStatusBar(160, data)[1] ?? "", /designer/);
+test("renders every work mode flush until focused, then shows the navigation pointer", () => {
+	const icons = { agent: "", orchestrator: "󰒪", workflow: "󱄗", designer: "󰏘" } as const;
+	for (const [workMode, icon] of Object.entries(icons)) {
+		const row = renderStatusBar(160, { ...data, workMode: workMode as keyof typeof icons })[1] ?? "";
+		assert.match(row, new RegExp(`^ ${icon}`), "the unfocused icon starts at the shared one-column row margin");
+		assert.doesNotMatch(row, new RegExp(workMode, "i"));
+		const selected = renderStatusBar(160, { ...data, workMode: workMode as keyof typeof icons, selectedInteractiveId: "work-mode" })[1] ?? "";
+		assert.match(selected, new RegExp(`^ › ${icon}`), "focus adds the same arrow pointer used by other footer elements");
+	}
 });
 
 test("wide layout distinguishes context and session metrics", () => {
@@ -156,6 +161,7 @@ test("interactive layout exposes visible footer rows and marks the selected elem
 		selectedInteractiveId: "tier-profile",
 	});
 	assert.deepEqual(layout.interactiveRows, [
+		["work-mode"],
 		["permissions", "effort", "tier-profile", "fast-mode"],
 		["service:mem0", "service:searxng"],
 	]);
@@ -165,7 +171,7 @@ test("interactive layout exposes visible footer rows and marks the selected elem
 
 test("settings hidden by right-side metrics are not exposed as invisible interactive targets", () => {
 	const layout = renderStatusBarLayout(20, data);
-	assert.deepEqual(layout.interactiveRows, []);
+	assert.deepEqual(layout.interactiveRows, [["work-mode"]]);
 	assert.doesNotMatch(layout.lines[3] ?? "", /Permissions|Effort/);
 	assert.ok(layout.lines.every((line) => visibleWidth(line) <= 20));
 });

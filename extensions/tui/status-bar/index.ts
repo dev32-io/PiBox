@@ -7,7 +7,7 @@ import { collectSessionMetrics } from "./metrics.js";
 import { readUsageStatus, USAGE_STATUS_PREFIX } from "../../providers/shared/usage.js";
 import { FAST_MODE_STATUS_KEY, parseFastModeStatus } from "../../fast-mode/policy.js";
 import { MODEL_TIER_PROFILE_STATUS_KEY, parseModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
-import { PROFILE_STATUS_KEY } from "../../profile/registry.js";
+import { parseWorkModeStatus, WORK_MODE_STATUS_KEY } from "../../work-mode/policy.js";
 import { attachInteractiveFooter } from "../interactive-footer/controller.js";
 import { getInteractiveFooterItem } from "../interactive-footer/registry.js";
 import { SUBAGENT_ANIMATION_INTERVAL_MS } from "../../subagent/display.js";
@@ -74,8 +74,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						.sort(([left], [right]) => left.localeCompare(right))
 						.map(([key, value]) => ({ id: `service:${key.split(":").slice(2).join(":")}`, text: value }));
 					const permissionMode = extensionStatuses.get("permission-mode") === "bypass" ? "bypass" : "enforce";
-					const profileStatus = extensionStatuses.get(PROFILE_STATUS_KEY);
-					const profile = profileStatus?.startsWith("profile:") ? profileStatus.slice("profile:".length) : undefined;
+					const workMode = parseWorkModeStatus(extensionStatuses.get(WORK_MODE_STATUS_KEY));
 					const tierProfile = parseModelTierProfileStatus(extensionStatuses.get(MODEL_TIER_PROFILE_STATUS_KEY));
 					const fastMode = parseFastModeStatus(extensionStatuses.get(FAST_MODE_STATUS_KEY));
 					const provider = ctx.model?.provider;
@@ -87,7 +86,7 @@ export default function statusBar(pi: ExtensionAPI): void {
 						theme,
 						thinkingLevel: pi.getThinkingLevel(),
 						permissionMode,
-						...(profile ? { profile } : {}),
+						...(workMode ? { workMode } : {}),
 						...(tierProfile ? { tierProfile } : {}),
 						...(fastMode ? { fastMode } : {}),
 						metrics: collectSessionMetrics(ctx),

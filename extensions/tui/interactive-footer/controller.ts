@@ -77,7 +77,7 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 		}
 		const rows = availableRows(surface.rows());
 		if (!selection) {
-			if (!matchesKey(data, "alt+down") || rows.length === 0) return undefined;
+			if (!matchesKey(data, Key.down) || rows.length === 0 || (ctx.ui.getEditorText?.() ?? "").length > 0) return undefined;
 			selection = { row: 0, column: 0 };
 			render();
 			return { consume: true };

@@ -141,9 +141,20 @@ test("renders the in-place /fast settings menu and persists each complete change
 	assert.match(text, /Main session/);
 	assert.match(text, /Subagents/);
 	assert.match(text, /additional ChatGPT credits/);
+	component?.handleInput?.("\x1b[C");
 	component?.handleInput?.("\r");
+	await new Promise((resolve) => setImmediate(resolve));
+	await command?.handler("", {
+		mode: "tui",
+		ui: {
+			notify() {},
+			custom: async (factory: any) => { component = factory({ requestRender() {} }, theme, {}, () => undefined); },
+		},
+	});
 	component?.handleInput?.("\x1b[B");
+	component?.handleInput?.("\x1b[C");
 	component?.handleInput?.("\r");
+	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(appended, [
 		{ main: true, subagents: "off" },
 		{ main: true, subagents: "low" },

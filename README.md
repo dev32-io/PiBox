@@ -1,27 +1,31 @@
-# PiBox
+<h1 align="center">
+  <img src="docs/assets/pibox-logo.svg" alt="PiBox" width="420">
+</h1>
 
-PiBox is an extension pack for the [Pi coding agent](https://github.com/badlogic/pi-mono). It combines a focused terminal experience with safer delegation, local tools, and an optional managed workflow that can carry a reviewed idea through implementation and verification.
+<p align="center">
+  <a href="https://github.com/dev32-io/PiBox/actions/workflows/ci.yml?query=branch%3Adevelop"><img src="https://img.shields.io/github/actions/workflow/status/dev32-io/PiBox/ci.yml?branch=develop&amp;style=flat-square&amp;label=CI" alt="CI status on develop"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-d99a7b?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/badlogic/pi-mono"><img src="https://img.shields.io/badge/Pi-%E2%89%A5%200.84.3-62656f?style=flat-square" alt="Pi 0.84.3 or newer"></a>
+</p>
 
-![Accelerated Pi TUI recording of a todo app moving from an initial request through story shaping, staged implementation, review, E2E verification, and the delivered Aero Todo product](docs/assets/workflow-demo/workflow-demo.gif)
+PiBox is a mode-driven extension pack for the [Pi coding agent](https://github.com/badlogic/pi-mono). It adds a focused terminal, activation-scoped subagents, private session scratch, repository-aware visual design, and an optional managed workflow that carries reviewed ideas through implementation and verification.
 
-*An 18-second accelerated reenactment grounded in a completed PiBox run. The terminal was recorded from the real Pi TUI using the production workflow dashboard; the final screen is the delivered Aero Todo application. Intermediate timing is compressed. [View a static frame instead.](docs/assets/workflow-demo/workflow-demo-poster.png)*
+## Choose how PiBox works
 
-## At a glance
+New sessions start in **Agent** mode. From an empty editor, press `Down` to enter the interactive footer, or use `/mode <name>` directly.
 
-| Layer | What PiBox adds |
+| Mode | Use it for |
 |---|---|
-| **Terminal** | The `rattle` theme, responsive status, compact tool output, refined input, and visible agent progress. |
-| **Agents** | Activation-scoped subagents, capability tiers, provider fallback, and bounded background delivery. |
-| **Workflow** | Reviewed stories and plans, sequential or concurrent stages, isolated Git worktrees, checks, review, repair, and final E2E. |
-| **Control** | Repository permission rules, explicit launch gates, inherited child policy, and user-owned material decisions. |
-| **Context** | Path-scoped rules, curated memory, and evidence-backed knowledge distillation without silent writes. |
-| **Visual tools** | Live architecture diagrams, a designer profile, browser mockups, and optional local sound feedback. |
+| **Agent** | Direct repository work with ordinary tools, optional scratch, and bounded subagents. |
+| **Orchestrator** | Plan-and-ledger coordination with deliberate delegation and final verification. |
+| **Workflow** | Reviewed stories and plans followed by managed stages, checks, repair, review, and E2E. |
+| **Designer** | Repository-aware visual exploration, mockups, and implementation handoff. |
+
+Modes are session-branch-local and select authority, not permission: Workflow still requires separate story and plan review plus an explicit start or resume. See [work modes](docs/work-modes.md) for cache behavior, restoration, and scratch semantics.
 
 ## Quick start
 
-Prerequisite: [Pi 0.84.3 or newer](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#quick-start).
-
-From this repository:
+Requires [Pi 0.84.3 or newer](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#quick-start).
 
 ```bash
 npm install
@@ -29,56 +33,55 @@ npm run verify
 pi -e .
 ```
 
-`pi -e .` loads the package for one run. To keep it installed, use Pi's package manager:
+`pi -e .` loads PiBox for one run. To keep it installed:
 
 ```bash
 pi install /absolute/path/to/PiBox
 ```
 
-PiBox packages execute extension code with your user permissions; review the source and configuration before installation.
+Pi packages run with your user permissions; review the source and configuration before installation.
 
 ## From idea to working product
 
-![PiBox lifecycle from idea and brainstorming through story shaping, implementation planning, staged execution, quality guardrails, and a working product](docs/assets/workflow-demo/workflow-lifecycle.png)
+![Accelerated Pi TUI recording of a todo app moving from an initial request through story shaping, staged implementation, review, E2E verification, and the delivered Aero Todo product](docs/assets/workflow-demo/workflow-demo.gif)
 
-The main agent helps turn an open-ended request into a product contract and a separate delivery plan. You review both boundaries before anything runs. After an explicit start, PiBox owns scheduling, worktree isolation, deterministic checks, integration, bounded repair, whole-branch review, and final E2E. Material decisions and exhausted recovery return to you rather than silently changing the contract.
+*An accelerated reenactment grounded in a completed PiBox run. [View the static poster.](docs/assets/workflow-demo/workflow-demo-poster.png)*
+
+The main agent shapes an open request into a product contract and a separate delivery plan. You review both before execution. After an explicit start, PiBox owns stage scheduling, isolated Git worktrees, deterministic checks, integration, bounded repair, whole-branch review, and final E2E. Material decisions return to you instead of silently changing the contract.
 
 ```text
-/harness init [standard|economy]
+/mode workflow
+/workflow init [standard|economy]
 /workflow status
 
-Discuss the idea → review the story → review the plan → say “start the workflow”
+Discuss → review the story → review the plan → say “start the workflow”
 ```
 
-Managed execution is unattended only within the current live Pi activation; quitting is treated as a crash, not as detached background operation. See [the workflow guide](docs/workflow.md) for authoring, execution, recovery, and evidence details.
-
-### Inspect delivery at a glance
+Managed execution lives only within the current Pi activation; quitting is treated as a crash, not detached background operation. See the [workflow guide](docs/workflow.md) for setup, authoring, recovery, and evidence.
 
 ![Visual Companion showing the completed Aero Todo workflow with progress, delivery metrics, sequential and concurrent stages, and final assurance](docs/assets/workflow-demo/workflow-dashboard.png)
-
-*The read-only Visual Companion view of the completed Aero Todo delivery: 13 tasks across four ordered stages, three recovery passes, final review, E2E, and written outcome.*
 
 ## Everyday controls
 
 | Control | Purpose |
 |---|---|
-| `/thinking` | Select a model-compatible thinking level. |
-| `/tier-profile` | Switch the active agent routing profile. |
+| `Down` from an empty editor | Enter the interactive footer; arrows navigate, `Enter` confirms, and `Esc` closes. |
+| `/mode <agent\|orchestrator\|workflow\|designer>` | Change work mode directly. |
+| `/scratch` | Inspect, reset, or purge private session scratch. |
 | `Shift+Tab` or `/permissions` | Switch between enforced and bypass permission modes. |
+| `/tier-profile` | Change managed-agent model routing. |
 | `/services` | Inspect or control local PiBox services. |
 | `/distill` | Turn a reviewed code, release, workflow, or session range into evidence-backed proposals. |
 | `/skill:architecture-visualizer` | Open a live architecture explanation in the Visual Companion. |
-| `pi --profile designer` | Start the repository-aware visual design workflow. |
 
 ## Documentation
 
-- **Workflow:** [concepts and setup](docs/workflow.md) · [collaboration flow](docs/agent-collaboration-flow.md) · [E2E](docs/workflow-e2e.md)
+- **Modes and workflow:** [work modes](docs/work-modes.md) · [workflow](docs/workflow.md) · [collaboration flow](docs/agent-collaboration-flow.md) · [E2E](docs/workflow-e2e.md)
 - **Agents and models:** [agent workflow](docs/specs/agent-workflow.md) · [model tiers](docs/model-tier-guidance.md) · [provider integrations](docs/specs/provider-integrations.md)
-- **Interface and design:** [visual TUI](docs/specs/visual-tui.md) · [visual diff example](examples/visual-diff/README.md)
 - **Safety and context:** [permissions](extensions/permissions/README.md) · [path-scoped rules](extensions/rule/README.md) · [memory](extensions/memory-adapter/README.md) · [distillation](extensions/distill/README.md)
-- **Local integrations:** [services](extensions/service-adapter/README.md) · [sound feedback](extensions/feedback/sound-hooks/README.md) · [local models](extensions/providers/local-llm/README.md) · [Ollama Cloud](extensions/providers/ollama-cloud/README.md)
+- **Local integrations:** [services](extensions/service-adapter/README.md) · [sound](extensions/feedback/sound-hooks/README.md) · [local models](extensions/providers/local-llm/README.md) · [Ollama Cloud](extensions/providers/ollama-cloud/README.md)
 
-MCP transport and copyrighted audio remain user-supplied. Local services start lazily and never update without explicit approval.
+Local services start lazily and never update without explicit approval. MCP transport and copyrighted audio remain user-supplied.
 
 ## Development
 
@@ -88,8 +91,8 @@ npm test
 npm run eval:workflow
 ```
 
-Generated benchmark data stays under ignored `.benchmark/` paths. The deterministic workflow scenarios cover stage scheduling, checks, review, repair, recovery, and completion boundaries.
+CI runs these checks for pushes and pull requests to `develop`, the serving branch. Generated benchmark data stays under ignored `.benchmark/` paths.
 
 ## License
 
-MIT
+[MIT](LICENSE)

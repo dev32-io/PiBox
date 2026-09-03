@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="560" height="144" viewBox="0 0 560 144" role="img" aria-labelledby="pibox-title pibox-desc">
+  <title id="pibox-title">PiBox</title>
+  <desc id="pibox-desc">Pi inside a box above three connected workflow checkpoints, representing deterministic review, execution, and verification.</desc>
+
+  <rect width="560" height="144" rx="20" fill="#242528"/>
+
+  <rect x="24" y="24" width="96" height="96" rx="14" fill="#303136" stroke="#7b7f8a" stroke-width="2"/>
+  <path d="M46 51H98M60 51V86M86 51V75C86 83 90 87 98 87" fill="none" stroke="#e7e4e0" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <path d="M46 102H98" fill="none" stroke="#d99a7b" stroke-width="3" stroke-linecap="round"/>
+  <rect x="43" y="99" width="6" height="6" rx="1" fill="#d99a7b"/>
+  <rect x="69" y="99" width="6" height="6" rx="1" fill="#d99a7b"/>
+  <rect x="95" y="99" width="6" height="6" rx="1" fill="#d99a7b"/>
+
+  <text x="148" y="81" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="52" font-weight="700" letter-spacing="-1">
+    <tspan fill="#e7e4e0">Pi</tspan><tspan fill="#d99a7b">Box</tspan>
+  </text>
+  <text x="151" y="107" fill="#aba7a1" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" letter-spacing="2">REVIEW · RUN · VERIFY</text>
+</svg>

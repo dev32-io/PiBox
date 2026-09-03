@@ -25,6 +25,7 @@ import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/po
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
 import { readBuiltInPrompt } from "./prompt-loader.js";
+import { requireWorkflowMode } from "../work-mode/runtime.js";
 
 const WORKFLOW_EXTENSION_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
 export const WORKFLOW_CHILD_EXTENSION_PATHS = [WORKFLOW_EXTENSION_PATH, ...STANDALONE_CHILD_EXTENSION_PATHS] as const;
@@ -212,6 +213,7 @@ export default function workflow(pi: ExtensionAPI): void {
 	} });
 
 	const command = async (args: string, ctx: ExtensionContext) => {
+		requireWorkflowMode();
 		const [action, target] = args.trim().split(/\s+/, 2);
 		if (action === "init") { requireTrusted(ctx); const scaffold = await initializeHarnessRepository(ctx.cwd, target === "economy" ? "economy" : "standard"); runtimeResolver.reset(); ctx.ui.notify(scaffold.created ? "Initialized target workflow policy." : "Workflow policy already valid.", "info"); return; }
 		if (action === "status" || !action) { const current = await runtimeFor(ctx); const rows = await Promise.all((await current.workItems.listForCurrentBranch()).map(async (item) => `${item.id} · ${formatState(await new StoryRuntimeStore(current.identity.root, item.id).readState())}`)); ctx.ui.notify(rows.join("\n") || "No target stories on this branch.", "info"); return; }

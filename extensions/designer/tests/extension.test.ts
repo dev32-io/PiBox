@@ -4,15 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { formatSkillsForPrompt, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { resetActiveProfile, setActiveProfile } from "../../profile/registry.js";
+import { installWorkModeRuntime } from "../../work-mode/runtime.js";
+import type { PiBoxWorkMode } from "../../work-mode/policy.js";
 import designerExtension, { loadClosestDesignAuthority } from "../index.js";
 
-test("published package separates the designer prompt, profile-only handoff skill, and visual diff example", async () => {
+test("published package separates the designer prompt, mode-only handoff skill, and visual diff example", async () => {
 	const packageJson = JSON.parse(await readFile("package.json", "utf8")) as { files?: string[]; pi?: { extensions?: string[]; skills?: string[] } };
 	assert.ok(packageJson.files?.includes("prompt"));
 	assert.ok(packageJson.files?.includes("skills"));
 	assert.ok(packageJson.files?.includes("examples"));
-	assert.ok(packageJson.pi?.skills?.includes("!./skills/designer-handoff/SKILL.md"), "normal package discovery excludes the profile-only skill");
+	assert.ok(packageJson.pi?.skills?.includes("!./skills/designer-handoff/SKILL.md"), "normal package discovery excludes the mode-only skill");
 	const prompt = await readFile("prompt/designer.md", "utf8");
 	assert.match(prompt, /# Visual Designer/);
 	assert.match(prompt, /read and follow the `designer-handoff` skill/);
@@ -57,11 +58,13 @@ test("closest DESIGN.md is snapshotted within the repository boundary", async ()
 	}
 });
 
-test("designer prompt and DESIGN.md apply only to --profile designer", async () => {
+test("designer authority composes lazily only while Designer mode is active", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-designer-extension-"));
 	await mkdir(join(root, ".git"));
 	await writeFile(join(root, "DESIGN.md"), "Use the repository palette.");
-	let activeTools = ["read"];
+	let mode: PiBoxWorkMode = "agent";
+	const uninstallMode = installWorkModeRuntime({ snapshot: () => ({ sessionId: "session", mode, workflowToolsExposed: false, generation: 1 }) });
+	let activeTools = ["read", "subagent_spawn"];
 	const handlers = new Map<string, (...args: any[]) => unknown>();
 	const pi = {
 		getAllTools() { return [{ name: "read" }, { name: "subagent_spawn" }]; },
@@ -69,47 +72,58 @@ test("designer prompt and DESIGN.md apply only to --profile designer", async () 
 		setActiveTools(tools: string[]) { activeTools = tools; },
 		on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, handler); },
 	} as unknown as ExtensionAPI;
-	designerExtension(pi);
-	const ctx = { cwd: root, hasUI: false } as any;
+	const priorRole = process.env.PIBOX_RUNTIME_ROLE;
+	delete process.env.PIBOX_RUNTIME_ROLE;
+	try { designerExtension(pi); } finally {
+		if (priorRole === undefined) delete process.env.PIBOX_RUNTIME_ROLE;
+		else process.env.PIBOX_RUNTIME_ROLE = priorRole;
+	}
+	const notices: string[] = [];
+	const ctx = { cwd: root, hasUI: false, ui: { notify(message: string) { notices.push(message); } } } as any;
 	try {
-		setActiveProfile("default");
-		await handlers.get("session_start")?.({}, ctx);
-		assert.equal(await handlers.get("resources_discover")?.({}, ctx), undefined, "default profile does not load the handoff skill");
-		assert.equal(await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx), undefined);
-
-		setActiveProfile("designer");
-		await handlers.get("session_start")?.({}, ctx);
 		const resources = await handlers.get("resources_discover")?.({}, ctx) as { skillPaths?: string[] };
-		assert.equal(resources.skillPaths?.length, 1);
+		assert.equal(resources.skillPaths?.length, 1, "the load-once resource is always discoverable");
 		assert.match(resources.skillPaths?.[0] ?? "", /skills\/designer-handoff\/SKILL\.md$/);
-
 		const skills = [
 			{ name: "product-discussion", description: "Product exploration", filePath: "/skills/product-discussion/SKILL.md" },
 			{ name: "shape-story", description: "Story shaping", filePath: "/skills/shape-story/SKILL.md" },
 			{ name: "plan-delivery", description: "Delivery planning", filePath: "/skills/plan-delivery/SKILL.md" },
 			{ name: "workflow-run", description: "Workflow execution", filePath: "/skills/workflow-run/SKILL.md" },
 			{ name: "architecture-visualizer", description: "Architecture diagrams", filePath: "/skills/architecture-visualizer/SKILL.md" },
-			{ name: "designer-handoff", description: "Deliver an approved visual mockup as implementation references", filePath: resources.skillPaths?.[0] },
+			{ name: "designer-handoff", description: "Designer handoff", filePath: resources.skillPaths?.[0] },
 		] as any[];
 		const base = `base${formatSkillsForPrompt(skills)}`;
 		const event = { systemPrompt: base, systemPromptOptions: { skills } } as any;
-		const result = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
-		assert.deepEqual(activeTools, ["read", "subagent_spawn"], "designer keeps subagent_spawn active");
-		assert.match(result.systemPrompt, /^base/);
-		assert.doesNotMatch(result.systemPrompt, /<name>(product-discussion|shape-story|plan-delivery|workflow-run)<\/name>/);
-		assert.match(result.systemPrompt, /<name>architecture-visualizer<\/name>/, "non-product skills remain visible");
-		assert.match(result.systemPrompt, /<name>designer-handoff<\/name>/, "profile-only handoff skill is available on demand");
-		assert.match(result.systemPrompt, /# Visual Designer/);
-		assert.match(result.systemPrompt, /# Repository Design Authority/);
-		assert.match(result.systemPrompt, /Use the repository palette\./);
 
-		await writeFile(join(root, "DESIGN.md"), "Changed after startup.");
+		const ordinary = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
+		assert.doesNotMatch(ordinary.systemPrompt, /<name>designer-handoff<\/name>|# Visual Designer|Repository Design Authority/);
+		assert.match(ordinary.systemPrompt, /<name>product-discussion<\/name>/);
+		assert.deepEqual(await handlers.get("input")?.({ text: "/skill:designer-handoff", source: "interactive" }, ctx), { action: "handled" });
+		assert.match(notices.at(-1) ?? "", /only in PiBox Designer mode/);
+
+		mode = "designer";
+		assert.equal(await handlers.get("input")?.({ text: "/skill:designer-handoff", source: "interactive" }, ctx), undefined);
+		const result = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
+		assert.deepEqual(activeTools, ["read", "subagent_spawn"]);
+		assert.doesNotMatch(result.systemPrompt, /<name>(product-discussion|shape-story|plan-delivery|workflow-run)<\/name>/);
+		assert.match(result.systemPrompt, /<name>architecture-visualizer<\/name>/);
+		assert.match(result.systemPrompt, /<name>designer-handoff<\/name>/);
+		assert.match(result.systemPrompt, /# Visual Designer[\s\S]+# Repository Design Authority[\s\S]+Use the repository palette\./);
+		activeTools = ["read"];
+		await assert.rejects(async () => handlers.get("before_agent_start")?.(event, ctx), /active subagent_spawn tool/);
+		activeTools = ["read", "subagent_spawn"];
+
+		await writeFile(join(root, "DESIGN.md"), "Changed after first designer turn.");
 		const later = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
-		assert.match(later.systemPrompt, /Use the repository palette\./, "authority is a session-start snapshot");
-		assert.doesNotMatch(later.systemPrompt, /Changed after startup/);
+		assert.match(later.systemPrompt, /Use the repository palette\./, "authority is snapshotted lazily once");
+		assert.doesNotMatch(later.systemPrompt, /Changed after first designer turn/);
+
+		mode = "agent";
+		const returned = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
+		assert.doesNotMatch(returned.systemPrompt, /# Visual Designer|Repository Design Authority|<name>designer-handoff<\/name>/);
 	} finally {
 		await handlers.get("session_shutdown")?.({}, ctx);
-		resetActiveProfile();
+		uninstallMode();
 		await rm(root, { recursive: true, force: true });
 	}
 });

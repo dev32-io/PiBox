@@ -55,6 +55,25 @@ function describe(snapshot: ServiceSnapshot): string {
 	return [snapshot.state, snapshot.detail, snapshot.error].filter(Boolean).join(" · ");
 }
 
+function serviceDialogDescription(descriptor: ServiceDescriptor): string {
+	if (descriptor.id === "visual-companion") return "Open browser-rendered PiBox architecture, mockups, and delivery views for this session.";
+	if (descriptor.id === "mem0") return "Repository-scoped memory service shared by Pi sessions on this machine.";
+	if (descriptor.id === "searxng") return "Local web-search service shared by Pi sessions on this machine.";
+	return descriptor.perSession ? "Service available only to this Pi session." : "Service shared by Pi sessions on this machine.";
+}
+
+function displayState(state: ServiceSnapshot["state"]): string {
+	const marker = state === "running" ? "●" : state === "starting" || state === "updating" ? "◌" : state === "unhealthy" || state === "error" ? "!" : "○";
+	return `${marker} ${state[0]!.toUpperCase()}${state.slice(1)}`;
+}
+
+function displayCheckedAt(value: string | undefined): string {
+	if (!value) return "Not checked yet";
+	const parsed = new Date(value);
+	if (!Number.isFinite(parsed.getTime())) return value;
+	return `${parsed.toISOString().slice(0, 19).replace("T", " ")} UTC`;
+}
+
 export function summarizeServices(): string {
 	const services = listServices();
 	if (services.length === 0) return "";
@@ -127,26 +146,36 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 			const pending = () => snapshot().state === "starting" || snapshot().state === "updating";
 			return {
 				title: descriptor.name,
-				description: descriptor.perSession ? "Session-scoped PiBox service." : "Shared machine-scoped PiBox service; its lifecycle can affect other Pi sessions.",
+				description: serviceDialogDescription(descriptor),
 				rows: [
-					{ kind: "detail", label: "State", value: () => snapshot().state },
-					{ kind: "detail", label: "Detail", value: () => snapshot().detail ?? snapshot().error ?? "—" },
-					{ kind: "detail", label: "Checked", value: () => snapshot().checkedAt ?? "Not yet" },
-					{ kind: "detail", label: "Lifecycle", value: () => descriptor.perSession ? "Session" : descriptor.stayAlive ? "Shared · stays alive" : "Shared" },
+					{ kind: "detail", label: "Status", value: () => displayState(snapshot().state) },
+					{ kind: "detail", label: "Scope", value: () => descriptor.perSession ? "This Pi session" : descriptor.stayAlive ? "Shared · remains available after exit" : "Shared across Pi sessions" },
+					{ kind: "detail", label: "Last check", value: () => displayCheckedAt(snapshot().checkedAt) },
+					{
+						kind: "notice",
+						text: () => snapshot().error ?? snapshot().detail ?? "",
+						tone: () => snapshot().error ? "error" : "muted",
+						hidden: () => !snapshot().error && !snapshot().detail,
+					},
 					{
 						kind: "action",
 						id: "toggle",
-						label: () => snapshot().state === "running" ? `Stop ${descriptor.name}` : `Start ${descriptor.name}`,
-						description: "Enter performs the displayed lifecycle action. Updates remain available only through the approval-gated service command/tool.",
-						tone: snapshot().state === "running" ? "warning" : "success",
+						label: () => snapshot().state === "running" ? "Stop service" : "Start service",
+						description: () => snapshot().state === "running"
+							? descriptor.perSession ? "Stop it for this Pi session." : "Stop the shared service for every Pi session."
+							: descriptor.perSession ? "Start it for this Pi session." : "Start the shared service on this machine.",
+						tone: () => snapshot().state === "running" ? "warning" : "success",
 						disabled: pending,
+						closeOnSuccess: false,
 						run: async (signal) => { await run(snapshot().state === "running" ? "stop" : "start", descriptor.id, ctx, signal); },
 					},
 					{
 						kind: "action",
 						id: "refresh",
-						label: () => "Refresh health",
+						label: () => "Check health",
+						description: "Refresh the status and last-check time shown above.",
 						disabled: pending,
+						closeOnSuccess: false,
 						run: async (signal) => { await run("health", descriptor.id, ctx, signal); },
 					},
 				],

@@ -11,10 +11,12 @@ pi --no-extensions \
   -e ./extensions/subagent/index.ts \
   -e ./extensions/workflow-runtime/index.ts \
   -e ./extensions/workflow/index.ts \
+  -e ./extensions/work-mode/index.ts \
+  --work-mode workflow \
   --theme ./themes/rattle.json
 ```
 
-Initialize a repository with `/harness init [standard|economy]`. Repository policy lives in `.pi/harness.yaml`; tool permission policy lives in `.pi/permissions.yaml`. Initialization establishes a safe Git/develop boundary and the ignored `.worktree/` location without staging an existing project's files.
+Workflow tools and commands are authorized only in [Workflow mode](work-modes.md). Initialize a repository with `/harness init [standard|economy]`. Repository policy lives in `.pi/harness.yaml`; tool permission policy lives in `.pi/permissions.yaml`. Initialization establishes a safe Git/develop boundary and the ignored `.worktree/` location without staging an existing project's files.
 
 ## Collaboration and authorization
 

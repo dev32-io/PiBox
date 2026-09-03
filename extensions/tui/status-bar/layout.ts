@@ -10,6 +10,7 @@ import type { FastModeStatus } from "../../fast-mode/policy.js";
 import type { ModelTierProfileStatus } from "../../model-tier-list-profiles/policy.js";
 import { currentSubagentIndicator, renderSubagentFooterProjection } from "../../subagent/display.js";
 import type { SubagentUiProjection } from "../../subagent/ui-projection.js";
+import { DEFAULT_WORK_MODE, WORK_MODE_ICONS, type PiBoxWorkMode } from "../../work-mode/policy.js";
 
 export type LayoutMode = "wide" | "medium" | "narrow";
 
@@ -24,7 +25,7 @@ export interface StatusRenderData {
 	theme: Theme;
 	thinkingLevel: string;
 	permissionMode: "enforce" | "bypass";
-	profile?: string;
+	workMode?: PiBoxWorkMode;
 	tierProfile?: ModelTierProfileStatus;
 	fastMode?: FastModeStatus;
 	metrics: SessionMetrics;
@@ -65,12 +66,9 @@ function separator(theme: Theme): string {
 	return theme.fg("dim", "│");
 }
 
-function profileMark(data: StatusRenderData, mode: LayoutMode): string {
-	if (data.profile === "designer") {
-		const icon = hasNerdFonts() ? "󰏘" : "◇";
-		return mode === "narrow" ? data.theme.fg("accent", icon) : `${data.theme.fg("accent", icon)} ${data.theme.fg("muted", "designer")}`;
-	}
-	return data.theme.fg("accent", hasNerdFonts() ? "" : "π");
+function workModeMark(data: StatusRenderData): string {
+	const icon = data.theme.fg("accent", WORK_MODE_ICONS[data.workMode ?? DEFAULT_WORK_MODE]);
+	return data.selectedInteractiveId === "work-mode" ? `${data.theme.fg("accent", "›")} ${icon}` : icon;
 }
 
 function buildRow(leftParts: string[], rightParts: string[], width: number): string {
@@ -285,11 +283,21 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	if (width <= 0) return { lines: [], interactiveRows: [] };
 	const mode = layoutMode(width, data.config);
 	const divider = separator(data.theme);
-	const piMark = profileMark(data, mode);
-	const row1Left = [piMark, divider, modelSegment(data), divider, pathSegment(data, mode), gitSegment(data)];
+	const piMark = workModeMark(data);
+	const model = modelSegment(data);
+	const path = pathSegment(data, mode);
+	const row1LeftCandidates = [
+		[piMark, divider, model, divider, path, gitSegment(data)],
+		[piMark, divider, model, divider, path],
+		[piMark, divider, model],
+		[piMark],
+	];
 	const context = contextSegment(data, mode);
 	const quota = quotaSegment(data, mode, width, context);
-	const row1 = buildRow(row1Left, [context, ...(quota ? [separator(data.theme), quota] : [])], width);
+	let row1Right = [context, ...(quota ? [separator(data.theme), quota] : [])];
+	let row1Left = row1LeftCandidates.find((candidate) => rowFits(candidate, row1Right, width)) ?? [piMark];
+	if (!rowFits(row1Left, row1Right, width)) row1Right = [];
+	const row1 = buildRow(row1Left, row1Right, width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
 	const baseSegments: InteractiveSegment[] = [
 		{ id: "permissions", text: permissionSegment(data) },
@@ -306,7 +314,8 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	const row2Left = segmentTexts(visibleSettings.map((segment) => ({ ...segment, text: decorateInteractiveSegment(segment, data) })), divider);
 	const row2 = buildRow(row2Left, row2Right, width);
 	const lines = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
-	const interactiveRows = visibleSettings.length > 0 ? [visibleSettings.map((segment) => segment.id)] : [];
+	const interactiveRows: string[][] = width >= 5 ? [["work-mode"]] : [];
+	if (visibleSettings.length > 0) interactiveRows.push(visibleSettings.map((segment) => segment.id));
 	if (data.serviceStatuses?.length) {
 		const services = data.serviceStatuses.map((status, index): ServiceStatusSegment => typeof status === "string" ? { id: `service:${index}`, text: status } : status);
 		const visibleServices = fitServiceSegments(services, width, divider);

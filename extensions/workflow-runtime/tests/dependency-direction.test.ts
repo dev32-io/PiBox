@@ -48,7 +48,11 @@ test("package activation order and runtime role remain explicit compatibility co
 	const standalone = extensions.indexOf("./extensions/subagent/index.ts");
 	const runtime = extensions.indexOf("./extensions/workflow-runtime/index.ts");
 	const workflow = extensions.indexOf("./extensions/workflow/index.ts");
+	const workMode = extensions.indexOf("./extensions/work-mode/index.ts");
+	const scratch = extensions.indexOf("./extensions/session-scratch/index.ts");
+	const designer = extensions.indexOf("./extensions/designer/index.ts");
 	assert.ok(standalone >= 0 && standalone < runtime && runtime < workflow, "standalone service must activate before workflow consumers");
+	assert.ok(workflow < workMode && workMode < scratch && scratch < designer, "mode restoration must follow tool registration and precede mode consumers");
 
 	assert.equal(isSubagentRuntime({ PIBOX_SUBAGENT_ID: "managed-identity" }), false, "identity metadata cannot select child behavior");
 	assert.equal(isSubagentRuntime({ [PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE }), true);
