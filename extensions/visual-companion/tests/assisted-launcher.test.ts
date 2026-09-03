@@ -47,11 +47,16 @@ test("discovery is deferred, delayed, bounded, and recoverable only inside the f
 
 async function runCli(signal: "SIGINT" | "SIGTERM"): Promise<void> {
 	const cli = resolve("extensions/visual-companion/assisted-launcher-cli.ts");
-	const child = spawn("npx", ["tsx", cli], { stdio: ["ignore", "pipe", "pipe"] });
+	const child = spawn(process.execPath, ["--import", "tsx", cli], { stdio: ["ignore", "pipe", "pipe"] });
 	let output = ""; child.stdout.setEncoding("utf8"); child.stdout.on("data", (chunk) => { output += chunk; });
 	const deadline = Date.now() + 4_000; while (!output.includes("\n") && Date.now() < deadline) await new Promise((done) => setTimeout(done, 20));
 	const lines = output.trim().split("\n"); assert.equal(lines.length, 1); const startup = JSON.parse(lines[0]!); assert.equal(startup.type, "visual-companion-assisted-start"); assert.match(startup.url, /^http:\/\/(?:127\.0\.0\.1|\[::1\]):\d+\/story-board$/);
-	child.kill(signal); const [code, exitSignal] = await once(child, "exit") as [number | null, NodeJS.Signals | null]; assert.equal(exitSignal, null); assert.equal(code, 0);
+	child.kill(signal);
+	const exitTimeout = setTimeout(() => child.kill("SIGKILL"), 4_000);
+	const [code, exitSignal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
+	clearTimeout(exitTimeout);
+	assert.notEqual(exitSignal, "SIGKILL", `CLI did not exit after ${signal}`);
+	assert.equal(exitSignal, null); assert.equal(code, 0);
 }
 
 test("explicit control shutdown is idempotent", async () => {
