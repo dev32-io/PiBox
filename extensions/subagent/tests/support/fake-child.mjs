@@ -54,11 +54,11 @@ switch (mode) {
 		break;
 	case "wait":
 	case "ignore-term": {
-		emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ready" } });
 		process.on("SIGTERM", () => {
 			if (signalLog) appendFileSync(signalLog, "SIGTERM\n");
 			if (mode === "wait") process.exit(0);
 		});
+		emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ready" } });
 		setInterval(() => {}, 1_000);
 		break;
 	}
