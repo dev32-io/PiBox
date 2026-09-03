@@ -6,10 +6,19 @@ import test from "node:test";
 import { createVisualCompanionBackend } from "../backend.mjs";
 import { createMockupViewer } from "../mockup/index.js";
 
-test("mockup canvas allows scripts without granting same-origin parent access", async () => {
-	const html = await readFile(resolve("extensions/visual-companion/mockup/assets/index.html"), "utf8");
+test("mockup canvas is sandboxed and uses the shared dark wrapper without recoloring content", async () => {
+	const assets = resolve("extensions/visual-companion/mockup/assets");
+	const [html, css] = await Promise.all([
+		readFile(resolve(assets, "index.html"), "utf8"),
+		readFile(resolve(assets, "styles.css"), "utf8"),
+	]);
 	assert.match(html, /sandbox="[^"]*allow-scripts/);
 	assert.doesNotMatch(html, /sandbox="[^"]*allow-same-origin/);
+	assert.match(html, /href="\/assets\/design-tokens\.css"/);
+	assert.match(css, /body[^}]*background:\s*var\(--color-canvas,\s*Canvas\)/s);
+	assert.match(css, /#mockup[^}]*background:\s*var\(--color-canvas,\s*Canvas\)/s);
+	assert.match(css, /#status[^}]*color:\s*var\(--color-text-muted,\s*GrayText\)/s);
+	assert.doesNotMatch(css, /\bwhite\b|#[\da-f]{3,8}\b|rgba?\(/i, "wrapper must not flash white or establish another palette");
 });
 
 async function waitForEvent(reader: ReadableStreamDefaultReader<Uint8Array>, event: string, timeoutMs = 3_000): Promise<void> {

@@ -8,12 +8,17 @@ import type { RuntimeOwner } from "../subagent/api.js";
 export const WORKFLOW_METRIC_CATEGORIES = ["implementation", "integration", "verification", "review", "e2e"] as const;
 export type WorkflowMetricCategory = (typeof WORKFLOW_METRIC_CATEGORIES)[number];
 
-export interface StoryWorkflowMetrics {
+export interface WorkflowMetricBreakdown {
 	workflowMs: number;
 	categories: Record<WorkflowMetricCategory, number>;
-	open?: { category: WorkflowMetricCategory; since: string };
 	incompleteIntervals: number;
 	incompleteCategories: WorkflowMetricCategory[];
+}
+
+export interface StoryWorkflowMetrics extends WorkflowMetricBreakdown {
+	open?: { category: WorkflowMetricCategory; since: string; stageId?: string };
+	/** Added lazily so current state remains compatible with runs created before stage timing existed. */
+	stageBreakdown?: Record<string, WorkflowMetricBreakdown>;
 }
 
 export type ActivationOwner = RuntimeOwner;
@@ -237,8 +242,17 @@ function timestamp(value: string): number {
 	return result;
 }
 
+function emptyMetricBreakdown(): WorkflowMetricBreakdown {
+	return {
+		workflowMs: 0,
+		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+		incompleteIntervals: 0,
+		incompleteCategories: [],
+	};
+}
+
 /** Close the current exclusive interval at a durable transition and optionally open the next category. */
-export function transitionWorkflowClock(metrics: StoryWorkflowMetrics, category: WorkflowMetricCategory | undefined, at: string): StoryWorkflowMetrics {
+export function transitionWorkflowClock(metrics: StoryWorkflowMetrics, category: WorkflowMetricCategory | undefined, at: string, stageId?: string): StoryWorkflowMetrics {
 	const next = structuredClone(metrics);
 	const atMs = timestamp(at);
 	if (next.open) {
@@ -246,9 +260,17 @@ export function transitionWorkflowClock(metrics: StoryWorkflowMetrics, category:
 		if (elapsed < 0) throw new Error("Workflow clock cannot move backwards");
 		next.workflowMs += elapsed;
 		next.categories[next.open.category] += elapsed;
+		if (next.open.stageId) {
+			const stage = next.stageBreakdown?.[next.open.stageId] ?? emptyMetricBreakdown();
+			stage.workflowMs += elapsed;
+			stage.categories[next.open.category] += elapsed;
+			next.stageBreakdown = { ...next.stageBreakdown, [next.open.stageId]: stage };
+		}
 	}
-	if (category) next.open = { category, since: at };
-	else delete next.open;
+	if (category) {
+		if (stageId && !next.stageBreakdown?.[stageId]) next.stageBreakdown = { ...next.stageBreakdown, [stageId]: emptyMetricBreakdown() };
+		next.open = { category, since: at, ...(stageId ? { stageId } : {}) };
+	} else delete next.open;
 	return next;
 }
 
@@ -257,6 +279,12 @@ export function markWorkflowClockIncomplete(metrics: StoryWorkflowMetrics): Stor
 	const next = structuredClone(metrics);
 	if (next.open) {
 		if (!next.incompleteCategories.includes(next.open.category)) next.incompleteCategories.push(next.open.category);
+		if (next.open.stageId) {
+			const stage = next.stageBreakdown?.[next.open.stageId] ?? emptyMetricBreakdown();
+			if (!stage.incompleteCategories.includes(next.open.category)) stage.incompleteCategories.push(next.open.category);
+			stage.incompleteIntervals += 1;
+			next.stageBreakdown = { ...next.stageBreakdown, [next.open.stageId]: stage };
+		}
 		delete next.open;
 		next.incompleteIntervals += 1;
 	}
@@ -360,8 +388,8 @@ function validE2E(value: unknown): boolean {
 		&& boundedArray(value.evidenceRefs, 64) && value.evidenceRefs.every((reference) => boundedString(reference, 500))
 		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
-function validMetrics(value: unknown): boolean {
-	if (!record(value) || !onlyKeys(value, ["workflowMs", "categories", "open", "incompleteIntervals", "incompleteCategories"])
+function validMetricBreakdown(value: unknown): boolean {
+	if (!record(value) || !onlyKeys(value, ["workflowMs", "categories", "incompleteIntervals", "incompleteCategories"])
 		|| !nonNegativeInteger(value.workflowMs) || !nonNegativeInteger(value.incompleteIntervals)
 		|| !boundedArray(value.incompleteCategories, WORKFLOW_METRIC_CATEGORIES.length)
 		|| value.incompleteCategories.some((category) => !oneOf(category, WORKFLOW_METRIC_CATEGORIES))
@@ -370,10 +398,16 @@ function validMetrics(value: unknown): boolean {
 	if (!record(categories) || Object.keys(categories).length !== WORKFLOW_METRIC_CATEGORIES.length
 		|| !Object.keys(categories).every((category) => (WORKFLOW_METRIC_CATEGORIES as readonly string[]).includes(category))
 		|| !WORKFLOW_METRIC_CATEGORIES.every((category) => nonNegativeInteger(categories[category]))) return false;
-	const total = WORKFLOW_METRIC_CATEGORIES.reduce((sum, category) => sum + (categories[category] as number), 0);
-	if (total !== value.workflowMs) return false;
-	return value.open === undefined || (record(value.open) && onlyKeys(value.open, ["category", "since"]) && oneOf(value.open.category, WORKFLOW_METRIC_CATEGORIES)
-		&& boundedString(value.open.since, 80) && Number.isFinite(Date.parse(value.open.since)));
+	return WORKFLOW_METRIC_CATEGORIES.reduce((sum, category) => sum + (categories[category] as number), 0) === value.workflowMs;
+}
+function validMetrics(value: unknown): boolean {
+	if (!record(value) || !onlyKeys(value, ["workflowMs", "categories", "open", "incompleteIntervals", "incompleteCategories", "stageBreakdown"])) return false;
+	const { open, stageBreakdown, ...breakdown } = value;
+	if (!validMetricBreakdown(breakdown)) return false;
+	if (stageBreakdown !== undefined && (!record(stageBreakdown) || Object.keys(stageBreakdown).length > 100
+		|| Object.entries(stageBreakdown).some(([stageId, stage]) => !STORY_ID.test(stageId) || !validMetricBreakdown(stage)))) return false;
+	return open === undefined || (record(open) && onlyKeys(open, ["category", "since", "stageId"]) && oneOf(open.category, WORKFLOW_METRIC_CATEGORIES)
+		&& boundedString(open.since, 80) && Number.isFinite(Date.parse(open.since)) && (open.stageId === undefined || (typeof open.stageId === "string" && STORY_ID.test(open.stageId))));
 }
 function validGit(value: unknown): boolean {
 	return record(value) && onlyKeys(value, ["canonicalBranch", "baseCommit", "integrationBranch", "integrationWorktree"])
@@ -389,6 +423,24 @@ function validContracts(value: unknown): boolean {
 	const entries = Object.entries(value.tasks);
 	return entries.length <= 200 && entries.every(([id, digest]) => STORY_ID.test(id) && validDigest(digest));
 }
+function validMetricStageReferences(state: Record<string, unknown>): boolean {
+	const stageIds = new Set((state.stages as Array<Record<string, unknown>>).map((stage) => stage.id as string));
+	const metrics = state.metrics as Record<string, unknown>;
+	const open = metrics.open as Record<string, unknown> | undefined;
+	const stageBreakdown = metrics.stageBreakdown as Record<string, WorkflowMetricBreakdown> | undefined;
+	if (open?.stageId !== undefined && (!stageIds.has(open.stageId as string) || !stageBreakdown?.[open.stageId as string])) return false;
+	if (stageBreakdown === undefined) return true;
+	if (!Object.keys(stageBreakdown).every((stageId) => stageIds.has(stageId))) return false;
+	const globalCategories = metrics.categories as Record<WorkflowMetricCategory, number>;
+	for (const category of WORKFLOW_METRIC_CATEGORIES) {
+		const attributed = Object.values(stageBreakdown).reduce((sum, stage) => sum + stage.categories[category], 0);
+		if (attributed > globalCategories[category]) return false;
+	}
+	const globalIncompleteIntervals = metrics.incompleteIntervals as number;
+	if (Object.values(stageBreakdown).reduce((sum, stage) => sum + stage.incompleteIntervals, 0) > globalIncompleteIntervals) return false;
+	const globalIncompleteCategories = new Set(metrics.incompleteCategories as WorkflowMetricCategory[]);
+	return Object.values(stageBreakdown).every((stage) => stage.incompleteCategories.every((category) => globalIncompleteCategories.has(category)));
+}
 function validStateShape(state: Record<string, unknown>): boolean {
 	return onlyKeys(state, ["schemaVersion", "storyId", "status", "activationOwner", "attention", "contracts", "git", "stages", "finalReview", "e2e", "metrics", "outcomeStatus"])
 		&& oneOf(state.status, ["ready", "running", "paused", "attention", "completed", "failed", "stopped"])
@@ -399,7 +451,8 @@ function validStateShape(state: Record<string, unknown>): boolean {
 			&& boundedArray(stage.tasks, 200) && stage.tasks.every(validTask) && validIntegration(stage.integration)
 			&& validVerification(stage.verification) && validReview(stage.review))
 		&& validReview(state.finalReview) && validE2E(state.e2e)
-		&& (state.outcomeStatus === undefined || oneOf(state.outcomeStatus, ["pending", "written", "failed"]));
+		&& (state.outcomeStatus === undefined || oneOf(state.outcomeStatus, ["pending", "written", "failed"]))
+		&& validMetricStageReferences(state);
 }
 export function parseStoryRuntimeState(value: unknown, storyId: string): StoryRuntimeState {
 	if (!record(value) || value.schemaVersion !== 1 || value.storyId !== storyId || !validStateShape(value)) {

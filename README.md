@@ -52,6 +52,12 @@ Discuss the idea → review the story → review the plan → say “start the w
 
 Managed execution is unattended only within the current live Pi activation; quitting is treated as a crash, not as detached background operation. See [the workflow guide](docs/workflow.md) for authoring, execution, recovery, and evidence details.
 
+### Inspect delivery at a glance
+
+![Visual Companion showing the completed Aero Todo workflow with progress, delivery metrics, sequential and concurrent stages, and final assurance](docs/assets/workflow-demo/workflow-dashboard.png)
+
+*The read-only Visual Companion view of the completed Aero Todo delivery: 13 tasks across four ordered stages, three recovery passes, final review, E2E, and written outcome.*
+
 ## Everyday controls
 
 | Control | Purpose |

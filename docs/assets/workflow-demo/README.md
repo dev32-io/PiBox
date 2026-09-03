@@ -1,6 +1,6 @@
 # Workflow demo assets
 
-The lifecycle chart and terminal recording use separate pipelines.
+The lifecycle chart, terminal recording, and Visual Companion showcase use separate capture paths.
 
 ## Lifecycle chart
 
@@ -37,5 +37,6 @@ Outputs:
 - `workflow-lifecycle.png` — high-resolution lifecycle chart.
 - `workflow-demo-poster.png` — static fallback/preview extracted from the real terminal recording.
 - `workflow-demo.gif` — looping, accelerated real-Pi-TUI recording embedded directly in the project README.
+- `workflow-dashboard.png` — read-only production Visual Companion capture of the completed, sanitized Aero Todo workflow at 1440×1120.
 
 The final reveal uses `aero-todo-product.png`, a sanitized real capture of the Aero Todo application delivered by the completed workflow. The animation visibly preserves the run's 1/6/5/1 task topology, two review repairs, 13/13 completion, 62/62 checks, exact final metrics, and 5/5 E2E result without claiming original intermediate timing. The checked-in media was recorded against PiBox parent commit `79dee268ac2f24ef797d4fb8308b08ef32b4ce27`; the production dashboard source was unchanged by this media-only follow-up. Recorder output can vary with terminal fonts and platform rendering, so regenerate only with an intentionally reviewed capture toolchain.

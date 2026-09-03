@@ -25,6 +25,7 @@ test("documents, reports, task links, and responsive detail sheets use productio
 	assert.match(app, /data-related-report/);
 	assert.match(app, /data-go-task/);
 	assert.match(app, /Accepted risk/);
-	assert.match(styles, /\.detail-sheet \{ inset: 0; width: 100%; height: 100%/);
+	assert.match(styles, /\.detail-layer \{ position: fixed;[^}]*place-items: center/);
+	assert.match(styles, /\.detail-sheet \{ width: 100%; max-height: calc\(100vh - 2 \* var\(--space-3\)\)/);
 	assert.match(styles, /prefers-reduced-motion/);
 });

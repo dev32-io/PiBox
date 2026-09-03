@@ -7,6 +7,7 @@ const fitButton = document.querySelector("#fit");
 const refreshButton = document.querySelector("#refresh");
 const canvas = document.querySelector("#canvas");
 const status = document.querySelector("#status");
+const selectionStatus = document.querySelector("#selection-status");
 const details = document.querySelector("#details");
 const detailContent = document.querySelector("#detail-content");
 const closeDetails = document.querySelector("#close-details");
@@ -15,12 +16,47 @@ let documentModel;
 let cy;
 let firstRender = true;
 let loadGeneration = 0;
+const forcedColorsQuery = matchMedia("(forced-colors: active)");
 
 function cssToken(name, fallback) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 }
 
 function graphTheme() {
+  if (forcedColorsQuery.matches) {
+    const systemColor = (name) => {
+      const probe = document.createElement("span");
+      probe.style.color = name;
+      probe.style.position = "fixed";
+      probe.style.visibility = "hidden";
+      document.body.append(probe);
+      const resolved = getComputedStyle(probe).color;
+      probe.remove();
+      return resolved || name;
+    };
+    const canvasColor = systemColor("Canvas");
+    const textColor = systemColor("CanvasText");
+    const highlightColor = systemColor("Highlight");
+    return {
+      canvas: canvasColor,
+      surface: canvasColor,
+      raised: canvasColor,
+      strong: canvasColor,
+      border: textColor,
+      borderStrong: textColor,
+      text: textColor,
+      textSecondary: textColor,
+      textMuted: textColor,
+      accent: highlightColor,
+      accentSoft: canvasColor,
+      success: highlightColor,
+      successSoft: canvasColor,
+      warning: highlightColor,
+      warningSoft: canvasColor,
+      info: highlightColor,
+      infoSoft: canvasColor,
+    };
+  }
   const token = (name, fallback) => cssToken(`--color-${name}`, fallback);
   return {
     canvas: token("canvas", "black"),
@@ -62,6 +98,16 @@ function valueText(value) {
 
 function labelFor(item) {
   return item.label ?? item.title ?? item.name ?? item.text ?? item.id;
+}
+
+function announceSelection(element) {
+  const data = element.data();
+  const elements = cy.elements("node, edge").toArray();
+  const index = elements.findIndex((candidate) => candidate.id() === element.id());
+  const label = data.label || labelFor(data.raw ?? {}) || (element.isEdge() ? `${data.source} to ${data.target}` : data.id) || "Unnamed element";
+  const kind = data.kind || (element.isEdge() ? "relationship" : "concept");
+  const position = index >= 0 ? ` Item ${index + 1} of ${elements.length} in keyboard navigation order.` : "";
+  selectionStatus.textContent = `Selected ${label}. ${kind}.${position}`;
 }
 
 function selectedView() {
@@ -174,6 +220,7 @@ function renderGraph({ preserveViewport = false } = {}) {
     ],
     layout: layoutOptions(layoutSelect.value),
   });
+  cy.on("select", "node, edge", (event) => announceSelection(event.target));
   cy.on("tap", "node, edge", (event) => {
     const data = event.target.data();
     renderDetails(data.raw, data.kind, event.target.isEdge());
@@ -225,6 +272,9 @@ async function loadDocument() {
 viewSelect.addEventListener("change", () => renderGraph());
 layoutSelect.addEventListener("change", () => renderGraph());
 groupsToggle.addEventListener("change", () => renderGraph({ preserveViewport: true }));
+forcedColorsQuery.addEventListener("change", () => {
+  if (cy && documentModel) renderGraph({ preserveViewport: true });
+});
 fitButton.addEventListener("click", () => cy?.fit(undefined, 54));
 refreshButton.addEventListener("click", async () => {
   refreshButton.disabled = true;

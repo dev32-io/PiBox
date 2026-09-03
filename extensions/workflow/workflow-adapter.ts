@@ -1014,6 +1014,11 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			stateMatchesPlan(current, loaded);
 			const projected = advanceStageStateMachine(loaded.machinePlan, current);
 			let next = projected.state;
+			let transitionAt: string | undefined;
+			const transitionTimestamp = () => transitionAt ??= now().toISOString();
+			if (activeActions(next).length === 0 && next.metrics.open) {
+				next = { ...next, metrics: transitionWorkflowClock(next.metrics, undefined, transitionTimestamp()) };
+			}
 			actions = projected.actions.map((action) => {
 				const reason = actionFailure(next, action);
 				return reason ? { ...action, reason } : action;
@@ -1025,13 +1030,15 @@ export function createHarnessWorkflowAdapter(options: HarnessWorkflowAdapterOpti
 			});
 			for (const action of actions) {
 				const token = createAttemptToken();
-				const at = now().toISOString();
+				const at = transitionTimestamp();
 				next = activateWorkflowAction(next, action, token, owner, at);
 				const category = categoryFor(action);
-				if (category && next.metrics.open?.category !== category) next.metrics = transitionWorkflowClock(next.metrics, category, at);
+				if (category && (next.metrics.open?.category !== category || next.metrics.open?.stageId !== action.stageId)) {
+					next.metrics = transitionWorkflowClock(next.metrics, category, at, action.stageId);
+				}
 			}
 			completed = next.status === "completed";
-			if (completed && next.metrics.open) next.metrics = transitionWorkflowClock(next.metrics, undefined, now().toISOString());
+			if (completed && next.metrics.open) next.metrics = transitionWorkflowClock(next.metrics, undefined, transitionTimestamp());
 			return next;
 		}, (state) => ({ type: completed ? "workflow.completed" : "workflow.advanced", resultCode: state.status }));
 		const state = committed.state;

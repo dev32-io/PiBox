@@ -7,7 +7,7 @@ import type { E2ERuntimeState, IntegrationRuntimeState, ReviewRuntimeState, Stor
 import { parseAuthoredTaskDocument, parseStoryDocument, parseStoryPlanDocument } from "../../workflow/work-items.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../../workflow/types.js";
 import { readBoundedCurrentRuntimeState, readCurrentEvidenceMetadata } from "./evidence.js";
-import type { CheckAggregate, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, FindingCounts, ReportDetail, ReportSummary, RuntimeSummaryProjection, StageOperationProjection, StageProjection, StorySummary, StoryWorkspace, TaskCard, TaskDetail, WorkflowMetricsProjection, WorkflowOverview } from "./models.js";
+import type { CheckAggregate, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, FindingCounts, ReportDetail, ReportSummary, RuntimeSummaryProjection, StageOperationProjection, StageProjection, StageTimingProjection, StorySummary, StoryWorkspace, TaskCard, TaskDetail, WorkflowMetricsProjection, WorkflowOverview } from "./models.js";
 import { orderDocuments, orderReports, orderTaskCards, projectStorySummary, projectTaskCard } from "./projector.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -70,14 +70,31 @@ function publicReview(value: ReviewRuntimeState): SafeReview {
 function publicTask(value: TaskRuntimeState): SafeTaskState {
 	return { ...publicOperation(value), id: value.id, checks: publicChecks(value.checks), ...(value.contributionCommit && /^[a-f0-9]{7,64}$/i.test(value.contributionCommit) ? { contributionCommit: value.contributionCommit } : {}) };
 }
+function publicTiming(value: StoryRuntimeState["metrics"], stageId?: string): StageTimingProjection {
+	const source = stageId ? value.stageBreakdown?.[stageId] : value;
+	const timing: StageTimingProjection = source ? {
+		workflowMs: source.workflowMs,
+		categories: { ...source.categories },
+		incompleteIntervals: source.incompleteIntervals,
+		incompleteCategories: [...source.incompleteCategories],
+	} : {
+		workflowMs: 0,
+		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+		incompleteIntervals: 0,
+		incompleteCategories: [],
+	};
+	if (value.open && (!stageId || value.open.stageId === stageId)) {
+		timing.activeCategory = value.open.category;
+		timing.activeSince = value.open.since;
+	}
+	return timing;
+}
 function stateDocument(value: unknown, storyId: string): SafeState {
 	const state: StoryRuntimeState = parseStoryRuntimeState(value, storyId);
 	const metrics: WorkflowMetricsProjection = {
-		workflowMs: state.metrics.workflowMs,
-		categories: { ...state.metrics.categories },
-		incompleteIntervals: state.metrics.incompleteIntervals,
-		incompleteCategories: [...state.metrics.incompleteCategories],
-		...(state.metrics.open ? { activeCategory: state.metrics.open.category } : {}),
+		...publicTiming(state.metrics),
+		...(state.metrics.open?.stageId ? { activeStageId: state.metrics.open.stageId } : {}),
+		...(state.metrics.stageBreakdown ? { stageBreakdown: Object.fromEntries(Object.keys(state.metrics.stageBreakdown).map((stageId) => [stageId, publicTiming(state.metrics, stageId)])) } : {}),
 	};
 	return {
 		status: state.status, contracts: { story: state.contracts.story, plan: state.contracts.plan, tasks: { ...state.contracts.tasks } },
@@ -241,6 +258,7 @@ export class CurrentStoryReader {
 				integration: this.operation(runtime?.integration, runtime ? this.reportId("integration", planned.id) : undefined),
 				verification: this.operation(runtime?.verification, runtime ? this.reportId("verification", planned.id) : undefined, planned.checks.length),
 				review: this.reviewOperation(runtime?.review, "review" in planned && planned.review?.mode === "skip" ? "skipped" : "pending", runtime ? this.reportId("review", planned.id) : undefined),
+				...(state?.metrics.stageBreakdown?.[planned.id] ? { timing: state.metrics.stageBreakdown[planned.id] } : {}),
 			};
 		});
 	}

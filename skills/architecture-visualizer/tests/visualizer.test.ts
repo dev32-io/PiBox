@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -34,6 +34,15 @@ test("normalization supplies only structural defaults and preserves authored dat
   assert.deepEqual(normalized.extraDocumentMeaning, { audience: "developers" });
   assert.deepEqual(normalized.views[0]!.nodes[1]!.position, { x: 1, y: 2 });
   assert.deepEqual(normalized.views[0]!.annotations, []);
+});
+
+test("forced-colors changes reuse one media query and preserve the rendered graph state", async () => {
+  const app = await readFile(new URL("../assets/app.js", import.meta.url), "utf8");
+  assert.equal(app.match(/matchMedia\("\(forced-colors: active\)"\)/g)?.length, 1);
+  assert.match(app, /const forcedColorsQuery = matchMedia\("\(forced-colors: active\)"\)/);
+  assert.match(app, /function graphTheme\(\) \{\s*if \(forcedColorsQuery\.matches\)/);
+  assert.equal(app.match(/forcedColorsQuery\.addEventListener\("change"/g)?.length, 1);
+  assert.match(app, /forcedColorsQuery\.addEventListener\("change", \(\) => \{\s*if \(cy && documentModel\) renderGraph\(\{ preserveViewport: true \}\);\s*\}\)/);
 });
 
 test("server exposes only visualizer routes and retains the last valid document", async () => {

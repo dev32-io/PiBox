@@ -63,6 +63,8 @@ test("rejects representative corrupt nested authoritative state", async (t) => {
 		{ ...valid, metrics: { ...valid.metrics, categories: { ...valid.metrics.categories, review: 1 } } },
 		{ ...valid, metrics: { ...valid.metrics, open: { category: "orchestration", since: "2026-01-01T00:00:00.000Z" } } },
 		{ ...valid, metrics: { ...valid.metrics, open: { category: "review", since: "not-a-time" } } },
+		{ ...valid, stages: [validStage], metrics: { ...valid.metrics, open: { category: "review", since: "2026-01-01T00:00:00.000Z", stageId: "other-stage" } } },
+		{ ...valid, stages: [validStage], metrics: { ...valid.metrics, stageBreakdown: { delivery: { workflowMs: 1, categories: { ...valid.metrics.categories, implementation: 1 }, incompleteIntervals: 0, incompleteCategories: [] } } } },
 	];
 	for (const corruption of corruptions) await assert.rejects(store.writeState(corruption as never), /invalid runtime state/i);
 });
@@ -164,12 +166,37 @@ test("exclusive clock transitions partition workflow time without summing concur
 	assert.equal(metrics.open, undefined);
 });
 
+test("exclusive clock attributes elapsed categories to their owning stages", () => {
+	let metrics = transitionWorkflowClock(emptyWorkflowMetrics(), "implementation", "2026-01-01T00:00:00.000Z", "foundation");
+	metrics = transitionWorkflowClock(metrics, "verification", "2026-01-01T00:00:10.000Z", "foundation");
+	metrics = transitionWorkflowClock(metrics, "implementation", "2026-01-01T00:00:13.000Z", "interface");
+	metrics = transitionWorkflowClock(metrics, undefined, "2026-01-01T00:00:18.000Z");
+	assert.deepEqual(metrics.stageBreakdown?.foundation, {
+		workflowMs: 13_000,
+		categories: { implementation: 10_000, integration: 0, verification: 3_000, review: 0, e2e: 0 },
+		incompleteIntervals: 0,
+		incompleteCategories: [],
+	});
+	assert.deepEqual(metrics.stageBreakdown?.interface, {
+		workflowMs: 5_000,
+		categories: { implementation: 5_000, integration: 0, verification: 0, review: 0, e2e: 0 },
+		incompleteIntervals: 0,
+		incompleteCategories: [],
+	});
+});
+
 test("owner-loss recovery marks but does not count an incomplete open interval", () => {
-	const open = transitionWorkflowClock(emptyWorkflowMetrics(), "verification", "2026-01-01T00:00:00.000Z");
+	const open = transitionWorkflowClock(emptyWorkflowMetrics(), "verification", "2026-01-01T00:00:00.000Z", "foundation");
 	const recovered = markWorkflowClockIncomplete(open);
 	assert.equal(recovered.workflowMs, 0);
 	assert.equal(recovered.categories.verification, 0);
 	assert.equal(recovered.incompleteIntervals, 1);
 	assert.deepEqual(recovered.incompleteCategories, ["verification"]);
+	assert.deepEqual(recovered.stageBreakdown?.foundation, {
+		workflowMs: 0,
+		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+		incompleteIntervals: 1,
+		incompleteCategories: ["verification"],
+	});
 	assert.equal(recovered.open, undefined);
 });

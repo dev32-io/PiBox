@@ -132,12 +132,20 @@ export interface RuntimeSummaryProjection {
 	summary: string;
 }
 
-export interface WorkflowMetricsProjection {
+export type WorkflowTimingCategory = "implementation" | "integration" | "verification" | "review" | "e2e";
+
+export interface StageTimingProjection {
 	workflowMs: number;
-	categories: Record<"implementation" | "integration" | "verification" | "review" | "e2e", number>;
+	categories: Record<WorkflowTimingCategory, number>;
 	incompleteIntervals: number;
-	incompleteCategories: Array<"implementation" | "integration" | "verification" | "review" | "e2e">;
-	activeCategory?: "implementation" | "integration" | "verification" | "review" | "e2e";
+	incompleteCategories: WorkflowTimingCategory[];
+	activeCategory?: WorkflowTimingCategory;
+	activeSince?: string;
+}
+
+export interface WorkflowMetricsProjection extends StageTimingProjection {
+	activeStageId?: string;
+	stageBreakdown?: Record<string, StageTimingProjection>;
 }
 
 export interface WorkflowOverview {
@@ -190,6 +198,7 @@ export interface StageProjection {
 	integration: StageOperationProjection;
 	verification: StageOperationProjection;
 	review: StageOperationProjection;
+	timing?: StageTimingProjection;
 }
 
 export interface StoryWorkspace {

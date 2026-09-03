@@ -1,8 +1,14 @@
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COLUMNS = ["To do", "In progress", "Done"];
 const COMPLETE_TASK_STATUSES = new Set(["accepted", "merged", "staged", "integrated", "completed", "cancelled"]);
-const ACTIVE_TASK_STATUSES = new Set(["implementing", "check_pending", "checking", "repair_pending", "repairing", "interrupted"]);
-const FAILURE_STATUSES = new Set(["failed", "protocol_failed", "changes_requested", "blocked", "stopped", "attention"]);
+const ACTIVE_STAGE_TASK_STATUSES = new Set(["implementing", "check_pending", "checking", "repairing"]);
+const ACTIVE_STAGE_OPERATION_STATUSES = {
+  integration: new Set(["integrating", "repairing"]),
+  verification: new Set(["checking", "repairing"]),
+  review: new Set(["reviewing", "fixing"]),
+};
+const DISCLOSURE_ATTENTION_STATUSES = new Set(["attention", "interrupted"]);
+const DISCLOSURE_COMPLETED_STATUSES = new Set(["complete", "completed", "accepted", "merged", "staged", "integrated", "passed", "written", "success", "cancelled"]);
 const SHELL_ACTIVITY_MESSAGE = "visual-companion:activity";
 
 export function parseRoute(pathname) {
@@ -129,7 +135,28 @@ function errorRegion(message, retry) {
 function number(value, fallback = 0) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback; }
 function titleCase(value = "") { return String(value).replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function taskIsComplete(task) { return COMPLETE_TASK_STATUSES.has(normalizedStatus(task?.status)); }
-function taskNeedsAttention(task) { return FAILURE_STATUSES.has(normalizedStatus(task?.status)) || number(task?.checks?.failed) > 0 || Boolean(task?.failure); }
+function stageChildren(stage) { return [...(stage?.tasks || []), stage?.integration, stage?.verification, stage?.review].filter(Boolean); }
+export function stageHasActiveChildWork(stage) {
+  if ((stage?.tasks || []).some((task) => ACTIVE_STAGE_TASK_STATUSES.has(normalizedStatus(task?.status)))) return true;
+  return Object.entries(ACTIVE_STAGE_OPERATION_STATUSES).some(([phase, statuses]) => statuses.has(normalizedStatus(stage?.[phase]?.status)));
+}
+export function stageDefaultExpanded(stage) {
+  return ["attention", "interrupted", "active"].includes(stageDisclosureLifecycle(stage));
+}
+export function stageDisclosureLifecycle(stage) {
+  const statuses = [stage?.status, ...stageChildren(stage).map((child) => child?.status)].map(normalizedStatus);
+  if (statuses.includes("attention")) return "attention";
+  if (statuses.includes("interrupted")) return "interrupted";
+  if (stageHasActiveChildWork(stage)) return "active";
+  const stageStatus = normalizedStatus(stage?.status);
+  if (stageStatus === "running") return "capacity/idle-running";
+  if (DISCLOSURE_COMPLETED_STATUSES.has(stageStatus)) return "completed";
+  return "pending/other";
+}
+export function stageIsExpanded(storyId, stage, manualChoices = {}) {
+  const choice = manualChoices?.[storyId]?.[stage?.id];
+  return choice?.lifecycle === stageDisclosureLifecycle(stage) ? Boolean(choice.expanded) : stageDefaultExpanded(stage);
+}
 function attentionEntries(attention) {
   if (typeof attention === "number") return attention > 0 ? [["Attention", attention]] : [];
   if (!attention || typeof attention !== "object") return [];
@@ -148,13 +175,12 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   const state = {
     route: parseRoute(navigationWindow.location.pathname), catalog: undefined, workspace: undefined, observation: undefined,
     detail: undefined, error: undefined, loading: true, detailLoading: false, etag: undefined, stale: undefined,
-    ui: { density: "comfortable", filter: "all", collapseCompleted: false },
+    ui: { stageDisclosureChoices: {} },
   };
   const pageGate = createRequestGate();
   const detailGate = createRequestGate();
   const pollGate = createRequestGate();
   let returnFocus;
-  let drawerVisible = false;
   let pollTimer;
   let pollFailures = 0;
   let shellActive = true;
@@ -216,6 +242,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
         pollFailures = 0;
         state.stale = undefined;
         root.querySelector(".stale-indicator")?.remove();
+        refreshTimingLabels();
         schedulePoll(pollingDelay());
         return;
       }
@@ -228,7 +255,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
       Object.assign(state, { workspace: payload.workspace, observation: payload.observation, etag, stale: undefined });
       pollFailures = 0;
       render(); restoreInteractionState(interaction);
-      if (state.route.taskId || state.route.reportId) void loadDetail(interaction);
+      if (state.route.taskId || state.route.reportId) void loadDetail(interaction, { preserveContent: true });
       schedulePoll(pollingDelay());
     } catch (error) {
       if (!pollGate.current(token.generation) || error?.name === "AbortError") return;
@@ -247,8 +274,9 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     state.route = route;
     navigationWindow.history[replace ? "replaceState" : "pushState"]({ storyBoard: true }, "", path);
     if (canReuseWorkspace) {
-      pageGate.cancel(); detailGate.cancel(); state.detail = undefined; state.detailLoading = false; render();
-      if (route.taskId || route.documentId || route.reportId) void loadDetail();
+      const hasDetail = Boolean(route.taskId || route.documentId || route.reportId);
+      pageGate.cancel(); detailGate.cancel(); state.detail = undefined; state.detailLoading = hasDetail; render();
+      if (hasDetail) void loadDetail(undefined, { preserveContent: true });
       syncPolling();
     } else void loadRoute();
   }
@@ -291,17 +319,18 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
       syncPolling();
     } catch (error) { if (pageGate.current(token.generation) && error?.name !== "AbortError") { state.loading = false; state.error = error.message; render(); } }
   }
-  async function loadDetail(preservedInteraction) {
+  async function loadDetail(preservedInteraction, { preserveContent = false } = {}) {
     const { storyId, taskId, documentId, reportId } = state.route;
     const kind = taskId ? "task" : documentId ? "document" : "report";
     const id = taskId || documentId || reportId;
     if (!id) return;
-    const token = detailGate.next(); const openingInteraction = preservedInteraction ?? captureInteractionState(); state.detailLoading = true; state.detail = undefined; render(); restoreInteractionState(openingInteraction);
+    const token = detailGate.next(); const openingInteraction = preservedInteraction ?? captureInteractionState();
+    if (!preserveContent || !state.detail) { state.detailLoading = true; if (!preserveContent) state.detail = undefined; render(); restoreInteractionState(openingInteraction); }
     try {
       const payload = await request(`api/${kind}?story=${encodeURIComponent(storyId)}&${kind}=${encodeURIComponent(id)}`, { signal: token.signal });
       if (!detailGate.current(token.generation)) return;
-      const settledInteraction = preservedInteraction ?? captureInteractionState(); state.detail = payload[kind]; state.detailLoading = false; render(); restoreInteractionState(settledInteraction);
-    } catch (error) { if (detailGate.current(token.generation) && error?.name !== "AbortError") { const settledInteraction = preservedInteraction ?? captureInteractionState(); state.detailLoading = false; state.detail = { error: error.message }; render(); restoreInteractionState(settledInteraction); } }
+      const settledInteraction = captureInteractionState(); state.detail = payload[kind]; state.detailLoading = false; render(); restoreInteractionState(settledInteraction);
+    } catch (error) { if (detailGate.current(token.generation) && error?.name !== "AbortError") { const settledInteraction = captureInteractionState(); state.detailLoading = false; state.detail = { error: error.message }; render(); restoreInteractionState(settledInteraction); } }
   }
   async function refresh() {
     stopPolling();
@@ -330,68 +359,185 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   function taskChecks(task) {
     const checks = task?.checks || {};
     const passed = number(checks.passed); const failed = number(checks.failed); const running = number(checks.running); const total = number(checks.total, passed + failed + running);
-    return `<span class="task-checks"><span><strong>${passed}</strong> passed</span><span><strong>${failed}</strong> failed</span><span><strong>${running}</strong> running</span><span><strong>${total}</strong> total</span></span>`;
+    if (!total) return "";
+    const pending = Math.max(0, total - passed - failed - running);
+    const detail = [`${passed} passed`, failed ? `${failed} failed` : "", running ? `${running} running` : "", pending ? `${pending} pending` : ""].filter(Boolean).join(", ");
+    return `<span class="task-tag task-checks" title="${escapeHtml(detail)}">${dashboardIcon("checks")}<span class="sr-only">Checks: ${escapeHtml(detail)}. </span><span aria-hidden="true">${passed}/${total}</span></span>`;
   }
   function summaryLine(label, value, className = "") {
     if (value == null || value === "") return "";
     const content = typeof value === "object" ? [value.code, value.summary].filter(Boolean).join(" · ") : value;
     return content ? `<p class="${className}"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(content)}</p>` : "";
   }
-  function workflowTask(task, index) {
+  function workflowTask(task, executionMode) {
     const wait = number(task?.incompleteDependencyCount);
-    const retries = number(task?.repairCount);
-    return `<li class="workflow-task tone-border-${statusTone(task?.status)}"><button type="button" data-task="${escapeHtml(task?.id)}"><span class="sr-only">Open task detail. </span><span class="task-topline"><span class="task-sequence" aria-hidden="true">${index + 1}</span>${badge(task?.status || "unknown", "status")}</span><strong class="task-title">${escapeHtml(task?.title || task?.id)}</strong><code class="task-id">${escapeHtml(task?.id)}</code>${taskChecks(task)}<span class="task-signals"><span>Retries <strong>${retries}</strong></span><span>Dependency wait <strong>${wait}</strong></span></span>${task?.dependsOn?.length ? `<span class="task-dependencies ${wait ? "is-waiting" : ""}">${wait ? `Waiting on ${wait} incomplete dependencies · ` : "Depends on "}${task.dependsOn.map(escapeHtml).join(", ")}</span>` : ""}${summaryLine("Result", task?.result, "task-result")}${summaryLine("Failure", task?.failure, "task-failure")}</button></li>`;
+    const repairs = number(task?.repairCount);
+    const dependencies = task?.dependsOn || [];
+    const mode = executionMode === "concurrent" ? "concurrent" : executionMode === "sequential" ? "sequential" : "unknown";
+    const dependencyLabel = dependencies.length ? dependencies.join(", ") : `${wait} incomplete`;
+    const dependencyTag = dependencies.length || wait ? `<span class="task-tag task-dependency-tag ${wait ? "is-waiting" : ""}" title="${escapeHtml(`Dependencies: ${dependencyLabel}`)}">${dashboardIcon(wait ? "waiting" : "dependencies")}<span class="sr-only">${wait ? `Waiting on ${wait} incomplete dependencies` : `Dependencies: ${dependencyLabel}`}. </span><span aria-hidden="true">${wait ? `${wait} waiting` : `${dependencies.length} dependencies`}</span></span>` : "";
+    const repairTag = repairs ? `<span class="task-tag task-repair-tag">${dashboardIcon("repairs")}<span>${repairs} ${repairs === 1 ? "repair" : "repairs"}</span></span>` : "";
+    return `<li class="workflow-task is-${mode}-task tone-border-${statusTone(task?.status)}"><button type="button" data-task="${escapeHtml(task?.id)}"><span class="sr-only">Open task detail. </span><span class="task-primary-row"><span class="task-marker" aria-hidden="true">${dashboardIcon(mode)}</span><strong class="task-title">${escapeHtml(task?.title || task?.id)}</strong><span class="task-status-text tone-${statusTone(task?.status)}">${escapeHtml(titleCase(task?.status || "unknown"))}</span></span><span class="task-metadata-row"><code class="task-id">${escapeHtml(task?.id)}</code>${taskChecks(task)}${dependencyTag}${repairTag}</span>${summaryLine("Failure", task?.failure, "task-failure")}</button></li>`;
   }
   function gateDetails(gate) {
     if (!gate) return "";
     const checks = gate.checks || {};
-    const checkTotal = number(checks.total, number(checks.passed) + number(checks.failed) + number(checks.running));
+    const passed = number(checks.passed); const failed = number(checks.failed); const running = number(checks.running);
+    const checkTotal = number(checks.total, passed + failed + running); const pending = Math.max(0, checkTotal - passed - failed - running);
+    const checkText = [passed ? `${passed} passed` : "", failed ? `${failed} failed` : "", running ? `${running} running` : "", pending ? `${pending} pending` : ""].filter(Boolean).join(" · ");
     const findings = gate.findings || gate.findingSeverityTotals || gate.findingSeverities;
     const findingText = findings && typeof findings === "object" ? Object.entries(findings).filter(([severity, count]) => severity !== "total" && number(count) > 0).map(([severity, count]) => `${number(count)} ${severity}`).join(" · ") : "";
-    return `${checkTotal ? `<span>${number(checks.passed)}/${checkTotal} checks passed${number(checks.failed) ? ` · ${number(checks.failed)} failed` : ""}${number(checks.running) ? ` · ${number(checks.running)} running` : ""}</span>` : ""}${number(gate.repairCount) ? `<span>${number(gate.repairCount)} repairs</span>` : ""}${findingText ? `<span>${escapeHtml(findingText)} findings</span>` : ""}${summaryLine("Result", gate.result)}${summaryLine("Failure", gate.failure, "task-failure")}`;
+    return `${gate.caption ? `<span>${escapeHtml(gate.caption)}</span>` : ""}${checkTotal ? `<span>${escapeHtml(checkText || `${checkTotal} checks`)}</span>` : ""}${number(gate.repairCount) ? `<span>${number(gate.repairCount)} repairs</span>` : ""}${findingText ? `<span>${escapeHtml(findingText)} findings</span>` : ""}${summaryLine("Failure", gate.failure, "task-failure")}`;
   }
   function gate(label, value, kind = "gate") {
-    const content = `<span class="gate-name">${escapeHtml(label)}</span>${badge(value?.status || "pending", "status")}<div class="gate-detail">${gateDetails(value)}</div>`;
+    const iconKind = label === "Implementation" ? "implementation" : label === "Integration" ? "integration" : label === "Verification" ? "verification" : label === "Final E2E" ? "e2e" : label === "Outcome" ? "outcome" : "review";
+    const content = `<span class="gate-icon" aria-hidden="true">${dashboardIcon(iconKind)}</span><span class="gate-name">${escapeHtml(label)}</span>${badge(value?.status || "pending", "status")}<div class="gate-detail">${gateDetails(value)}</div>`;
     const action = value?.reportId ? { attribute: `data-report="${escapeHtml(value.reportId)}"`, label: "Open report. " } : value?.documentId ? { attribute: `data-document="${escapeHtml(value.documentId)}"`, label: "Open document. " } : undefined;
-    return `<li class="workflow-gate ${kind} tone-border-${statusTone(value?.status)}">${action ? `<button type="button" ${action.attribute}><span class="sr-only">${action.label}</span>${content}</button>` : `<div>${content}</div>`}</li>`;
+    return `<li class="workflow-gate phase-${iconKind} ${kind} tone-border-${statusTone(value?.status)}">${action ? `<button type="button" ${action.attribute}><span class="sr-only">${action.label}</span>${content}</button>` : `<div>${content}</div>`}</li>`;
   }
   function stageTasks(workspace, stage) {
-    const projected = Array.isArray(stage.tasks) && stage.tasks.length ? stage.tasks : (stage.taskIds || []).map((id) => (workspace.tasks || []).find((task) => task.id === id) || { id, title: id, status: "unknown" });
-    if (state.ui.filter === "active") return projected.filter((task) => ACTIVE_TASK_STATUSES.has(normalizedStatus(task.status)));
-    if (state.ui.filter === "attention") return projected.filter(taskNeedsAttention);
-    if (state.ui.filter === "incomplete") return projected.filter((task) => !taskIsComplete(task));
-    return projected;
+    return Array.isArray(stage.tasks) && stage.tasks.length ? stage.tasks : (stage.taskIds || []).map((id) => (workspace.tasks || []).find((task) => task.id === id) || { id, title: id, status: "unknown" });
   }
-  function stageComplete(stage) { return ["completed", "complete", "integrated", "accepted"].includes(normalizedStatus(stage?.status)); }
+  function timingMilliseconds(timing, category) {
+    if (!timing) return 0;
+    let milliseconds = number(category ? timing.categories?.[category] : timing.workflowMs);
+    if ((!category || timing.activeCategory === category) && timing.activeSince) {
+      const since = Date.parse(timing.activeSince); if (Number.isFinite(since)) milliseconds += Math.max(0, Date.now() - since);
+    }
+    return milliseconds;
+  }
+  function timingValue(timing, category) {
+    if (!timing) return `<span class="timing-unavailable">Not recorded</span>`;
+    const base = number(category ? timing.categories?.[category] : timing.workflowMs);
+    const active = Boolean(timing.activeSince && (!category || timing.activeCategory === category));
+    return `<span data-timing-base="${base}"${active ? ` data-timing-since="${escapeHtml(timing.activeSince)}"` : ""}>${duration(timingMilliseconds(timing, category))}</span>`;
+  }
+  function stageTiming(stage) {
+    const timing = stage.timing;
+    if (!timing) return `<p class="stage-timing-unavailable">Stage timing was not recorded for this run.</p>`;
+    const categories = [["Implementation", "implementation"], ["Integration", "integration"], ["Verification", "verification"], ["Review", "review"]];
+    return `<section class="stage-timing" aria-label="${escapeHtml(stage.id)} timing"><div><strong>Stage time</strong>${timingValue(timing)}</div>${categories.map(([label, category]) => `<div><span>${label}</span>${timingValue(timing, category)}</div>`).join("")}${timing.incompleteIntervals ? `<p>${number(timing.incompleteIntervals)} interrupted timing ${number(timing.incompleteIntervals) === 1 ? "interval was" : "intervals were"} excluded.</p>` : ""}</section>`;
+  }
+  function stageExceptionCount(stage) {
+    const children = stageChildren(stage);
+    const childExceptions = children.reduce((total, child) => {
+      const findings = child?.findings || child?.findingSeverityTotals || child?.findingSeverities;
+      const findingCount = findings && typeof findings === "object" ? number(findings.total, Object.entries(findings).filter(([severity]) => severity !== "total").reduce((sum, [, count]) => sum + number(count), 0)) : 0;
+      return total + number(child?.repairCount) + number(child?.checks?.failed) + findingCount + (child?.failure ? 1 : 0) + (DISCLOSURE_ATTENTION_STATUSES.has(normalizedStatus(child?.status)) ? 1 : 0);
+    }, 0);
+    return childExceptions + (DISCLOSURE_ATTENTION_STATUSES.has(normalizedStatus(stage?.status)) ? 1 : 0);
+  }
+  function stageDisclosureLabel({ expanded, title, modeName, status, completed, total, timing, exceptions }) {
+    return [
+      `${expanded ? "Collapse" : "Expand"} ${title}`,
+      `${modeName} mode`,
+      `Status: ${titleCase(status || "pending")}`,
+      `${completed} of ${total} tasks complete`,
+      timing ? `Duration: ${duration(timingMilliseconds(timing))}` : "",
+      exceptions ? `${exceptions} ${exceptions === 1 ? "exception" : "exceptions"}` : "",
+    ].filter(Boolean).join(". ");
+  }
   function workflowStage(workspace, stage, index) {
     const progress = stage.progress || {};
     const tasks = stageTasks(workspace, stage);
     const total = number(progress.total, (stage.tasks || stage.taskIds || []).length);
     const completed = number(progress.completed, (stage.tasks || []).filter(taskIsComplete).length);
     const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
-    const collapsed = state.ui.collapseCompleted && stageComplete(stage);
-    const concurrent = stage.mode === "concurrent"; const sequential = stage.mode === "sequential";
-    return `<li class="pipeline-stage tone-border-${statusTone(stage.status)} ${normalizedStatus(stage.status) === "running" ? "is-active" : ""}"><article><header class="stage-header"><span class="stage-number" aria-hidden="true">${index + 1}</span><div><p class="eyebrow">Stage ${index + 1} · ${escapeHtml(stage.mode || "unknown")}</p><h3>${escapeHtml(stage.title || stage.id)}</h3><code>${escapeHtml(stage.id)}</code></div>${badge(stage.status || "pending", "status")}</header><div class="stage-progress" role="progressbar" aria-label="${escapeHtml(stage.id)} task progress" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${completed}"><span style="width:${percent}%"></span></div><p class="stage-progress-label">${completed} of ${total} tasks complete · ${percent}%</p>${collapsed ? `<p class="collapsed-stage">Completed stage collapsed</p>` : `<div class="stage-work ${concurrent ? "is-concurrent" : sequential ? "is-sequential" : "is-unknown"}">${concurrent ? `<p class="fork-label"><span aria-hidden="true">⑂</span> Fork · ${tasks.length} parallel workstreams</p>` : ""}<ol class="stage-task-list ${concurrent ? "concurrent-grid" : sequential ? "sequential-chain" : "unknown-chain"}" aria-label="Tasks in ${escapeHtml(stage.id)}">${tasks.map(workflowTask).join("") || `<li class="filtered-empty">No tasks match this filter.</li>`}</ol>${concurrent ? `<p class="join-label"><span aria-hidden="true">⑂</span> Join · all workstreams converge</p>` : ""}</div><footer class="gate-footer" aria-label="${escapeHtml(stage.id)} gates"><ol>${gate("Tasks", { status: total && completed === total ? "completed" : stage.status }, "tasks-gate")}${gate("Integration", stage.integration)}${gate("Verification", stage.verification)}${gate("Review", stage.review)}</ol></footer>`}</article></li>`;
+    const storyId = workspace.story?.id || state.route.storyId;
+    const expanded = stageIsExpanded(storyId, stage, state.ui.stageDisclosureChoices);
+    const collapsed = !expanded;
+    const mode = stage.mode === "concurrent" ? "concurrent" : stage.mode === "sequential" ? "sequential" : "unknown";
+    const modeName = mode === "concurrent" ? "Concurrent" : mode === "sequential" ? "Sequential" : "Unknown";
+    const modeLabel = mode === "concurrent" ? `Concurrent · ${tasks.length} workstreams` : mode === "sequential" ? `Sequential · ${tasks.length} ordered tasks` : "Execution mode unknown";
+    const taskClass = mode === "concurrent" ? "parallel-list" : mode === "sequential" ? "sequential-chain" : "unknown-chain";
+    const title = stage.title || stage.id;
+    const stageIdLabel = title === stage.id ? "" : `<code>${escapeHtml(stage.id)}</code>`;
+    const exceptions = stageExceptionCount(stage);
+    const exceptionSummary = exceptions ? `<span>${exceptions} ${exceptions === 1 ? "exception" : "exceptions"}</span>` : "";
+    const disclosureLabel = stageDisclosureLabel({ expanded, title, modeName, status: stage.status, completed, total, timing: stage.timing, exceptions });
+    const headingId = `stage-${stage.id}-title`;
+    const detailsId = `stage-${stage.id}-details`;
+    return `<li class="pipeline-stage mode-${mode} tone-border-${statusTone(stage.status)} ${stageHasActiveChildWork(stage) ? "is-active" : ""} ${expanded ? "is-expanded" : "is-collapsed"}"><article><h3 id="${escapeHtml(headingId)}" class="sr-only">${escapeHtml(title)}</h3><button type="button" class="stage-header stage-disclosure" data-stage-disclosure="${escapeHtml(stage.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(detailsId)}" aria-label="${escapeHtml(disclosureLabel)}"><span class="stage-number" aria-hidden="true">${index + 1}</span><span class="stage-heading"><span class="stage-mode-label"><span class="mode-icon" aria-hidden="true">${dashboardIcon(mode)}</span><span>Stage ${index + 1} · ${modeName}</span></span><span class="stage-title" aria-hidden="true">${escapeHtml(title)}</span>${stageIdLabel}</span><span class="stage-state">${badge(stage.status || "pending", "status")}<span class="stage-collapsed-summary"${expanded ? " hidden" : ""}><span>${completed}/${total} complete</span><span>${timingValue(stage.timing)}</span>${exceptionSummary}</span><span class="stage-chevron" aria-hidden="true">${dashboardIcon("chevron")}</span></span></button><div id="${escapeHtml(detailsId)}" class="stage-details"${collapsed ? " hidden" : ""}><div class="stage-progress" role="progressbar" aria-label="${escapeHtml(stage.id)} task progress" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${completed}"><span style="width:${percent}%"></span></div><p class="stage-progress-label">${completed} of ${total} tasks complete · ${percent}%</p>${stageTiming(stage)}<div class="stage-work mode-${mode}"><p class="execution-mode"><span class="mode-icon" aria-hidden="true">${dashboardIcon(mode)}</span><span>${escapeHtml(modeLabel)}</span></p><ol class="stage-task-list ${taskClass}" aria-label="Tasks in ${escapeHtml(stage.id)}">${tasks.map((task) => workflowTask(task, mode)).join("") || `<li class="filtered-empty">No tasks available.</li>`}</ol>${mode === "concurrent" ? `<p class="join-label"><span aria-hidden="true">${dashboardIcon("join")}</span><span>Join · all workstreams converge before integration</span></p>` : ""}</div><footer class="gate-footer" aria-label="${escapeHtml(stage.id)} gates"><ol>${gate("Implementation", { status: total && completed === total ? "completed" : stage.status, caption: `${completed} of ${total} tasks delivered` }, "tasks-gate")}${gate("Integration", stage.integration)}${gate("Verification", stage.verification)}${gate("Review", stage.review)}</ol></footer></div></article></li>`;
   }
-  function metric(label, value, detail = "") { return `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</div>`; }
+  function dashboardIcon(kind) {
+    const paths = {
+      tasks: '<path d="M5 6h14M5 12h14M5 18h9"/><path d="m3 6 .5.5L5 5m-2 7 .5.5L5 11m-2 7 .5.5L5 17"/>',
+      gates: '<path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/>',
+      repairs: '<path d="M20 7h-6V1"/><path d="M20 7a9 9 0 1 0 1 8"/>',
+      evidence: '<rect x="4" y="3" width="13" height="16" rx="2"/><path d="M8 7h5M8 11h5M8 15h3M17 7h3v14H8v-2"/>',
+      clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      sequential: '<circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/><path d="M12 7v3m0 4v3"/>',
+      concurrent: '<path d="M12 4v4m0 8v4M12 8 6 12m6-4 6 4M6 12v5m12-5v5"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/>',
+      unknown: '<circle cx="12" cy="12" r="9"/><path d="M9.8 9a2.4 2.4 0 1 1 3.4 2.2c-.8.4-1.2.9-1.2 1.8m0 3h.01"/>',
+      chevron: '<path d="m8 10 4 4 4-4"/>',
+      join: '<path d="M6 5v5l6 4 6-4V5M12 14v5"/>',
+      checks: '<path d="m5 12 4 4L19 6"/>',
+      dependencies: '<circle cx="6" cy="12" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="m8 12 8-5m-8 5 8 5"/>',
+      waiting: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      implementation: '<path d="M4 19h16M6 16l4-4 3 3 5-7"/>',
+      integration: '<path d="M5 6h5a4 4 0 0 1 4 4v8m5-12h-1a4 4 0 0 0-4 4"/><path d="m11 15 3 3 3-3"/>',
+      verification: '<path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/>',
+      review: '<path d="M4 5h16v12H8l-4 4V5Z"/><path d="M8 9h8m-8 4h5"/>',
+      e2e: '<path d="M4 12h5l2-5 3 10 2-5h4"/>',
+      outcome: '<path d="M6 3h9l3 3v15H6V3Z"/><path d="M15 3v4h4M9 12h6m-6 4h6"/>',
+    };
+    return `<svg class="dashboard-icon icon-${escapeHtml(kind)}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${paths[kind] || paths.clock}</svg>`;
+  }
+  function metricCard(kind, label, value, detail, progress) {
+    const bounded = Math.max(0, Math.min(100, number(progress)));
+    return `<article class="metric-card metric-${kind}"><div class="metric-icon">${dashboardIcon(kind)}</div><div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></div>${progress == null ? "" : `<div class="metric-mini" aria-hidden="true"><span style="width:${bounded}%"></span></div>`}</article>`;
+  }
   function duration(value) {
     const milliseconds = number(value);
     if (!milliseconds) return "0s";
-    if (milliseconds < 60000) return `${Math.round(milliseconds / 1000)}s`;
-    const minutes = Math.floor(milliseconds / 60000); const seconds = Math.round(milliseconds % 60000 / 1000);
+    if (milliseconds < 1000) return "<1s";
+    const totalSeconds = Math.round(milliseconds / 1000);
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60); const seconds = totalSeconds % 60;
     return `${minutes}m ${seconds}s`;
+  }
+  function refreshTimingLabels() {
+    for (const element of root.querySelectorAll("[data-timing-base]:not([data-timing-segment])")) {
+      const since = Date.parse(element.dataset.timingSince || "");
+      const elapsed = Number.isFinite(since) ? Math.max(0, Date.now() - since) : 0;
+      element.textContent = duration(number(element.dataset.timingBase) + elapsed);
+    }
+    for (const chart of root.querySelectorAll(".timing-bar")) {
+      const segments = [...chart.querySelectorAll("[data-timing-segment]")];
+      const values = segments.map((segment) => {
+        const since = Date.parse(segment.dataset.timingSince || "");
+        return number(segment.dataset.timingBase) + (Number.isFinite(since) ? Math.max(0, Date.now() - since) : 0);
+      });
+      const total = Math.max(1, values.reduce((sum, value) => sum + value, 0));
+      segments.forEach((segment, index) => {
+        const label = segment.dataset.timingLabel || "Activity"; const value = duration(values[index]);
+        segment.style.width = `${values[index] / total * 100}%`;
+        segment.dataset.tooltip = `${label} · ${value}`; segment.setAttribute("aria-label", `${label}: ${value}`);
+      });
+      const largestIndex = values.indexOf(Math.max(...values)); const caption = chart.parentElement?.querySelector("[data-timing-caption]");
+      if (caption && largestIndex >= 0) caption.textContent = `${segments[largestIndex]?.dataset.timingLabel || "Activity"} is the largest activity`;
+    }
   }
   function workflowMetrics(workspace) {
     const workflow = workspace.workflow || {};
     const tasks = (workspace.stages || []).flatMap((stage) => stage.tasks || []);
     const totalTasks = number(workflow.totals?.tasks?.total ?? workflow.totals?.tasks ?? workflow.aggregates?.taskTotal, tasks.length || workspace.tasks?.length);
     const completeTasks = number(workflow.totals?.tasks?.completed ?? workflow.aggregates?.tasksCompleted, tasks.filter(taskIsComplete).length);
-    const checks = workflow.totals?.checks || workflow.aggregates?.checks || {};
+    const gates = (workspace.stages || []).flatMap((stage) => [stage.integration, stage.verification, stage.review]);
+    const completeGates = gates.filter((gate) => ["completed", "skipped"].includes(normalizedStatus(gate?.status))).length;
     const repairs = number(workflow.totals?.repairs ?? workflow.aggregates?.repairCount ?? workflow.metrics?.repairCount);
     const evidence = number(workflow.evidenceCount);
-    const metrics = workflow.metrics || {};
-    const runtime = metrics.workflowMs == null ? "" : metric("Runtime", duration(metrics.workflowMs), metrics.incompleteIntervals ? "timing in progress" : "workflow time");
-    return `<dl class="metric-strip" aria-label="Workflow metrics">${metric("Tasks", `${completeTasks}/${totalTasks}`, "complete")}${metric("Checks", `${number(checks.passed)}/${number(checks.total, number(checks.passed) + number(checks.failed) + number(checks.running))}`, number(checks.failed) ? `${number(checks.failed)} failed` : "passed / total")}${metric("Repairs", repairs)}${metric("Evidence", evidence, evidence === 1 ? "item" : "items")}${runtime}</dl>`;
+    return `<section class="metric-strip" aria-label="Workflow at a glance">${metricCard("tasks", "Tasks", `${completeTasks} / ${totalTasks}`, "delivered", totalTasks ? completeTasks / totalTasks * 100 : 0)}${metricCard("gates", "Quality gates", `${completeGates} / ${gates.length}`, "integration · verification · review", gates.length ? completeGates / gates.length * 100 : 0)}${metricCard("repairs", "Repairs", String(repairs), repairs ? "recovery passes" : "clean run")}${metricCard("evidence", "Evidence", String(evidence), "final E2E items")}</section>`;
+  }
+  function workflowTiming(workspace) {
+    const timing = workspace.workflow?.metrics;
+    if (!timing) return "";
+    const categories = [["Implementation", "implementation"], ["Integration", "integration"], ["Verification", "verification"], ["Review", "review"], ["E2E", "e2e"]];
+    const values = categories.map(([label, category]) => ({ label, category, milliseconds: timingMilliseconds(timing, category) }));
+    const total = Math.max(1, values.reduce((sum, item) => sum + item.milliseconds, 0));
+    const segments = values.filter((item) => item.milliseconds > 0 || timing.activeCategory === item.category).map((item) => { const active = timing.activeCategory === item.category && timing.activeSince; return `<span class="timing-segment timing-${item.category}" style="width:${item.milliseconds / total * 100}%" data-timing-segment data-timing-label="${escapeHtml(item.label)}" data-timing-base="${number(timing.categories?.[item.category])}"${active ? ` data-timing-since="${escapeHtml(timing.activeSince)}"` : ""} data-tooltip="${escapeHtml(`${item.label} · ${duration(item.milliseconds)}`)}" aria-label="${escapeHtml(`${item.label}: ${duration(item.milliseconds)}`)}"></span>`; }).join("");
+    const largest = [...values].sort((left, right) => right.milliseconds - left.milliseconds)[0];
+    return `<section class="workflow-timing" aria-labelledby="workflow-timing-title"><div class="timing-heading"><div class="timing-title"><span class="metric-icon">${dashboardIcon("clock")}</span><div><p>Workflow time</p><h2 id="workflow-timing-title">Activity mix</h2></div></div><strong>${timingValue(timing)}</strong></div><figure class="timing-chart"><div class="timing-bar" role="group" aria-label="Workflow time distributed across implementation, integration, verification, review, and E2E">${segments}</div><figcaption data-timing-caption>${largest?.milliseconds ? `${escapeHtml(largest.label)} is the largest activity` : "Timing begins when workflow execution starts"}</figcaption></figure><dl class="timing-legend">${values.map(({ label, category }) => `<div class="timing-${category}" tabindex="0" data-chart-category="${category}"><dt><span aria-hidden="true"></span>${label}</dt><dd>${timingValue(timing, category)}</dd></div>`).join("")}</dl>${timing.incompleteIntervals ? `<p>${number(timing.incompleteIntervals)} interrupted timing ${number(timing.incompleteIntervals) === 1 ? "interval was" : "intervals were"} excluded.</p>` : ""}</section>`;
   }
   function workflowHero(workspace) {
     const workflow = workspace.workflow || {};
@@ -399,11 +545,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     const completed = (workspace.stages || []).reduce((sum, stage) => sum + number(stage.progress?.completed, (stage.tasks || []).filter(taskIsComplete).length), 0);
     const percent = total ? Math.min(100, Math.round(completed / total * 100)) : 0;
     const current = workflow.currentStageId || workflow.currentPhase;
-    return `<section class="workflow-hero" aria-labelledby="workflow-title"><p class="sr-only" role="status" aria-live="polite">Workflow ${escapeHtml(workflow.status || "unknown")}; ${completed} of ${total} tasks complete.</p><div class="hero-copy"><p class="eyebrow">Delivery operations</p><h2 id="workflow-title">Workflow</h2><p>${current ? `Current focus · ${escapeHtml(current)}` : "Ordered execution and quality gates"}</p></div><div class="hero-status">${badge(workflow.status || "unknown", "status hero-badge")}<span>Outcome · ${escapeHtml(workflow.outcomeStatus || "pending")}</span></div><div class="hero-progress"><div><strong>${percent}%</strong><span>${completed} of ${total} tasks</span></div><div class="workflow-progress" role="progressbar" aria-label="Overall workflow progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><span style="width:${percent}%"></span></div></div>${state.stale ? `<p class="stale-indicator" role="status"><span aria-hidden="true">↻</span> ${escapeHtml(state.stale)} <button type="button" class="link-button" data-action="retry-live">Retry live updates</button></p>` : ""}</section>`;
-  }
-  function workflowControls() {
-    const filters = [["all", "All"], ["active", "Active"], ["attention", "Attention"], ["incomplete", "Incomplete"]];
-    return `<section class="workflow-controls" aria-label="Workflow display controls"><div class="segmented" aria-label="Task filter">${filters.map(([value, label]) => `<button type="button" data-filter="${value}" aria-pressed="${state.ui.filter === value}">${label}</button>`).join("")}</div><div class="control-cluster"><div class="segmented density-control" aria-label="Display density"><button type="button" data-density="compact" aria-pressed="${state.ui.density === "compact"}">Compact</button><button type="button" data-density="comfortable" aria-pressed="${state.ui.density === "comfortable"}">Comfortable</button></div><button type="button" class="collapse-control" data-action="collapse-completed" aria-pressed="${state.ui.collapseCompleted}">Collapse completed</button></div></section>`;
+    return `<section class="workflow-hero" aria-labelledby="workflow-title"><p class="sr-only" role="status" aria-live="polite">Workflow ${escapeHtml(workflow.status || "unknown")}; ${completed} of ${total} tasks complete.</p><div class="hero-copy"><p class="eyebrow">Managed delivery</p><h2 id="workflow-title">Workflow</h2><p>${current ? `Now · ${escapeHtml(current)}` : "Implementation to final assurance"}</p><div class="hero-status">${badge(workflow.status || "unknown", "status hero-badge")}<span>Outcome ${escapeHtml(workflow.outcomeStatus || "pending")}</span></div></div><div class="hero-visual"><div class="progress-orbit${percent === 100 ? " is-complete" : ""}" style="--workflow-progress:${percent * 3.6}deg" role="progressbar" aria-label="Overall workflow progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div><strong>${percent}%</strong><span>${completed} / ${total} tasks</span></div></div></div>${state.stale ? `<p class="stale-indicator" role="status"><span aria-hidden="true">↻</span> ${escapeHtml(state.stale)} <button type="button" class="link-button" data-action="retry-live">Retry live updates</button></p>` : ""}</section>`;
   }
   function endCap(workspace) {
     const workflow = workspace.workflow || {};
@@ -413,7 +555,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   function workflowView(workspace) {
     const attention = attentionEntries(workspace.workflow?.attention);
     const topAttention = workspace.workflow?.topAttention;
-    return `<div class="workflow-view density-${state.ui.density}">${workflowHero(workspace)}${workflowMetrics(workspace)}${attention.length ? `<aside class="attention-rail" aria-label="Workflow attention"><strong>${attentionTotal(workspace.workflow?.attention)} need attention</strong><ul>${attention.map(([label, count]) => `<li><span>${escapeHtml(label)}</span><strong>${count}</strong></li>`).join("")}</ul>${topAttention ? `<p>${escapeHtml([topAttention.code, topAttention.summary].filter(Boolean).join(" · "))}</p>` : ""}</aside>` : ""}${workflowControls()}<section class="workflow-pipeline-section" aria-labelledby="pipeline-title"><div class="section-heading"><div><p class="eyebrow">Global sequence</p><h2 id="pipeline-title">Stage pipeline</h2></div><span>${number(workspace.stages?.length)} ordered stages</span></div><ol class="workflow-pipeline">${(workspace.stages || []).map((stage, index) => workflowStage(workspace, stage, index)).join("") || `<li class="boundary"><p>No delivery stages are available.</p></li>`}</ol></section>${endCap(workspace)}</div>`;
+    return `<div class="workflow-view">${workflowHero(workspace)}${workflowMetrics(workspace)}${attention.length ? `<aside class="attention-rail" aria-label="Workflow attention"><strong>${attentionTotal(workspace.workflow?.attention)} need attention</strong><ul>${attention.map(([label, count]) => `<li><span>${escapeHtml(label)}</span><strong>${count}</strong></li>`).join("")}</ul>${topAttention ? `<p>${escapeHtml([topAttention.code, topAttention.summary].filter(Boolean).join(" · "))}</p>` : ""}</aside>` : ""}<section class="workflow-pipeline-section" aria-labelledby="pipeline-title"><div class="section-heading"><div><p class="eyebrow">Delivery path</p><h2 id="pipeline-title">Stages</h2></div><span>${number(workspace.stages?.length)} ordered stages</span></div><ol class="workflow-pipeline">${(workspace.stages || []).map((stage, index) => workflowStage(workspace, stage, index)).join("") || `<li class="boundary"><p>No delivery stages are available.</p></li>`}</ol></section>${endCap(workspace)}${workflowTiming(workspace)}</div>`;
   }
   function board(workspace) {
     return `<section><div class="section-heading"><h2>Task board</h2><span>${workspace.tasks?.length || 0} tasks</span></div><div class="board" aria-label="Task board">${COLUMNS.map((column) => { const tasks = workspace.columns?.[column] || []; return `<section class="column" aria-labelledby="column-${column.replaceAll(" ", "-")}"><h2 id="column-${column.replaceAll(" ", "-")}">${column} <span>${tasks.length}</span></h2><div class="cards">${tasks.map((task) => `<article class="task-card"><button type="button" data-task="${escapeHtml(task.id)}" aria-label="Open task ${escapeHtml(task.title)}"><strong>${escapeHtml(task.title)}</strong>${badge(task.status, "status")}${task.stage ? `<span>Stage: ${escapeHtml(task.stage)}</span>` : ""}${task.dependsOn?.length ? `<span>Depends on: ${task.dependsOn.map(escapeHtml).join(", ")}</span>` : ""}${task.degraded ? badge("Degraded", "warning") : ""}</button>${diagnostics(task.diagnostics)}</article>`).join("") || `<p class="empty-column">No tasks</p>`}</div></section>`; }).join("")}</div></section>`;
@@ -440,38 +582,38 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     const id = state.route.taskId || state.route.documentId || state.route.reportId;
     if (!id) return "";
     let title = id; let content;
-    if (state.detailLoading) content = `<p role="status">Loading detail…</p>`;
+    if (state.detailLoading && !state.detail) content = `<p role="status">Loading detail…</p>`;
     else if (state.detail?.error) content = errorRegion(state.detail.error, "retry-detail");
     else if (state.detail) { title = state.detail.title || state.detail.id; content = state.route.taskId ? taskDetail(state.detail) : state.route.documentId ? markdownSection("Document", state.detail.body) || "<p>Document content is missing.</p>" : reportDetail(state.detail); }
-    return `<aside class="drawer detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title"><header><h2 id="detail-title">${escapeHtml(title)}</h2><button type="button" data-action="close-detail" aria-label="Close detail">×</button></header><div class="drawer-content">${content || ""}</div></aside><div class="scrim" data-action="close-detail" aria-hidden="true"></div>`;
+    return `<div class="detail-layer"><div class="scrim" data-action="close-detail" aria-hidden="true"></div><aside class="drawer detail-sheet" role="dialog" aria-modal="true" aria-labelledby="detail-title"><header><h2 id="detail-title">${escapeHtml(title)}</h2><button type="button" data-action="close-detail" aria-label="Close detail">×</button></header><div class="drawer-content">${content || ""}</div></aside></div>`;
   }
   function workspace() {
     if (state.loading) return `<section class="boundary" role="status"><span class="spinner" aria-hidden="true"></span> Loading story…</section>`;
     if (state.error) return errorRegion(state.error, "retry");
     const workspace = state.workspace;
     const body = state.route.view === "workflow" ? workflowView(workspace) : state.route.view === "documents" ? documents(workspace) : state.route.view === "reports" ? reports(workspace) : board(workspace);
-    return `${header(workspace)}<div class="workspace-body">${workspace.story?.degraded ? `<div class="degraded-banner" role="status">Some story content is degraded.${diagnostics(workspace.diagnostics)}</div>` : ""}${body}</div>${drawer()}`;
+    const modalOpen = Boolean(state.route.taskId || state.route.documentId || state.route.reportId);
+    return `<div class="workspace-surface"${modalOpen ? " inert aria-hidden=\"true\"" : ""}>${header(workspace)}<div class="workspace-body">${workspace.story?.degraded ? `<div class="degraded-banner" role="status">Some story content is degraded.${diagnostics(workspace.diagnostics)}</div>` : ""}${body}</div></div>${drawer()}`;
   }
   function focusSelector(element) {
     if (!element || !root.contains(element)) return undefined;
-    for (const attribute of ["data-task", "data-report", "data-related-report", "data-go-task", "data-document", "data-filter", "data-density", "data-action", "data-view", "href"]) {
+    for (const attribute of ["data-task", "data-report", "data-related-report", "data-go-task", "data-document", "data-stage-disclosure", "data-chart-category", "data-action", "data-view", "href"]) {
       if (element.hasAttribute?.(attribute)) return `[${attribute}="${String(element.getAttribute(attribute)).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"]`;
     }
     return element.id ? `#${CSS.escape(element.id)}` : undefined;
   }
   function captureInteractionState() {
-    return { focus: focusSelector(document.activeElement), drawerScrollTop: root.querySelector(".drawer")?.scrollTop };
+    return { focus: focusSelector(document.activeElement), drawerScrollTop: root.querySelector(".drawer-content")?.scrollTop };
   }
   function restoreInteractionState(interaction) {
     if (!interaction) return;
-    if (Number.isFinite(interaction.drawerScrollTop)) { const drawer = root.querySelector(".drawer"); if (drawer) drawer.scrollTop = interaction.drawerScrollTop; }
+    if (Number.isFinite(interaction.drawerScrollTop)) { const drawer = root.querySelector(".drawer-content"); if (drawer) drawer.scrollTop = interaction.drawerScrollTop; }
     if (interaction.focus) (root.querySelector(interaction.focus) ?? root.querySelector('.drawer [data-action="close-detail"]') ?? root.querySelector(`[data-view="${state.route.view}"]`))?.focus({ preventScroll: true });
   }
   function render() {
     const willShowDrawer = Boolean(state.route.taskId || state.route.documentId || state.route.reportId);
     root.innerHTML = state.route.view === "catalog" ? catalog() : workspace();
-    if (willShowDrawer && !drawerVisible) queueMicrotask(() => root.querySelector('[data-action="close-detail"]')?.focus());
-    drawerVisible = willShowDrawer;
+    if (willShowDrawer) queueMicrotask(() => { const drawer = root.querySelector(".drawer"); if (drawer && !drawer.contains(document.activeElement)) drawer.querySelector('[data-action="close-detail"]')?.focus(); });
   }
   function closeDetail() {
     const route = { view: state.route.view, storyId: state.route.storyId };
@@ -480,16 +622,43 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     detailGate.cancel(); setRoute(route);
     queueMicrotask(() => { const target = focusTarget ? root.querySelector(focusTarget) : undefined; (target ?? root.querySelector(`[data-view="${route.view}"]`))?.focus(); });
   }
-  function updateUi(key, value, focusSelector) {
-    state.ui[key] = value;
-    render();
-    queueMicrotask(() => root.querySelector(focusSelector)?.focus());
+  function toggleStage(target) {
+    const stageId = target.dataset.stageDisclosure;
+    const stage = (state.workspace?.stages || []).find((candidate) => candidate.id === stageId);
+    const storyId = state.workspace?.story?.id || state.route.storyId;
+    if (!stageId || !stage || !storyId) return;
+    const expanded = !stageIsExpanded(storyId, stage, state.ui.stageDisclosureChoices);
+    state.ui.stageDisclosureChoices[storyId] ??= {};
+    state.ui.stageDisclosureChoices[storyId][stageId] = { lifecycle: stageDisclosureLifecycle(stage), expanded };
+    const collapsed = !expanded;
+    const total = number(stage.progress?.total, (stage.tasks || stage.taskIds || []).length);
+    const completed = number(stage.progress?.completed, (stage.tasks || []).filter(taskIsComplete).length);
+    const modeName = stage.mode === "concurrent" ? "Concurrent" : stage.mode === "sequential" ? "Sequential" : "Unknown";
+    const label = stageDisclosureLabel({ expanded, title: stage.title || stageId, modeName, status: stage.status, completed, total, timing: stage.timing, exceptions: stageExceptionCount(stage) });
+    const details = root.querySelector(`#stage-${stageId}-details`);
+    const summary = target.querySelector(".stage-collapsed-summary");
+    target.setAttribute("aria-expanded", String(expanded));
+    target.setAttribute("aria-label", label);
+    if (summary) summary.hidden = expanded;
+    target.closest(".pipeline-stage")?.classList.toggle("is-expanded", expanded);
+    target.closest(".pipeline-stage")?.classList.toggle("is-collapsed", collapsed);
+    target.focus({ preventScroll: true });
+    if (!details) return;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (reducedMotion || typeof details.animate !== "function") { details.hidden = collapsed; return; }
+    if (expanded) details.hidden = false;
+    details.style.overflow = "hidden";
+    const height = details.scrollHeight;
+    const animation = details.animate(collapsed ? [{ height: `${height}px`, opacity: 1 }, { height: "0px", opacity: 0 }] : [{ height: "0px", opacity: 0 }, { height: `${height}px`, opacity: 1 }], { duration: 180, easing: "cubic-bezier(.2,.8,.2,1)" });
+    void animation.finished.then(() => {
+      if (stageIsExpanded(storyId, stage, state.ui.stageDisclosureChoices) === expanded) details.hidden = collapsed;
+      details.style.overflow = "";
+    }).catch(() => {});
   }
   root.addEventListener("click", (event) => {
     const target = event.target.closest("a,button,[data-action]"); if (!target) return;
     if (target.matches("[data-route]")) { event.preventDefault(); setRoute(parseRoute(new URL(target.href).pathname)); return; }
-    if (target.dataset.filter) updateUi("filter", target.dataset.filter, `[data-filter="${target.dataset.filter}"]`);
-    else if (target.dataset.density) updateUi("density", target.dataset.density, `[data-density="${target.dataset.density}"]`);
+    if (target.dataset.stageDisclosure) toggleStage(target);
     else if (target.dataset.task) { returnFocus = `[data-task="${target.dataset.task}"]`; setRoute({ view: state.route.view === "workflow" ? "workflow" : "board", storyId: state.route.storyId, taskId: target.dataset.task }); }
     else if (target.dataset.document) { returnFocus = `[data-document="${target.dataset.document}"]`; setRoute({ view: "documents", storyId: state.route.storyId, documentId: target.dataset.document }); }
     else if (target.dataset.report) { returnFocus = `[data-report="${target.dataset.report}"]`; setRoute({ view: state.route.view === "workflow" ? "workflow" : "reports", storyId: state.route.storyId, reportId: target.dataset.report }); }
@@ -500,7 +669,6 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     else if (target.dataset.action === "retry") void loadRoute();
     else if (target.dataset.action === "retry-live") { pollFailures = 0; state.stale = undefined; syncPolling({ immediate: true }); render(); }
     else if (target.dataset.action === "retry-detail") void loadDetail();
-    else if (target.dataset.action === "collapse-completed") updateUi("collapseCompleted", !state.ui.collapseCompleted, '[data-action="collapse-completed"]');
     else if (target.dataset.action === "close-detail") closeDetail();
   });
   root.addEventListener("keydown", (event) => {

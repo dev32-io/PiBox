@@ -29,6 +29,7 @@ select, button {
 }
 button { cursor: pointer; }
 button:hover { border-color: var(--color-accent-hover, Highlight); background: var(--color-surface-hover, ButtonFace); }
+input[type="checkbox"] { accent-color: var(--color-accent, Highlight); }
 .check { white-space: nowrap; }
 main { min-height: 0; position: relative; display: grid; grid-template-columns: minmax(0, 1fr) min(var(--drawer-width, 464px), 34vw); }
 .canvas-wrap {
@@ -72,6 +73,7 @@ main { min-height: 0; position: relative; display: grid; grid-template-columns: 
   pointer-events: none;
 }
 .legend i { display: inline-block; width: 9px; height: 9px; margin-right: var(--space-1, 4px); border-radius: var(--radius-sm, 4px); background: var(--color-info, Highlight); }
+.legend .node-dot { background: var(--color-accent, Highlight); }
 .legend .note-dot { background: var(--color-warning, Highlight); }
 .legend .edge-dot { width: 13px; height: 2px; border-radius: 0; background: var(--color-text-muted, GrayText); vertical-align: middle; }
 aside {
@@ -88,6 +90,15 @@ aside p { color: var(--color-text-secondary, CanvasText); font-size: 13px; line-
 .empty p { color: var(--color-text-muted, GrayText); }
 .close-details { display: none; float: right; margin: 0 0 var(--space-3, 12px) var(--space-3, 12px); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--space-3, 12px); border-radius: var(--radius-md, 6px); background: var(--color-canvas, Canvas); color: var(--color-text-secondary, CanvasText); font: var(--font-size-xs, 11px)/var(--line-height-normal, 1.5) var(--font-mono, monospace); }
+
+@media (forced-colors: active) {
+  .canvas-wrap { background-color: Canvas; background-image: none; }
+  .canvas-wrap canvas { forced-color-adjust: none; }
+  #canvas:focus-visible { outline: 2px solid Highlight; outline-offset: -4px; }
+  .legend { border-color: CanvasText; background: Canvas; color: CanvasText; }
+  .legend .node-dot, .legend .note-dot { background: Highlight; }
+  .legend .edge-dot { background: CanvasText; }
+}
 
 @media (max-width: 820px) {
   .viewer-toolbar { align-items: flex-start; }

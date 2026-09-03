@@ -1,5 +1,6 @@
 html, body { height: 100%; overflow: hidden; }
 body {
+  color-scheme: dark;
   grid-template-rows: var(--header-height, 68px) minmax(0, 1fr);
   background: var(--color-canvas, Canvas);
   color: var(--color-text, CanvasText);
@@ -75,4 +76,12 @@ body {
   .shell-brand { display: none; }
   .shell-tabs { width: 100%; }
   .shell-tab { flex: 1; justify-content: center; }
+}
+
+@media (forced-colors: active) {
+  .shell-tab { border-color: transparent; }
+  .shell-tab[aria-selected="true"] { border-color: Highlight; background: Highlight; box-shadow: none; color: HighlightText; }
+  .shell-tab[aria-selected="true"]::after { background: HighlightText; }
+  .shell-tab:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; box-shadow: none; }
+  .shell-tab[aria-selected="true"]:focus-visible { outline-color: HighlightText; outline-offset: -4px; }
 }

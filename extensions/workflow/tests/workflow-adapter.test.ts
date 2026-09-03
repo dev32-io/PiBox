@@ -500,6 +500,54 @@ test("service-active children reduce configured session capacity before state ac
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"));
 });
 
+test("a capacity-blocked stage boundary checkpoints the completed stage clock exactly once", async (t) => {
+	const calls: string[] = [];
+	let capacityExhausted = false;
+	const f = await fixture(t, {
+		plan: { schemaVersion: 1, stages: [
+			{ id: "foundation", tasks: [], mode: "sequential", checks: [], review: { mode: "skip" } },
+			{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: "skip" } },
+		] },
+		tasks: [task("task-a")],
+		execute: async ({ action }) => {
+			calls.push(action.kind);
+			if (action.kind === "integration") {
+				capacityExhausted = true;
+				return { ...passed(), integratedCommit: "foundation-integrated" };
+			}
+			return passed();
+		},
+	});
+	f.runtime.config.limits.maxConcurrency = 1;
+	f.runtime.config.limits.maxActiveSubagentsPerSession = 1;
+	f.runtime.launcher.activeCount = () => capacityExhausted ? 1 : 0;
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => {
+		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
+		assert.equal(runtime.stages[0]?.status, "completed");
+		assert.equal(runtime.stages[1]?.tasks[0]?.status, "pending");
+		assert.equal(runtime.metrics.open, undefined, "the completed stage must retain no open category or stage attribution");
+	});
+	assert.equal(calls.includes("task-launch"), false, "the capacity-blocked next-stage child must not activate");
+
+	const store = new StoryRuntimeStore(f.root, "example");
+	const beforeIdleState = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
+	const priorStageTiming = structuredClone(beforeIdleState.metrics.stageBreakdown?.foundation);
+	assert.ok(priorStageTiming && priorStageTiming.workflowMs > 0, "the prior stage interval is durably checkpointed");
+	const beforeIdleEvents = await store.readDebugTail(50);
+	const beforeIdleFile = await stat(store.statePath);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	const afterIdleState = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
+	const afterIdleEvents = await store.readDebugTail(50);
+	const afterIdleFile = await stat(store.statePath);
+	assert.deepEqual(afterIdleState.metrics.stageBreakdown?.foundation, priorStageTiming, "blocked queue time is not added to the completed stage");
+	assert.equal(afterIdleState.metrics.open, undefined);
+	assert.equal(afterIdleEvents.length, beforeIdleEvents.length, "idle advancement appends no repeated metric event");
+	assert.equal(afterIdleFile.ino, beforeIdleFile.ino, "idle advancement does not rewrite the checkpointed state");
+	assert.equal(calls.includes("task-launch"), false);
+});
+
 test("deterministic checks execute even when child capacity is exhausted", async (t) => {
 	const calls: string[] = [];
 	const f = await fixture(t, {
