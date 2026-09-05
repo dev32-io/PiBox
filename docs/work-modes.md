@@ -1,6 +1,6 @@
 # PiBox work modes
 
-PiBox has four exclusive, session-scoped work modes. A new session defaults to **Agent**. Press `Down` from an empty editor to focus the mode icon in the first status-bar row, then press `Enter` or `Space` to open the selector. Inside the dialog, use arrow keys to select a mode, `Enter` to confirm, or `Esc` to cancel. `/mode` provides the same control from the command line.
+PiBox has four exclusive, session-scoped work modes. A new session defaults to **Agent**. Press `Alt+Down` from an empty editor to focus the mode icon in the first status-bar row, then press `Enter` or `Space` to open the selector. Inside the dialog, use arrow keys to select a mode, `Enter` to confirm, or `Esc` to cancel. `/mode` provides the same control from the command line.
 
 | Mode | Icon | Purpose |
 |---|---:|---|

@@ -12,7 +12,7 @@ PiBox is a mode-driven extension pack for the [Pi coding agent](https://github.c
 
 ## Choose how PiBox works
 
-New sessions start in **Agent** mode. From an empty editor, press `Down` to enter the interactive footer, or use `/mode <name>` directly.
+New sessions start in **Agent** mode. From an empty editor, press `Alt+Down` to enter the interactive footer, or use `/mode <name>` directly.
 
 | Mode | Use it for |
 |---|---|
@@ -76,7 +76,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 
 | Control | Purpose |
 |---|---|
-| `Down` from an empty editor | Enter the interactive footer; arrows navigate, `Enter` confirms, and `Esc` closes. |
+| `Alt+Down` from an empty editor | Enter the interactive footer; arrows navigate, `Enter` confirms, and `Esc` closes. |
 | `/mode <agent\|orchestrator\|workflow\|designer>` | Change work mode directly. |
 | `/scratch` | Inspect, reset, or purge private session scratch. |
 | `Shift+Tab` or `/permissions` | Switch between enforced and bypass permission modes. |

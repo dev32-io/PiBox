@@ -29,7 +29,7 @@ test("moves from mode into settings and exits only above the mode icon", () => {
 	assert.equal(moveInteractiveFooterSelection(rows, selection, "up"), undefined);
 });
 
-test("Down enters the footer only from an empty editor", () => {
+test("Alt+Down enters the footer only from an empty editor", () => {
 	let terminalInput!: (data: string) => { consume?: boolean } | undefined;
 	let editorText = "draft";
 	const ctx = {
@@ -40,10 +40,12 @@ test("Down enters the footer only from an empty editor", () => {
 		},
 	} as any;
 	const controller = attachInteractiveFooter(ctx, { rows: () => [["work-mode"]], requestRender() {} });
-	assert.equal(terminalInput("\x1b[B"), undefined, "Down remains available to navigate a non-empty editor");
+	assert.equal(terminalInput("\x1b[1;3B"), undefined, "Alt+Down remains available when the editor is non-empty");
 	assert.equal(controller.active, false);
 	editorText = "";
-	assert.equal(terminalInput("\x1b[B")?.consume, true);
+	assert.equal(terminalInput("\x1b[B"), undefined, "unmodified Down remains available to Pi");
+	assert.equal(controller.active, false);
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true);
 	assert.equal(controller.active, true);
 	controller.dispose();
 });
@@ -64,13 +66,13 @@ test("Escape exits footer mode and cancels pending dialog resolution", async () 
 		},
 	} as any;
 	const controller = attachInteractiveFooter(ctx, { rows: () => [["permissions"]], requestRender() {} });
-	assert.equal(terminalInput("\x1b[B")?.consume, true, "Down enters footer mode");
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true, "Alt+Down enters footer mode");
 	assert.equal(controller.active, true);
 	assert.equal(terminalInput("\x1b")?.consume, true, "the first Escape exits footer mode");
 	assert.equal(controller.active, false);
 	assert.equal(terminalInput("\x1b"), undefined, "later Escape reaches Pi's interrupt handler");
 
-	assert.equal(terminalInput("\x1b[B")?.consume, true);
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true);
 	assert.equal(terminalInput("\r")?.consume, true);
 	assert.equal(terminalInput("\x1b")?.consume, true, "Escape cancels an unresolved footer dialog");
 	assert.equal(controller.active, false);
@@ -108,7 +110,7 @@ test("terminal routing lets a focused footer overlay own Escape", async () => {
 		},
 	} as any;
 	const controller = attachInteractiveFooter(ctx, { rows: () => [["permissions"]], requestRender() {} });
-	assert.equal(terminalInput("\x1b[B")?.consume, true);
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true);
 	assert.equal(terminalInput("\r")?.consume, true);
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(terminalInput("\x1b"), undefined, "the mounted overlay receives terminal input directly");
