@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { sameRuntimeOwner } from "./activation.js";
 import type { AgentProgress } from "./agent-progress.js";
-import type { LogicalAgentState, RuntimeOwner } from "./api.js";
+import type { LogicalAgentState, RuntimeOwner, SubagentRoutingMetadata } from "./api.js";
 
 export interface SubagentUiWorkflowProvenance {
 	readonly storyId: string;
@@ -10,15 +10,21 @@ export interface SubagentUiWorkflowProvenance {
 	readonly taskId?: string;
 }
 
+export type SubagentUiRouteAttempt = SubagentRoutingMetadata["attempts"][number];
+export type SubagentUiRouting = SubagentRoutingMetadata;
+
 export interface SubagentUiAgentProjection {
 	readonly agentId: string;
 	readonly agent: string;
+	/** Optional display-only identity retained for every attempt of the logical agent. */
+	readonly title?: string;
 	readonly state: LogicalAgentState;
 	readonly presentation: "foreground" | "background";
 	readonly provider: string;
 	readonly model: string;
 	readonly effort: string;
 	readonly tier?: string;
+	readonly routing?: SubagentUiRouting;
 	readonly fast: boolean;
 	readonly startedAt: string;
 	readonly updatedAt: string;

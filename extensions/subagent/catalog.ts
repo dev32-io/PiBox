@@ -108,9 +108,13 @@ export function resolveAgentConfigs(
 	return resolved;
 }
 
-function withoutHarnessTools(value: UnknownRecord): UnknownRecord {
+/** Selection descriptions and tool allowlists are owned by Markdown definitions. */
+function withoutHarnessDefinitionFields(value: UnknownRecord): UnknownRecord {
 	const copy = structuredClone(value);
-	for (const agent of Object.values(copy)) if (isRecord(agent)) delete agent.tools;
+	for (const agent of Object.values(copy)) if (isRecord(agent)) {
+		delete agent.tools;
+		delete agent.description;
+	}
 	return copy;
 }
 
@@ -159,7 +163,7 @@ export function loadSubagentCatalog(repositoryRoot: string, options: LoadSubagen
 			normalizeLegacyModelTiers(parsed);
 			if (parsed.modelTierListProfiles !== undefined) profiles = mergeCatalogValues(profiles, parsed.modelTierListProfiles);
 			const rawAgents = isRecord(parsed.agents) ? parsed.agents : parsed.roles;
-			if (isRecord(rawAgents)) agents = mergeCatalogValues(agents, withoutHarnessTools(rawAgents));
+			if (isRecord(rawAgents)) agents = mergeCatalogValues(agents, withoutHarnessDefinitionFields(rawAgents));
 			sources.push(source);
 		} catch (error) {
 			diagnostics.push({ level: "error", source, message: error instanceof Error ? error.message : String(error) });

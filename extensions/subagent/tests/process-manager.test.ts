@@ -557,7 +557,7 @@ test("production Pi resolver implements wildcard tools by excluding recursive su
 	});
 	const excludeIndex = invocation.args.indexOf("--exclude-tools");
 	assert.ok(excludeIndex >= 0);
-	assert.equal(invocation.args[excludeIndex + 1], "subagent_spawn,subagent_status,subagent_control,subagent_continue");
+	assert.equal(invocation.args[excludeIndex + 1], "subagent_spawn,subagent_status,subagent_control,subagent_continue,subagent_read");
 	assert.equal(invocation.args.includes("--tools"), false);
 	assert.equal(invocation.env?.PIBOX_SUBAGENT_ALL_TOOLS, "1");
 	assert.equal(invocation.env?.PIBOX_RUNTIME_ROLE, "subagent");
@@ -648,3 +648,29 @@ async function waitUntilGone(pid: number, timeoutMs: number): Promise<void> {
 		await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
 	}
 }
+
+test("display metadata survives service continuation but never enters child invocation or prompt hashes", async (t) => {
+	const { manager, invocations } = await fixture(t);
+	const routing = {
+		requested: { tier: "high", model: "missing", effort: "xhigh", allowFallback: true },
+		selected: { provider: EXECUTION.provider, model: EXECUTION.model, effort: EXECUTION.effort },
+		fallbackUsed: true,
+		attempts: [{ model: "missing", status: "model_missing" }],
+	};
+	const started = await manager.launch({ owner: owner(), agent: "continuation", title: "\u001b[31mFix\n RTL corners\u001b[0m", routing, cwd: process.cwd(), stableSystemContext: "stable", attemptUserPrompt: "first", ...EXECUTION });
+	const first = await started.result;
+	routing.requested.model = "mutated outside service";
+	const snapshot = manager.inspect(owner())[0]!;
+	assert.equal(snapshot.title, "Fix RTL corners");
+	assert.equal(snapshot.routing?.requested.model, "missing");
+	assert.equal(snapshot.attemptId, first.attemptId);
+	const continued = await manager.continue({ owner: owner(), handle: first.handle, attemptUserPrompt: "second" });
+	await continued.result;
+	assert.equal(manager.inspect(owner())[0]!.title, snapshot.title);
+	assert.deepEqual(manager.inspect(owner())[0]!.routing, snapshot.routing);
+	for (const invocation of invocations) {
+		assert.equal("title" in invocation, false);
+		assert.equal("routing" in invocation, false);
+		assert.equal(invocation.stableSystemContext, "stable");
+	}
+});

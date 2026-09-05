@@ -25,6 +25,14 @@ export interface LogicalAgentHandle {
 	readonly continuationCapability: string;
 }
 
+/** Display-only routing provenance. Never participates in prompts or execution authority. */
+export interface SubagentRoutingMetadata {
+	readonly requested: { readonly tier: string; readonly model?: string; readonly effort?: string; readonly allowFallback?: boolean };
+	readonly selected: { readonly provider: string; readonly model: string; readonly effort: string };
+	readonly fallbackUsed: boolean;
+	readonly attempts: readonly { readonly provider?: string; readonly model: string; readonly effort?: string; readonly status: string }[];
+}
+
 /** Fully resolved launch configuration. Record values are child environment entries. */
 export interface ResolvedExecutionConfig {
 	readonly provider: string;
@@ -42,6 +50,9 @@ export interface ResolvedExecutionConfig {
 export interface LaunchSpec extends PromptContext, ResolvedExecutionConfig {
 	readonly owner: RuntimeOwner;
 	readonly agent: string;
+	/** Optional display label, not an instruction or logical identity. */
+	readonly title?: string;
+	readonly routing?: SubagentRoutingMetadata;
 	readonly cwd: string;
 	/** Opaque caller key for deciding whether transcript continuation is safe. */
 	readonly continuationKey?: string;
@@ -85,6 +96,8 @@ export type LogicalAgentState = "launching" | "running" | "stopping" | "complete
 export interface LogicalAgentSnapshot {
 	readonly handle: LogicalAgentHandle;
 	readonly agent: string;
+	readonly title?: string;
+	readonly routing?: SubagentRoutingMetadata;
 	readonly state: LogicalAgentState;
 	readonly attemptId?: string;
 	/** Hashes for the current or most recently settled attempt. */

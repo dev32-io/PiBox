@@ -11,17 +11,48 @@ export interface ExplicitModelOverride {
 export interface ModelResolutionRequest {
 	tier: ModelTier;
 	override?: ExplicitModelOverride;
+	/** Override only the first configured tier route's effort. Later routes retain their configured effort. */
+	primaryEffort?: HarnessEffort;
+	/** Explicit model requests are strict unless fallback is deliberately enabled. */
+	allowFallback?: boolean;
+	/** @deprecated Use allowFallback. Retained for managed callers that already set strict explicitly. */
 	strict?: boolean;
 	/** Direct user launches may select any uniquely matching registered model. */
 	allowUnconfiguredOverride?: boolean;
 }
 
-export interface ModelAttempt {
+export interface RequestedModelRoute {
+	tier: ModelTier;
+	override?: ExplicitModelOverride;
+	primaryEffort?: HarnessEffort;
+	allowFallback: boolean;
+}
+
+interface AttemptRoute {
 	provider?: string;
 	model: string;
 	effort?: ModelThinkingLevel;
-	status: "override_not_configured" | "model_ambiguous" | "model_missing" | "effort_unsupported" | "selected";
 }
+
+export interface RequestedModelAttempt extends AttemptRoute {
+	kind: "requested";
+	status: "override_not_configured" | "model_ambiguous" | "model_missing" | "effort_unsupported";
+}
+
+export interface FallbackModelAttempt extends AttemptRoute {
+	kind: "fallback";
+	status: "model_missing" | "effort_unsupported";
+}
+
+export interface SelectedModelAttempt extends AttemptRoute {
+	kind: "selected";
+	provider: string;
+	effort: ModelThinkingLevel;
+	status: "selected";
+	fallback: boolean;
+}
+
+export type ModelAttempt = RequestedModelAttempt | FallbackModelAttempt | SelectedModelAttempt;
 
 interface ParsedRoute {
 	configured: TierModelRouteConfig;
@@ -30,21 +61,36 @@ interface ParsedRoute {
 	effort: HarnessEffort;
 }
 
+interface Candidate {
+	route: ParsedRoute;
+	effort: HarnessEffort;
+	kind: "requested" | "fallback";
+	/** An available requested model with an explicitly requested unsupported effort must not be hidden by substitution. */
+	failOnUnsupportedEffort: boolean;
+}
+
+export interface SelectedModelRoute {
+	provider: string;
+	model: string;
+	effort: ModelThinkingLevel;
+}
+
 export interface ResolvedSubagentModel {
 	status: "resolved";
-	requested: { tier: ModelTier; override?: ExplicitModelOverride };
+	requested: RequestedModelRoute;
+	selected: SelectedModelRoute;
 	route: TierModelRouteConfig;
 	model: Model<Api>;
 	effort: ModelThinkingLevel;
 	fallbackUsed: boolean;
 	/** Ordered usable same-tier routes for the launch coordinator. */
-	candidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }>;
+	candidates: SelectedModelRoute[];
 	attempts: ModelAttempt[];
 }
 
 export interface UnresolvedSubagentModel {
 	status: "waiting_model";
-	requested: { tier: ModelTier; override?: ExplicitModelOverride };
+	requested: RequestedModelRoute;
 	attempts: ModelAttempt[];
 }
 
@@ -68,6 +114,9 @@ export function normalizeExplicitModelOverride(model: string, effort?: HarnessEf
 		suffixEffort = suffix;
 	}
 	if (!normalizedModel) throw new Error("Model preference must not be empty");
+	if (suffixEffort && effort && suffixEffort !== effort) {
+		throw new Error(`Conflicting model efforts: ${suffixEffort} in ${model} and separate effort ${effort}`);
+	}
 	const selectedEffort = effort ?? suffixEffort;
 	return { model: normalizedModel, ...(selectedEffort ? { effort: selectedEffort } : {}) };
 }
@@ -87,10 +136,24 @@ function routeMatchesOverride(route: ParsedRoute, model: string): boolean {
 	return route.model === model || `${route.provider}/${route.model}` === model;
 }
 
-function candidates(config: ModelRoutingConfig, request: ModelResolutionRequest): Array<{ route: ParsedRoute; effort: HarnessEffort; override: boolean }> {
+function fallbackEnabled(request: ModelResolutionRequest): boolean {
+	if (!request.override) return true;
+	if (request.override && request.tier === "local") return false;
+	if (request.allowFallback !== undefined) return request.allowFallback;
+	return request.strict === false;
+}
+
+function candidates(config: ModelRoutingConfig, request: ModelResolutionRequest): Candidate[] {
 	const modelTiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
 	const routes = (modelTiers[request.tier] ?? []).map(parseRoute);
-	if (!request.override) return routes.map((route) => ({ route, effort: route.effort, override: false }));
+	if (!request.override) {
+		return routes.map((route, index) => ({
+			route,
+			effort: index === 0 ? request.primaryEffort ?? route.effort : route.effort,
+			kind: index === 0 ? "requested" : "fallback",
+			failOnUnsupportedEffort: index === 0 && request.primaryEffort !== undefined,
+		}));
+	}
 	const matched = new Set<string>();
 	// `local` is a provider-isolated route group, not another capability tier.
 	// Never let model-name collisions promote a paid route into a local launch,
@@ -107,12 +170,20 @@ function candidates(config: ModelRoutingConfig, request: ModelResolutionRequest)
 		matched.add(key);
 		return true;
 	});
-	const explicit = matching.map((route) => ({ route, effort: request.override!.effort ?? route.effort, override: true }));
-	// An explicit local request is always strict. A bad model id or unsupported
-	// effort must fail visibly rather than selecting another local or paid route.
-	if (request.strict || request.tier === "local") return explicit;
+	const explicit = matching.map((route): Candidate => ({
+		route,
+		effort: request.override!.effort ?? route.effort,
+		kind: "requested",
+		failOnUnsupportedEffort: request.override!.effort !== undefined,
+	}));
+	if (!fallbackEnabled(request)) return explicit;
 	const seen = new Set(explicit.map(({ route }) => `${route.provider}/${route.model}`));
-	return [...explicit, ...routes.filter((route) => !seen.has(`${route.provider}/${route.model}`)).map((route) => ({ route, effort: route.effort, override: false }))];
+	return [
+		...explicit,
+		...routes
+			.filter((route) => !seen.has(`${route.provider}/${route.model}`))
+			.map((route): Candidate => ({ route, effort: route.effort, kind: "fallback", failOnUnsupportedEffort: false })),
+	];
 }
 
 export function resolveSubagentModel(
@@ -120,9 +191,17 @@ export function resolveSubagentModel(
 	availableModels: readonly Model<Api>[],
 	request: ModelResolutionRequest,
 ): SubagentModelResolution {
+	if (request.override && request.primaryEffort) throw new Error("primaryEffort cannot be combined with an explicit model override");
+	if (request.strict === true && request.allowFallback === true) throw new Error("strict and allowFallback cannot both be enabled");
+
 	const attempts: ModelAttempt[] = [];
-	const resolvedCandidates: Array<{ provider: string; model: string; effort: ModelThinkingLevel }> = [];
-	const requested = { tier: request.tier, ...(request.override ? { override: request.override } : {}) };
+	const resolvedCandidates: SelectedModelRoute[] = [];
+	const requested: RequestedModelRoute = {
+		tier: request.tier,
+		...(request.override ? { override: request.override } : {}),
+		...(request.primaryEffort ? { primaryEffort: request.primaryEffort } : {}),
+		allowFallback: fallbackEnabled(request),
+	};
 	let selectedCandidates = candidates(config, request);
 	const modelTiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
 	const overrideSearchRoutes = request.tier === "local"
@@ -147,12 +226,22 @@ export function resolveSubagentModel(
 				model: selected.id,
 				effort,
 			};
-			const explicit = { route, effort, override: true };
-			selectedCandidates = request.strict || request.tier === "local" ? [explicit] : [explicit, ...selectedCandidates];
+			const explicit: Candidate = {
+				route,
+				effort,
+				kind: "requested",
+				failOnUnsupportedEffort: request.override.effort !== undefined,
+			};
+			selectedCandidates = fallbackEnabled(request) ? [explicit, ...selectedCandidates] : [explicit];
 		} else if (availableOverrideModels.length > 1) {
-			attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "model_ambiguous" });
+			attempts.push({ kind: "requested", model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: "model_ambiguous" });
 		} else {
-			attempts.push({ model: request.override.model, ...(request.override.effort ? { effort: request.override.effort } : {}), status: request.allowUnconfiguredOverride ? "model_missing" : "override_not_configured" });
+			attempts.push({
+				kind: "requested",
+				model: request.override.model,
+				...(request.override.effort ? { effort: request.override.effort } : {}),
+				status: request.allowUnconfiguredOverride ? "model_missing" : "override_not_configured",
+			});
 		}
 	}
 
@@ -161,26 +250,32 @@ export function resolveSubagentModel(
 		const { route, effort } = candidate;
 		const model = availableModels.find((item) => item.provider === route.provider && item.id === route.model);
 		if (!model) {
-			attempts.push({ provider: route.provider, model: route.model, effort, status: "model_missing" });
+			attempts.push({ kind: candidate.kind, provider: route.provider, model: route.model, effort, status: "model_missing" });
 			continue;
 		}
 		if (!supportsEffort(model, effort)) {
-			attempts.push({ provider: route.provider, model: route.model, effort, status: "effort_unsupported" });
+			attempts.push({ kind: candidate.kind, provider: route.provider, model: route.model, effort, status: "effort_unsupported" });
+			if (candidate.failOnUnsupportedEffort) return { status: "waiting_model", requested, attempts };
 			continue;
 		}
-		attempts.push({ provider: route.provider, model: route.model, effort, status: "selected" });
-		resolvedCandidates.push({ provider: route.provider, model: route.model, effort });
+		const fallback = candidate.kind === "fallback";
+		attempts.push({ kind: "selected", provider: route.provider, model: route.model, effort, status: "selected", fallback });
+		const selected = { provider: route.provider, model: route.model, effort };
+		resolvedCandidates.push(selected);
 		for (const remaining of selectedCandidates.slice(index + 1)) {
 			const alternate = availableModels.find((item) => item.provider === remaining.route.provider && item.id === remaining.route.model);
-			if (alternate && supportsEffort(alternate, remaining.effort)) resolvedCandidates.push({ provider: remaining.route.provider, model: remaining.route.model, effort: remaining.effort });
+			if (alternate && supportsEffort(alternate, remaining.effort)) {
+				resolvedCandidates.push({ provider: remaining.route.provider, model: remaining.route.model, effort: remaining.effort });
+			}
 		}
 		return {
 			status: "resolved",
 			requested,
+			selected,
 			route: route.configured,
 			model,
 			effort,
-			fallbackUsed: index > 0 || Boolean(request.override && !candidate.override),
+			fallbackUsed: fallback,
 			candidates: resolvedCandidates,
 			attempts,
 		};

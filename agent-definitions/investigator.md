@@ -1,6 +1,6 @@
 ---
 name: investigator
-description: Evidence-driven investigation of unexpected behavior, failures, and technical causes
+description: Read-only investigation of unexpected behavior, failures, and technical causes
 tools: [read, grep, find, ls, bash]
 tier: medium
 ---

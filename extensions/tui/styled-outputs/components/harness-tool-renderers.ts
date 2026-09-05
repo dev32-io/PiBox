@@ -1,6 +1,6 @@
 import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
-import { currentSubagentIndicator, renderSubagentLiveStatus } from "../../../subagent/display.js";
+import { currentSubagentIndicator, renderSubagentLiveStatus, sanitizeSubagentTitle } from "../../../subagent/display.js";
 import { getSubagentUiProjectionRegistry, type SubagentUiAgentProjection, type SubagentUiAgentRef } from "../../../subagent/ui-projection.js";
 
 const EXACT_HARNESS_TOOLS = new Set(["memory_adapter", "wait"]);
@@ -54,6 +54,7 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 		case "workflow_init": return { action: "Initialize workflow", target: args.profile };
 		case "subagent_spawn": return { action: args.agent ?? "Subagent", target: compact(args.task, 78) };
 		case "subagent_status": return { action: "Inspect subagents" };
+		case "subagent_read": return { action: "Read subagent", target: args.agentId };
 		case "subagent_control": return { action: `${words(args.action ?? "control")} subagent`, target: args.agentId };
 		case "subagent_continue": return { action: "Continue subagent", target: args.agentId };
 		case "task_clarify": return { action: args.findText ? "Search task context" : "Read task context", target: args.section };
@@ -77,8 +78,10 @@ function projectionDetails(details: Record<string, any> | undefined, projection:
 		...details,
 		agentId: projection.agentId,
 		agent: projection.agent,
+		...(projection.title ? { title: projection.title } : {}),
 		state: projection.state,
 		...(projection.tier ? { tier: projection.tier } : {}),
+		...(projection.routing ? { routing: projection.routing } : {}),
 		resolved: {
 			provider: projection.provider,
 			model: projection.model,
@@ -91,6 +94,19 @@ function projectionDetails(details: Record<string, any> | undefined, projection:
 		processStatus: ["launching", "running", "stopping"].includes(projection.state)
 			? (projection.progress?.processStartedAt ? "active" : "starting")
 			: undefined,
+	};
+}
+
+function subagentCallLabel(name: string, args: Record<string, any>, details: Record<string, any> | undefined): { action: string; target?: string } {
+	// Continue has no model-authored role argument: identity comes only from the
+	// retained logical-agent details/projection. Spawn may use its declared type.
+	const agent = compact(name === "subagent_spawn" ? details?.agent ?? args.agent : details?.agent, 48);
+	const title = sanitizeSubagentTitle(details?.title ?? (name === "subagent_spawn" ? args.title : undefined));
+	const task = compact(args.task, 78);
+	const id = compact(details?.agentId ?? args.agentId, 48);
+	return {
+		action: agent || (name === "subagent_spawn" ? "Subagent" : "Continue subagent"),
+		...(title || task || id ? { target: title ?? task ?? id } : {}),
 	};
 }
 
@@ -186,7 +202,8 @@ class HarnessCallComponent implements Component {
 		const ref = subagentUiRef(this.details);
 		const projection = ref ? this.lookup(ref) : undefined;
 		const details = projection ? projectionDetails(this.details, projection) : this.details;
-		const rawLabel = callLabel(this.name, this.args);
+		const isSubagent = this.name === "subagent_spawn" || this.name === "subagent_continue";
+		const rawLabel = isSubagent ? subagentCallLabel(this.name, this.args, details) : callLabel(this.name, this.args);
 		// Harness arguments are model-controlled and may contain newlines. Keep the
 		// transcript row single-line and bounded without changing the tool payload.
 		const label = { action: compact(rawLabel.action, 72), ...(rawLabel.target ? { target: compact(rawLabel.target, 96) } : {}) };
@@ -195,7 +212,6 @@ class HarnessCallComponent implements Component {
 			? this.theme.fg(indicatorState === "starting" ? "muted" : "accent", currentSubagentIndicator(indicatorState, this.now()))
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
 		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
-		const isSubagent = this.name === "subagent_spawn" || this.name === "subagent_continue";
 		const isDetachedBackgroundReceipt = this.name === "subagent_spawn" && this.args.mode === "background" && !this.partial && Boolean(ref) && !projection;
 		const showSubagentStatus = isSubagent && !isDetachedBackgroundReceipt && (this.partial || Boolean(details?.terminal) || Boolean(projection) || Boolean(details?.resolved));
 		if (!this.partial && !showSubagentStatus) return [truncateToWidth(headline, width, "…")];
@@ -205,6 +221,7 @@ class HarnessCallComponent implements Component {
 				// in this inline continuation row. Footer projections retain identity.
 				tier: details?.tier ?? this.args.tier,
 				resolved: details?.resolved,
+				routing: details?.routing,
 				fast: details?.fast,
 				progress: details?.progress,
 				processStatus: details?.processStatus,
@@ -395,7 +412,7 @@ function renderWaitToolResult(result: any, expanded: boolean, theme: Theme, erro
 	));
 	if (count > 0) {
 		appendTreeRows(component, settlements.map((settlement: any) => {
-			const identity = [compact(scalar(settlement?.agent) ?? "subagent", 48), compact(scalar(settlement?.status) ?? "settled", 32), compact(scalar(settlement?.agentId) ?? "", 48)].filter(Boolean).join(" · ");
+			const identity = [compact(scalar(settlement?.agent) ?? "subagent", 48), sanitizeSubagentTitle(settlement?.title), compact(scalar(settlement?.status) ?? "settled", 32), compact(scalar(settlement?.agentId) ?? "", 48)].filter(Boolean).join(" · ");
 			const summary = expanded ? compact(scalar(settlement?.summary) ?? "", 120) : "";
 			return summary ? `${identity} · ${summary}` : identity;
 		}), theme, expanded, 5);
@@ -403,9 +420,36 @@ function renderWaitToolResult(result: any, expanded: boolean, theme: Theme, erro
 	return component;
 }
 
+function subagentReadPagination(details: any): string | undefined {
+	if (typeof details.offset !== "number" || typeof details.count !== "number" || typeof details.totalCharacters !== "number") return undefined;
+	return `${details.offset}–${details.offset + details.count} of ${details.totalCharacters} characters`;
+}
+
+function renderSubagentReadResult(result: any, expanded: boolean, theme: Theme, error: boolean): Component {
+	const component = new Container();
+	const details = result?.details ?? {};
+	const identityDetails = details;
+	const title = sanitizeSubagentTitle(identityDetails.title);
+	const identity = [
+		compact(scalar(identityDetails.agent) ?? "", 48),
+		title,
+		!identityDetails.agent && !title ? compact(scalar(identityDetails.agentId) ?? "", 48) : undefined,
+	].filter(Boolean).join(" · ");
+	const pagination = subagentReadPagination(details);
+	const metadata = [identity, pagination].filter(Boolean).join(" · ");
+	component.addChild(new Text(
+		`${theme.fg("dim", "└─")} ${theme.fg(error ? "error" : "success", error ? "Error" : "Done")}${metadata ? `${theme.fg("dim", " · ")}${theme.fg("muted", metadata)}` : ""}`,
+		0,
+		0,
+	));
+	appendOutputBlock(component, firstText(result), theme, expanded, 10);
+	return component;
+}
+
 function renderHarnessToolResultSnapshot(name: string, result: any, expanded: boolean, theme: Theme, error: boolean): Component {
 	if (name === "memory_adapter") return renderMemoryToolResult(result, expanded, theme, error);
 	if (name === "wait") return renderWaitToolResult(result, expanded, theme, error);
+	if (name === "subagent_read") return renderSubagentReadResult(result, expanded, theme, error);
 	const component = new Container();
 	const text = firstText(result);
 	// A returned subagent report is prose and often contains code, file excerpts,

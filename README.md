@@ -28,7 +28,7 @@ Modes are session-branch-local and select authority, not permission: Workflow st
 | Area | Highlights |
 |---|---|
 | **Terminal UX** | `rattle` theme, refined input, responsive status, keyboard-driven interactive footer, reusable dialogs, spinners, and compact styled transcript and tool output. |
-| **Subagents** | Activation-scoped foreground/background `subagent_spawn`, status, stop, and continuation controls, live progress, bounded delivery, and event-aware `wait` without shell polling. |
+| **Subagents** | Markdown-backed agent catalog, titled foreground/background `subagent_spawn`, explicit routing overrides, continuation, paged report reads, live progress, and event-aware `wait` without shell polling. |
 | **Models and speed** | Capacity-aware fallback across managed-agent routes, tier profiles, ChatGPT Fast mode for the main agent and selected child tiers, Codex usage meters, and local LLM or Ollama Cloud support. |
 | **Managed workflow** | Reviewed stories and plans, sequential or concurrent stages, isolated Git worktrees, checks, integration, bounded repair, whole-branch review, and final E2E. |
 | **Context and control** | Enforced repository permissions, path-scoped rules, private session scratch, curated memory, and evidence-backed distillation without silent writes. |
@@ -90,7 +90,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 ## Documentation
 
 - **Modes and workflow:** [work modes](docs/work-modes.md) · [workflow](docs/workflow.md) · [collaboration flow](docs/agent-collaboration-flow.md) · [E2E](docs/workflow-e2e.md)
-- **Agents and models:** [agent workflow](docs/specs/agent-workflow.md) · [model tiers](docs/model-tier-guidance.md) · [Fast mode](extensions/fast-mode/README.md) · [provider integrations](docs/specs/provider-integrations.md)
+- **Agents and models:** [standalone subagents](docs/subagents.md) · [agent workflow](docs/specs/agent-workflow.md) · [model tiers](docs/model-tier-guidance.md) · [Fast mode](extensions/fast-mode/README.md) · [provider integrations](docs/specs/provider-integrations.md)
 - **Interface:** [interactive footer](extensions/tui/interactive-footer/README.md) · [status and usage](extensions/tui/status-bar/README.md) · [styled output](extensions/tui/styled-outputs/README.md) · [visual TUI](docs/specs/visual-tui.md)
 - **Safety and context:** [permissions](extensions/permissions/README.md) · [path-scoped rules](extensions/rule/README.md) · [memory](extensions/memory-adapter/README.md) · [distillation](extensions/distill/README.md)
 - **Local integrations:** [services](extensions/service-adapter/README.md) · [sound](extensions/feedback/sound-hooks/README.md) · [local models](extensions/providers/local-llm/README.md) · [Ollama Cloud](extensions/providers/ollama-cloud/README.md)

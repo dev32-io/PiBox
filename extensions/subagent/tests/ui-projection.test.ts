@@ -44,6 +44,24 @@ test("process-global projection bindings sort stably, bound rows, report overflo
 	binding.release();
 });
 
+test("identity and routing metadata are cloned and retained for terminal transcript lookup", () => {
+	const registry = new SubagentUiProjectionRegistry();
+	const binding = registry.bind(owner, "identity");
+	const routing = {
+		requested: { tier: "medium", model: "requested/model", effort: "high", allowFallback: true },
+		selected: { provider: "selected", model: "model", effort: "medium" },
+		fallbackUsed: true,
+		attempts: [{ model: "requested/model", effort: "high", status: "effort_unsupported" }],
+	};
+	const value = { ...agent("terminal", "2026-01-01T00:00:00Z", "background", "completed"), title: "Review login flow", routing };
+	binding.publish([value]);
+	routing.requested.model = "mutated";
+	const retained = registry.lookup({ owner, agentId: "terminal" });
+	assert.equal(retained?.title, "Review login flow");
+	assert.equal(retained?.routing?.requested.model, "requested/model");
+	assert.equal(registry.project()?.agents.length, 0, "terminal identity remains transcript-only");
+});
+
 test("a replacement binding fences stale projection publication and release", () => {
 	const registry = new SubagentUiProjectionRegistry();
 	const old = registry.bind(owner, "old");

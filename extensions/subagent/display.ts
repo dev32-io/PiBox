@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatAgentProgress, type AgentProgress } from "./agent-progress.js";
-import type { SubagentUiAgentProjection } from "./ui-projection.js";
+import { normalizeSubagentTitle } from "./presentation.js";
+import type { SubagentUiAgentProjection, SubagentUiRouting } from "./ui-projection.js";
 
 export const SUBAGENT_STARTING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 export const SUBAGENT_RUNNING_FRAMES = ["·", "•", "●", "•"] as const;
@@ -37,9 +38,37 @@ export function formatSubagentRoute(tier: string | undefined, resolved?: { provi
 	return `${label} (${resolved.provider}/${resolved.model}#${resolved.effort})`;
 }
 
+/** Defense-in-depth for restored or externally projected display metadata. */
+export function sanitizeSubagentTitle(value: unknown): string | undefined {
+	return typeof value === "string" ? normalizeSubagentTitle(value) : undefined;
+}
+
+function routingFailureReason(routing: SubagentUiRouting): string | undefined {
+	const failed = routing.attempts.find((attempt) => attempt.status !== "selected");
+	if (!failed) return undefined;
+	const reasons: Record<string, string> = {
+		override_not_configured: "not configured",
+		model_ambiguous: "model ambiguous",
+		model_missing: "model unavailable",
+		effort_unsupported: "effort unsupported",
+	};
+	return reasons[failed.status] ?? failed.status.replaceAll("_", " ");
+}
+
+export function formatSubagentFallback(routing: SubagentUiRouting | undefined): string | undefined {
+	if (!routing?.fallbackUsed) return undefined;
+	const requestedModel = routing.requested.model ?? `${routing.requested.tier} tier`;
+	const requested = `${requestedModel}${routing.requested.effort ? `#${routing.requested.effort}` : ""}`;
+	const selected = `${routing.selected.provider}/${routing.selected.model}#${routing.selected.effort}`;
+	const reason = routingFailureReason(routing);
+	return `Fallback ${requested} → ${selected}${reason ? ` (${reason})` : ""}`;
+}
+
 export interface SubagentLiveStatus {
 	agent?: string;
+	title?: string;
 	tier?: string;
+	routing?: SubagentUiRouting;
 	resolved?: { provider: string; model: string; effort: string; fast?: boolean };
 	fast?: boolean;
 	progress?: AgentProgress;
@@ -64,8 +93,12 @@ function fastLabel(status: SubagentLiveStatus): string {
 export function subagentStatusSegments(status: SubagentLiveStatus, now = Date.now()): SubagentStatusSegment[] {
 	const segments: SubagentStatusSegment[] = [];
 	if (status.agent) segments.push({ text: status.agent, tone: "text" });
+	const title = sanitizeSubagentTitle(status.title);
+	if (title) segments.push({ text: title, tone: "accent" });
 	if (fastLabel(status)) segments.push({ text: "Fast", tone: "warning" });
 	if (status.tier || status.resolved) segments.push({ text: formatSubagentRoute(status.tier, status.resolved), tone: "muted" });
+	const fallback = formatSubagentFallback(status.routing);
+	if (fallback) segments.push({ text: fallback, tone: "warning" });
 	const progress = formatAgentProgress(status.progress, now, {
 		...(status.startedAt !== undefined ? { fallbackStartedAt: status.startedAt } : {}),
 		...(status.processStatus ? { processStatus: status.processStatus } : {}),
@@ -103,7 +136,9 @@ export function formatBackgroundSubagentStatus(status: SubagentLiveStatus, now =
 export function formatSubagentFooterProjection(agent: SubagentUiAgentProjection, now = Date.now()): string {
 	return formatSubagentLiveStatus({
 		agent: agent.agent,
+		...(agent.title ? { title: agent.title } : {}),
 		...(agent.tier ? { tier: agent.tier } : {}),
+		...(agent.routing ? { routing: agent.routing } : {}),
 		resolved: { provider: agent.provider, model: agent.model, effort: agent.effort },
 		fast: agent.fast,
 		...(agent.progress ? { progress: agent.progress } : {}),
@@ -116,7 +151,9 @@ export function formatSubagentFooterProjection(agent: SubagentUiAgentProjection,
 export function renderSubagentFooterProjection(agent: SubagentUiAgentProjection, theme: Theme, now = Date.now()): string {
 	return renderSubagentLiveStatus({
 		agent: agent.agent,
+		...(agent.title ? { title: agent.title } : {}),
 		...(agent.tier ? { tier: agent.tier } : {}),
+		...(agent.routing ? { routing: agent.routing } : {}),
 		resolved: { provider: agent.provider, model: agent.model, effort: agent.effort },
 		fast: agent.fast,
 		...(agent.progress ? { progress: agent.progress } : {}),

@@ -5,7 +5,10 @@ import { formatAgentProgress, type AgentProgress } from "../agent-progress.js";
 import {
 	formatBackgroundSubagentStatus,
 	formatInlineSubagentStatus,
+	formatSubagentFallback,
+	formatSubagentFooterProjection,
 	renderSubagentLiveStatus,
+	sanitizeSubagentTitle,
 	subagentIndicatorFrame,
 	subagentStatusSegments,
 } from "../display.js";
@@ -47,6 +50,37 @@ test("startup keeps stable identity and route while lifecycle moves to animation
 	assert.equal(formatBackgroundSubagentStatus({ ...pending, processStatus: "active" }, now), "general-purpose · Low · 5s");
 	assert.notEqual(subagentIndicatorFrame("starting", 0), subagentIndicatorFrame("running", 0));
 	assert.notEqual(subagentIndicatorFrame("stopping", 0), subagentIndicatorFrame("running", 0));
+});
+
+test("titles are a distinct inert bounded identity segment", () => {
+	const injected = `  Review\nlogin \u001b[31mflow\u001b[0m\u001b]2;owned\u0007\u202e  `;
+	assert.equal(sanitizeSubagentTitle(injected), "Review login flow");
+	assert.equal(sanitizeSubagentTitle("x".repeat(100))?.length, 80);
+	assert.equal(sanitizeSubagentTitle("\u0000\n"), undefined);
+	assert.equal(
+		formatInlineSubagentStatus({ ...route, title: injected }, now),
+		"general-purpose · Review login flow · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash",
+	);
+	assert.match(formatSubagentFooterProjection({
+		agentId: "agent-1", agent: "general-purpose", title: injected, state: "running", presentation: "background",
+		provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium", tier: "medium", fast: false,
+		startedAt: progress.startedAt, updatedAt: progress.lastEventAt, progress,
+	}, now), /^general-purpose · Review login flow · Medium/);
+});
+
+test("fallback provenance renders requested to actual with a reason only when used", () => {
+	const routing = {
+		requested: { tier: "medium", model: "ollama-cloud/glm", effort: "high", allowFallback: true },
+		selected: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
+		fallbackUsed: true,
+		attempts: [
+			{ model: "ollama-cloud/glm", effort: "high", status: "effort_unsupported" },
+			{ provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium", status: "selected" },
+		],
+	} as const;
+	assert.equal(formatSubagentFallback(routing), "Fallback ollama-cloud/glm#high → openai-codex/gpt-5.6-sol#medium (effort unsupported)");
+	assert.equal(formatSubagentFallback({ ...routing, fallbackUsed: false }), undefined);
+	assert.match(formatInlineSubagentStatus({ ...route, routing }, now), /Medium \(openai-codex\/gpt-5\.6-sol#medium\) · Fallback ollama-cloud\/glm#high → openai-codex\/gpt-5\.6-sol#medium \(effort unsupported\)/);
 });
 
 test("semantic segments apply footer-consistent colors without recoloring the whole line", () => {

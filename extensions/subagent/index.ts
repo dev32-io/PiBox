@@ -15,9 +15,13 @@ import {
 	type FastModePolicy,
 } from "../fast-mode/policy.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
-import { assertTreeNavigationAllowed, type ActivationLifecycle } from "./activation.js";
-import type { LogicalAgentHandle, LogicalAgentSnapshot, RuntimeOwner, SubagentService, TerminalResult } from "./api.js";
+import { assertTreeNavigationAllowed, sameRuntimeOwner, type ActivationLifecycle } from "./activation.js";
+import type { LogicalAgentHandle, LogicalAgentSnapshot, RuntimeOwner, SubagentRoutingMetadata, SubagentService, TerminalResult } from "./api.js";
 import { loadSubagentCatalog, type LoadSubagentCatalogOptions } from "./catalog.js";
+import { subagentSpawnToolDescription } from "./catalog-description.js";
+import { MAX_SUBAGENT_TITLE_CHARACTERS, normalizeSubagentTitle } from "./presentation.js";
+import { formatSubagentFallback } from "./display.js";
+import { DEFAULT_REPORT_CHARACTERS, MAX_REPORT_CHARACTERS, readReportPage, terminalReportText } from "./report.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "./child-extensions.js";
 import { assemblePromptContext } from "./prompt-context.js";
 import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
@@ -107,7 +111,7 @@ interface SessionBinding {
 }
 
 /** Complete standalone generic subagent tool surface. */
-export const STANDALONE_SUBAGENT_TOOL_NAMES = ["subagent_spawn", "wait", "subagent_status", "subagent_control", "subagent_continue"] as const;
+export const STANDALONE_SUBAGENT_TOOL_NAMES = ["subagent_spawn", "wait", "subagent_status", "subagent_control", "subagent_continue", "subagent_read"] as const;
 
 export default function subagentExtension(pi: ExtensionAPI, dependencies: SubagentExtensionDependencies = {}): void {
 	const env = dependencies.env ?? process.env;
@@ -143,22 +147,24 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		if (!current.active || binding !== current) return;
 		const agents: SubagentUiAgentProjection[] = snapshot.agents.map((agent) => {
 			const workflow = workflowProvenance(agent);
-			const tier = current.tiers.get(agent.handle.agentId) ?? (workflow ? agent.workflowMetadata?.[WORKFLOW_TIER] : undefined);
+			const tier = agent.routing?.requested.tier ?? current.tiers.get(agent.handle.agentId) ?? (workflow ? agent.workflowMetadata?.[WORKFLOW_TIER] : undefined);
 			return {
-			agentId: agent.handle.agentId,
-			agent: agent.agent,
-			state: agent.state,
-			presentation: current.presentations.get(agent.handle.agentId) ?? "background",
-			provider: agent.provider,
-			model: agent.model,
-			effort: agent.effort,
-			...(tier ? { tier } : {}),
-			fast: agent.fast,
-			startedAt: agent.startedAt,
-			updatedAt: agent.updatedAt,
-			...(agent.progress ? { progress: agent.progress } : {}),
-			...(workflow ? { workflow } : {}),
-		};
+				agentId: agent.handle.agentId,
+				agent: agent.agent,
+				...(agent.title ? { title: agent.title } : {}),
+				...(agent.routing ? { routing: agent.routing } : {}),
+				state: agent.state,
+				presentation: current.presentations.get(agent.handle.agentId) ?? "background",
+				provider: agent.provider,
+				model: agent.model,
+				effort: agent.effort,
+				...(tier ? { tier } : {}),
+				fast: agent.fast,
+				startedAt: agent.startedAt,
+				updatedAt: agent.updatedAt,
+				...(agent.progress ? { progress: agent.progress } : {}),
+				...(workflow ? { workflow } : {}),
+			};
 		});
 		current.ui.publish(agents);
 	};
@@ -174,6 +180,8 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			...(current.tiers.get(agentId) ? { tier: current.tiers.get(agentId) } : {}),
 			...(snapshot ? {
 				agent: snapshot.agent,
+				...(snapshot.title ? { title: snapshot.title } : {}),
+				...(snapshot.routing ? { routing: snapshot.routing, tier: snapshot.routing.requested.tier } : {}),
 				state: snapshot.state,
 				resolved: { provider: snapshot.provider, model: snapshot.model, effort: snapshot.effort, fast: snapshot.fast, startedAt: snapshot.startedAt },
 				...(snapshot.progress ? { progress: snapshot.progress } : {}),
@@ -207,7 +215,10 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	};
 
 	const terminalResult = (current: SessionBinding, agentId: string, terminal: TerminalResult) => {
-		const text = boundedUtf8(terminal.text || terminal.stderr || `Subagent ${terminal.status}.`, MAX_TOOL_OUTPUT_BYTES);
+		const snapshot = agentSnapshot(current, agentId);
+		const identity = `${snapshot?.agent ?? "Subagent"}${snapshot?.title ? ` · ${snapshot.title}` : ""} (${agentId})`;
+		const report = boundedUtf8(terminalReportText(terminal), MAX_TOOL_OUTPUT_BYTES - 2_000);
+		const text = `${identity} · ${terminal.status}\n${routingNotice(snapshot?.routing)}${report}\n\nRead this existing report with subagent_read (agentId: ${agentId}, attemptId: ${terminal.attemptId}); use subagent_continue only for new work.`;
 		if (terminal.status === "failed") throw new Error(text);
 		return result(text, toolDetails(current, agentId, terminal));
 	};
@@ -215,18 +226,21 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	const formatSettlements = (settlements: readonly PendingBackgroundSettlement[]) => {
 		const details = settlements.map(({ delivery, outcome }) => {
 			const status = "terminal" in outcome ? outcome.terminal.status : "failed";
-			const summary = boundedUtf8("terminal" in outcome
-				? outcome.terminal.text || outcome.terminal.stderr || `Subagent ${status}.`
-				: outcome.error, 1_200);
+			const snapshot = binding?.active && sameRuntimeOwner(binding.owner, delivery.owner)
+				? agentSnapshot(binding, delivery.agentId) : undefined;
+			const summary = boundedUtf8("terminal" in outcome ? terminalReportText(outcome.terminal) : outcome.error, 1_200);
 			return {
 				agent: boundedUtf8(delivery.agent, 256),
 				agentId: boundedUtf8(delivery.agentId, 256),
+				...(snapshot?.title ? { title: snapshot.title } : {}),
+				...(snapshot?.routing ? { routing: snapshot.routing } : {}),
+				...("terminal" in outcome ? { attemptId: outcome.terminal.attemptId } : {}),
 				status,
 				summary,
 			};
 		});
 		const text = boundedUtf8(details.map((item) =>
-			`[Subagent ${item.status}]\n${item.agent} (${item.agentId})\n${item.summary}`,
+			`[Subagent ${item.status}]\n${item.agent}${item.title ? ` · ${item.title}` : ""} (${item.agentId})\n${routingNotice(item.routing)}${item.summary}${item.attemptId ? `\nRead the existing report with subagent_read (agentId: ${item.agentId}, attemptId: ${item.attemptId}); no new model turn needed.` : ""}`,
 		).join("\n\n"), MAX_TOOL_OUTPUT_BYTES);
 		return { text, details };
 	};
@@ -281,21 +295,23 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		});
 	};
 
-	pi.registerTool({
+	const registerSpawnTool = (catalog?: LoadedSubagentCatalog) => pi.registerTool({
 		name: "subagent_spawn",
 		label: "Spawn Subagent",
-		description: "Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress. Background is for independent work: it returns immediately, steers terminal results into ongoing work, and wakes an idle parent.",
+		description: catalog ? subagentSpawnToolDescription(catalog) : "Launch one configured standalone subagent. The available catalog is loaded when the session starts.",
 		promptGuidelines: [
 			"After subagent_spawn starts background work, continue meaningful non-overlapping work or end the turn; its terminal result is delivered automatically and wakes the session when idle.",
 			"Never use bash sleep, polling loops, or repeated subagent_status calls to wait for background subagents; use wait with event subagent_settled once only when further progress is genuinely blocked.",
 		],
 		parameters: Type.Object({
 			agent: Type.String({ description: "Exact configured agent name" }),
+			title: Type.Optional(Type.String({ maxLength: MAX_SUBAGENT_TITLE_CHARACTERS, description: "Optional short display label (3–7 words). Not an agent name or assignment; retained across continuation." })),
 			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions" }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
-			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const)),
-			model: Type.Optional(Type.String({ description: "Registered model or provider/model override, optionally suffixed with #effort" })),
-			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
+			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Ordered configured route list; defaults to the agent tier. Local never uses paid providers." })),
+			model: Type.Optional(Type.String({ description: "Exact registered model ID or provider/model, optionally #effort. Strict by default; no fuzzy aliases." })),
+			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Overrides the explicit model or tier primary route effort. Fallback routes retain their configured effort. Must agree with any #effort suffix." })),
+			allowFallback: Type.Optional(Type.Boolean({ description: "With an explicit model only: opt into pre-launch substitution from the tier list. Default false. No standalone runtime retry; local explicit models remain strict." })),
 		}, { additionalProperties: false }),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const current = requireBinding();
@@ -309,7 +325,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			publishProjection(current);
 			if (mode === "background") {
 				pendingDeliveries.track({ owner: current.owner, agent: params.agent, agentId }, launched.result);
-				return result(`Spawned ${params.agent} in background as ${agentId}. Its terminal report will be steered into this activation and will wake it when idle. Do not sleep or poll for progress; continue non-overlapping work, end the turn, or call wait once with event subagent_settled only when blocked.`, toolDetails(current, agentId));
+				return result(`${routingNotice(resolved.spec.routing)}Spawned ${params.agent}${resolved.spec.title ? ` · ${resolved.spec.title}` : ""} in background as ${agentId}. Its terminal report will be steered into this activation and will wake it when idle. Do not sleep or poll for progress; continue non-overlapping work, end the turn, or call wait once with event subagent_settled only when blocked.`, toolDetails(current, agentId));
 			}
 			const unsubscribe = subscribeToolUpdates(current, agentId, onUpdate);
 			const removeAbort = stopOnAbort(signal, current, launched.handle);
@@ -321,6 +337,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			}
 		},
 	});
+	registerSpawnTool();
 
 	pi.registerTool({
 		name: "wait",
@@ -390,6 +407,8 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			const agents = all.slice(0, limit).map((agent) => ({
 				agentId: agent.handle.agentId,
 				agent: agent.agent,
+				...(agent.title ? { title: agent.title } : {}),
+				...(agent.routing ? { routing: agent.routing, tier: agent.routing.requested.tier } : {}),
 				state: agent.state,
 				provider: agent.provider,
 				model: agent.model,
@@ -422,7 +441,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "subagent_continue",
 		label: "Continue Subagent",
-		description: "Run one new bounded terminal turn against a settled standalone subagent's same-activation transcript. The tool waits for settlement; there is no live respond surface.",
+		description: "Run new work against a settled standalone subagent's same-activation transcript, retaining its agent type, title, model, effort, and tools. Waits for settlement; not a live messaging tool. Use subagent_read to retrieve an existing report without a model turn.",
 		parameters: Type.Object({ agentId: Type.String(), task: Type.String({ description: "New user turn for the settled logical agent" }) }, { additionalProperties: false }),
 		async execute(_id, params, signal, onUpdate) {
 			const current = requireBinding();
@@ -452,6 +471,38 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 				signal?.removeEventListener("abort", stopStarted);
 				unsubscribe();
 			}
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_read",
+		label: "Read Subagent Report",
+		description: "Read a bounded page of a settled standalone subagent's latest existing terminal report in this activation. No model turn, wait, or continuation. Offsets count Unicode characters; pages contain at most 12,000 characters / 48KB. Supply the returned attemptId on later pages to reject a replaced report.",
+		parameters: Type.Object({
+			agentId: Type.String(),
+			attemptId: Type.Optional(Type.String({ description: "Expected report attempt ID; prevents mixing pages after a continuation" })),
+			offset: Type.Optional(Type.Integer({ minimum: 0, default: 0 })),
+			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_REPORT_CHARACTERS, default: DEFAULT_REPORT_CHARACTERS })),
+		}, { additionalProperties: false }),
+		async execute(_id, params, signal) {
+			const current = requireBinding();
+			if (signal?.aborted) throw abortError(signal);
+			const target = agentSnapshot(current, params.agentId);
+			if (!target || workflowProvenance(target)) throw new Error(`Unknown standalone subagent: ${params.agentId}`);
+			if (ACTIVE_STATES.has(target.state)) throw new Error("Subagent is still active; report reading never waits for settlement");
+			// wait returns the already-settled immutable result synchronously through
+			// its promise; the state check and call have no intervening await.
+			const terminal = await current.service.wait(current.owner, target.handle);
+			if (binding !== current || !current.active) throw new Error("Report belongs to an ended session activation");
+			if (signal?.aborted) throw abortError(signal);
+			if (params.attemptId && params.attemptId !== terminal.attemptId) throw new Error("Report attempt changed; read again from offset 0 without the old attemptId");
+			const { text, ...page } = readReportPage(terminalReportText(terminal), params.offset, params.limit);
+			const identity = `${target.agent}${target.title ? ` · ${target.title}` : ""} (${params.agentId})`;
+			const next = page.nextOffset === undefined ? "End of report." : `Next: subagent_read agentId=${params.agentId} attemptId=${terminal.attemptId} offset=${page.nextOffset}`;
+			return result(`${identity} · ${terminal.status} · attempt ${terminal.attemptId}\nCharacters ${page.offset}–${page.offset + page.count} of ${page.totalCharacters}. ${next}\n\n${text}`, {
+				agentId: params.agentId, agent: target.agent, title: target.title,
+				state: terminal.status, routing: target.routing, attemptId: terminal.attemptId, ...page,
+			});
 		},
 	});
 
@@ -521,6 +572,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		const subscription = current.service.subscribe(current.owner, current.service.replay(current.owner).snapshot.cursor, () => publishProjection(current));
 		current.unsubscribe = () => subscription.unsubscribe();
 		binding = current;
+		registerSpawnTool(catalog);
 		const deliveryId = idFactory();
 		current.delivery = typeof (pendingDeliveries as PendingSubagentDeliveryRegistry & { bindBatched?: unknown }).bindBatched === "function"
 			? pendingDeliveries.bindBatched(current.owner, deliveryId, (settlements) => deliverBackgroundBatch(current, settlements))
@@ -545,28 +597,26 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 
 async function resolveLaunch(
 	binding: SessionBinding,
-	params: { agent: string; task: string; tier?: ModelTier; model?: string; effort?: HarnessEffort },
+	params: { agent: string; title?: string; task: string; tier?: ModelTier; model?: string; effort?: HarnessEffort; allowFallback?: boolean },
 	fastModePolicy: FastModePolicy,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
 ): Promise<{ tier: ModelTier; spec: Parameters<SubagentService["launch"]>[0] }> {
 	const agent = binding.catalog.config.agents[params.agent];
 	if (!agent) throw new Error(`Unknown subagent definition: ${params.agent}. Available: ${Object.keys(binding.catalog.config.agents).sort().join(", ")}`);
-	let tier: ModelTier = params.tier ?? (params.model?.trim().startsWith("local-llm/") ? "local" : agent.tier ?? "medium");
-	if (params.model?.trim().startsWith("local-llm/") && params.tier && params.tier !== "local") throw new Error("local-llm models require tier local");
+	if (params.allowFallback !== undefined && !params.model) throw new Error("allowFallback requires an explicit model");
+	const preferredModel = params.model ?? agent.model;
+	const override = preferredModel !== undefined ? normalizeExplicitModelOverride(preferredModel, params.effort) : undefined;
+	const explicitLocal = override?.model.startsWith("local-llm/") === true;
+	if (explicitLocal && params.tier && params.tier !== "local") throw new Error("local-llm models require tier local");
+	const tier: ModelTier = explicitLocal ? "local" : params.tier ?? agent.tier ?? "medium";
+	const title = normalizeSubagentTitle(params.title);
 	const routingConfig = {
 		modelTierListProfiles: binding.catalog.config.modelTierListProfiles,
 		modelTierProfile: binding.catalog.config.modelTierListProfiles.profiles[binding.catalog.config.modelTierProfile]
 			? binding.catalog.config.modelTierProfile
 			: binding.catalog.config.modelTierListProfiles.defaultProfile,
 	};
-	let preferredModel = params.model ?? agent.model;
-	if (!preferredModel && params.effort) {
-		const route = routingConfig.modelTierListProfiles.profiles[routingConfig.modelTierProfile]?.[tier]?.[0];
-		if (route) preferredModel = route.slice(0, route.lastIndexOf("#"));
-	}
-	const override = preferredModel ? normalizeExplicitModelOverride(preferredModel, params.effort) : undefined;
-	if (preferredModel?.startsWith("local-llm/")) tier = "local";
 	const userSelectedModel = params.model !== undefined;
 	let availableModels = userSelectedModel
 		? ctx.modelRegistry.getAvailable()
@@ -577,9 +627,9 @@ async function resolveLaunch(
 		tier,
 		...(override ? {
 			override,
-			strict: !userSelectedModel,
+			allowFallback: userSelectedModel && params.allowFallback === true && tier !== "local",
 			allowUnconfiguredOverride: userSelectedModel,
-		} : {}),
+		} : params.effort ? { primaryEffort: params.effort } : {}),
 	});
 	let resolution = resolveModel();
 	const providerSeparator = override?.model.indexOf("/") ?? -1;
@@ -593,7 +643,21 @@ async function resolveLaunch(
 			if (signal?.aborted) throw error;
 		}
 	}
-	if (resolution.status !== "resolved") throw new Error(`No available subagent model could satisfy the request: ${JSON.stringify(resolution.attempts)}`);
+	if (resolution.status !== "resolved") throw new Error(`No available subagent model could satisfy the request (exact model IDs required; explicit models do not substitute unless allowFallback is true): ${JSON.stringify(resolution.attempts)}`);
+	const first = resolution.attempts[0];
+	const requestedModel = override?.model ?? (first ? `${first.provider}/${first.model}` : undefined);
+	const requestedEffort = override?.effort ?? params.effort ?? first?.effort;
+	const routing: SubagentRoutingMetadata = {
+		requested: {
+			tier,
+			...(requestedModel ? { model: requestedModel } : {}),
+			...(requestedEffort ? { effort: requestedEffort } : {}),
+			allowFallback: override ? params.allowFallback === true && userSelectedModel && tier !== "local" : true,
+		},
+		selected: { provider: resolution.model.provider, model: resolution.model.id, effort: resolution.effort },
+		fallbackUsed: resolution.fallbackUsed,
+		attempts: resolution.attempts,
+	};
 	const selectors = agent.tools ?? [...DEFAULT_SUBAGENT_TOOLS];
 	const promptPath = resolveConfiguredPath(binding.repositoryRoot, agent.prompt);
 	if (!promptPath) throw new Error(`Subagent ${params.agent} has no readable prompt definition`);
@@ -607,6 +671,8 @@ async function resolveLaunch(
 		spec: {
 			owner: binding.owner,
 			agent: params.agent,
+			...(title ? { title } : {}),
+			routing,
 			cwd: binding.repositoryRoot,
 			...promptContext,
 			provider: resolution.model.provider,
@@ -619,6 +685,11 @@ async function resolveLaunch(
 			env: mcpLaunchEnvironment(selectors),
 		},
 	};
+}
+
+function routingNotice(routing: SubagentRoutingMetadata | undefined): string {
+	const fallback = formatSubagentFallback(routing);
+	return fallback ? `${fallback}\n` : "";
 }
 
 function resolveConfiguredPath(repositoryRoot: string, configuredPath: string | undefined): string | undefined {
@@ -665,7 +736,7 @@ function boundedUtf8(value: string, maximumBytes: number): string {
 	if (buffer.length <= maximumBytes) return value;
 	let text = buffer.subarray(0, maximumBytes).toString("utf8");
 	while (text.endsWith("�")) text = text.slice(0, -1);
-	return `${text}\n\n[Subagent output truncated; the complete turn remains in its private transcript.]`;
+	return `${text}\n\n[Subagent output truncated; use subagent_read to retrieve the existing report without another model turn.]`;
 }
 
 export * from "./activation.js";

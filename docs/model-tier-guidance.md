@@ -26,6 +26,8 @@ modelTierListProfiles:
 
 Each tier list contains availability fallbacks, not quality escalation after weak output. Additional complete profiles may be declared under `profiles`; every profile supplies max, high, medium, low, and provider-isolated local lists.
 
+Standalone `subagent_spawn` also uses these profiles. An effort-only override changes the primary route's effort without changing fallback efforts. Explicit model requests are strict unless `allowFallback: true` is supplied; standalone fallback happens before launch, not after a runtime provider failure. See [standalone subagents](subagents.md) for exact routing, title, continuation and report-reading semantics.
+
 ### Tier intent
 
 - **Max:** exceptional architecture, security/privacy, irreversible decisions, and unusually high-blast-radius work.

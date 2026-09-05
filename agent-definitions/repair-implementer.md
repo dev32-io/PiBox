@@ -1,6 +1,6 @@
 ---
 name: repair-implementer
-description: Focused repairs in managed review and fix loops
+description: Focused implementation of accepted review findings
 tools: [read, grep, find, bash, edit, write]
 tier: medium
 ---

@@ -67,6 +67,8 @@ class FakeService implements SubagentService {
 		const now = new Date().toISOString();
 		this.snapshots.set(agentId, {
 			handle, agent: spec.agent, state: "running", attemptId,
+			...(spec.title ? { title: spec.title } : {}),
+			...(spec.routing ? { routing: structuredClone(spec.routing) } : {}),
 			provider: spec.provider, model: spec.model, effort: spec.effort, fast: spec.fast,
 			...(spec.continuationKey ? { continuationKey: spec.continuationKey } : {}),
 			...(spec.workflowMetadata ? { workflowMetadata: spec.workflowMetadata } : {}),
@@ -281,7 +283,7 @@ test("loads trusted catalog policy, resolves the active tier profile, prompt, ro
 	service.activity(agentId);
 	service.finish(agentId, "completed", "foreground report");
 	const settled = await pending;
-	assert.equal(settled.content[0].text, "foreground report");
+	assert.match(settled.content[0].text, /general-purpose.*completed\nforeground report/);
 	assert.ok(updates.length >= 2);
 	assert.equal(f.catalogOptions[0].includeProject, true);
 	assert.equal(f.catalogOptions[0].modelTierProfile, "token-conservative");
@@ -420,7 +422,7 @@ test("wait subscribes once to background settlement and consumes automatic deliv
 	assert.equal(typeof settled.details.elapsedMs, "number");
 	assert.equal(settled.details.pendingCount, 1);
 	assert.deepEqual(settled.details.settlements, [
-		{ agent: "general-purpose", agentId: "agent-1", status: "completed", summary: "dependency report" },
+		{ agent: "general-purpose", agentId: "agent-1", attemptId: "attempt-1", routing: f.services[0]!.launches[0]!.routing, status: "completed", summary: "dependency report" },
 	]);
 	assert.equal(f.sent.length, 0, "the wait result is the sole model-visible delivery");
 });
@@ -478,7 +480,7 @@ test("continues only a settled same-activation transcript and rotates its intern
 	assert.equal(f.services[0]!.continuations[0]?.handle.continuationCapability, firstHandle.continuationCapability);
 	f.services[0]!.finish(initial.agentId, "completed", "second report");
 	const settled = await continuation;
-	assert.equal(settled.content[0].text, "second report");
+	assert.match(settled.content[0].text, /general-purpose.*completed\nsecond report/);
 	assert.notEqual(f.services[0]!.snapshots.get(initial.agentId)!.handle.continuationCapability, firstHandle.continuationCapability);
 });
 
@@ -622,6 +624,7 @@ test("standalone user model override falls back to the configured same-tier list
 	await f.tools.get("subagent_spawn").execute("spawn", {
 		agent: "general-purpose",
 		task: "Fallback",
+		allowFallback: true,
 		mode: "background",
 		model: "ollama-cloud/missing#off",
 	}, undefined, undefined, f.ctx);
@@ -712,4 +715,116 @@ test("tree navigation is cancelled only while this activation has active process
 	assert.match(f.notices.at(-1) ?? "", /unavailable while subagents are active/);
 	f.services[0]!.finish("agent-1");
 	assert.equal(await f.fire("session_before_tree"), undefined);
+});
+
+test("spawn exposes the loaded Markdown catalog and refreshes custom descriptions on reload", async () => {
+	let description = "Trace custom widget contracts without editing";
+	const f = harness({ loadCatalog: () => {
+		const loaded = catalog();
+		loaded.config.agents["custom-scout"] = { ...loaded.config.agents["general-purpose"]!, description };
+		return loaded;
+	} });
+	await f.fire("session_start", { reason: "startup" });
+	assert.match(f.tools.get("subagent_spawn").description, /custom-scout: Trace custom widget contracts without editing/);
+	assert.match(f.tools.get("subagent_spawn").description, /general-purpose: General/);
+	await f.fire("session_shutdown", { reason: "reload" });
+	description = "Inspect revised local widgets";
+	await f.fire("session_start", { reason: "reload" });
+	assert.match(f.tools.get("subagent_spawn").description, /custom-scout: Inspect revised local widgets/);
+	assert.doesNotMatch(f.tools.get("subagent_spawn").description, /Trace custom/);
+	const receipt = await f.tools.get("subagent_spawn").execute("custom", { agent: "custom-scout", task: "Look up widget", mode: "background" }, undefined, undefined, f.ctx);
+	assert.equal(receipt.details.agent, "custom-scout");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("standalone model selection is strict by default, including shorthand aliases and invalid combinations", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	for (const routing of [{ model: "luna#max" }, { model: "ollama-cloud/missing#off" }, { model: "gpt-5.6-sol#high", effort: "low" }, { allowFallback: true }]) {
+		await assert.rejects(f.tools.get("subagent_spawn").execute("bad", { agent: "general-purpose", task: "Do not launch", ...routing }, undefined, undefined, f.ctx), /exact model IDs|Conflicting model efforts|requires an explicit model/);
+	}
+	assert.equal(f.services[0]!.launches.length, 0);
+	const receipt = await f.tools.get("subagent_spawn").execute("fallback", { agent: "general-purpose", task: "Fallback permitted", model: "luna#max", allowFallback: true, mode: "background" }, undefined, undefined, f.ctx);
+	assert.match(receipt.content[0].text, /Fallback luna#max → openai-codex\/gpt-5.6-sol#medium \(model unavailable\)/);
+	assert.equal(receipt.details.routing.fallbackUsed, true);
+	assert.equal(receipt.details.routing.requested.model, "luna");
+	assert.equal(receipt.details.resolved.effort, "medium");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("tier effort preserves configured fallback effort rather than pinning the unavailable primary", async () => {
+	const f = harness({ availableModels: [model("ollama-cloud", "fallback", false)], loadCatalog: () => {
+		const loaded = catalog();
+		loaded.config.modelTierListProfiles.profiles.performance!.high = ["openai-codex/missing#medium", "ollama-cloud/fallback#off"];
+		return loaded;
+	} });
+	await f.fire("session_start", { reason: "startup" });
+	const receipt = await f.tools.get("subagent_spawn").execute("effort", { agent: "general-purpose", task: "Inspect", tier: "high", effort: "xhigh", mode: "background" }, undefined, undefined, f.ctx);
+	assert.equal(receipt.details.resolved.model, "fallback");
+	assert.equal(receipt.details.resolved.effort, "off");
+	assert.equal(receipt.details.routing.requested.effort, "xhigh");
+	assert.match(receipt.content[0].text, /Fallback openai-codex\/missing#xhigh → ollama-cloud\/fallback#off/);
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("titles, routing and existing reports survive reload and continuation without prompt contamination", async () => {
+	const f = harness({ availableModels: [{ ...model(), thinkingLevelMap: { high: "high", xhigh: "xhigh" } }] });
+	await f.fire("session_start", { reason: "startup" });
+	const receipt = await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "\u001b[31mFix RTL\n bubble corners\u001b[0m", task: "Original assignment", tier: "high", effort: "xhigh", mode: "background" }, undefined, undefined, f.ctx);
+	const id = receipt.details.agentId;
+	assert.equal(receipt.details.title, "Fix RTL bubble corners");
+	const status = await f.tools.get("subagent_status").execute("status", { agentId: id }, undefined, undefined, f.ctx);
+	assert.equal(status.details.agents[0].title, receipt.details.title);
+	assert.deepEqual(status.details.agents[0].routing, receipt.details.routing);
+	assert.equal(f.services[0]!.launches[0]!.attemptUserPrompt, "Original assignment");
+	assert.doesNotMatch(f.services[0]!.launches[0]!.stableSystemContext, /Fix RTL bubble corners/);
+	const read = (args: Record<string, unknown>) => f.tools.get("subagent_read").execute("read", { agentId: id, ...args }, undefined, undefined, f.ctx);
+	await assert.rejects(read({}), /still active/);
+	f.services[0]!.finish(id, "completed", "🙂αβγ".repeat(4_000));
+	await f.fire("session_shutdown", { reason: "reload" });
+	await f.fire("session_start", { reason: "reload" });
+	const page = await read({ limit: 3 });
+	assert.equal(page.details.title, "Fix RTL bubble corners");
+	assert.equal(page.details.count, 3);
+	assert.equal(page.details.totalCharacters, 16_000);
+	assert.equal(page.details.nextOffset, 3);
+	assert.ok(page.content[0].text.endsWith("🙂αβ"));
+	const next = await read({ offset: page.details.nextOffset, attemptId: page.details.attemptId, limit: 3 });
+	assert.ok(next.content[0].text.endsWith("γ🙂α"));
+	assert.equal(f.services[0]!.continuations.length, 0);
+	assert.equal(f.services.length, 1, "reload rebinds the service rather than launching or restoring from disk");
+	f.pi.events.emit(MODEL_TIER_PROFILE_EVENT, { profile: "token-conservative" });
+	const continued = f.tools.get("subagent_continue").execute("continue", { agentId: id, task: "New assignment" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	f.services[0]!.finish(id, "completed", "New report");
+	const settled = await continued;
+	assert.equal(settled.details.title, "Fix RTL bubble corners");
+	assert.equal(settled.details.tier, "high");
+	assert.equal(settled.details.resolved.effort, "xhigh");
+	assert.deepEqual(settled.details.routing, receipt.details.routing);
+	await assert.rejects(read({ attemptId: page.details.attemptId }), /Report attempt changed/);
+	await f.services[0]!.release(f.services[0]!.owner, f.services[0]!.snapshots.get(id)!.handle);
+	await assert.rejects(read({}), /Unknown standalone/);
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("background truncation directs report reads and failed reports remain readable without continuation", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	const spawned = await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Inspect failure", task: "Inspect", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(spawned.details.agentId, "failed", "Failure report\n" + "x".repeat(5_000));
+	await waitUntil(() => f.sent.length > 0, "background result did not arrive");
+	assert.match(f.sent[0].message.content, /Inspect failure/);
+	assert.match(f.sent[0].message.content, /subagent_read/);
+	assert.match(f.sent[0].message.content, /attemptId/);
+	const report = await f.tools.get("subagent_read").execute("read", { agentId: spawned.details.agentId }, undefined, undefined, f.ctx);
+	assert.equal(report.details.state, "failed");
+	assert.equal(report.details.totalCharacters, 5_015);
+	assert.ok(report.content[0].text.endsWith("x".repeat(5_000)));
+	assert.equal(f.services[0]!.continuations.length, 0);
+	const oldId = spawned.details.agentId;
+	await f.fire("session_shutdown", { reason: "quit" });
+	await f.fire("session_start", { reason: "startup" });
+	await assert.rejects(f.tools.get("subagent_read").execute("old", { agentId: oldId }, undefined, undefined, f.ctx), /Unknown standalone/);
+	await f.fire("session_shutdown", { reason: "quit" });
 });

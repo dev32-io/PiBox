@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: Fast repository lookup, extraction, mapping, tracing, and fact checking
+description: Focused repository lookup, extraction, mapping, tracing, and fact checking
 tools: [read, grep, find, ls, bash]
 tier: low
 ---

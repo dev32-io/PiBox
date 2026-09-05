@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: General implementation work for managed tasks
+description: Feature implementation, refactoring, and bug fixes, including diagnosis needed to deliver the change
 tools: [read, grep, find, bash, edit, write, mcp:context7]
 tier: medium
 ---

@@ -27,6 +27,7 @@ import { createPiInvocationResolver, stableSystemPromptPath, type SubagentInvoca
 import { JsonlStreamParser } from "./jsonl.js";
 import { promptContextHashes } from "./prompt-context.js";
 import { SUBAGENT_PROTOCOL_VERSION } from "./registry.js";
+import { normalizeSubagentTitle } from "./presentation.js";
 
 const DEFAULT_MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_EVENT_TEXT_CHARACTERS = 16 * 1024;
@@ -45,6 +46,8 @@ export interface SubagentProcessManagerOptions {
 interface AgentRecord {
 	readonly agentId: string;
 	readonly agent: string;
+	readonly title?: string;
+	readonly routing?: LaunchSpec["routing"];
 	readonly cwd: string;
 	readonly stableSystemContext: string;
 	readonly transcriptPath: string;
@@ -142,9 +145,12 @@ export class SubagentProcessManager implements SubagentService {
 		const transcriptPath = resolve(this.sessionDirectory, `${agentId}.jsonl`);
 		this.assertPrivateTranscriptPath(transcriptPath);
 		const startedAt = new Date().toISOString();
+		const title = normalizeSubagentTitle(spec.title);
 		const record: AgentRecord = {
 			agentId,
 			agent: spec.agent,
+			...(title ? { title } : {}),
+			...(spec.routing ? { routing: structuredClone(spec.routing) } : {}),
 			cwd: resolve(spec.cwd),
 			stableSystemContext: spec.stableSystemContext,
 			transcriptPath,
@@ -657,6 +663,8 @@ export class SubagentProcessManager implements SubagentService {
 		return [...this.agents.values()].map((record) => ({
 			handle: structuredClone(record.handle),
 			agent: record.agent,
+			...(record.title ? { title: record.title } : {}),
+			...(record.routing ? { routing: structuredClone(record.routing) } : {}),
 			state: record.state,
 			...(record.active?.child.pid === undefined ? {} : { processId: record.active.child.pid }),
 			provider: record.execution.provider,
@@ -668,7 +676,7 @@ export class SubagentProcessManager implements SubagentService {
 			...(record.lastAttemptMetadata ? { attemptMetadata: structuredClone(record.lastAttemptMetadata) } : {}),
 			startedAt: record.startedAt,
 			updatedAt: record.updatedAt,
-			...(record.active ? { attemptId: record.active.attemptId, contextHashes: structuredClone(record.active.contextHashes) } : record.launching ? { attemptId: record.launching.attemptId, contextHashes: structuredClone(record.launching.contextHashes) } : record.lastResult ? { contextHashes: structuredClone(record.lastResult.contextHashes) } : {}),
+			...(record.active ? { attemptId: record.active.attemptId, contextHashes: structuredClone(record.active.contextHashes) } : record.launching ? { attemptId: record.launching.attemptId, contextHashes: structuredClone(record.launching.contextHashes) } : record.lastResult ? { attemptId: record.lastResult.attemptId, contextHashes: structuredClone(record.lastResult.contextHashes) } : {}),
 			...(record.progress ? { progress: structuredClone(record.progress) } : {}),
 			...(record.summary ? { summary: record.summary } : {}),
 		}));

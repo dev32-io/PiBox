@@ -26,14 +26,18 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	assert.doesNotMatch(starting.join("\n"), /resolving model|foreground/);
 	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester",
+		title: "Verify checkout flow",
 		mode: "foreground",
 		tier: "medium",
 		task: "Verify one browser flow like a real user",
 	}, theme, true, false, {
+		agent: "e2e-tester",
+		title: "Verify checkout flow",
 		tier: "medium",
 		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
 	}));
-	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] e2e-tester Verify one browser flow like a real user/);
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] e2e-tester Verify checkout flow/);
+	assert.doesNotMatch(rendered[0] ?? "", /Verify one browser flow/);
 	assert.equal(rendered[1], "└─ Medium (openai-codex/gpt-5.6-sol#medium)");
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
 	const activeComponent = renderHarnessToolCall("subagent_spawn", {
@@ -114,8 +118,10 @@ test("background transcript rows follow the owner-fenced event projection throug
 
 test("renders continuation foreground progress and prose like spawn", () => {
 	const rendered = lines(renderHarnessToolCall("subagent_continue", {
-		agentId: "agent-1", task: "Inspect the follow-up",
+		agentId: "agent-1", agent: "model-supplied-role", task: "Inspect the follow-up",
 	}, theme, true, false, {
+		agent: "investigator",
+		title: "Trace fallback routing",
 		tier: "high",
 		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
 		progress: {
@@ -124,13 +130,51 @@ test("renders continuation foreground progress and prose like spawn", () => {
 			outputTokens: 200, reasoningTokens: 0,
 		},
 	}, () => Date.parse("2026-01-01T00:00:03.000Z")));
-	assert.match(rendered[0] ?? "", /^[·•●] Continue subagent agent-1/);
+	assert.match(rendered[0] ?? "", /^[·•●] investigator Trace fallback routing/);
+	assert.doesNotMatch(rendered[0] ?? "", /model-supplied-role|agent-1|Inspect the follow-up/);
 	assert.match(rendered[1] ?? "", /High \(openai-codex\/gpt-5\.6-sol#high\) · 1 turn · 2 tools · ↓ 200 · 3s/);
 
 	const report = Array.from({ length: 11 }, (_, index) => `line ${index + 1}`).join("\n");
 	const result = lines(renderHarnessToolResult("subagent_continue", { content: [{ type: "text", text: report }] }, false, theme, false));
 	assert.match(result.join("\n"), /line 10/);
 	assert.doesNotMatch(result.join("\n"), /line 11/);
+});
+
+test("renders fallback provenance and sanitizes title control sequences", () => {
+	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
+		agent: "general-purpose", title: "  Audit\n\u001b[31mrouting\u001b[0m\u001b]2;owned\u0007 ", tier: "medium", task: "ignored",
+	}, theme, true, false, {
+		agent: "general-purpose",
+		title: "  Audit\n\u001b[31mrouting\u001b[0m\u001b]2;owned\u0007 ",
+		tier: "medium",
+		resolved: { provider: "selected", model: "actual", effort: "medium" },
+		routing: {
+			requested: { tier: "medium", model: "requested/model", effort: "high", allowFallback: true },
+			selected: { provider: "selected", model: "actual", effort: "medium" },
+			fallbackUsed: true,
+			attempts: [{ model: "requested/model", effort: "high", status: "effort_unsupported" }],
+		},
+	}));
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] general-purpose Audit routing$/);
+	assert.equal(rendered[1], "└─ Medium (selected/actual#medium) · Fallback requested/model#high → selected/actual#medium (effort unsupported)");
+	assert.doesNotMatch(rendered.join(" "), /owned|[\u0000-\u001f\u007f]/);
+});
+
+test("renders paged subagent reads as historical prose with identity", () => {
+	assert.equal(isHarnessTool("subagent_read"), true);
+	assert.deepEqual(lines(renderHarnessToolCall("subagent_read", { agentId: "agent-1", offset: 10, limit: 20 }, theme, false, false)), ["✓ Read subagent agent-1"]);
+	const rendered = lines(renderHarnessToolResult("subagent_read", {
+		content: [{ type: "text", text: "terminal report\n  indented proof" }],
+		details: {
+			agentId: "agent-1", agent: "investigator", title: "Trace routing",
+			offset: 10, count: 2, totalCharacters: 40, nextOffset: 12,
+		},
+	}, false, theme, false));
+	assert.deepEqual(rendered, [
+		"└─ Done · investigator · Trace routing · 10–12 of 40 characters",
+		"  terminal report",
+		"    indented proof",
+	]);
 });
 
 test("renders wait timers with an animated countdown and elapsed completion", () => {

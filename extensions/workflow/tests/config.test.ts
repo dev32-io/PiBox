@@ -17,11 +17,11 @@ test("uses performance and token-conservative model tier profiles", () => {
 
 test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.match(DEFAULT_HARNESS_CONFIG.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
-	assert.equal(DEFAULT_HARNESS_CONFIG.agents.implementer?.description, "General implementation work for managed tasks");
+	assert.equal(DEFAULT_HARNESS_CONFIG.agents.implementer?.description, "Feature implementation, refactoring, and bug fixes, including diagnosis needed to deliver the change");
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7"]);
 	const generalPurpose = DEFAULT_HARNESS_CONFIG.agents["general-purpose"];
 	assert.match(generalPurpose?.prompt ?? "", /agent-definitions\/general-purpose\.md$/);
-	assert.equal(generalPurpose?.description, "General execution of assignments delegated by the main session");
+	assert.equal(generalPurpose?.description, "Mixed, research, or unclassified assignments delegated by the main session when no specialist fits");
 	assert.deepEqual(generalPurpose?.tools, ["*"]);
 	assert.equal(generalPurpose?.canDelegate, false);
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
@@ -45,7 +45,7 @@ test("merges maps recursively and replaces arrays", () => {
 
 test("loads user then repository tier configuration and records a stable digest", () => {
 	const files: Record<string, string> = {
-		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - local/bounded#off\nroles:\n  implementer:\n    tier: medium\n    tools: [read]\nlimits:\n  maxConcurrency: 2\n",
+		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - local/bounded#off\nroles:\n  implementer:\n    tier: medium\n    description: YAML must not own this\n    tools: [read]\nlimits:\n  maxConcurrency: 2\n",
 		"/repo/.pi/harness.yaml": "schemaVersion: 2\nagents:\n  e2e-tester:\n    tools: [bash]\nlimits:\n  maxConcurrency: 6\n",
 	};
 	const loaded = loadHarnessConfig("/repo", {
@@ -59,6 +59,7 @@ test("loads user then repository tier configuration and records a stable digest"
 	assert.equal(loaded.config.limits.repairRounds, 8, "partial repository configuration inherits the review/fix default");
 	assert.deepEqual(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium, ["local/bounded#off"]);
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
+	assert.equal(loaded.config.agents.implementer?.description, DEFAULT_HARNESS_CONFIG.agents.implementer?.description);
 	assert.deepEqual(loaded.config.agents.implementer?.tools, DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, "harness policy cannot override frontmatter tools");
 	assert.deepEqual(loaded.config.agents["e2e-tester"]?.tools, DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, "existing repository tool lists are ignored");
 	assert.equal(loaded.sources.length, 3);

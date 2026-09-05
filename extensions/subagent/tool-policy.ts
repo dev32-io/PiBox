@@ -8,7 +8,7 @@ export const DEFAULT_SUBAGENT_TOOLS = ["read", "bash", "edit", "write", "grep", 
 /** Marks a wildcard launch so the child can restore all extension tools before exclusions. */
 export const ALL_TOOLS_SUBAGENT_ENV = "PIBOX_SUBAGENT_ALL_TOOLS";
 /** Recursive child controls are never inherited by a spawned agent. */
-export const SUBAGENT_CONTROL_TOOLS = ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue"] as const;
+export const SUBAGENT_CONTROL_TOOLS = ["subagent_spawn", "subagent_status", "subagent_control", "subagent_continue", "subagent_read"] as const;
 export const RECURSIVE_SUBAGENT_CONTROL_EXCLUSIONS = SUBAGENT_CONTROL_TOOLS;
 
 export function validateSubagentToolSelectors(selectors: readonly string[]): void {

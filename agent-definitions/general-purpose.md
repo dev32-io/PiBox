@@ -1,6 +1,6 @@
 ---
 name: general-purpose
-description: General execution of assignments delegated by the main session
+description: Mixed, research, or unclassified assignments delegated by the main session when no specialist fits
 tools: ["*"]
 tier: medium
 ---

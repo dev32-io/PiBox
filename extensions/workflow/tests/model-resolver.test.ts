@@ -49,10 +49,37 @@ test("falls back visibly within the ordered model-effort list", () => {
 	}
 });
 
-test("normalizes compact model effort preferences", () => {
+test("normalizes compact model effort preferences and rejects conflicting effort inputs", () => {
 	assert.deepEqual(normalizeExplicitModelOverride("deepseek-v4-pro#high"), { model: "deepseek-v4-pro", effort: "high" });
-	assert.deepEqual(normalizeExplicitModelOverride("ollama-cloud/deepseek-v4-pro#max", "low"), { model: "ollama-cloud/deepseek-v4-pro", effort: "low" });
+	assert.deepEqual(normalizeExplicitModelOverride("ollama-cloud/deepseek-v4-pro#max", "max"), { model: "ollama-cloud/deepseek-v4-pro", effort: "max" });
+	assert.throws(() => normalizeExplicitModelOverride("ollama-cloud/deepseek-v4-pro#max", "low"), /Conflicting model efforts/);
 	assert.throws(() => normalizeExplicitModelOverride("deepseek-v4-pro#turbo"), /Unsupported model effort suffix/);
+});
+
+test("tier effort overrides only the primary route and a missing primary keeps configured fallback effort", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.high = ["openai-codex/missing#max", "openai-codex/gpt-5.6-sol#medium"];
+	const result = resolveHarnessModel(config, [model("openai-codex", "gpt-5.6-sol", true, { medium: "medium", high: "high" })], {
+		tier: "high",
+		primaryEffort: "high",
+	});
+	assert.equal(result.status, "resolved");
+	if (result.status === "resolved") {
+		assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-5.6-sol#medium");
+		assert.equal(result.fallbackUsed, true);
+		assert.equal(result.attempts[0]?.effort, "high");
+	}
+});
+
+test("unsupported explicitly requested primary effort fails instead of hiding it with fallback", () => {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.high = ["openai-codex/primary#medium", "openai-codex/gpt-5.6-sol#medium"];
+	const result = resolveHarnessModel(config, [
+		model("openai-codex", "primary", true, { medium: "medium", high: null }),
+		model("openai-codex", "gpt-5.6-sol", true, { medium: "medium" }),
+	], { tier: "high", primaryEffort: "high" });
+	assert.equal(result.status, "waiting_model");
+	assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["effort_unsupported"]);
 });
 
 test("preferred model is promoted ahead of the selected tier fallback list", () => {
@@ -62,6 +89,7 @@ test("preferred model is promoted ahead of the selected tier fallback list", () 
 	const result = resolveHarnessModel(config, [model("openai-codex", "gpt-5.6-sol"), model("ollama-cloud", "deepseek-v4-pro")], {
 		tier: "high",
 		override: preference,
+		allowFallback: true,
 	});
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") {
@@ -95,9 +123,9 @@ test("an unknown explicit local model fails closed instead of using a configured
 	const result = resolveHarnessModel(config, [
 		model("local-llm", "meta/muse-glimmer"),
 		model("openai-codex", "gpt-5.6-luna"),
-	], { tier: "local", override: { model: "local-llm/qwen3.8-27b-uncensored", effort: "medium" } });
+	], { tier: "local", override: { model: "local-llm/qwen3.8-27b-uncensored", effort: "medium" }, allowFallback: true });
 	assert.equal(result.status, "waiting_model");
-	assert.deepEqual(result.attempts, [{ model: "local-llm/qwen3.8-27b-uncensored", effort: "medium", status: "override_not_configured" }]);
+	assert.deepEqual(result.attempts, [{ kind: "requested", model: "local-llm/qwen3.8-27b-uncensored", effort: "medium", status: "override_not_configured" }]);
 });
 
 test("an unsupported effort for an explicit local model fails without fallback", () => {
@@ -106,9 +134,9 @@ test("an unsupported effort for an explicit local model fails without fallback",
 	const result = resolveHarnessModel(config, [
 		model("local-llm", "meta/muse-glimmer"),
 		model("local-llm", "qwen3.8-27b-uncensored", true, { medium: null, high: "high" }),
-	], { tier: "local", override: { model: "local-llm/qwen3.8-27b-uncensored", effort: "medium" } });
+	], { tier: "local", override: { model: "local-llm/qwen3.8-27b-uncensored", effort: "medium" }, allowFallback: true });
 	assert.equal(result.status, "waiting_model");
-	assert.deepEqual(result.attempts, [{ provider: "local-llm", model: "qwen3.8-27b-uncensored", effort: "medium", status: "effort_unsupported" }]);
+	assert.deepEqual(result.attempts, [{ kind: "requested", provider: "local-llm", model: "qwen3.8-27b-uncensored", effort: "medium", status: "effort_unsupported" }]);
 });
 
 test("ordinary tiers never promote a matching local route", () => {

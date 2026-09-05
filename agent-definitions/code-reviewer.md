@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Code review against specifications and acceptance contracts
+description: Read-only review of existing changes against requirements and acceptance contracts
 tools: [read, grep, find, bash]
 tier: medium
 ---

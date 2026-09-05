@@ -19,7 +19,7 @@ function model(provider: string, id: string, reasoning = false): Model<Api> {
 	return { provider, id, reasoning } as unknown as Model<Api>;
 }
 
-test("a direct user override may select an unconfigured registered model before same-tier fallbacks", () => {
+test("a direct user override may strictly select an unconfigured registered model", () => {
 	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
 	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium = ["openai-codex/fallback#off"];
 	const result = resolveSubagentModel(config, [model("ollama-cloud", "glm-5.3-flash"), model("openai-codex", "fallback")], {
@@ -30,30 +30,70 @@ test("a direct user override may select an unconfigured registered model before 
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") {
 		assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "ollama-cloud/glm-5.3-flash#off");
-		assert.deepEqual(result.candidates, [
-			{ provider: "ollama-cloud", model: "glm-5.3-flash", effort: "off" },
-			{ provider: "openai-codex", model: "fallback", effort: "off" },
-		]);
+		assert.deepEqual(result.candidates, [{ provider: "ollama-cloud", model: "glm-5.3-flash", effort: "off" }]);
+		assert.deepEqual(result.selected, { provider: "ollama-cloud", model: "glm-5.3-flash", effort: "off" });
 	}
 });
 
-test("an unusable direct user override falls back in same-tier route order", () => {
+test("a missing direct user override is strict by default", () => {
+	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium = ["openai-codex/fallback#off"];
+	const result = resolveSubagentModel(config, [model("openai-codex", "fallback")], {
+		tier: "medium",
+		override: { model: "ollama-cloud/unavailable", effort: "off" },
+		allowUnconfiguredOverride: true,
+	});
+	assert.equal(result.status, "waiting_model");
+	assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["model_missing"]);
+});
+
+test("an unsupported effort on a direct user override fails even when fallback is allowed", () => {
+	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
+	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium = ["openai-codex/fallback#off"];
+	const result = resolveSubagentModel(config, [model("ollama-cloud", "glm-5.3-flash"), model("openai-codex", "fallback")], {
+		tier: "medium",
+		override: { model: "ollama-cloud/glm-5.3-flash", effort: "high" },
+		allowUnconfiguredOverride: true,
+		allowFallback: true,
+	});
+	assert.equal(result.status, "waiting_model");
+	assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["effort_unsupported"]);
+});
+
+test("a missing direct user override may opt into same-tier substitution", () => {
 	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
 	activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium = [
 		"openai-codex/missing#off",
 		"openai-codex/fallback#off",
 	];
-	const result = resolveSubagentModel(config, [model("ollama-cloud", "glm-5.3-flash"), model("openai-codex", "fallback")], {
+	const result = resolveSubagentModel(config, [model("openai-codex", "fallback")], {
 		tier: "medium",
-		override: { model: "ollama-cloud/glm-5.3-flash", effort: "high" },
+		override: { model: "ollama-cloud/unavailable", effort: "off" },
 		allowUnconfiguredOverride: true,
+		allowFallback: true,
 	});
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") {
 		assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/fallback#off");
 		assert.equal(result.fallbackUsed, true);
-		assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["effort_unsupported", "model_missing", "selected"]);
+		assert.deepEqual(result.attempts.map((attempt) => attempt.status), ["model_missing", "model_missing", "selected"]);
+		assert.deepEqual(result.attempts.map((attempt) => attempt.kind), ["requested", "fallback", "selected"]);
 	}
+});
+
+test("local fallback opt-in never crosses into a paid route", () => {
+	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
+	const tiers = activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers;
+	tiers.local = ["local-llm/local-fallback#off"];
+	tiers.medium = ["openai-codex/paid-fallback#off"];
+	const result = resolveSubagentModel(config, [model("openai-codex", "paid-fallback")], {
+		tier: "local",
+		override: { model: "local-llm/unavailable", effort: "off" },
+		allowUnconfiguredOverride: true,
+		allowFallback: true,
+	});
+	assert.equal(result.status, "waiting_model");
+	assert.equal(result.attempts.some((attempt) => attempt.provider === "openai-codex"), false);
 });
 
 test("loads standalone built-in, harness routing, and trusted project agent policy", () => {
