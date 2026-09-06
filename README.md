@@ -79,6 +79,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 | `Alt+Down` from an empty editor | Enter the interactive footer; arrows navigate, `Enter` confirms, and `Esc` closes. |
 | `/mode <agent\|orchestrator\|workflow\|designer>` | Change work mode directly. |
 | `/scratch` | Inspect, reset, or purge private session scratch. |
+| `/keep-awake on\|off\|status` | Control [quiet, enabled-by-default macOS keep-awake](extensions/keep-awake/README.md) while agents work; other platforms are a no-op. |
 | `Shift+Tab` or `/permissions` | Switch between enforced and bypass permission modes. |
 | `/tier-profile` | Change managed-agent model routing. |
 | `/fast` | Configure ChatGPT Fast mode for the main agent and subagent tiers. |
