@@ -127,6 +127,32 @@ test("detail values wrap instead of losing staged preview text", async () => {
 	await mounted.closed;
 });
 
+test("detail tones update dynamically and color the whole value", async () => {
+	let value = "○ Stopped";
+	let valueTone: "warning" | "success" = "warning";
+	const tones: Array<{ tone: string; text: string }> = [];
+	const mounted = mountDialog({
+		title: "Service",
+		rows: [
+			{ kind: "detail", label: "Status", value: () => value, tone: () => valueTone },
+			{ kind: "detail", label: "Mode", value: () => "Static tone", tone: "accent" },
+			{ kind: "detail", label: "Scope", value: () => "This Pi session" },
+		],
+	}, tones);
+
+	mounted.component.render(60);
+	assert.deepEqual(tones.filter(({ text }) => text === "○ Stopped"), [{ tone: "warning", text: "○ Stopped" }]);
+	assert.ok(tones.some(({ tone, text }) => tone === "accent" && text === "Static tone"), "static detail tones are supported");
+	assert.ok(tones.some(({ tone, text }) => tone === "muted" && text === "This Pi session"), "untoned details stay muted");
+
+	value = "● Running";
+	valueTone = "success";
+	mounted.component.render(60);
+	assert.deepEqual(tones.filter(({ text }) => text === "● Running"), [{ tone: "success", text: "● Running" }]);
+	mounted.component.handleInput("\x1b");
+	await mounted.closed;
+});
+
 test("short overlays keep the selected control visible while content scrolls", async () => {
 	const mounted = mountDialog({
 		title: "Scrollable",

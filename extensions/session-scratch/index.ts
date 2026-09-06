@@ -7,39 +7,13 @@ import {
 	createSessionScratchWorkspace,
 	purgeSessionScratchWorkspace,
 	restoreSessionScratchWorkspace,
-	WorkspaceValidationError,
 	type SessionScratchBinding,
 	type SessionScratchWorkspace,
 } from "./workspace.js";
 
-const ENTRY_TYPE = "pibox-session-scratch-v1";
+import { SESSION_SCRATCH_ENTRY_TYPE as ENTRY_TYPE, restoreScratchEntry, type ScratchEntry } from "./binding.js";
+
 const STATUS_KEY = "pibox-session-scratch";
-
-interface ScratchEntry {
-	schemaVersion: 1;
-	binding: SessionScratchBinding | null;
-}
-
-function parseEntry(value: unknown): ScratchEntry | undefined {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-	const candidate = value as Partial<ScratchEntry>;
-	if (candidate.schemaVersion !== 1) return undefined;
-	if (candidate.binding === null) return { schemaVersion: 1, binding: null };
-	const binding = candidate.binding as Partial<SessionScratchBinding> | undefined;
-	if (!binding || typeof binding.workspaceId !== "string" || typeof binding.sessionId !== "string") return undefined;
-	return { schemaVersion: 1, binding: { workspaceId: binding.workspaceId, sessionId: binding.sessionId } };
-}
-
-function restoreEntry(ctx: ExtensionContext): ScratchEntry {
-	const entries = ctx.sessionManager.getBranch?.() ?? ctx.sessionManager.getEntries();
-	for (let index = entries.length - 1; index >= 0; index--) {
-		const entry = entries[index] as { type?: string; customType?: string; data?: unknown };
-		if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
-		const parsed = parseEntry(entry.data);
-		if (parsed) return parsed;
-	}
-	return { schemaVersion: 1, binding: null };
-}
 
 function workspaceSummary(workspace: SessionScratchWorkspace, note?: string): string {
 	return [
@@ -48,6 +22,7 @@ function workspaceSummary(workspace: SessionScratchWorkspace, note?: string): st
 		`Root: ${workspace.paths.root}`,
 		`Plan: ${workspace.paths.plan}`,
 		`Ledger: ${workspace.paths.ledger}`,
+		"After compaction or resume, consult relevant scratch notes to recover context; current user direction and repository evidence take precedence. Notes may be stale.",
 		`Scripts: ${workspace.paths.scripts}`,
 		`Results: ${workspace.paths.results}`,
 	].filter(Boolean).join("\n");
@@ -112,7 +87,7 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 		description: "Inspect or initialize this Pi session's private, non-authoritative /tmp scratch workspace.",
 		promptSnippet: "Inspect or initialize private session scratch",
 		promptGuidelines: [
-			"Scratch is optional in Agent mode and mandatory working memory in Orchestrator mode.",
+			"Use scratch_workspace for plans, notes, scripts, experiments, and temporary output; actively make use of this flexible workspace in Orchestrator mode.",
 			"Never treat scratch as workflow authority or durable repository state.",
 			"If prior scratch is missing or invalid, report the lost continuity before initializing a replacement.",
 		],
@@ -177,7 +152,7 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		sessionCtx = ctx;
-		entry = restoreEntry(ctx);
+		entry = restoreScratchEntry(ctx);
 		workspace = undefined;
 		unavailable = undefined;
 		continuityNote = undefined;
@@ -186,7 +161,7 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", (_event, ctx) => {
 		sessionCtx = ctx;
-		entry = restoreEntry(ctx);
+		entry = restoreScratchEntry(ctx);
 		workspace = undefined;
 		unavailable = undefined;
 		continuityNote = undefined;
@@ -198,10 +173,10 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("context", async (event) => {
 		if (!runUsesScratch) return;
-		const mandatory = currentWorkMode() === "orchestrator";
+		const autoInitialize = currentWorkMode() === "orchestrator";
 		let current: SessionScratchWorkspace | undefined;
 		try {
-			current = await attach(mandatory);
+			current = await attach(autoInitialize);
 		} catch (error) {
 			unavailable = error instanceof Error ? error.message : String(error);
 		}

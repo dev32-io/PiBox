@@ -1,4 +1,5 @@
 html, body { height: 100%; overflow: hidden; }
+[hidden] { display: none !important; }
 body {
   color-scheme: dark;
   grid-template-rows: var(--header-height, 68px) minmax(0, 1fr);
@@ -75,7 +76,7 @@ body {
   .shell-header { align-items: stretch; flex-direction: column; justify-content: center; gap: 0; padding-inline: var(--space-3, 12px); }
   .shell-brand { display: none; }
   .shell-tabs { width: 100%; }
-  .shell-tab { flex: 1; justify-content: center; }
+  .shell-tab { flex: 1; justify-content: center; min-width: 0; padding-inline: var(--space-2, 8px); }
 }
 
 @media (forced-colors: active) {

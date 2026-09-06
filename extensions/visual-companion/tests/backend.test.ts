@@ -9,6 +9,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createVisualCompanionBackend } from "../backend.mjs";
 import visualCompanion, { resolveArtifact } from "../index.js";
 import { getService } from "../../service-adapter/registry.js";
+import { createSessionScratchWorkspace } from "../../session-scratch/workspace.js";
+import { SESSION_SCRATCH_ENTRY_TYPE } from "../../session-scratch/binding.js";
 
 async function fixture(root: string, id: string) {
 	const assetsDir = join(root, id);
@@ -101,7 +103,8 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	assert.equal(definition.name, "visual_companion");
 	assert.match(definition.description, /single.*session/i);
 	assert.deepEqual([...events.keys()], ["session_start", "session_shutdown"]);
-	const ctx = { hasUI: false, cwd: process.cwd() } as any;
+	let branch: any[] = [];
+	const ctx = { hasUI: false, cwd: process.cwd(), sessionManager: { getBranch: () => branch, getSessionId: () => "companion-session" } } as any;
 	const service = getService("visual-companion");
 	assert.ok(service?.controller.start);
 	const first = await service.controller.start({ ctx });
@@ -109,6 +112,15 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	assert.equal(first.state, "running");
 	assert.equal(second.detail, first.detail);
 	assert.equal((await fetch(first.detail!)).status, 200);
+	assert.deepEqual((await (await fetch(`${first.detail}/api/viewers`)).json()).viewers, ["story-board"]);
+	const scratch = await createSessionScratchWorkspace("companion-session");
+	try {
+		branch = [{ type: "custom", customType: SESSION_SCRATCH_ENTRY_TYPE, data: { schemaVersion: 1, binding: scratch.binding } }];
+		assert.deepEqual((await (await fetch(`${first.detail}/api/viewers`)).json()).viewers, ["story-board", "scratch"]);
+		assert.equal((await fetch(`${first.detail}/v/scratch/api/notes`)).status, 200);
+		branch = [];
+		assert.equal((await fetch(`${first.detail}/v/scratch/api/notes`)).status, 404);
+	} finally { await rm(scratch.paths.root, { recursive: true, force: true }); }
 	assert.equal((await service.controller.health({ ctx })).state, "running");
 	assert.equal((await service.controller.stop!({ ctx })).state, "stopped");
 	assert.equal((await service.controller.stop!({ ctx })).state, "stopped");

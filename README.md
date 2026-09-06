@@ -12,12 +12,12 @@ PiBox is a mode-driven extension pack for the [Pi coding agent](https://github.c
 
 ## Choose how PiBox works
 
-New sessions start in **Agent** mode. From an empty editor, press `Alt+Down` to enter the interactive footer, or use `/mode <name>` directly.
+New sessions start in **Orchestrator** mode; Agent remains available for direct work without the plan-approval step. From an empty editor, press `Alt+Down` to enter the interactive footer, or use `/mode <name>` directly.
 
 | Mode | Use it for |
 |---|---|
 | **Agent** | Direct repository work with ordinary tools, optional scratch, and bounded subagents. |
-| **Orchestrator** | Plan-and-ledger coordination with deliberate delegation and final verification. |
+| **Orchestrator** | Plan discussion and approval, flexible scratch, deliberate delegation, and final verification. |
 | **Workflow** | Reviewed stories and plans followed by managed stages, checks, repair, review, and E2E. |
 | **Designer** | Repository-aware visual exploration, mockups, and implementation handoff. |
 

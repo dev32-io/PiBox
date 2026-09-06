@@ -24,7 +24,7 @@ test("restores only the latest valid active-branch work-mode entry", () => {
 	const newest = entry({ schemaVersion: 1, mode: "designer", workflowToolsExposed: true, providerMode: "workflow" });
 	assert.deepEqual(restoreWorkMode(ctx([older, malformed, newest])), newest.data);
 	assert.deepEqual(restoreWorkMode(ctx([older, malformed])), older.data);
-	assert.deepEqual(restoreWorkMode(ctx([])), { schemaVersion: 1, mode: "agent", workflowToolsExposed: false });
+	assert.deepEqual(restoreWorkMode(ctx([])), { schemaVersion: 1, mode: "orchestrator", workflowToolsExposed: false });
 });
 
 test("parsing rejects partial or invented provider state", () => {
@@ -40,7 +40,7 @@ test("legacy provider history is inferred without reading message content", () =
 
 test("startup mode accepts four modes and the bounded deprecated profile alias", () => {
 	assert.equal(requestedStartupMode({ getFlag: (name: string) => name === "work-mode" ? "Workflow" : undefined } as any), "workflow");
-	assert.equal(requestedStartupMode({ getFlag: (name: string) => name === "profile" ? "default" : undefined } as any), "agent");
+	assert.equal(requestedStartupMode({ getFlag: (name: string) => name === "profile" ? "default" : undefined } as any), "orchestrator");
 	assert.equal(requestedStartupMode({ getFlag: (name: string) => name === "profile" ? "designer" : undefined } as any), "designer");
 	assert.throws(() => requestedStartupMode({ getFlag: () => "made-up" } as any), /Unknown PiBox mode/);
 });

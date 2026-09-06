@@ -4,12 +4,12 @@ export const WORK_MODES = ["agent", "orchestrator", "workflow", "designer"] as c
 export type PiBoxWorkMode = (typeof WORK_MODES)[number];
 
 export const WORK_MODE_ICONS: Record<PiBoxWorkMode, string> = {
-	agent: "",
-	orchestrator: "󰒪",
+	agent: "",
+	orchestrator: "󰏿",
 	workflow: "󱄗",
 	designer: "󰏘",
 };
-export const DEFAULT_WORK_MODE: PiBoxWorkMode = "agent";
+export const DEFAULT_WORK_MODE: PiBoxWorkMode = "orchestrator";
 export const WORK_MODE_ENTRY_TYPE = "pibox-work-mode-v1";
 export const WORK_MODE_STATUS_KEY = "pibox-work-mode";
 export const WORK_MODE_EVENT = "pibox:work-mode";
@@ -62,7 +62,7 @@ export function requestedStartupMode(pi: Pick<ExtensionAPI, "getFlag">): PiBoxWo
 	const legacy = pi.getFlag("profile");
 	if (typeof legacy !== "string" || !legacy.trim()) return undefined;
 	const normalized = legacy.trim().toLowerCase();
-	if (normalized === "default") return "agent";
+	if (normalized === "default") return DEFAULT_WORK_MODE;
 	if (normalized === "designer") return "designer";
 	throw new Error(`Unknown deprecated PiBox profile \"${legacy}\". Use --work-mode with one of: ${WORK_MODES.join(", ")}`);
 }

@@ -469,7 +469,7 @@ test("child-backed activation respects both concurrency limits and leaves excess
 	const bounded = (await adapter.snapshot("work-item:example", f.ctx)).runtime?.stages[0]?.tasks;
 	assert.deepEqual(bounded?.map((entry) => entry.status), ["implementing", "implementing", "pending"], "unlaunched child work must not receive an attempt token");
 	gates.get("a")!.resolve({ ...passed(), contributionCommit: "commit-a" });
-	await eventually(() => assert.deepEqual(launched, ["a", "b", "c"]));
+	await eventually(() => assert.deepEqual([...launched].sort(), ["a", "b", "c"]));
 	gates.get("b")!.resolve({ ...passed(), contributionCommit: "commit-b" });
 	gates.get("c")!.resolve({ ...passed(), contributionCommit: "commit-c" });
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"));

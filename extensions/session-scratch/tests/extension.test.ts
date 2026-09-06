@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import sessionScratchExtension, { SESSION_SCRATCH_ENTRY_TYPE } from "../index.js";
@@ -61,6 +61,49 @@ test("Agent startup is disk-idle while Orchestrator demand creates and reinjects
 		assert.equal(next.messages.filter((message) => message.customType === "pibox-session-scratch").length, 1, "compaction pointer is replaced, not duplicated");
 	} finally {
 		await testHarness.handlers.get("session_shutdown")?.({}, testHarness.ctx);
+		uninstall();
+		if (root) await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("recovery guidance survives context replacement and resume without rewriting notes", async () => {
+	const uninstall = installWorkModeRuntime({ snapshot: () => ({ sessionId: "session-a", mode: "orchestrator", workflowToolsExposed: false, generation: 1 }) });
+	const seed = harness();
+	let root: string | undefined;
+	try {
+		await seed.handlers.get("session_start")?.({ reason: "startup" }, seed.ctx);
+		await seed.handlers.get("before_agent_start")?.({}, seed.ctx);
+		await seed.handlers.get("context")?.({ messages: [{ role: "user", content: "coordinate" }] }, seed.ctx);
+		const binding = seed.appended.at(-1).data.binding;
+		root = `/tmp/pibox-session-${binding.workspaceId}`;
+		const plan = "Existing free-form plan, including obsolete scope.\n";
+		const ledger = "Existing decisions and evidence.\n";
+		await writeFile(`${root}/plan.md`, plan);
+		await writeFile(`${root}/ledger.md`, ledger);
+
+		const assertPointer = (messages: any[]) => {
+			const pointers = messages.filter((message) => message.customType === "pibox-session-scratch");
+			assert.equal(pointers.length, 1);
+			assert.match(pointers[0].content, /After compaction or resume, consult relevant scratch notes to recover context/);
+			assert.match(pointers[0].content, /current user direction and repository evidence take precedence[\s\S]+may be stale/);
+			assert.equal(pointers[0].content.includes(plan.trim()), false, "notes are not automatically injected");
+			assert.equal(pointers[0].content.includes(ledger.trim()), false);
+		};
+		// Pi has rebuilt context without the previous scratch pointer.
+		const compacted = await seed.handlers.get("context")?.({ messages: [{ role: "compactionSummary", summary: "Prior work" }] }, seed.ctx);
+		assertPointer(compacted.messages);
+		await seed.handlers.get("session_shutdown")?.({}, seed.ctx);
+
+		const resumed = harness([scratchEntry(binding)]);
+		await resumed.handlers.get("session_start")?.({ reason: "resume" }, resumed.ctx);
+		await resumed.handlers.get("before_agent_start")?.({}, resumed.ctx);
+		const restored = await resumed.handlers.get("context")?.({ messages: [{ role: "user", content: "narrow the scope" }] }, resumed.ctx);
+		assertPointer(restored.messages);
+		assert.equal(resumed.appended.length, 0, "the existing binding is reused");
+		assert.equal(await readFile(`${root}/plan.md`, "utf8"), plan);
+		assert.equal(await readFile(`${root}/ledger.md`, "utf8"), ledger);
+		await resumed.handlers.get("session_shutdown")?.({}, resumed.ctx);
+	} finally {
 		uninstall();
 		if (root) await rm(root, { recursive: true, force: true });
 	}

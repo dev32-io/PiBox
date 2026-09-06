@@ -205,7 +205,8 @@ class InteractiveFooterDialog implements Component {
 		for (const row of spec.rows) {
 			if (row.kind === "detail") {
 				const label = `${row.label}${" ".repeat(Math.max(0, detailLabelWidth - visibleWidth(row.label)))}`;
-				const value = this.theme.fg("muted", row.value());
+				const rowTone = typeof row.tone === "function" ? row.tone() : row.tone;
+				const value = tone(this.theme, rowTone ?? "muted", row.value());
 				for (const text of wrapTextWithAnsi(`${this.theme.fg("dim", label)}  ${value}`, Math.max(1, innerWidth - 6))) lines.push(line(`   ${text}`));
 				continue;
 			}

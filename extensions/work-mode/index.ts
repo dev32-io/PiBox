@@ -27,7 +27,7 @@ const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const ORCHESTRATOR_PROMPT = readFileSync(resolve(PACKAGE_ROOT, "prompt/orchestrator-mode.md"), "utf8").trim();
 const MODE_DESCRIPTIONS: Record<PiBoxWorkMode, string> = {
 	agent: "Direct work with ordinary PiBox capabilities. Scratch is optional and workflow operations are blocked.",
-	orchestrator: "Plan- and ledger-driven coordination with deliberate subagent delegation. Workflow operations remain blocked.",
+	orchestrator: "Discuss and approve a plan, then coordinate with flexible scratch and deliberate delegation. Workflow operations remain blocked.",
 	workflow: "Structured story, plan, stage, review, and E2E delivery. Existing workflow authority gates still apply.",
 	designer: "Repository-aware visual design authority with the Designer prompt and handoff skill.",
 };

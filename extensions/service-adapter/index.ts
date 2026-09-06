@@ -56,7 +56,7 @@ function describe(snapshot: ServiceSnapshot): string {
 }
 
 function serviceDialogDescription(descriptor: ServiceDescriptor): string {
-	if (descriptor.id === "visual-companion") return "Open browser-rendered PiBox architecture, mockups, and delivery views for this session.";
+	if (descriptor.id === "visual-companion") return "Open browser-rendered PiBox architecture, mockups, delivery views, and available scratch notes for this session.";
 	if (descriptor.id === "mem0") return "Repository-scoped memory service shared by Pi sessions on this machine.";
 	if (descriptor.id === "searxng") return "Local web-search service shared by Pi sessions on this machine.";
 	return descriptor.perSession ? "Service available only to this Pi session." : "Service shared by Pi sessions on this machine.";
@@ -127,9 +127,9 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 
 	const serviceTone = (state: ServiceSnapshot["state"]): InteractiveFooterTone => state === "running"
 		? "success"
-		: state === "starting" || state === "updating"
-			? "warning"
-			: state === "unhealthy" || state === "error" ? "error" : "dim";
+		: state === "unhealthy" || state === "error"
+			? "error"
+			: "warning";
 	const serviceMarker = (state: ServiceSnapshot["state"]): string => state === "running"
 		? "●"
 		: state === "starting" || state === "updating" ? "◌" : state === "unhealthy" || state === "error" ? "!" : "○";
@@ -148,7 +148,7 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 				title: descriptor.name,
 				description: serviceDialogDescription(descriptor),
 				rows: [
-					{ kind: "detail", label: "Status", value: () => displayState(snapshot().state) },
+					{ kind: "detail", label: "Status", value: () => displayState(snapshot().state), tone: () => serviceTone(snapshot().state) },
 					{ kind: "detail", label: "Scope", value: () => descriptor.perSession ? "This Pi session" : descriptor.stayAlive ? "Shared · remains available after exit" : "Shared across Pi sessions" },
 					{ kind: "detail", label: "Last check", value: () => displayCheckedAt(snapshot().checkedAt) },
 					{

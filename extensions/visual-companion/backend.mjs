@@ -161,11 +161,16 @@ export async function createVisualCompanionBackend({
         return;
       }
       if (url.pathname === "/api/viewers") {
+        const available = await Promise.all([...registry.entries()].map(async ([id, registration]) => {
+          try { return (!registration.viewer.isAvailable || await registration.viewer.isAvailable()) && registry.get(id) === registration ? id : undefined; }
+          catch { return undefined; }
+        }));
+        const viewers = available.filter((id) => id !== undefined);
         response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-        response.end(JSON.stringify({ viewers: [...registry.keys()], selected: selectedViewer }));
+        response.end(JSON.stringify({ viewers, selected: viewers.includes(selectedViewer) ? selectedViewer : undefined }));
         return;
       }
-      if (url.pathname === "/" || /^\/(?:story-board|architecture|mockup)(?:\/.*)?$/.test(url.pathname)) {
+      if (url.pathname === "/" || /^\/(?:story-board|architecture|mockup|scratch)(?:\/.*)?$/.test(url.pathname)) {
         const shell = containedPath(commonAssetsDir, "index.html");
         if (shell && existsSync(shell)) sendFile(response, shell);
         else notFound(response);

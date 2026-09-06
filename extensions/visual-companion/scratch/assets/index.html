@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Session Scratch</title>
+  <link rel="stylesheet" href="/assets/design-tokens.css">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="scratch-header">
+    <div>
+      <p class="eyebrow">Session Scratch</p>
+      <h1>Working notes</h1>
+    </div>
+    <button id="refresh" type="button">Refresh</button>
+  </header>
+  <aside class="notice" aria-label="Scratch note status">
+    Private, temporary working context. These notes may be stale and are not an authoritative plan or record.
+  </aside>
+  <nav class="note-tabs" role="tablist" aria-label="Scratch notes">
+    <button id="tab-plan" type="button" role="tab" aria-selected="true" aria-controls="panel-plan" data-note="plan">Plan</button>
+    <button id="tab-ledger" type="button" role="tab" aria-selected="false" aria-controls="panel-ledger" data-note="ledger" tabindex="-1">Ledger</button>
+  </nav>
+  <main>
+    <div id="status" role="status" aria-live="polite"></div>
+    <section id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
+      <div class="note-state" hidden></div>
+      <article class="markdown" tabindex="0"></article>
+    </section>
+    <section id="panel-ledger" role="tabpanel" aria-labelledby="tab-ledger" hidden>
+      <div class="note-state" hidden></div>
+      <article class="markdown" tabindex="0"></article>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -15,6 +15,7 @@ export interface InteractiveFooterDetailRow {
 	kind: "detail";
 	label: string;
 	value: () => string;
+	tone?: InteractiveFooterTone | (() => InteractiveFooterTone | undefined);
 }
 
 export interface InteractiveFooterSettingRow {

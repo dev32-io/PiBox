@@ -9,6 +9,9 @@ import { registerService, setServiceSnapshot } from "../service-adapter/registry
 import { createVisualCompanionPlatform } from "./platform.js";
 import { createMockupViewer } from "./mockup/index.js";
 import { createStoryBoardViewer } from "./story-board/index.js";
+import { currentSessionScratchBinding } from "../session-scratch/binding.js";
+import { createScratchViewer } from "./scratch/index.js";
+import type { VisualCompanionBackend } from "./backend.mjs";
 
 const SERVICE_ID = "visual-companion";
 
@@ -61,6 +64,10 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	const platform = createVisualCompanionPlatform();
 	let activeViewer: string | undefined;
 	let activeArtifact: string | undefined;
+	const registerSessionViewers = (backend: VisualCompanionBackend, ctx: ExtensionContext) => {
+		if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
+		if (!backend.viewers.includes("scratch")) backend.registerViewer(createScratchViewer(() => currentSessionScratchBinding(ctx)));
+	};
 
 	const unregisterService = registerService({
 		id: SERVICE_ID,
@@ -73,7 +80,7 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	}, {
 		start: async ({ ctx, signal }) => {
 			const { backend } = await platform.start(signal);
-			if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
+			registerSessionViewers(backend, ctx);
 			backend.select("story-board");
 			return { state: "running", detail: backend.url };
 		},
@@ -111,7 +118,7 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 			setState(ctx, "starting");
 			try {
 				const { backend } = await platform.start(signal);
-				if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
+				registerSessionViewers(backend, ctx);
 				const shown = await platform.open({
 					viewer: () => viewerId === "mockup" ? createMockupViewer() : createArchitectureViewer(),
 					artifactPath,

@@ -9,6 +9,7 @@ const WORKSPACE_PREFIX = "pibox-session-";
 const WORKSPACE_ID = /^[0-9a-f]{32}$/;
 const MAX_CREATE_ATTEMPTS = 32;
 const MAX_META_BYTES = 16 * 1024;
+export const MAX_SCRATCH_NOTE_BYTES = 128 * 1024;
 const MAX_SESSION_ID_BYTES = 4 * 1024;
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -17,10 +18,14 @@ const PLAN_TEMPLATE = `# Session Scratch Plan
 
 > Non-authoritative scratch material. This file is temporary and is not a product, workflow, or repository source of truth.
 
+Use a step-by-step checklist to guide execution of the agreed goal. Make the next action, dependencies, and completion checks clear, including sequential work and independent implementation work suitable for parallel subagents. Keep it practical and update it as work progresses.
+
 `;
 const LEDGER_TEMPLATE = `# Session Scratch Ledger
 
 > Non-authoritative scratch material. This file is temporary and is not a durable workflow ledger or repository source of truth.
+
+A concise rolling record of execution context, so work can continue without repeating prior investigation. Preserve meaningful progress together with what was established, decisions and rationale, approaches tried or ruled out, evidence pointers, and unresolved issues—not merely a list of completed actions. Revisit and clean up at logical boundaries using judgment, preserving anything that may still help.
 
 `;
 
@@ -240,6 +245,39 @@ async function validateWorkspace(binding: SessionScratchBinding): Promise<Sessio
 /** Restore an existing workspace only when both opaque id and owning Pi session id match. */
 export async function restoreSessionScratchWorkspace(binding: SessionScratchBinding): Promise<SessionScratchWorkspace> {
 	return validateWorkspace(binding);
+}
+
+export interface SessionScratchNote {
+	markdown: string;
+	truncated: boolean;
+}
+
+/** Bounded, read-only projection of the two notes; never serves arbitrary workspace files. */
+export async function readSessionScratchNotes(binding: SessionScratchBinding): Promise<{ plan: SessionScratchNote; ledger: SessionScratchNote }> {
+	const workspace = await validateWorkspace(binding);
+	const root = await openValidated(workspace.paths.root, "directory", DIRECTORY_MODE);
+	const readNote = async (path: string): Promise<SessionScratchNote> => {
+		const handle = await openValidated(path, "file", FILE_MODE);
+		try {
+			const [openedRoot, currentRoot] = await Promise.all([root.stat(), lstat(workspace.paths.root)]);
+			if (!currentRoot.isDirectory() || currentRoot.isSymbolicLink() || openedRoot.dev !== currentRoot.dev || openedRoot.ino !== currentRoot.ino) {
+				throw new WorkspaceValidationError("Scratch workspace changed during note read");
+			}
+			const buffer = Buffer.alloc(MAX_SCRATCH_NOTE_BYTES + 1);
+			let total = 0;
+			while (total < buffer.length) {
+				const { bytesRead } = await handle.read(buffer, total, buffer.length - total, total);
+				if (!bytesRead) break;
+				total += bytesRead;
+			}
+			const truncated = total > MAX_SCRATCH_NOTE_BYTES;
+			return { markdown: new TextDecoder().decode(buffer.subarray(0, Math.min(total, MAX_SCRATCH_NOTE_BYTES)), { stream: truncated }), truncated };
+		} finally { await handle.close(); }
+	};
+	try {
+		// Read sequentially so every handle has settled before the root handle is closed.
+		return { plan: await readNote(workspace.paths.plan), ledger: await readNote(workspace.paths.ledger) };
+	} finally { await root.close(); }
 }
 
 /** Permanently remove a workspace after revalidating its complete layout and binding. */

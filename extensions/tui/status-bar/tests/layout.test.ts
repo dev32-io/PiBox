@@ -66,7 +66,8 @@ test("hides quota when it cannot fit or no reliable windows exist", () => {
 });
 
 test("renders every work mode flush until focused, then shows the navigation pointer", () => {
-	const icons = { agent: "", orchestrator: "󰒪", workflow: "󱄗", designer: "󰏘" } as const;
+	const icons = { agent: "", orchestrator: "󰏿", workflow: "󱄗", designer: "󰏘" } as const;
+	assert.match(renderStatusBar(160, data)[1] ?? "", /^ 󰏿/, "the default mode uses the Pi icon");
 	for (const [workMode, icon] of Object.entries(icons)) {
 		const row = renderStatusBar(160, { ...data, workMode: workMode as keyof typeof icons })[1] ?? "";
 		assert.match(row, new RegExp(`^ ${icon}`), "the unfocused icon starts at the shared one-column row margin");

@@ -58,7 +58,9 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	const testHarness = harness();
 	const { handlers, ctx } = testHarness;
 	await handlers.get("session_start")?.({ reason: "startup" }, ctx);
-	assert.equal(currentWorkMode(), "agent");
+	assert.equal(currentWorkMode(), "orchestrator");
+	const prompt = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
+	assert.match(prompt.systemPrompt, /# PiBox Orchestrator Mode/);
 	assert.deepEqual(testHarness.active(), ["read", "subagent_spawn", "unrelated"]);
 	assert.equal(testHarness.appended.length, 0, "default startup adds no entry or model message");
 	await testHarness.commands.get("mode")?.("workflow", ctx);
@@ -103,6 +105,33 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	resetInteractiveFooterRegistryForTests();
 });
 
+test("new defaults preserve explicit Agent choices and startup overrides", async () => {
+	resetInteractiveFooterRegistryForTests();
+	const savedAgent = custom({ schemaVersion: 1, mode: "agent", workflowToolsExposed: false, providerMode: "agent" });
+	for (const reason of ["resume", "reload", "fork"]) {
+		const restored = harness([savedAgent]);
+		await restored.handlers.get("session_start")?.({ reason }, restored.ctx);
+		assert.equal(currentWorkMode(), "agent", reason);
+		assert.equal(await restored.handlers.get("before_agent_start")?.({ systemPrompt: "base" }, restored.ctx), undefined);
+		await restored.handlers.get("session_shutdown")?.({}, restored.ctx);
+	}
+	const explicit = harness([], { "work-mode": "agent" });
+	await explicit.handlers.get("session_start")?.({ reason: "startup" }, explicit.ctx);
+	assert.equal(currentWorkMode(), "agent");
+	assert.equal(explicit.appended.at(-1)?.data.mode, "agent");
+	await explicit.handlers.get("session_shutdown")?.({}, explicit.ctx);
+
+	// A startup override does not carry into a new session with no saved selection.
+	await explicit.handlers.get("session_start")?.({ reason: "new" }, explicit.ctx);
+	assert.equal(currentWorkMode(), "orchestrator");
+	assert.equal(getInteractiveFooterItem("work-mode")!.status().marker, "󰏿");
+	await explicit.handlers.get("before_provider_request")?.({}, explicit.ctx);
+	assert.equal(explicit.appended.at(-1)?.data.providerMode, "orchestrator");
+	await explicit.handlers.get("session_shutdown")?.({}, explicit.ctx);
+	assert.equal(currentWorkMode(), "orchestrator", "unbound helpers use the same default");
+	resetInteractiveFooterRegistryForTests();
+});
+
 test("branch restoration, mode prompts, startup aliases, and cache impact stay exact", async () => {
 	resetInteractiveFooterRegistryForTests();
 	const saved = { schemaVersion: 1, mode: "designer", workflowToolsExposed: true, providerMode: "workflow" };
@@ -117,6 +146,15 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.equal(currentWorkMode(), "orchestrator");
 	const result = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
 	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode[\s\S]+plan\.md[\s\S]+ledger\.md/);
+	assert.match(result.systemPrompt, /present a concise plan in your response, and wait for approval before substantial execution/);
+	assert.match(result.systemPrompt, /Actively use session scratch as a flexible memo board and workbench/);
+	assert.match(result.systemPrompt, /`plan\.md` as a step-by-step checklist that guides delivery of the agreed goal, not paperwork/);
+	assert.match(result.systemPrompt, /dependencies, and completion checks[\s\S]+sequentially[\s\S]+independent implementation work suitable for parallel subagents/);
+	assert.match(result.systemPrompt, /`ledger\.md` as a concise rolling record of execution context[\s\S]+without repeating prior investigation/);
+	assert.match(result.systemPrompt, /meaningful progress[\s\S]+approaches tried or ruled out[\s\S]+not merely a list of completed actions/);
+	assert.match(result.systemPrompt, /`scripts\/` and `results\/`[\s\S]+starting points, not limits/);
+	assert.match(result.systemPrompt, /logical boundaries using judgment, preserving anything that may still help/);
+	assert.doesNotMatch(result.systemPrompt, /detailed, step-by-step checklist|Before context compaction|Replace the active plan when|Retain a note only if/);
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {
 		changesSystemPrompt: false,
 		changesToolDefinitions: true,
@@ -130,7 +168,9 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	const legacyDialog = await getInteractiveFooterItem("work-mode")!.dialog(legacy.ctx);
 	assert.equal(legacyDialog.kind, "choice");
 	if (legacyDialog.kind !== "choice") throw new Error("expected choice dialog");
-	assert.equal(legacyDialog.notice?.("orchestrator")?.tone, "warning", "legacy conversations conservatively infer an Agent provider prefix");
+	assert.equal(currentWorkMode(), "orchestrator", "legacy sessions without a saved mode use the new default");
+	assert.equal(legacyDialog.notice?.("agent"), undefined, "legacy provider history still conservatively infers the old Agent prefix");
+	assert.equal(legacyDialog.notice?.("designer")?.tone, "warning");
 	await legacy.handlers.get("session_shutdown")?.({}, legacy.ctx);
 
 	const startup = harness([], { profile: "designer" });

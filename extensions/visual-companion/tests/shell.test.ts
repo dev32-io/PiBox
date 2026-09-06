@@ -21,6 +21,7 @@ test("shell exposes accessible stable tabs and lazy viewer mount regions", async
 	assert.match(html, /id="tab-story-board"[\s\S]*role="tab"[\s\S]*aria-controls="panel-story-board"/);
 	assert.match(html, /id="tab-architecture"[\s\S]*role="tab"[\s\S]*aria-controls="panel-architecture"/);
 	assert.match(html, /id="tab-mockup"[\s\S]*role="tab"[\s\S]*aria-controls="panel-mockup"/);
+	assert.match(html, /id="tab-scratch"[\s\S]*role="tab"[\s\S]*aria-controls="panel-scratch"[\s\S]*hidden/);
 	assert.match(html, /role="tabpanel"/);
 	assert.doesNotMatch(html, /<iframe[^>]+src=/, "viewer frames must not load before route selection");
 	assert.match(app, /routeViewer/);
@@ -31,6 +32,11 @@ test("shell exposes accessible stable tabs and lazy viewer mount regions", async
 	assert.match(app, /postMessage\(\{ type: ACTIVITY_MESSAGE, active \}, location\.origin\)/, "viewer activity messages must use the exact shell origin");
 	assert.match(app, /notifyActivity\(viewerId, selected\)/, "tab changes must notify mounted viewers");
 	assert.match(app, /notifyActivity\(id, id === activeViewer\)/, "iframe load must send its initial activity state");
+	assert.match(app, /visibleViewerIds\(\)/, "keyboard navigation must omit hidden viewers");
+	assert.match(app, /REGISTRY_INTERVAL_MS = 5_000/);
+	assert.match(app, /visibilitychange/);
+	assert.match(app, /frame\.remove\(\)/, "removing Scratch must destroy its browsing context");
+	assert.match(app, /activeViewer === "scratch"[\s\S]*activate\("story-board"\)/, "removing active Scratch must fall back to Story Board");
 });
 
 test("home and deep viewer routes serve one shell while direct viewers remain selected", async () => {

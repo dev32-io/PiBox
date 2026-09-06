@@ -53,8 +53,15 @@ test("creates an opaque canonical workspace with private layout and non-authorit
 	assert.equal(metadata.sessionId, sessionId);
 	assert.equal(metadata.schemaVersion, 1);
 	assert.match(metadata.createdAt, /^\d{4}-\d{2}-\d{2}T/);
-	assert.match(await readFile(workspace.paths.plan, "utf8"), /non-authoritative/i);
-	assert.match(await readFile(workspace.paths.ledger, "utf8"), /non-authoritative/i);
+	const plan = await readFile(workspace.paths.plan, "utf8");
+	const ledger = await readFile(workspace.paths.ledger, "utf8");
+	assert.match(plan, /non-authoritative/i);
+	assert.match(plan, /step-by-step checklist to guide execution of the agreed goal/i);
+	assert.match(plan, /sequential work[\s\S]+independent implementation work suitable for parallel subagents/i);
+	assert.match(ledger, /non-authoritative/i);
+	assert.match(ledger, /rolling record of execution context[\s\S]+without repeating prior investigation/i);
+	assert.match(ledger, /meaningful progress[\s\S]+not merely a list of completed actions/i);
+	assert.match(ledger, /logical boundaries using judgment, preserving anything that may still help/i);
 	assert.equal((await readdir(workspace.paths.root)).some((entry) => entry.endsWith(".tmp")), false);
 });
 

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { summarizeServices } from "../index.js";
-import { formatServiceStatus, listServiceDetails, listServices, operateService, registerService, resetServiceRegistryForTests } from "../registry.js";
+import serviceAdapter, { summarizeServices } from "../index.js";
+import { formatServiceStatus, listServiceDetails, listServices, operateService, registerService, resetServiceRegistryForTests, setServiceState } from "../registry.js";
+import { getInteractiveFooterItem, resetInteractiveFooterRegistryForTests } from "../../tui/interactive-footer/registry.js";
 
 const ctx = {
 	hasUI: true,
@@ -76,6 +77,45 @@ test("shares services across separately loaded extension module instances", asyn
 	} finally {
 		removePlaceholder();
 		removeLoaded();
+	}
+});
+
+test("service dialog status value and shared tone mapping update live", async () => {
+	resetServiceRegistryForTests();
+	resetInteractiveFooterRegistryForTests();
+	const handlers = new Map<string, (...args: any[]) => void>();
+	serviceAdapter({
+		registerTool() {},
+		registerCommand() {},
+		on(name: string, handler: (...args: any[]) => void) { handlers.set(name, handler); },
+	} as any);
+	try {
+		const item = getInteractiveFooterItem("service:mem0");
+		assert.ok(item);
+		const spec = await item.dialog({} as ExtensionContext);
+		assert.notEqual(spec.kind, "choice");
+		if (spec.kind === "choice") return;
+		const statusRow = spec.rows.find((row) => row.kind === "detail" && row.label === "Status");
+		assert.ok(statusRow?.kind === "detail");
+
+		const cases = [
+			["running", "● Running", "success"],
+			["starting", "◌ Starting", "warning"],
+			["updating", "◌ Updating", "warning"],
+			["unhealthy", "! Unhealthy", "error"],
+			["error", "! Error", "error"],
+			["stopped", "○ Stopped", "warning"],
+		] as const;
+		for (const [state, value, expectedTone] of cases) {
+			setServiceState("mem0", state);
+			assert.equal(statusRow.value(), value);
+			assert.equal(typeof statusRow.tone === "function" ? statusRow.tone() : statusRow.tone, expectedTone);
+			assert.equal(item.status().tone, expectedTone, "dialog and footer use the same service tone mapping");
+		}
+	} finally {
+		handlers.get("session_shutdown")?.({}, { hasUI: false });
+		resetServiceRegistryForTests();
+		resetInteractiveFooterRegistryForTests();
 	}
 });
 

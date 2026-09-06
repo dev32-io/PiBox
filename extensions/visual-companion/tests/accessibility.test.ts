@@ -15,7 +15,7 @@ test("shared shell implements keyboard tabs, visible focus, and assertive error 
 		readFile(resolve(shellAssets, "styles.css"), "utf8"),
 	]);
 	assert.match(html, /role="tablist"/);
-	assert.equal((html.match(/role="tab"/g) ?? []).length, 3);
+	assert.equal((html.match(/role="tab"/g) ?? []).length, 4);
 	for (const key of ["ArrowRight", "ArrowLeft", "Home", "End"]) assert.match(app, new RegExp(key));
 	assert.match(app, /state === "error" \? "alert" : "status"/);
 	assert.match(tokens, /:focus-visible/);

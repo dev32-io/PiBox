@@ -1,4 +1,4 @@
-import type { PiBoxWorkMode } from "./policy.js";
+import { DEFAULT_WORK_MODE, type PiBoxWorkMode } from "./policy.js";
 
 export interface WorkModeRuntimeSnapshot {
 	sessionId: string;
@@ -32,7 +32,7 @@ export function currentWorkModeSnapshot(): WorkModeRuntimeSnapshot | undefined {
 }
 
 export function currentWorkMode(): PiBoxWorkMode {
-	return currentWorkModeSnapshot()?.mode ?? "agent";
+	return currentWorkModeSnapshot()?.mode ?? DEFAULT_WORK_MODE;
 }
 
 export function workflowModeActive(): boolean {

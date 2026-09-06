@@ -26,6 +26,8 @@ export interface VisualCompanionAsset {
 
 export interface VisualCompanionViewer {
 	id: string;
+	/** Optional lazy discovery predicate. Does not create resources; handlers still enforce access. */
+	isAvailable?(): boolean | Promise<boolean>;
 	assetsDir?: string;
 	routes?: Record<string, string>;
 	handlers?: Record<string, VisualCompanionRouteHandler>;
