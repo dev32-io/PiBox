@@ -18,14 +18,14 @@ const PLAN_TEMPLATE = `# Session Scratch Plan
 
 > Non-authoritative scratch material. This file is temporary and is not a product, workflow, or repository source of truth.
 
-Use a step-by-step checklist to guide execution of the agreed goal. Make the next action, dependencies, and completion checks clear, including sequential work and independent implementation work suitable for parallel subagents. Keep it practical and update it as work progresses.
+In Orchestrator mode, for substantial work, investigate read-only as needed, then draft the plan here before presenting or discussing it or asking for approval. Keep it focused on the current goal as a practical step-by-step checklist, not an accumulation of projects. Make the next action, dependencies, completion checks, and sequential versus independent implementation work clear. Revise this same plan during discussion and delivery; wait for approval before implementation or delegating implementation. At goal changes and completion, remove obsolete or superseded detail using judgment, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
 
 `;
 const LEDGER_TEMPLATE = `# Session Scratch Ledger
 
 > Non-authoritative scratch material. This file is temporary and is not a durable workflow ledger or repository source of truth.
 
-A concise rolling record of execution context, so work can continue without repeating prior investigation. Preserve meaningful progress together with what was established, decisions and rationale, approaches tried or ruled out, evidence pointers, and unresolved issues—not merely a list of completed actions. Revisit and clean up at logical boundaries using judgment, preserving anything that may still help.
+Keep currently useful facts, decisions and rationale, evidence pointers, approaches tried or ruled out, and unresolved issues so work can continue without repeated investigation. This is context, not a chronological activity log. At goal changes and completion, consolidate and remove obsolete or superseded detail using judgment, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
 
 `;
 

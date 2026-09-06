@@ -102,7 +102,7 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	visualCompanion(pi);
 	assert.equal(definition.name, "visual_companion");
 	assert.match(definition.description, /single.*session/i);
-	assert.deepEqual([...events.keys()], ["session_start", "session_shutdown"]);
+	assert.deepEqual([...events.keys()], ["session_start", "session_tree", "session_shutdown"]);
 	let branch: any[] = [];
 	const ctx = { hasUI: false, cwd: process.cwd(), sessionManager: { getBranch: () => branch, getSessionId: () => "companion-session" } } as any;
 	const service = getService("visual-companion");
@@ -118,7 +118,13 @@ test("extension registers one session-scoped start/stop tool", async () => {
 		branch = [{ type: "custom", customType: SESSION_SCRATCH_ENTRY_TYPE, data: { schemaVersion: 1, binding: scratch.binding } }];
 		assert.deepEqual((await (await fetch(`${first.detail}/api/viewers`)).json()).viewers, ["story-board", "scratch"]);
 		assert.equal((await fetch(`${first.detail}/v/scratch/api/notes`)).status, 200);
+		const stream = await fetch(`${first.detail}/v/scratch/events`, { signal: AbortSignal.timeout(5_000) });
+		const reader = stream.body!.getReader();
+		assert.match(new TextDecoder().decode((await reader.read()).value), /event: ready/);
 		branch = [];
+		await events.get("session_tree")?.({}, ctx);
+		assert.match(new TextDecoder().decode((await reader.read()).value), /event: unavailable/);
+		assert.equal((await reader.read()).done, true, "tree changes close the old scratch stream immediately");
 		assert.equal((await fetch(`${first.detail}/v/scratch/api/notes`)).status, 404);
 	} finally { await rm(scratch.paths.root, { recursive: true, force: true }); }
 	assert.equal((await service.controller.health({ ctx })).state, "running");

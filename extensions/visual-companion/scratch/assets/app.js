@@ -10,6 +10,9 @@ let selectedNote = "plan";
 let notes;
 let requestGeneration = 0;
 let requestController;
+let events;
+let active = true;
+let pageActive = true;
 
 function showStatus(message, state = "status") {
   status.textContent = message;
@@ -46,12 +49,16 @@ function renderNote(id, note) {
   }
 }
 
-function renderNotes(payload, scrollPositions) {
+function renderNotes(payload) {
+  // Capture at render time, not fetch time: the user may scroll during a request.
+  const scrollPositions = Object.fromEntries(noteIds.map((id) => [id, panels.get(id).querySelector(".markdown").scrollTop]));
+  for (const id of noteIds) {
+    if (payload[id]?.markdown !== notes?.[id]?.markdown || payload[id]?.truncated !== notes?.[id]?.truncated) {
+      renderNote(id, payload[id]);
+      panels.get(id).querySelector(".markdown").scrollTop = scrollPositions[id];
+    }
+  }
   notes = payload;
-  for (const id of noteIds) renderNote(id, payload[id]);
-  requestAnimationFrame(() => {
-    for (const id of noteIds) panels.get(id).querySelector(".markdown").scrollTop = scrollPositions[id] ?? 0;
-  });
 }
 
 function clearNotes(message) {
@@ -68,7 +75,6 @@ function clearNotes(message) {
 }
 
 async function refreshNotes() {
-  const scrollPositions = Object.fromEntries(noteIds.map((id) => [id, panels.get(id).querySelector(".markdown").scrollTop]));
   requestController?.abort();
   const generation = ++requestGeneration;
   requestController = new AbortController();
@@ -85,7 +91,7 @@ async function refreshNotes() {
     if (!response.ok) throw new Error("request failed");
     const payload = await response.json();
     if (generation !== requestGeneration) return;
-    renderNotes(payload, scrollPositions);
+    renderNotes(payload);
     showStatus("Scratch notes refreshed.");
   } catch (error) {
     if (error.name === "AbortError" || generation !== requestGeneration) return;
@@ -96,6 +102,51 @@ async function refreshNotes() {
       requestController = undefined;
       refreshButton.disabled = false;
     }
+  }
+}
+
+function stopLiveUpdates() {
+  events?.close();
+  events = undefined;
+  requestGeneration += 1;
+  requestController?.abort();
+  requestController = undefined;
+  refreshButton.disabled = false;
+}
+
+function startLiveUpdates() {
+  if (!active || !pageActive || document.hidden) return;
+  if (events && events.readyState !== EventSource.CLOSED) return;
+  events = new EventSource("/v/scratch/events");
+  const source = events;
+  // Ready also runs after reconnection, recovering edits missed while disconnected.
+  const refresh = () => { if (events === source) void refreshNotes(); };
+  source.addEventListener("ready", refresh);
+  source.addEventListener("changed", refresh);
+  source.addEventListener("unavailable", () => {
+    if (events !== source) return;
+    stopLiveUpdates();
+    clearNotes("Scratch notes are no longer available for this session.");
+    showStatus("Scratch notes are unavailable.", "error");
+    // A tree change may have replaced one valid binding with another. Revalidate
+    // once, then reconnect only if notes are available; a genuine 404 stays idle.
+    if (active && pageActive && !document.hidden) {
+      void refreshNotes().then(() => { if (notes) startLiveUpdates(); });
+    }
+  });
+  source.addEventListener("error", () => {
+    if (events !== source) return;
+    showStatus("Live updates disconnected. Use Refresh or wait for reconnection.", "error");
+    // Revalidate displayed notes; a lost binding must not leave private stale content.
+    void refreshNotes();
+  });
+}
+
+function syncActivity() {
+  if (!active || !pageActive || document.hidden) stopLiveUpdates();
+  else {
+    startLiveUpdates();
+    void refreshNotes();
   }
 }
 
@@ -114,16 +165,17 @@ for (const [id, tab] of tabs) {
   });
 }
 
-refreshButton.addEventListener("click", () => { void refreshNotes(); });
+refreshButton.addEventListener("click", () => { startLiveUpdates(); void refreshNotes(); });
 addEventListener("message", (event) => {
   if (event.origin !== location.origin || event.source !== parent || event.data?.type !== ACTIVITY_MESSAGE) return;
-  if (event.data.active === true) void refreshNotes();
-  else if (event.data.active === false) requestController?.abort();
+  if (event.data.active === true) active = true;
+  else if (event.data.active === false) active = false;
+  else return;
+  syncActivity();
 });
-addEventListener("pagehide", () => {
-  requestGeneration += 1;
-  requestController?.abort();
-});
+document.addEventListener("visibilitychange", syncActivity);
+addEventListener("pagehide", () => { pageActive = false; stopLiveUpdates(); });
+addEventListener("pageshow", () => { pageActive = true; syncActivity(); });
 
 activateNote(selectedNote);
-void refreshNotes();
+syncActivity();

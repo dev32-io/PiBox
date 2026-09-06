@@ -64,9 +64,13 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	const platform = createVisualCompanionPlatform();
 	let activeViewer: string | undefined;
 	let activeArtifact: string | undefined;
+	let scratchViewer: ReturnType<typeof createScratchViewer> | undefined;
 	const registerSessionViewers = (backend: VisualCompanionBackend, ctx: ExtensionContext) => {
 		if (!backend.viewers.includes("story-board")) backend.registerViewer(createStoryBoardViewer({ repositoryRoot: ctx.cwd }));
-		if (!backend.viewers.includes("scratch")) backend.registerViewer(createScratchViewer(() => currentSessionScratchBinding(ctx)));
+		if (!backend.viewers.includes("scratch")) {
+			scratchViewer = createScratchViewer(() => currentSessionScratchBinding(ctx));
+			backend.registerViewer(scratchViewer);
+		}
 	};
 
 	const unregisterService = registerService({
@@ -156,8 +160,10 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 		platform.beginSession();
 		setState(ctx, "stopped");
 	});
+	pi.on("session_tree", () => { scratchViewer?.refreshBinding(); });
 	pi.on("session_shutdown", async (_event, ctx) => {
 		await platform.shutdown();
+		scratchViewer = undefined;
 		setState(ctx, "stopped");
 		unregisterService();
 	});

@@ -146,15 +146,17 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.equal(currentWorkMode(), "orchestrator");
 	const result = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
 	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode[\s\S]+plan\.md[\s\S]+ledger\.md/);
-	assert.match(result.systemPrompt, /present a concise plan in your response, and wait for approval before substantial execution/);
+	assert.match(result.systemPrompt, /investigate read-only as needed[\s\S]+write a draft in `plan\.md` before presenting or discussing the plan or asking for approval/);
+	assert.match(result.systemPrompt, /revise the same plan during discussion[\s\S]+wait for approval before implementation or delegating implementation/);
 	assert.match(result.systemPrompt, /Actively use session scratch as a flexible memo board and workbench/);
-	assert.match(result.systemPrompt, /`plan\.md` as a step-by-step checklist that guides delivery of the agreed goal, not paperwork/);
-	assert.match(result.systemPrompt, /dependencies, and completion checks[\s\S]+sequentially[\s\S]+independent implementation work suitable for parallel subagents/);
-	assert.match(result.systemPrompt, /`ledger\.md` as a concise rolling record of execution context[\s\S]+without repeating prior investigation/);
-	assert.match(result.systemPrompt, /meaningful progress[\s\S]+approaches tried or ruled out[\s\S]+not merely a list of completed actions/);
+	assert.match(result.systemPrompt, /`plan\.md` focused on the current goal[\s\S]+not an accumulation of projects/);
+	assert.match(result.systemPrompt, /next action, dependencies, completion checks[\s\S]+sequential versus independent implementation work/);
+	assert.match(result.systemPrompt, /`ledger\.md` focused on currently useful facts[\s\S]+decisions and rationale[\s\S]+unresolved issues/);
+	assert.match(result.systemPrompt, /context, not a chronological activity log/);
 	assert.match(result.systemPrompt, /`scripts\/` and `results\/`[\s\S]+starting points, not limits/);
-	assert.match(result.systemPrompt, /logical boundaries using judgment, preserving anything that may still help/);
-	assert.doesNotMatch(result.systemPrompt, /detailed, step-by-step checklist|Before context compaction|Replace the active plan when|Retain a note only if/);
+	assert.match(result.systemPrompt, /At goal changes and completion[\s\S]+remove obsolete or superseded detail using judgment/);
+	assert.match(result.systemPrompt, /summaries or pointers only where useful[\s\S]+do not force archives, hard caps, or automatic deletion/);
+	assert.doesNotMatch(result.systemPrompt, /detailed, step-by-step checklist|Before context compaction|Retain a note only if/);
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {
 		changesSystemPrompt: false,
 		changesToolDefinitions: true,

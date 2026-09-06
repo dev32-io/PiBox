@@ -56,12 +56,17 @@ test("creates an opaque canonical workspace with private layout and non-authorit
 	const plan = await readFile(workspace.paths.plan, "utf8");
 	const ledger = await readFile(workspace.paths.ledger, "utf8");
 	assert.match(plan, /non-authoritative/i);
-	assert.match(plan, /step-by-step checklist to guide execution of the agreed goal/i);
-	assert.match(plan, /sequential work[\s\S]+independent implementation work suitable for parallel subagents/i);
+	assert.match(plan, /investigate read-only as needed[\s\S]+draft the plan here before presenting or discussing it or asking for approval/i);
+	assert.match(plan, /focused on the current goal[\s\S]+not an accumulation of projects/i);
+	assert.match(plan, /revise this same plan during discussion[\s\S]+wait for approval before implementation or delegating implementation/i);
+	assert.match(plan, /sequential versus independent implementation work/i);
 	assert.match(ledger, /non-authoritative/i);
-	assert.match(ledger, /rolling record of execution context[\s\S]+without repeating prior investigation/i);
-	assert.match(ledger, /meaningful progress[\s\S]+not merely a list of completed actions/i);
-	assert.match(ledger, /logical boundaries using judgment, preserving anything that may still help/i);
+	assert.match(ledger, /currently useful facts[\s\S]+decisions and rationale[\s\S]+unresolved issues/i);
+	assert.match(ledger, /context, not a chronological activity log/i);
+	for (const note of [plan, ledger]) {
+		assert.match(note, /goal changes and completion[\s\S]+obsolete or superseded detail/i);
+		assert.match(note, /summaries or pointers only where useful[\s\S]+without forced archives, hard caps, or automatic deletion/i);
+	}
 	assert.equal((await readdir(workspace.paths.root)).some((entry) => entry.endsWith(".tmp")), false);
 });
 
