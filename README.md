@@ -27,7 +27,7 @@ Modes are session-branch-local and select authority, not permission: Workflow st
 
 | Area | Highlights |
 |---|---|
-| **Terminal UX** | `rattle` theme, refined input, responsive status, keyboard-driven interactive footer, reusable dialogs, spinners, and compact styled transcript and tool output. |
+| **Terminal UX** | `rattle` theme, refined input, responsive status, keyboard-driven interactive footer, reusable dialogs, spinners, and compact styled transcript output with subagent lifecycle and prompt previews. |
 | **Subagents** | Markdown-backed agent catalog, titled foreground/background `subagent_spawn`, explicit routing overrides, continuation, paged report reads, live progress, and event-aware `wait` without shell polling. |
 | **Models and speed** | Capacity-aware fallback across managed-agent routes, tier profiles, ChatGPT Fast mode for the main agent and selected child tiers, Codex usage meters, and local LLM or Ollama Cloud support. |
 | **Managed workflow** | Reviewed stories and plans, sequential or concurrent stages, isolated Git worktrees, checks, integration, bounded repair, whole-branch review, and final E2E. |

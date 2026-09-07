@@ -22,7 +22,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		tier: "medium",
 		task: "Verify one browser flow like a real user",
 	}, theme, true, false));
-	assert.equal(starting[1], "└─ Medium");
+	assert.equal(starting[1], "└─ Starting · Medium");
 	assert.doesNotMatch(starting.join("\n"), /resolving model|foreground/);
 	const rendered = lines(renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester",
@@ -38,7 +38,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	}));
 	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] e2e-tester Verify checkout flow/);
 	assert.doesNotMatch(rendered[0] ?? "", /Verify one browser flow/);
-	assert.equal(rendered[1], "└─ Medium (openai-codex/gpt-5.6-sol#medium)");
+	assert.equal(rendered[1], "└─ Starting · Medium (openai-codex/gpt-5.6-sol#medium)");
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
 	const activeComponent = renderHarnessToolCall("subagent_spawn", {
 		agent: "e2e-tester", mode: "foreground", tier: "medium", task: "Verify one browser flow like a real user",
@@ -52,9 +52,9 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
 	const active = lines(activeComponent);
-	assert.equal(active[1], "└─ Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash");
+	assert.equal(active[1], "└─ Running · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash");
 	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
-	assert.equal(narrow.length, 2, "volatile status stays on one detail row");
+	assert.equal(narrow.length, 4, "volatile status stays on one detail row above the prompt block");
 	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
 
 	const settled = lines(renderHarnessToolCall("subagent_spawn", {
@@ -69,8 +69,9 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 			outputTokens: 1234, reasoningTokens: 50,
 		},
 	}, () => Date.parse("2026-01-01T00:02:00.000Z")));
-	assert.equal(settled.length, 2, "settled foreground rows retain their resolved request metadata");
-	assert.match(settled[1] ?? "", /^└─ Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\).*1m 05s$/);
+	assert.equal(settled.length, 4, "settled foreground rows retain their resolved request metadata and prompt");
+	assert.match(settled[0] ?? "", /^✓ e2e-tester/);
+	assert.match(settled[1] ?? "", /^└─ Done · Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\).*1m 05s$/);
 
 });
 
@@ -95,8 +96,9 @@ test("background transcript rows follow the owner-fenced event projection throug
 	};
 	const call = renderHarnessToolCall("subagent_spawn", { agent: "general-purpose", mode: "background", tier: "low", task: "Inspect" }, theme, false, false, details, () => now, lookup);
 	const result = renderHarnessToolResult("subagent_spawn", { content: [{ type: "text", text: "Spawned in background." }], details }, true, theme, false, lookup);
-	assert.match(lines(call)[1] ?? "", /Low \(openai-codex\/gpt-5\.6-sol#low\) · 1 turn · 1 tool · ↓ 100 · 10s$/);
-	assert.match(lines(result).join("\n"), /State: running/);
+	assert.match(lines(call)[0] ?? "", /^[·•●] general-purpose$/);
+	assert.match(lines(call)[1] ?? "", /^└─ Running · Fast · Low \(openai-codex\/gpt-5\.6-sol#low\) · 1 turn · 1 tool · ↓ 100 · 10s$/);
+	assert.doesNotMatch(lines(result).join("\n"), /State:|Title:|Done/);
 
 	projection = {
 		...projection,
@@ -108,12 +110,78 @@ test("background transcript rows follow the owner-fenced event projection throug
 	const terminalAtOneMinute = lines(call);
 	now = Date.parse("2026-01-01T00:02:00.000Z");
 	assert.deepEqual(lines(call), terminalAtOneMinute, "authoritative processExitedAt freezes the terminal duration across later renders");
-	assert.match(terminalAtOneMinute[1] ?? "", /12s$/);
-	assert.match(lines(result).join("\n"), /State: completed/);
+	assert.match(terminalAtOneMinute[0] ?? "", /^✓ general-purpose$/);
+	assert.match(terminalAtOneMinute[1] ?? "", /^└─ Done .*12s$/);
 
 	projection = undefined;
-	assert.equal(lines(call).length, 1, "a detached historical launch is a static receipt, never a live clock");
-	assert.match(lines(result).join("\n"), /State: launched/);
+	assert.deepEqual(lines(call).slice(1), ["└─ Launched · Low (openai-codex/gpt-5.6-sol#low)", "   Prompt:", "      Inspect"], "a detached historical launch is a static receipt, never a live clock");
+	assert.doesNotMatch(lines(call).join("\n"), /Done|Running|\d+s/);
+	assert.doesNotMatch(lines(result).join("\n"), /State: launched/);
+});
+
+test("foreground terminal receipts stay pinned to their attempt when the logical agent continues", () => {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const uiRef = { owner, agentId: "agent-1" };
+	const newerProjection: any = {
+		agentId: "agent-1", agent: "investigator", title: "Newer attempt", state: "running", presentation: "foreground",
+		provider: "new-provider", model: "new-model", effort: "high", tier: "high", fast: false,
+		startedAt: "2026-01-01T00:02:00.000Z", updatedAt: "2026-01-01T00:02:03.000Z",
+		progress: { startedAt: "2026-01-01T00:02:00.000Z", processStartedAt: "2026-01-01T00:02:01.000Z", turns: 1, toolCalls: 0, toolErrors: 0, outputTokens: 20, reasoningTokens: 0 },
+	};
+	const details = {
+		agentId: "agent-1", agent: "investigator", title: "Original attempt", uiRef, state: "completed", tier: "low",
+		resolved: { provider: "old-provider", model: "old-model", effort: "low", startedAt: "2026-01-01T00:00:00.000Z" },
+		progress: { startedAt: "2026-01-01T00:00:00.000Z", processExitedAt: "2026-01-01T00:00:05.000Z", turns: 1, toolCalls: 1, toolErrors: 0, outputTokens: 40, reasoningTokens: 0 },
+		terminal: { status: "completed" },
+	};
+	const rendered = lines(renderHarnessToolCall("subagent_continue", { agentId: "agent-1", task: "First follow-up" }, theme, false, false, details, () => Date.parse("2026-01-01T00:03:00.000Z"), () => newerProjection));
+	assert.match(rendered[0] ?? "", /^✓ investigator Original attempt$/);
+	assert.match(rendered[1] ?? "", /^└─ Done · Low \(old-provider\/old-model#low\).*5s$/);
+	assert.doesNotMatch(rendered.join("\n"), /Newer attempt|new-provider|Running/);
+});
+
+test("renders child lifecycle icons and labels for stopping, failed, stopped, and launch errors", () => {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const uiRef = { owner, agentId: "agent-1" };
+	let state: any = "stopping";
+	const lookup = () => ({
+		agentId: "agent-1", agent: "investigator", state, presentation: "background",
+		provider: "provider", model: "model", effort: "low", tier: "low", fast: false,
+		startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:02.000Z",
+		progress: { startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z", processExitedAt: state === "stopping" ? undefined : "2026-01-01T00:00:03.000Z", turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
+	} as any);
+	const call = () => lines(renderHarnessToolCall("subagent_spawn", { agent: "investigator", mode: "background", task: "Inspect" }, theme, false, false, { uiRef }, () => Date.parse("2026-01-01T00:00:04.000Z"), lookup));
+	assert.match(call()[0] ?? "", /^[◐◓◑◒] investigator$/);
+	assert.match(call()[1] ?? "", /^└─ Stopping · Low/);
+	state = "failed";
+	assert.match(call()[0] ?? "", /^✗ investigator$/);
+	assert.match(call()[1] ?? "", /^└─ Failed · Low/);
+	state = "cancelled";
+	assert.match(call()[0] ?? "", /^○ investigator$/);
+	assert.match(call()[1] ?? "", /^└─ Stopped · Low/);
+
+	const launchError = lines(renderHarnessToolCall("subagent_spawn", { agent: "investigator", task: "Inspect" }, theme, false, true));
+	assert.match(launchError[0] ?? "", /^✗ investigator$/);
+	assert.equal(launchError[1], "└─ Failed");
+});
+
+test("composes one lifecycle status before prompt and foreground report", () => {
+	const args = { agent: "investigator", title: "Inspect layout", task: "Check ordering", mode: "foreground" };
+	const details = { agent: "investigator", title: "Inspect layout", state: "completed", terminal: { status: "completed" } };
+	const call = lines(renderHarnessToolCall("subagent_spawn", args, theme, false, false, details));
+	const output = lines(renderHarnessToolResult("subagent_spawn", { content: [{ type: "text", text: "Report\n  proof" }], details }, true, theme, false));
+	const composed = [...call, ...output];
+	assert.deepEqual(composed, [
+		"✓ investigator Inspect layout",
+		"└─ Done",
+		"   Prompt:",
+		"      Check ordering",
+		"   Result:",
+		"      Report",
+		"        proof",
+	]);
+	assert.equal(composed.filter((line) => /└─ (Done|Failed|Stopped|Launched|Running|Starting|Stopping)/.test(line)).length, 1);
+	assert.doesNotMatch(composed.join("\n"), /Title:|State:|Agent Id:|AgentId:/);
 });
 
 test("renders continuation foreground progress and prose like spawn", () => {
@@ -132,7 +200,7 @@ test("renders continuation foreground progress and prose like spawn", () => {
 	}, () => Date.parse("2026-01-01T00:00:03.000Z")));
 	assert.match(rendered[0] ?? "", /^[·•●] investigator Trace fallback routing/);
 	assert.doesNotMatch(rendered[0] ?? "", /model-supplied-role|agent-1|Inspect the follow-up/);
-	assert.match(rendered[1] ?? "", /High \(openai-codex\/gpt-5\.6-sol#high\) · 1 turn · 2 tools · ↓ 200 · 3s/);
+	assert.match(rendered[1] ?? "", /^└─ Running · High \(openai-codex\/gpt-5\.6-sol#high\) · 1 turn · 2 tools · ↓ 200 · 3s/);
 
 	const report = Array.from({ length: 11 }, (_, index) => `line ${index + 1}`).join("\n");
 	const result = lines(renderHarnessToolResult("subagent_continue", { content: [{ type: "text", text: report }] }, false, theme, false));
@@ -156,7 +224,7 @@ test("renders fallback provenance and sanitizes title control sequences", () => 
 		},
 	}));
 	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] general-purpose Audit routing$/);
-	assert.equal(rendered[1], "└─ Medium (selected/actual#medium) · Fallback requested/model#high → selected/actual#medium (effort unsupported)");
+	assert.equal(rendered[1], "└─ Starting · Medium (selected/actual#medium) · Fallback requested/model#high → selected/actual#medium (effort unsupported)");
 	assert.doesNotMatch(rendered.join(" "), /owned|[\u0000-\u001f\u007f]/);
 });
 
@@ -377,15 +445,35 @@ test("preserves subagent report and nested output indentation", () => {
 	}, true, theme, false));
 
 	assert.deepEqual(rendered, [
-		"└─ Done",
-		"  Research summary",
+		"   Result:",
+		"      Research summary",
 		"",
-		"  src/example.ts",
-		"    function outer() {",
-		"      return inner();",
-		"    }",
+		"      src/example.ts",
+		"        function outer() {",
+		"          return inner();",
+		"        }",
 		"",
-		"  Command output:",
-		"      nested value",
+		"      Command output:",
+		"          nested value",
 	]);
+});
+
+test("child state wins over the tool result delivery phase", () => {
+	const uiRef = { owner: { sessionId: "s", processInstanceId: "p", activationId: "a" }, agentId: "agent-1" };
+	const projection: any = { agentId: "agent-1", agent: "investigator", state: "completed" };
+	const terminalUpdate = lines(renderHarnessToolCall("subagent_spawn", { agent: "investigator", mode: "foreground" }, theme, true, false, { uiRef, state: "running" }, undefined, () => projection));
+	assert.match(terminalUpdate[1]!, /^└─ Done/, "a completed child need not be mislabeled Running while its tool return is delivered");
+	projection.state = "running";
+	const backgroundReceipt = lines(renderHarnessToolCall("subagent_spawn", { agent: "investigator", mode: "background" }, theme, false, false, { uiRef }, undefined, () => projection));
+	assert.match(backgroundReceipt[1]!, /^└─ Running/, "a returned tool receipt does not mean its child is done");
+});
+
+test("background launch receipts and identifiers stay in expanded details, not the report preview", () => {
+	const details = { agentId: "agent-1", uiRef: { owner: { sessionId: "s", processInstanceId: "p", activationId: "a" }, agentId: "agent-1" }, state: "running" };
+	const receipt = { content: [{ type: "text", text: "Spawned in background. Delivery instructions." }], details };
+	assert.deepEqual(lines(renderHarnessToolResult("subagent_spawn", receipt, false, theme, false)), []);
+	const expanded = lines(renderHarnessToolResult("subagent_spawn", receipt, true, theme, false));
+	assert.deepEqual(expanded, ["   AgentId: agent-1", "   Launch receipt:", "      Spawned in background. Delivery instructions."]);
+	const failed = lines(renderHarnessToolResult("subagent_spawn", receipt, false, theme, true));
+	assert.match(failed.join("\n"), /Delivery instructions/, "errors must never be hidden as successful receipts");
 });

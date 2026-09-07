@@ -26,7 +26,7 @@ import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from ".
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v14");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v16");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -158,6 +158,9 @@ class LatestHarnessToolComponent implements Component {
 			this.source.isPartial,
 			this.source.result?.isError ?? false,
 			this.source.result?.details,
+			undefined,
+			undefined,
+			this.source.expanded,
 		);
 		const lines = call.render(width);
 		const renderResult = state.harnessResultRenderer;
@@ -205,7 +208,13 @@ function installToolPatch(): void {
 		// readable instead of appearing as raw JSON blobs. Foreground subagents use
 		// the same pulsing row language as the background footer dashboard.
 		if (isHarnessTool(this.toolName) && Array.isArray(renderContainer?.children)) {
-			if (globalState().theme) renderContainer.children = [new LatestHarnessToolComponent(this)];
+			if (globalState().theme) {
+				const content = new LatestHarnessToolComponent(this);
+				// Pi 0.85 adds row-local mouse expansion. Our replacement must retain
+				// its region rather than dropping the interaction with the old children.
+				// Older Pi versions still support keyboard expansion without this hook.
+				renderContainer.children = [this.createResultRegion?.(content) ?? content];
+			}
 			return;
 		}
 
@@ -221,8 +230,20 @@ function installToolPatch(): void {
 				while (component?.constructor?.name === "LinePrefixedComponent" && component.child) component = component.child;
 				return component;
 			};
-			const call = unwrap(renderContainer.children[0]);
-			const result = this.result ? unwrap(renderContainer.children[1]) : undefined;
+			const callSlot = unwrap(renderContainer.children[0]);
+			const resultSlot = this.result ? unwrap(renderContainer.children[1]) : undefined;
+			const callRegion = isComponent(callSlot, "MouseRegion") ? callSlot : undefined;
+			const resultRegion = isComponent(resultSlot, "MouseRegion") ? resultSlot : undefined;
+			const call = unwrap(callRegion ? callRegion.child : callSlot);
+			const result = unwrap(resultRegion ? resultRegion.child : resultSlot);
+			// Keep native mouse regions outside our display-only prefixes. Prefixes
+			// do not route pointer events, and their overflow hint must be clickable.
+			const retainRegion = (region: any, content: LinePrefixedComponent): Component => {
+				if (!region) return content;
+				content.setMouseRegion(region.constructor);
+				region.child = content;
+				return region;
+			};
 			if (theme && call) {
 				const symbol = this.isPartial
 					? theme.fg("muted", "✽")
@@ -231,9 +252,9 @@ function installToolPatch(): void {
 						: theme.fg("success", "✓");
 				const prefix = `${shellIndent}${symbol} `;
 				const continuation = `${shellIndent}  `;
-				renderContainer.children[0] = new LinePrefixedComponent(
+				renderContainer.children[0] = retainRegion(callRegion, new LinePrefixedComponent(
 					call, prefix, continuation, visibleWidth(prefix), visibleWidth(continuation),
-				);
+				));
 			}
 			if (theme && result) {
 				const status = this.isPartial ? "Running…" : this.result?.isError ? "Error" : "Done";
@@ -242,7 +263,7 @@ function installToolPatch(): void {
 				const continuation = `${shellIndent}   `;
 				const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
 				const collapsed = !this.isPartial && !this.expanded;
-				renderContainer.children[1] = new LinePrefixedComponent(
+				renderContainer.children[1] = retainRegion(resultRegion, new LinePrefixedComponent(
 					result,
 					prefix,
 					continuation,
@@ -253,7 +274,7 @@ function installToolPatch(): void {
 					collapsed ? 3 : undefined,
 					collapsed ? (text) => theme.fg("muted", text) : undefined,
 					collapsed ? (omitted) => theme.fg("dim", `… +${omitted} lines (${toggle} to expand)`) : undefined,
-				);
+				));
 			}
 		}
 	};
