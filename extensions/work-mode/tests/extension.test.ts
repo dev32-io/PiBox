@@ -146,17 +146,63 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.equal(currentWorkMode(), "orchestrator");
 	const result = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
 	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode[\s\S]+plan\.md[\s\S]+ledger\.md/);
-	assert.match(result.systemPrompt, /investigate read-only as needed[\s\S]+write a draft in `plan\.md` before presenting or discussing the plan or asking for approval/);
-	assert.match(result.systemPrompt, /revise the same plan during discussion[\s\S]+wait for approval before implementation or delegating implementation/);
-	assert.match(result.systemPrompt, /Actively use session scratch as a flexible memo board and workbench/);
-	assert.match(result.systemPrompt, /`plan\.md` focused on the current goal[\s\S]+not an accumulation of projects/);
-	assert.match(result.systemPrompt, /next action, dependencies, completion checks[\s\S]+sequential versus independent implementation work/);
-	assert.match(result.systemPrompt, /`ledger\.md` focused on currently useful facts[\s\S]+decisions and rationale[\s\S]+unresolved issues/);
-	assert.match(result.systemPrompt, /context, not a chronological activity log/);
-	assert.match(result.systemPrompt, /`scripts\/` and `results\/`[\s\S]+starting points, not limits/);
-	assert.match(result.systemPrompt, /At goal changes and completion[\s\S]+remove obsolete or superseded detail using judgment/);
-	assert.match(result.systemPrompt, /summaries or pointers only where useful[\s\S]+do not force archives, hard caps, or automatic deletion/);
-	assert.doesNotMatch(result.systemPrompt, /detailed, step-by-step checklist|Before context compaction|Retain a note only if/);
+	// Text contract guards only: these do not prove live model behavior.
+	const prompt = result.systemPrompt;
+	// Research precedes plan approval; approval is not permission bypass.
+	assert.match(prompt, /Before substantial delivery planning, identify unknowns/);
+	assert.match(prompt, /exploration, research, and investigation early, not after completing the broad investigation yourself/);
+	assert.match(prompt, /Pre-approval delegation is read-only research or critique, not implementation/);
+	assert.match(prompt, /Before drafting or presenting the delivery plan, collect, review, and reconcile delegated findings that could affect it/);
+	assert.match(prompt, /While these are pending[^\n]+do not present a plan for approval/);
+	assert.match(prompt, /Distinguish facts from assumptions and resolve material decision blockers with the user/);
+	assert.match(prompt, /draft in scratch `plan\.md`, then present it for discussion and explicit approval/);
+	assert.match(prompt, /Revise the same plan during discussion\. Wait for approval before implementation or delegating implementation/);
+	assert.match(prompt, /a plan request is not approval, and approval does not bypass tool permissions/);
+
+	// The approved plan remains a live control loop, not a one-time proposal.
+	assert.match(prompt, /Record Goal, Deliverable, verifiable Done criteria/);
+	assert.match(prompt, /concise step-by-step Markdown checklist \(`- \[ \]` \/ `- \[x\]`\)/);
+	assert.match(prompt, /next action, dependencies, completion checks, sequential versus independent work, and remaining assumptions/);
+	assert.match(prompt, /After approval, keep working within the agreed scope without waiting for routine user prompts/);
+	assert.match(prompt, /Track the current step; mark each item `\[x\]` as soon as its checks pass/);
+	assert.match(prompt, /Keep unfinished or blocked work unchecked; reconcile the checklist before reporting progress or completion/);
+	assert.match(prompt, /Iterate investigation, delegation, implementation, and verification until Done criteria are met/);
+	assert.match(prompt, /Pause only for a genuine blocker, required approval, or a material decision reserved for the user; record what remains and the input needed/);
+	assert.match(prompt, /Routine iteration needs no renewed approval; material changes to the agreed plan do/);
+
+	// Default delegation, direct-work exceptions, and explicit handoff ownership.
+	assert.match(prompt, /Use ad hoc `subagent_spawn` by default for substantial, separable research, implementation after approval, and independent review/);
+	assert.match(prompt, /Handle clear, local, reversible work directly when delegation and planning would add disproportionate overhead/);
+	assert.match(prompt, /Work directly for trivial operations, tightly coupled steps, or when delegation is unavailable or adds more coordination than value/);
+	assert.match(prompt, /Briefly state the concrete reason if keeping substantial work entirely local/);
+	assert.match(prompt, /narrowest agent whose stated contract covers the assignment[^\n]+exact configured name; use `general-purpose` when no specialist fits/);
+	assert.match(prompt, /self-contained objective, relevant context and paths, constraints, read-only or edit authority, owned outputs, dependencies, expected result and proof, and a stop condition/);
+	assert.match(prompt, /Keep `plan\.md` and `ledger\.md` parent-owned\. Children do not orchestrate recursively/);
+	assert.match(prompt, /Review is not approval\. Integrate and verify the assembled outcome yourself/);
+
+	// Safe asynchronous work and recovery from incomplete assignments.
+	assert.match(prompt, /Use foreground for a prerequisite needed next and background for independent assignments/);
+	assert.match(prompt, /Run independent work concurrently within harness limits; do non-overlapping work while children run, not their assignment again/);
+	assert.match(prompt, /Parallel edits require disjoint file ownership and compatible interfaces; sequence shared-file work and resolve newly discovered conflicts before continuing\. Preserve existing user work/);
+	assert.match(prompt, /Background results arrive automatically\. End the turn if no useful independent work remains, or use `wait` with `event: subagent_settled` at a genuine dependency barrier/);
+	assert.match(prompt, /A wake-up does not mean every prerequisite finished/);
+	assert.match(prompt, /Never sleep or poll for completion; `subagent_status` is diagnostic only/);
+	assert.match(prompt, /Use `subagent_read` for truncated reports; reserve `subagent_continue` for new follow-up work/);
+	assert.match(prompt, /Treat failed, blocked, or partial results as incomplete/);
+	assert.match(prompt, /Before reassigning work, confirm the prior attempt has settled and inspect its evidence and any edits; assign only the remaining gap or surface the blocker/);
+	assert.match(prompt, /Review decisive evidence before relying on results; resolve disagreements against repository facts and checks, not votes/);
+
+	// Flexible scratch retains the existing continuity and authority boundaries.
+	assert.match(prompt, /Actively use session scratch as a flexible memo board and workbench/);
+	assert.match(prompt, /`plan\.md` focused on the current goal, not an accumulation of projects/);
+	assert.match(prompt, /`ledger\.md` for useful facts, decisions and rationale, evidence pointers, delegated findings, ruled-out approaches, and unresolved issues: context, not a chronological log/);
+	assert.match(prompt, /`scripts\/` and `results\/`; these are starting points, not limits/);
+	assert.match(prompt, /At goal changes and completion, consolidate notes and remove obsolete detail using judgment/);
+	assert.match(prompt, /Retain useful pointers without forced archives, hard caps, or automatic deletion/);
+	assert.match(prompt, /After compaction or resume, consult relevant notes; current user direction, repository evidence, and reviewed contracts outrank scratch/);
+	assert.match(prompt, /Scratch is private, temporary, non-authoritative `\/tmp` state; keep secrets out of it/);
+	assert.match(prompt, /Do not invoke Workflow resource or execution tools in Orchestrator mode/);
+	assert.doesNotMatch(prompt, /detailed, step-by-step checklist|Before context compaction|Retain a note only if/);
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {
 		changesSystemPrompt: false,
 		changesToolDefinitions: true,
