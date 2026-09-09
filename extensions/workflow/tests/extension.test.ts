@@ -7,10 +7,11 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import workflow, { createDemandRuntimeResolver, createFirstDemandReconciler, structuredCapabilityError, WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
 import { HarnessError } from "../errors.js";
 import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../../subagent/tool-policy.js";
+import { MODEL_TIER_PROFILE_EVENT } from "../../model-tier-list-profiles/policy.js";
 
 function host() {
-	const tools: string[] = []; const toolDefinitions = new Map<string, any>(); const commands: string[] = []; const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
-	const pi = { events: { on() {}, emit() {} }, registerTool(definition: any) { tools.push(definition.name); toolDefinitions.set(definition.name, definition); }, registerCommand(name: string) { commands.push(name); }, on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } } as unknown as ExtensionAPI;
+	const tools: string[] = []; const toolDefinitions = new Map<string, any>(); const commands: string[] = []; const handlers = new Map<string, Array<(...args: any[]) => unknown>>(); const eventHandlers = new Map<string, Array<(value: unknown) => void>>();
+	const pi = { events: { on(name: string, handler: (value: unknown) => void) { eventHandlers.set(name, [...(eventHandlers.get(name) ?? []), handler]); }, emit(name: string, value: unknown) { for (const handler of eventHandlers.get(name) ?? []) handler(value); } }, registerTool(definition: any) { tools.push(definition.name); toolDefinitions.set(definition.name, definition); }, registerCommand(name: string) { commands.push(name); }, on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); } } as unknown as ExtensionAPI;
 	return { pi, tools, toolDefinitions, commands, handlers };
 }
 
@@ -67,6 +68,36 @@ test("repository discovery, runtime construction, and reconciliation share keyed
 
 	let attempts = 0; const retryable = createDemandRuntimeResolver({ async discover() { if (++attempts === 1) throw new Error("discovery failed"); return { id: "repo", root: "/repo", privateRoot: "/private/repo" }; }, async create(_ctx, identity) { return { identity } as any; }, async reconcile() {} });
 	await assert.rejects(retryable.run(ctx("/repo")), /discovery failed/); await retryable.run(ctx("/repo")); assert.equal(attempts, 2);
+});
+
+test("real runtime caller excludes project config for untrusted initial and profile reload loads", async () => {
+	const previous = process.env[PIBOX_RUNTIME_ROLE_ENV]; delete process.env[PIBOX_RUNTIME_ROLE_ENV];
+	try {
+		for (const trusted of [true, false]) {
+			const f = host();
+			const loads: Array<{ modelTierProfile: string | undefined; includeProject: boolean | undefined }> = [];
+			workflow(f.pi, {
+				async discover(cwd) { return { id: "repo", root: cwd, privateRoot: join(cwd, ".git", "pibox") }; },
+				loadConfig(_root, options = {}) {
+					loads.push({ modelTierProfile: options.modelTierProfile, includeProject: options.includeProject });
+					return { config: { modelTierProfile: options.modelTierProfile ?? "default" } as any, digest: "test", diagnostics: [], sources: [] };
+				},
+				async create(_ctx, identity, config) { return { identity, config, workItems: { async listForCurrentBranch() { return []; } } } as any; },
+				async reconcile() {},
+			});
+			const ctx = { cwd: `/repo-${trusted}`, sessionManager: { getSessionId: () => `session-${trusted}` }, isProjectTrusted: () => trusted } as any;
+			await f.toolDefinitions.get("workflow_status").execute("status", {}, undefined, undefined, ctx);
+			f.pi.events.emit(MODEL_TIER_PROFILE_EVENT, { profile: "token-conservative" });
+			await f.toolDefinitions.get("workflow_status").execute("status", {}, undefined, undefined, ctx);
+			assert.deepEqual(loads, [
+				{ modelTierProfile: undefined, includeProject: trusted },
+				{ modelTierProfile: "token-conservative", includeProject: trusted },
+			]);
+			for (const handler of f.handlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
+		}
+	} finally {
+		if (previous === undefined) delete process.env[PIBOX_RUNTIME_ROLE_ENV]; else process.env[PIBOX_RUNTIME_ROLE_ENV] = previous;
+	}
 });
 
 test("non-repository startup stays lazy and first demand returns a structured refusal", async (t) => {

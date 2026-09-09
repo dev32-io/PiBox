@@ -223,6 +223,20 @@ test("generic footer excludes workflow-managed projections while retaining stand
 	assert.doesNotMatch(text, /managed/);
 });
 
+test("narrow subagent rows retain route-adjacent elapsed time before lower-priority counters", () => {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const startedAt = "2026-01-01T00:00:00.000Z";
+	const agent: SubagentUiAgentProjection = {
+		agentId: "agent-1", agent: "alpha", state: "running", presentation: "background",
+		provider: "p", model: "m", effort: "high", tier: "medium", fast: false, startedAt, updatedAt: startedAt,
+		progress: { startedAt, processStartedAt: startedAt, lastEventAt: startedAt, turns: 2, toolCalls: 3, toolErrors: 0, outputTokens: 1_200, reasoningTokens: 0 },
+	};
+	const row = renderStatusBar(40, { ...data, now: Date.parse("2026-01-01T00:01:05.000Z"), subagents: { owner, agents: [agent], overflow: 0 } }).at(-1) ?? "";
+	assert.match(row, /alpha · Medium \(p\/m#high\) · 1m 05s/);
+	assert.doesNotMatch(row, /2 turns/, "narrow truncation preserves higher-priority elapsed time before counters");
+	assert.ok(visibleWidth(row) <= 40);
+});
+
 test("structured subagent projection renders bounded semantic rows and overflow width-safely", () => {
 	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
 	const startedAt = "2026-01-01T00:00:00.000Z";
@@ -249,6 +263,6 @@ test("structured subagent projection renders bounded semantic rows and overflow 
 	}
 	const text = renderStatusBar(160, { ...data, now, subagents: { owner, agents, overflow: 2 } }).join("\n");
 	assert.match(text, /alpha · Fast · Medium \(openai-codex\/gpt-5\.6-sol-with-a-very-long-route-name#high\)/);
-	assert.match(text, /2 turns · 3 tools · ↓ 1\.2k · 1m 05s/);
+	assert.match(text, /Medium \(openai-codex\/gpt-5\.6-sol-with-a-very-long-route-name#high\) · 1m 05s · 2 turns · 3 tools · ↓ 1\.2k/);
 	assert.doesNotMatch(text, /R 400|W 20| · active/);
 });

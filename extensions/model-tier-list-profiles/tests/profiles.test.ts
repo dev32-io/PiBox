@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	DEFAULT_MODEL_TIER_LIST_PROFILES,
 	activeModelTierLists,
@@ -7,10 +8,28 @@ import {
 	validateModelTierListProfiles,
 } from "../profiles.js";
 
-test("ships performance by default plus a token-conservative medium route", () => {
+const BUILT_IN_PERFORMANCE = {
+	max: ["openai-codex/gpt-5.6-sol#max", "ollama-cloud/deepseek-v4-pro#max"],
+	high: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro:0813#high"],
+	medium: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
+	low: ["openai-codex/gpt-5.6-luna#high", "ollama-cloud/deepseek-v4-flash#low"],
+	local: ["local-llm/meta/muse-glimmer#high"],
+};
+
+test("ships opt-in nuke routes while preserving built-in defaults and existing profiles", () => {
 	assert.equal(DEFAULT_MODEL_TIER_LIST_PROFILES.defaultProfile, "performance");
-	assert.equal(activeModelTierLists(DEFAULT_MODEL_TIER_LIST_PROFILES).tiers.medium[0], "openai-codex/gpt-5.6-sol#medium");
-	assert.equal(activeModelTierLists(DEFAULT_MODEL_TIER_LIST_PROFILES, "token-conservative").tiers.medium[0], "openai-codex/gpt-5.6-luna#max");
+	assert.deepEqual(activeModelTierLists(DEFAULT_MODEL_TIER_LIST_PROFILES).tiers, BUILT_IN_PERFORMANCE);
+	assert.deepEqual(activeModelTierLists(DEFAULT_MODEL_TIER_LIST_PROFILES, "token-conservative").tiers, {
+		...BUILT_IN_PERFORMANCE,
+		medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
+	});
+	assert.deepEqual(activeModelTierLists(DEFAULT_MODEL_TIER_LIST_PROFILES, "nuke").tiers, {
+		max: ["openai-codex/gpt-6-astra#max", "openai-codex/gpt-5.6-sol#max", "ollama-cloud/deepseek-v4-pro#max"],
+		high: ["openai-codex/gpt-6-astra#high", "openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro:0813#high"],
+		medium: ["openai-codex/gpt-6-astra#medium", "openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
+		low: BUILT_IN_PERFORMANCE.low,
+		local: BUILT_IN_PERFORMANCE.local,
+	});
 });
 
 test("accepts any number of complete named profiles", () => {
@@ -18,8 +37,16 @@ test("accepts any number of complete named profiles", () => {
 	base.profiles.custom = structuredClone(base.profiles.performance!);
 	base.profiles.custom.medium = ["example/model#xhigh"];
 	const parsed = validateModelTierListProfiles(base);
-	assert.deepEqual(Object.keys(parsed.profiles).sort(), ["custom", "performance", "token-conservative"]);
+	assert.deepEqual(Object.keys(parsed.profiles).sort(), ["custom", "nuke", "performance", "token-conservative"]);
 	assert.deepEqual(parsed.profiles.custom?.medium, ["example/model#xhigh"]);
+});
+
+test("repository without tier lists inherits built-in nuke routes and local isolation", () => {
+	const repositoryRoot = fileURLToPath(new URL("../../..", import.meta.url));
+	const loaded = loadModelTierListProfiles(repositoryRoot, { home: "/missing-home" });
+	assert.equal(loaded.defaultProfile, "performance");
+	assert.deepEqual(loaded.profiles.nuke, DEFAULT_MODEL_TIER_LIST_PROFILES.profiles.nuke);
+	assert.deepEqual(loaded.profiles.nuke?.local, loaded.profiles.performance?.local);
 });
 
 test("loads repository profiles and normalizes the former modelTiers field", () => {
@@ -33,6 +60,7 @@ test("loads repository profiles and normalizes the former modelTiers field", () 
 		readFile: (path) => files[path] ?? "",
 	});
 	assert.deepEqual(loaded.profiles.performance?.medium, ["legacy/model#high"]);
+	assert.ok(loaded.profiles.nuke);
 	assert.ok(loaded.profiles["token-conservative"]);
 });
 

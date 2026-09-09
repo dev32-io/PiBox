@@ -107,7 +107,7 @@ function subagentCallLabel(name: string, args: Record<string, any>, details: Rec
 	// The assignment has its own sanitized, expandable block; never duplicate raw
 	// task text in the single-line identity fallback.
 	return {
-		action: agent || (name === "subagent_spawn" ? "Subagent" : "Continue subagent"),
+		action: name === "subagent_continue" && agent ? `Continue ${agent}` : agent || (name === "subagent_spawn" ? "Subagent" : "Continue subagent"),
 		...(title || (!agent && id) ? { target: title || id } : {}),
 	};
 }

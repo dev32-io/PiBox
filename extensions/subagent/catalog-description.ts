@@ -1,6 +1,10 @@
 import type { LoadedSubagentCatalog } from "./types.js";
 
-const SPAWN_DESCRIPTION = "Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress. Background is for independent work: it returns immediately, steers terminal results into ongoing work, and wakes an idle parent.";
+const SPAWN_DESCRIPTION = [
+	"Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress. Background is for independent work: it returns immediately, steers terminal results into ongoing work, and wakes an idle parent.",
+	"Choose the smallest sufficient tier. Tier guidance (you may override an agent default up or down; these are guidelines, not caps): Low for bounded scans, extraction, focused research, and routine checks. Medium for ordinary implementation, review, and investigation. High for difficult tightly coupled work and the normal ceiling. Max is a very rare exception for a specific reasoning bottleneck when High is insufficient—or there is a concrete task-specific reason to expect High will be insufficient—and better context, tools, or safe decomposition will not solve it. When choosing Max, explain why High is insufficient and the expected benefit. Size, importance or security labels, urgency, vague uncertainty, and one failure are not sufficient reasons; prefer High when unsure. Nuke profiles upgrade routed models, not task tiers.",
+	"A configured agent model takes precedence over its default or requested tier; only an explicit model override replaces it. A local-llm model requires tier local, so up/down tier overrides do not apply while that model is selected. Existing strict explicit-model, fallback, and local-isolation semantics still apply.",
+].join("\n\n");
 
 function compareNames(left: string, right: string): number {
 	return left < right ? -1 : left > right ? 1 : 0;
@@ -12,7 +16,11 @@ export function availableAgentCatalogDescription(catalog: LoadedSubagentCatalog)
 	if (entries.length === 0) return "No agents are currently configured.";
 	return [
 		"Available configured agents:",
-		...entries.map(([name, config]) => config.description ? `- ${name}: ${config.description}` : `- ${name}`),
+		...entries.map(([name, config]) => {
+			const localPinned = config.model?.trim().startsWith("local-llm/") === true;
+			const routing = `default tier: ${localPinned ? "local" : config.tier ?? "medium"}${config.model ? "; configured model takes precedence" : ""}`;
+			return config.description ? `- ${name} [${routing}]: ${config.description}` : `- ${name} [${routing}]`;
+		}),
 	].join("\n");
 }
 

@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { formatAgentProgress, type AgentProgress } from "./agent-progress.js";
+import { formatAgentProgressSegments, type AgentProgress } from "./agent-progress.js";
 import { normalizeSubagentTitle } from "./presentation.js";
 import type { SubagentUiAgentProjection, SubagentUiRouting } from "./ui-projection.js";
 
@@ -88,8 +88,8 @@ function fastLabel(status: SubagentLiveStatus): string {
 	return status.fast === true || status.resolved?.fast === true ? "Fast" : "";
 }
 
-/** Stable identity and route lead; increasingly volatile metrics follow, with
- * the currently executing tool last so tool transitions never move the prefix. */
+/** Stable identity, Fast, and route lead; elapsed stays beside the route before
+ * fallback and counters, with the currently executing tool always last. */
 export function subagentStatusSegments(status: SubagentLiveStatus, now = Date.now()): SubagentStatusSegment[] {
 	const segments: SubagentStatusSegment[] = [];
 	if (status.agent) segments.push({ text: status.agent, tone: "text" });
@@ -97,21 +97,17 @@ export function subagentStatusSegments(status: SubagentLiveStatus, now = Date.no
 	if (title) segments.push({ text: title, tone: "accent" });
 	if (fastLabel(status)) segments.push({ text: "Fast", tone: "warning" });
 	if (status.tier || status.resolved) segments.push({ text: formatSubagentRoute(status.tier, status.resolved), tone: "muted" });
-	const fallback = formatSubagentFallback(status.routing);
-	if (fallback) segments.push({ text: fallback, tone: "warning" });
-	const progress = formatAgentProgress(status.progress, now, {
+	const progress = formatAgentProgressSegments(status.progress, now, {
 		...(status.startedAt !== undefined ? { fallbackStartedAt: status.startedAt } : {}),
 		...(status.processStatus ? { processStatus: status.processStatus } : {}),
 	});
-	if (progress) {
-		const values = progress.split(" · ");
-		for (const [index, text] of values.entries()) {
-			const activeTool = status.progress?.activeTool;
-			const isTool = Boolean(activeTool) && index === values.length - 1 && text === activeTool;
-			const isError = / error(?:s)?$/.test(text);
-			segments.push({ text, tone: isTool ? "accent" : isError ? "error" : "muted" });
-		}
+	if (progress.elapsed) segments.push({ text: progress.elapsed, tone: "muted" });
+	const fallback = formatSubagentFallback(status.routing);
+	if (fallback) segments.push({ text: fallback, tone: "warning" });
+	for (const text of progress.metrics) {
+		segments.push({ text, tone: / error(?:s)?$/.test(text) ? "error" : "muted" });
 	}
+	if (progress.activeTool) segments.push({ text: progress.activeTool, tone: "accent" });
 	return segments;
 }
 

@@ -306,10 +306,10 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		parameters: Type.Object({
 			agent: Type.String({ description: "Exact configured agent name" }),
 			title: Type.Optional(Type.String({ maxLength: MAX_SUBAGENT_TITLE_CHARACTERS, description: "Optional short display label (3–7 words). Not an agent name or assignment; retained across continuation." })),
-			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions" }),
+			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions. Use readable prose with normal word spacing." }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
-			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Ordered configured route list; defaults to the agent tier. Local never uses paid providers." })),
-			model: Type.Optional(Type.String({ description: "Exact registered model ID or provider/model, optionally #effort. Strict by default; no fuzzy aliases." })),
+			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Override the agent default up or down; guidance, not a cap. Does not replace an agent's configured model. Local never uses paid providers." })),
+			model: Type.Optional(Type.String({ description: "Exact registered model ID or provider/model, optionally #effort. Overrides an agent's configured model. Strict by default; no fuzzy aliases." })),
 			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Overrides the explicit model or tier primary route effort. Fallback routes retain their configured effort. Must agree with any #effort suffix." })),
 			allowFallback: Type.Optional(Type.Boolean({ description: "With an explicit model only: opt into pre-launch substitution from the tier list. Default false. No standalone runtime retry; local explicit models remain strict." })),
 		}, { additionalProperties: false }),
@@ -442,7 +442,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		name: "subagent_continue",
 		label: "Continue Subagent",
 		description: "Run new work against a settled standalone subagent's same-activation transcript, retaining its agent type, title, model, effort, and tools. Waits for settlement; not a live messaging tool. Use subagent_read to retrieve an existing report without a model turn.",
-		parameters: Type.Object({ agentId: Type.String(), task: Type.String({ description: "New user turn for the settled logical agent" }) }, { additionalProperties: false }),
+		parameters: Type.Object({ agentId: Type.String(), task: Type.String({ description: "New user turn for the settled logical agent. Use readable prose with normal word spacing." }) }, { additionalProperties: false }),
 		async execute(_id, params, signal, onUpdate) {
 			const current = requireBinding();
 			if (signal?.aborted) throw abortError(signal);

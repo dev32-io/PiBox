@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { getAgentDir, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { parse } from "yaml";
 import type {
 	CapabilityTier,
@@ -36,6 +37,13 @@ const COMMON_LOW = ["openai-codex/gpt-5.6-luna#high", "ollama-cloud/deepseek-v4-
 export const DEFAULT_MODEL_TIER_LIST_PROFILES: ModelTierListProfilesConfig = Object.freeze({
 	defaultProfile: DEFAULT_MODEL_TIER_PROFILE,
 	profiles: {
+		nuke: {
+			max: ["openai-codex/gpt-6-astra#max", ...COMMON_MAX],
+			high: ["openai-codex/gpt-6-astra#high", ...COMMON_HIGH],
+			medium: ["openai-codex/gpt-6-astra#medium", "openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
+			low: [...COMMON_LOW],
+			local: [...COMMON_LOCAL],
+		},
 		performance: {
 			max: [...COMMON_MAX],
 			high: [...COMMON_HIGH],
@@ -130,10 +138,10 @@ export function activeModelTierLists(config: ModelTierListProfilesConfig, reques
 }
 
 /** Convert the former top-level modelTiers field into the configured default profile. */
-export function normalizeLegacyModelTiers(value: UnknownRecord): void {
+export function normalizeLegacyModelTiers(value: UnknownRecord, inheritedDefaultProfile = DEFAULT_MODEL_TIER_PROFILE): void {
 	if (!("modelTiers" in value)) return;
 	const current = isRecord(value.modelTierListProfiles) ? value.modelTierListProfiles : {};
-	const defaultProfile = typeof current.defaultProfile === "string" && current.defaultProfile.trim() ? current.defaultProfile.trim() : DEFAULT_MODEL_TIER_PROFILE;
+	const defaultProfile = typeof current.defaultProfile === "string" && current.defaultProfile.trim() ? current.defaultProfile.trim() : inheritedDefaultProfile;
 	const profiles = isRecord(current.profiles) ? current.profiles : {};
 	value.modelTierListProfiles = {
 		...current,
@@ -156,22 +164,81 @@ function findRepositoryRoot(cwd: string, exists: (path: string) => boolean): str
 	}
 }
 
+export interface ModelTierProfileSourceOptions {
+	home?: string;
+	agentDir?: string;
+	readFile?: (path: string) => string;
+	exists?: (path: string) => boolean;
+	includeProject?: boolean;
+}
+
+export function resolveModelTierAgentDir(options: Pick<ModelTierProfileSourceOptions, "home" | "agentDir"> = {}): string {
+	const configured = options.agentDir !== undefined
+		? options.agentDir
+		: options.home !== undefined
+			? join(options.home, ".pi", "agent")
+			: getAgentDir();
+	const expanded = configured === "~" ? homedir() : configured.startsWith("~/") ? join(homedir(), configured.slice(2)) : configured;
+	return resolve(expanded);
+}
+
+export function resolveModelTierSettingsPath(options: Pick<ModelTierProfileSourceOptions, "home" | "agentDir"> = {}): string {
+	return join(resolveModelTierAgentDir(options), "settings.json");
+}
+
+export interface LoadedGlobalModelTierListProfiles {
+	config: ModelTierListProfilesConfig;
+	path: string;
+	present: boolean;
+}
+
+function profilesFromGlobalSettings(settings: unknown, path: string, present: boolean): LoadedGlobalModelTierListProfiles {
+	if (!isRecord(settings)) throw new Error(`${path}: settings must contain a JSON object`);
+	if (settings.modelTierListProfiles === undefined) return { config: structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES), path, present };
+	const merged = mergeModelTierProfileValues(DEFAULT_MODEL_TIER_LIST_PROFILES, settings.modelTierListProfiles);
+	try { return { config: validateModelTierListProfiles(merged), path, present }; }
+	catch (error) { throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
+}
+
+/** Read only the official global settings source; project settings are intentionally excluded. */
+export function loadGlobalModelTierListProfiles(options: ModelTierProfileSourceOptions = {}): LoadedGlobalModelTierListProfiles {
+	const path = resolveModelTierSettingsPath(options);
+	if (options.home === undefined && options.readFile === undefined && options.exists === undefined) {
+		const manager = SettingsManager.create(process.cwd(), resolveModelTierAgentDir(options), { projectTrusted: false });
+		const settings = manager.getGlobalSettings() as unknown;
+		const errors = manager.drainErrors().filter((entry) => entry.scope === "global");
+		if (errors.length > 0) throw new Error(errors.map((entry) => {
+			const locked = (entry.error as NodeJS.ErrnoException).code === "ELOCKED";
+			return `${locked ? `${path}.lock` : path}: ${entry.error.message}`;
+		}).join("; "));
+		return profilesFromGlobalSettings(settings, path, existsSync(path));
+	}
+	const readFile = options.readFile ?? ((source: string) => readFileSync(source, "utf8"));
+	const exists = options.exists ?? existsSync;
+	if (!exists(path)) return { config: structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES), path, present: false };
+	let settings: unknown;
+	try { settings = JSON.parse(readFile(path).replace(/^\uFEFF/, "")); }
+	catch (error) { throw new Error(`${path}: malformed JSON: ${error instanceof Error ? error.message : String(error)}`); }
+	return profilesFromGlobalSettings(settings, path, true);
+}
+
 export function loadModelTierListProfiles(
 	cwd: string,
-	options: { home?: string; readFile?: (path: string) => string; exists?: (path: string) => boolean; includeProject?: boolean } = {},
+	options: ModelTierProfileSourceOptions = {},
 ): ModelTierListProfilesConfig {
-	const home = options.home ?? homedir();
 	const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
 	const exists = options.exists ?? existsSync;
+	let merged: unknown = loadGlobalModelTierListProfiles(options).config;
+	if (options.includeProject === false) return validateModelTierListProfiles(merged);
 	const repositoryRoot = findRepositoryRoot(cwd, exists);
-	const candidates = [join(home, ".pi", "agent", "harness", "config.yaml"), ...(options.includeProject === false ? [] : [join(repositoryRoot, ".pi", "harness.yaml")])];
-	let merged: unknown = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
-	for (const source of candidates) {
-		if (!exists(source)) continue;
-		const parsed = parse(readFile(source)) as unknown;
-		if (!isRecord(parsed)) throw new Error(`${source}: configuration must contain a mapping`);
-		normalizeLegacyModelTiers(parsed);
-		if (parsed.modelTierListProfiles !== undefined) merged = mergeModelTierProfileValues(merged, parsed.modelTierListProfiles);
-	}
+	const source = join(repositoryRoot, ".pi", "harness.yaml");
+	if (!exists(source)) return validateModelTierListProfiles(merged);
+	const parsed = parse(readFile(source)) as unknown;
+	if (!isRecord(parsed)) throw new Error(`${source}: configuration must contain a mapping`);
+	if (parsed.schemaVersion === 1 || "models" in parsed) throw new Error(`${source}: Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTierListProfiles`);
+	if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== 2) throw new Error(`${source}: schemaVersion must be 2`);
+	const inheritedDefault = isRecord(merged) && typeof merged.defaultProfile === "string" ? merged.defaultProfile : DEFAULT_MODEL_TIER_PROFILE;
+	normalizeLegacyModelTiers(parsed, inheritedDefault);
+	if (parsed.modelTierListProfiles !== undefined) merged = mergeModelTierProfileValues(merged, parsed.modelTierListProfiles);
 	return validateModelTierListProfiles(merged);
 }

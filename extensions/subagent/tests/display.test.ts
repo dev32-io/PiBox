@@ -35,12 +35,12 @@ const route = {
 test("inline, footer, and workflow surfaces share stable-to-volatile status ordering", () => {
 	const shared = formatAgentProgress(progress, now);
 	assert.equal(shared, "2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash");
-	const expected = "general-purpose · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash";
+	const expected = "general-purpose · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · 2 turns · 3 tools · ↓ 1.2k · bash";
 	assert.equal(formatInlineSubagentStatus(route, now), expected);
 	assert.equal(formatBackgroundSubagentStatus(route, now), expected);
 	assert.doesNotMatch(expected, /starting|active|stopping/);
 	const fast = { ...route, resolved: { ...route.resolved, fast: true } };
-	assert.equal(formatInlineSubagentStatus(fast, now), "general-purpose · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash");
+	assert.equal(formatInlineSubagentStatus(fast, now), "general-purpose · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · 2 turns · 3 tools · ↓ 1.2k · bash");
 });
 
 test("startup keeps stable identity and route while lifecycle moves to animation", () => {
@@ -59,7 +59,7 @@ test("titles are a distinct inert bounded identity segment", () => {
 	assert.equal(sanitizeSubagentTitle("\u0000\n"), undefined);
 	assert.equal(
 		formatInlineSubagentStatus({ ...route, title: injected }, now),
-		"general-purpose · Review login flow · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash",
+		"general-purpose · Review login flow · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · 2 turns · 3 tools · ↓ 1.2k · bash",
 	);
 	assert.match(formatSubagentFooterProjection({
 		agentId: "agent-1", agent: "general-purpose", title: injected, state: "running", presentation: "background",
@@ -80,7 +80,10 @@ test("fallback provenance renders requested to actual with a reason only when us
 	} as const;
 	assert.equal(formatSubagentFallback(routing), "Fallback ollama-cloud/glm#high → openai-codex/gpt-5.6-sol#medium (effort unsupported)");
 	assert.equal(formatSubagentFallback({ ...routing, fallbackUsed: false }), undefined);
-	assert.match(formatInlineSubagentStatus({ ...route, routing }, now), /Medium \(openai-codex\/gpt-5\.6-sol#medium\) · Fallback ollama-cloud\/glm#high → openai-codex\/gpt-5\.6-sol#medium \(effort unsupported\)/);
+	assert.equal(
+		formatInlineSubagentStatus({ ...route, routing }, now),
+		"general-purpose · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · Fallback ollama-cloud/glm#high → openai-codex/gpt-5.6-sol#medium (effort unsupported) · 2 turns · 3 tools · ↓ 1.2k · bash",
+	);
 });
 
 test("semantic segments apply footer-consistent colors without recoloring the whole line", () => {
@@ -89,7 +92,7 @@ test("semantic segments apply footer-consistent colors without recoloring the wh
 	} as unknown as Theme;
 	const status = { ...route, fast: true, progress: { ...progress, toolErrors: 1 } };
 	const segments = subagentStatusSegments(status, now);
-	assert.deepEqual(segments.map(({ text }) => text), ["general-purpose", "Fast", "Medium (openai-codex/gpt-5.6-sol#medium)", "2 turns", "3 tools", "1 error", "↓ 1.2k", "1m 05s", "bash"]);
+	assert.deepEqual(segments.map(({ text }) => text), ["general-purpose", "Fast", "Medium (openai-codex/gpt-5.6-sol#medium)", "1m 05s", "2 turns", "3 tools", "1 error", "↓ 1.2k", "bash"]);
 	const rendered = renderSubagentLiveStatus(status, theme, now);
 	assert.match(rendered, /<text>general-purpose<\/text>/);
 	assert.match(rendered, /<warning>Fast<\/warning>/);

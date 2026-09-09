@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 import {
 	CAPABILITY_TIERS,
 	DEFAULT_MODEL_TIER_LIST_PROFILES,
+	loadGlobalModelTierListProfiles,
 	normalizeLegacyModelTiers,
+	resolveModelTierAgentDir,
 	validateModelTierListProfiles,
 } from "../model-tier-list-profiles/profiles.js";
 import { discoverAgentDefinitions, discoverProjectAgents } from "./agent-definitions.js";
@@ -129,6 +130,7 @@ export const DEFAULT_SUBAGENT_CATALOG_CONFIG: SubagentCatalogConfig = {
 
 export interface LoadSubagentCatalogOptions {
 	home?: string;
+	agentDir?: string;
 	readFile?: (path: string) => string;
 	exists?: (path: string) => boolean;
 	modelTierProfile?: string;
@@ -141,27 +143,46 @@ export interface LoadSubagentCatalogOptions {
  * workflow stores, schedulers, registries, or repository runtime state.
  */
 export function loadSubagentCatalog(repositoryRoot: string, options: LoadSubagentCatalogOptions = {}): LoadedSubagentCatalog {
-	const home = options.home ?? homedir();
 	const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
 	const exists = options.exists ?? existsSync;
-	const candidates = [
-		join(home, ".pi", "agent", "harness", "config.yaml"),
-		...(options.includeProject === false ? [] : [join(repositoryRoot, ".pi", "harness.yaml")]),
-	];
+	const agentDir = resolveModelTierAgentDir(options);
 	let profiles: unknown = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
 	let agents: unknown = structuredClone(builtInDefinitions.agents);
 	const sources = ["built-in"];
 	const diagnostics: ConfigDiagnostic[] = [];
 
-	for (const source of candidates) {
+	try {
+		const globalProfiles = loadGlobalModelTierListProfiles(options);
+		profiles = globalProfiles.config;
+		if (globalProfiles.present) sources.push(globalProfiles.path);
+	} catch (error) {
+		diagnostics.push({ level: "error", source: join(agentDir, "settings.json"), message: error instanceof Error ? error.message : String(error) });
+	}
+
+	const candidates = [
+		{ source: join(agentDir, "harness", "config.yaml"), global: true },
+		...(options.includeProject === false ? [] : [{ source: join(repositoryRoot, ".pi", "harness.yaml"), global: false }]),
+	];
+	for (const { source, global } of candidates) {
 		if (!exists(source)) continue;
 		try {
 			const parsed = parse(readFile(source)) as unknown;
 			if (!isRecord(parsed)) throw new Error("Configuration file must contain a mapping");
 			if (parsed.schemaVersion === 1 || "models" in parsed) throw new Error("Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTierListProfiles");
 			if (parsed.schemaVersion !== undefined && parsed.schemaVersion !== 2) throw new Error("schemaVersion must be 2");
-			normalizeLegacyModelTiers(parsed);
-			if (parsed.modelTierListProfiles !== undefined) profiles = mergeCatalogValues(profiles, parsed.modelTierListProfiles);
+			if (global) {
+				if ("modelTierListProfiles" in parsed || "modelTiers" in parsed) diagnostics.push({
+					level: "warning",
+					source,
+					message: "Global YAML tier routes are ignored; move modelTierListProfiles to the global Pi settings.json file",
+				});
+				delete parsed.modelTierListProfiles;
+				delete parsed.modelTiers;
+			} else {
+				const inheritedDefault = isRecord(profiles) && typeof profiles.defaultProfile === "string" ? profiles.defaultProfile : DEFAULT_MODEL_TIER_LIST_PROFILES.defaultProfile;
+				normalizeLegacyModelTiers(parsed, inheritedDefault);
+				if (parsed.modelTierListProfiles !== undefined) profiles = mergeCatalogValues(profiles, parsed.modelTierListProfiles);
+			}
 			const rawAgents = isRecord(parsed.agents) ? parsed.agents : parsed.roles;
 			if (isRecord(rawAgents)) agents = mergeCatalogValues(agents, withoutHarnessDefinitionFields(rawAgents));
 			sources.push(source);
@@ -169,7 +190,7 @@ export function loadSubagentCatalog(repositoryRoot: string, options: LoadSubagen
 			diagnostics.push({ level: "error", source, message: error instanceof Error ? error.message : String(error) });
 		}
 	}
-	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new Error(diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"));
+	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new Error(diagnostics.filter((diagnostic) => diagnostic.level === "error").map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"));
 
 	const modelTierListProfiles = validateModelTierListProfiles(profiles);
 	const modelTierProfile = options.modelTierProfile && modelTierListProfiles.profiles[options.modelTierProfile]

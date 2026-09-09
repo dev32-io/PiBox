@@ -127,26 +127,41 @@ export interface AgentProgressFormatOptions {
 	showActive?: boolean;
 }
 
+export interface FormattedAgentProgress {
+	elapsed?: string;
+	metrics: string[];
+	activeTool?: string;
+}
+
+/** Structured volatile progress lets shared status surfaces keep elapsed time
+ * beside the route while retaining counters, tokens, and the active tool. */
+export function formatAgentProgressSegments(progress: AgentProgress | undefined, now = Date.now(), options: AgentProgressFormatOptions = {}): FormattedAgentProgress {
+	if (!progress && options.fallbackStartedAt === undefined) return { metrics: [] };
+	const safeNow = timestamp(now) ?? Date.now();
+	const startedAt = progress?.startedAt ?? options.fallbackStartedAt;
+	const terminalAt = timestamp(progress?.processExitedAt) ?? timestamp(progress?.settledAt) ?? safeNow;
+	const metrics: string[] = [];
+	const turns = displayCount(progress?.turns);
+	const toolCalls = displayCount(progress?.toolCalls);
+	const toolErrors = displayCount(progress?.toolErrors);
+	const outputTokens = displayCount(progress?.outputTokens);
+	if (turns > 0) metrics.push(`${turns} turn${turns === 1 ? "" : "s"}`);
+	if (toolCalls > 0) metrics.push(`${toolCalls} tool${toolCalls === 1 ? "" : "s"}`);
+	if (toolErrors > 0) metrics.push(`${toolErrors} error${toolErrors === 1 ? "" : "s"}`);
+	if (outputTokens > 0) metrics.push(`↓ ${compactNumber(outputTokens)}`);
+	const activeTool = safeToolName(progress?.activeTool);
+	return {
+		...(startedAt !== undefined ? { elapsed: elapsed(startedAt, terminalAt) } : {}),
+		metrics,
+		...(activeTool ? { activeTool } : {}),
+	};
+}
+
 /**
  * Format volatile progress after the stable agent and route prefix. Lifecycle is
  * deliberately absent: shared surface-specific animation owns that signal.
  */
 export function formatAgentProgress(progress: AgentProgress | undefined, now = Date.now(), options: AgentProgressFormatOptions = {}): string {
-	if (!progress && options.fallbackStartedAt === undefined) return "";
-	const safeNow = timestamp(now) ?? Date.now();
-	const startedAt = progress?.startedAt ?? options.fallbackStartedAt;
-	const terminalAt = timestamp(progress?.processExitedAt) ?? timestamp(progress?.settledAt) ?? safeNow;
-	const parts: string[] = [];
-	const turns = displayCount(progress?.turns);
-	const toolCalls = displayCount(progress?.toolCalls);
-	const toolErrors = displayCount(progress?.toolErrors);
-	const outputTokens = displayCount(progress?.outputTokens);
-	if (turns > 0) parts.push(`${turns} turn${turns === 1 ? "" : "s"}`);
-	if (toolCalls > 0) parts.push(`${toolCalls} tool${toolCalls === 1 ? "" : "s"}`);
-	if (toolErrors > 0) parts.push(`${toolErrors} error${toolErrors === 1 ? "" : "s"}`);
-	if (outputTokens > 0) parts.push(`↓ ${compactNumber(outputTokens)}`);
-	if (startedAt !== undefined) parts.push(elapsed(startedAt, terminalAt));
-	const activeTool = safeToolName(progress?.activeTool);
-	if (activeTool) parts.push(activeTool);
-	return parts.join(" · ");
+	const formatted = formatAgentProgressSegments(progress, now, options);
+	return [...formatted.metrics, formatted.elapsed, formatted.activeTool].filter((value): value is string => Boolean(value)).join(" · ");
 }

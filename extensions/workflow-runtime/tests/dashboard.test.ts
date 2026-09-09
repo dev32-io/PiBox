@@ -199,7 +199,7 @@ test("matches live workflow children by durable slot beneath the active row", ()
 	assert.equal(workflowDashboardNeedsAnimation({ snapshot: value, workflowChildren: children }, now), true, "a live workflow child runs the timer");
 	const activeRow = lines.findIndex((line) => line.includes("Implementing · one"));
 	assert.ok(activeRow >= 0);
-	assert.match(lines[activeRow + 1]!, /implementer · Medium \(openai\/gpt#high\) · 2 turns · 3 tools · ↓ 1\.2k · 5s · bash/);
+	assert.match(lines[activeRow + 1]!, /implementer · Medium \(openai\/gpt#high\) · 5s · 2 turns · 3 tools · ↓ 1\.2k · bash/);
 	assert.equal(lines.some((line) => line.includes("unmatched-reviewer") || line.includes("reviewer · Configured")), false);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 120));
 });

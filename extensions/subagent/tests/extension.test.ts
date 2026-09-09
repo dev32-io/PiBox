@@ -184,6 +184,29 @@ function catalog() {
 	return { config, digest: "test", sources: ["test"], diagnostics: [] };
 }
 
+function tierContractCatalog() {
+	const loaded = catalog();
+	loaded.config.modelTierProfile = "runtime-contract";
+	loaded.config.modelTierListProfiles.profiles["runtime-contract"] = {
+		low: ["provider/low#off"],
+		medium: ["provider/medium#off", "provider/pinned#off"],
+		high: ["provider/high#off"],
+		max: ["provider/max#off"],
+		local: ["local-llm/local#off"],
+	};
+	const base = loaded.config.agents["general-purpose"]!;
+	loaded.config.agents = {
+		"low-default": { ...base, tier: "low" },
+		"medium-default": { ...base, tier: "medium" },
+		"high-default": { ...base, tier: "high" },
+		pinned: { ...base, tier: "medium", model: "provider/pinned" },
+	};
+	return loaded;
+}
+
+const TIER_CONTRACT_MODELS = ["low", "medium", "high", "max", "pinned", "replacement"]
+	.map((id) => model("provider", id, false));
+
 function harness(options: {
 	registry?: SubagentCapabilityRegistry;
 	uiRegistry?: SubagentUiProjectionRegistry;
@@ -269,6 +292,32 @@ test("runtime role alone selects the standalone main or child surface", () => {
 	const child = harness({ env: { [PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE } as NodeJS.ProcessEnv });
 	assert.deepEqual([...child.tools.keys()], []);
 	assert.equal(child.handlers.size, 0);
+});
+
+test("spawn routing schema makes tier freedom and configured-model precedence explicit", () => {
+	const spawn = harness().tools.get("subagent_spawn");
+	assert.match(spawn.parameters.properties.tier.description, /override the agent default up or down/i);
+	assert.match(spawn.parameters.properties.tier.description, /does not replace an agent's configured model/i);
+	assert.match(spawn.parameters.properties.tier.description, /Local never uses paid providers/);
+	assert.match(spawn.parameters.properties.model.description, /Overrides an agent's configured model/);
+	assert.match(spawn.parameters.properties.model.description, /Strict by default/);
+	assert.equal(spawn.parameters.required.includes("tier"), false);
+});
+
+test("assignment legibility guidance stays scoped to spawn and continue task arguments", async () => {
+	const f = harness();
+	const checkGuidance = () => {
+		for (const name of ["subagent_spawn", "subagent_continue"]) {
+			const tool = f.tools.get(name);
+			assert.match(tool.parameters.properties.task.description, /Use readable prose with normal word spacing\./);
+			assert.doesNotMatch(tool.description, /normal word spacing/);
+			assert.doesNotMatch((tool.promptGuidelines ?? []).join("\n"), /normal word spacing/);
+		}
+	};
+	checkGuidance();
+	await f.fire("session_start", { reason: "startup" });
+	checkGuidance();
+	await f.fire("session_shutdown", { reason: "quit" });
 });
 
 test("loads trusted catalog policy, resolves the active tier profile, prompt, route, tools, and foreground updates", async () => {
@@ -569,6 +618,64 @@ for (const lifecycle of ["new", "resume", "fork"] as const) {
 	});
 }
 
+test("omitted tier uses the configured agent default", async () => {
+	const f = harness({ availableModels: TIER_CONTRACT_MODELS, loadCatalog: tierContractCatalog });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("default", {
+		agent: "high-default",
+		task: "Use the agent default",
+		mode: "background",
+	}, undefined, undefined, f.ctx);
+	assert.equal(f.services[0]!.launches[0]!.model, "high");
+	assert.equal(f.services[0]!.launches[0]!.routing?.requested.tier, "high");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("explicit tiers downshift medium and high defaults and upshift a low default", async () => {
+	const f = harness({ availableModels: TIER_CONTRACT_MODELS, loadCatalog: tierContractCatalog });
+	await f.fire("session_start", { reason: "startup" });
+	for (const agent of ["medium-default", "high-default"]) {
+		await f.tools.get("subagent_spawn").execute(`downshift-${agent}`, {
+			agent,
+			task: "Use Low",
+			tier: "low",
+			mode: "background",
+		}, undefined, undefined, f.ctx);
+	}
+	await f.tools.get("subagent_spawn").execute("upshift", {
+		agent: "low-default",
+		task: "Use High",
+		tier: "high",
+		mode: "background",
+	}, undefined, undefined, f.ctx);
+	assert.deepEqual(f.services[0]!.launches.map((launch) => launch.model), ["low", "low", "high"]);
+	assert.deepEqual(f.services[0]!.launches.map((launch) => launch.routing?.requested.tier), ["low", "low", "high"]);
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("a pinned agent model survives a differing tier and an explicit spawn model replaces it", async () => {
+	const f = harness({ availableModels: TIER_CONTRACT_MODELS, loadCatalog: tierContractCatalog });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("pinned", {
+		agent: "pinned",
+		task: "Keep the pinned model",
+		tier: "high",
+		mode: "background",
+	}, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("replacement", {
+		agent: "pinned",
+		task: "Replace the pinned model",
+		tier: "high",
+		model: "provider/replacement#off",
+		mode: "background",
+	}, undefined, undefined, f.ctx);
+	assert.equal(f.services[0]!.launches[0]!.model, "pinned");
+	assert.equal(f.services[0]!.launches[0]!.routing?.requested.tier, "high");
+	assert.equal(f.services[0]!.launches[1]!.model, "replacement");
+	assert.equal(f.services[0]!.launches[1]!.routing?.requested.model, "provider/replacement");
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
 test("standalone user model override launches an unconfigured registered model", async () => {
 	const f = harness({ availableModels: [model(), model("ollama-cloud", "glm-5.3-flash")] });
 	await f.fire("session_start", { reason: "startup" });
@@ -725,12 +832,12 @@ test("spawn exposes the loaded Markdown catalog and refreshes custom description
 		return loaded;
 	} });
 	await f.fire("session_start", { reason: "startup" });
-	assert.match(f.tools.get("subagent_spawn").description, /custom-scout: Trace custom widget contracts without editing/);
-	assert.match(f.tools.get("subagent_spawn").description, /general-purpose: General/);
+	assert.match(f.tools.get("subagent_spawn").description, /custom-scout \[default tier: medium\]: Trace custom widget contracts without editing/);
+	assert.match(f.tools.get("subagent_spawn").description, /general-purpose \[default tier: medium\]: General/);
 	await f.fire("session_shutdown", { reason: "reload" });
 	description = "Inspect revised local widgets";
 	await f.fire("session_start", { reason: "reload" });
-	assert.match(f.tools.get("subagent_spawn").description, /custom-scout: Inspect revised local widgets/);
+	assert.match(f.tools.get("subagent_spawn").description, /custom-scout \[default tier: medium\]: Inspect revised local widgets/);
 	assert.doesNotMatch(f.tools.get("subagent_spawn").description, /Trace custom/);
 	const receipt = await f.tools.get("subagent_spawn").execute("custom", { agent: "custom-scout", task: "Look up widget", mode: "background" }, undefined, undefined, f.ctx);
 	assert.equal(receipt.details.agent, "custom-scout");

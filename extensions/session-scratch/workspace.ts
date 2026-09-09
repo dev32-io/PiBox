@@ -18,7 +18,15 @@ const PLAN_TEMPLATE = `# Session Scratch Plan
 
 > Non-authoritative scratch material. This file is temporary and is not a product, workflow, or repository source of truth.
 
-In Orchestrator mode, for substantial work, investigate read-only as needed, then draft the plan here before presenting or discussing it or asking for approval. Keep it focused on the current goal as a practical step-by-step checklist, not an accumulation of projects. Make the next action, dependencies, completion checks, and sequential versus independent implementation work clear. Revise this same plan during discussion and delivery; wait for approval before implementation or delegating implementation. At goal changes and completion, remove obsolete or superseded detail using judgment, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
+In Orchestrator mode, for substantial work, complete the necessary read-only research, exploration, and investigation before drafting a suitable plan. If delegated findings could affect the plan's scope, approach, dependencies, or verification, wait for those results, review them, and reconcile them with other evidence before drafting or presenting the plan. While that research is pending, keep working notes and ask clarifying questions as needed, but do not present a plan for approval.
+
+Once sufficiently informed, draft the plan here, then present it concisely for user discussion and approval. State remaining assumptions and unresolved decisions rather than treating them as established facts. Keep it focused on the current goal as a concise step-by-step Markdown checklist (- [ ] / - [x]), not an accumulation of projects. Resolve a clear Goal, Deliverable, and verifiable Done criteria through discussion and record them before implementation. Make the next action, dependencies, completion checks, and sequential versus independent implementation work clear. Revise this same plan during discussion and delivery; wait for approval before implementation or delegating implementation.
+
+Treat the plan as the working control loop, not a one-time proposal: identify the current step, mark each completed item [x] as soon as its completion checks pass, and update remaining steps or blockers as evidence changes. Keep unfinished or blocked work unchecked; reconcile the checklist before reporting progress or completion.
+
+Once the plan is approved, keep working toward its agreed deliverable without waiting for routine user prompts. Repeat investigation, implementation, delegation, and verification as needed within the approved scope until the Done criteria are met. Pause only for a genuine blocker, required approval, or a material decision reserved for the user; record what remains and the specific input needed. Routine iteration needs no renewed approval, but a material goal or scope change does.
+
+At goal changes and completion, remove obsolete or superseded detail using judgment, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
 
 `;
 const LEDGER_TEMPLATE = `# Session Scratch Ledger

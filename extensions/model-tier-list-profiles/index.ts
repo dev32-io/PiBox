@@ -1,10 +1,11 @@
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { getAgentDir, SettingsManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MODEL_TIER_PROFILE,
 	loadModelTierListProfiles,
 	type ModelTierListProfilesConfig,
 } from "./profiles.js";
+import { initializeModelTierListProfilesSettings } from "./settings.js";
 import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
 import type { InteractiveFooterRegistration } from "../tui/interactive-footer/types.js";
 import {
@@ -15,23 +16,9 @@ import {
 	serializeModelTierProfileStatus,
 } from "./policy.js";
 
-export interface ModelTierListProfilesSettings {
-	defaultProfile?: string;
-}
+export { initializeModelTierListProfilesSettings } from "./settings.js";
 
-export function loadGlobalModelTierProfile(cwd: string): string | undefined {
-	try {
-		const settings = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: false }).getGlobalSettings() as {
-			modelTierListProfiles?: ModelTierListProfilesSettings;
-		};
-		const profile = settings.modelTierListProfiles?.defaultProfile;
-		return typeof profile === "string" && profile.trim() ? profile.trim() : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-export function restoreModelTierProfile(ctx: Pick<ExtensionContext, "sessionManager">, profiles: ModelTierListProfilesConfig, configuredDefault?: string): string {
+export function restoreModelTierProfile(ctx: Pick<ExtensionContext, "sessionManager">, profiles: ModelTierListProfilesConfig): string {
 	const entries = ctx.sessionManager.getBranch();
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = entries[index] as { type?: string; customType?: string; data?: unknown };
@@ -39,15 +26,15 @@ export function restoreModelTierProfile(ctx: Pick<ExtensionContext, "sessionMana
 		const restored = normalizeModelTierProfilePolicy(entry.data);
 		if (restored && profiles.profiles[restored.profile]) return restored.profile;
 	}
-	if (configuredDefault && profiles.profiles[configuredDefault]) return configuredDefault;
 	return profiles.profiles[profiles.defaultProfile] ? profiles.defaultProfile : DEFAULT_MODEL_TIER_PROFILE;
 }
 
-export default function modelTierListProfiles(
+export default async function modelTierListProfiles(
 	pi: ExtensionAPI,
 	loadProfiles: (cwd: string, includeProject: boolean) => ModelTierListProfilesConfig = (cwd, includeProject) => loadModelTierListProfiles(cwd, { includeProject }),
-	loadDefault: (cwd: string) => string | undefined = loadGlobalModelTierProfile,
-): void {
+	initializeSettings: () => Promise<unknown> = initializeModelTierListProfilesSettings,
+): Promise<void> {
+	await initializeSettings();
 	let config: ModelTierListProfilesConfig | undefined;
 	let activeProfile = DEFAULT_MODEL_TIER_PROFILE;
 	let sessionCtx: ExtensionContext | undefined;
@@ -63,7 +50,7 @@ export default function modelTierListProfiles(
 	const restore = (ctx: ExtensionContext) => {
 		sessionCtx = ctx;
 		config = loadProfiles(ctx.cwd, ctx.isProjectTrusted());
-		activeProfile = restoreModelTierProfile(ctx, config, loadDefault(ctx.cwd));
+		activeProfile = restoreModelTierProfile(ctx, config);
 		interactiveRegistration?.unregister();
 		interactiveRegistration = registerInteractiveFooterItem({
 			id: "tier-profile",

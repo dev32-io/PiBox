@@ -223,7 +223,7 @@ test("workflow widget subscribes to relevant shared child projections and disclo
 	assert.ok(f.dashboardRenderRequests() > beforeStandalone, "workflow child projection requests an event-driven render");
 	const lines = f.dashboardLines(120);
 	assert.ok(lines.some((line) => line.includes("⇉ Stage 1 · delivery")));
-	assert.ok(lines.some((line) => /implementer · Medium \(openai\/gpt#high\) · 1 turn · 1 tool/.test(line)));
+	assert.ok(lines.some((line) => /implementer · Medium \(openai\/gpt#high\) · (?:\d+m )?\d+s · 1 turn · 1 tool/.test(line)));
 	assert.equal(lines.some((line) => line.includes("general-purpose")), false);
 
 	binding.release();

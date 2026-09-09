@@ -52,7 +52,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:01:05.000Z"));
 	const active = lines(activeComponent);
-	assert.equal(active[1], "└─ Running · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 2 turns · 3 tools · ↓ 1.2k · 1m 05s · bash");
+	assert.equal(active[1], "└─ Running · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · 2 turns · 3 tools · ↓ 1.2k · bash");
 	const narrow = activeComponent.render(48).map((line) => stripTerminalSequences(line));
 	assert.equal(narrow.length, 4, "volatile status stays on one detail row above the prompt block");
 	assert.ok(narrow.every((line) => !line.includes("\n") && line.length <= 48), "each row stays single-line and width-bounded");
@@ -71,7 +71,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 	}, () => Date.parse("2026-01-01T00:02:00.000Z")));
 	assert.equal(settled.length, 4, "settled foreground rows retain their resolved request metadata and prompt");
 	assert.match(settled[0] ?? "", /^✓ e2e-tester/);
-	assert.match(settled[1] ?? "", /^└─ Done · Fast · Medium \(openai-codex\/gpt-5\.6-sol#medium\).*1m 05s$/);
+	assert.equal(settled[1], "└─ Done · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · 2 turns · 3 tools · ↓ 1.2k");
 
 });
 
@@ -97,7 +97,7 @@ test("background transcript rows follow the owner-fenced event projection throug
 	const call = renderHarnessToolCall("subagent_spawn", { agent: "general-purpose", mode: "background", tier: "low", task: "Inspect" }, theme, false, false, details, () => now, lookup);
 	const result = renderHarnessToolResult("subagent_spawn", { content: [{ type: "text", text: "Spawned in background." }], details }, true, theme, false, lookup);
 	assert.match(lines(call)[0] ?? "", /^[·•●] general-purpose$/);
-	assert.match(lines(call)[1] ?? "", /^└─ Running · Fast · Low \(openai-codex\/gpt-5\.6-sol#low\) · 1 turn · 1 tool · ↓ 100 · 10s$/);
+	assert.equal(lines(call)[1], "└─ Running · Fast · Low (openai-codex/gpt-5.6-sol#low) · 10s · 1 turn · 1 tool · ↓ 100");
 	assert.doesNotMatch(lines(result).join("\n"), /State:|Title:|Done/);
 
 	projection = {
@@ -111,7 +111,7 @@ test("background transcript rows follow the owner-fenced event projection throug
 	now = Date.parse("2026-01-01T00:02:00.000Z");
 	assert.deepEqual(lines(call), terminalAtOneMinute, "authoritative processExitedAt freezes the terminal duration across later renders");
 	assert.match(terminalAtOneMinute[0] ?? "", /^✓ general-purpose$/);
-	assert.match(terminalAtOneMinute[1] ?? "", /^└─ Done .*12s$/);
+	assert.equal(terminalAtOneMinute[1], "└─ Done · Fast · Low (openai-codex/gpt-5.6-sol#low) · 12s · 1 turn · 1 tool · ↓ 100");
 
 	projection = undefined;
 	assert.deepEqual(lines(call).slice(1), ["└─ Launched · Low (openai-codex/gpt-5.6-sol#low)", "   Prompt:", "      Inspect"], "a detached historical launch is a static receipt, never a live clock");
@@ -135,8 +135,8 @@ test("foreground terminal receipts stay pinned to their attempt when the logical
 		terminal: { status: "completed" },
 	};
 	const rendered = lines(renderHarnessToolCall("subagent_continue", { agentId: "agent-1", task: "First follow-up" }, theme, false, false, details, () => Date.parse("2026-01-01T00:03:00.000Z"), () => newerProjection));
-	assert.match(rendered[0] ?? "", /^✓ investigator Original attempt$/);
-	assert.match(rendered[1] ?? "", /^└─ Done · Low \(old-provider\/old-model#low\).*5s$/);
+	assert.match(rendered[0] ?? "", /^✓ Continue investigator Original attempt$/);
+	assert.equal(rendered[1], "└─ Done · Low (old-provider/old-model#low) · 5s · 1 turn · 1 tool · ↓ 40");
 	assert.doesNotMatch(rendered.join("\n"), /Newer attempt|new-provider|Running/);
 });
 
@@ -185,22 +185,31 @@ test("composes one lifecycle status before prompt and foreground report", () => 
 });
 
 test("renders continuation foreground progress and prose like spawn", () => {
-	const rendered = lines(renderHarnessToolCall("subagent_continue", {
+	const owner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
+	const uiRef = { owner, agentId: "agent-1" };
+	let projection: any;
+	const call = renderHarnessToolCall("subagent_continue", {
 		agentId: "agent-1", agent: "model-supplied-role", task: "Inspect the follow-up",
-	}, theme, true, false, {
-		agent: "investigator",
-		title: "Trace fallback routing",
-		tier: "high",
-		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" },
+	}, theme, true, false, { uiRef }, () => Date.parse("2026-01-01T00:00:03.000Z"), () => projection);
+	assert.match(lines(call)[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Continue subagent agent-1$/, "the identity-free fallback stays unchanged");
+
+	projection = {
+		agentId: "agent-1", agent: "investigator", title: "Trace fallback routing", state: "running", presentation: "foreground",
+		provider: "openai-codex", model: "gpt-5.6-sol", effort: "high", tier: "high", fast: false,
+		startedAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:02.000Z",
 		progress: {
 			startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z",
 			lastEventAt: "2026-01-01T00:00:02.000Z", turns: 1, toolCalls: 2, toolErrors: 0,
 			outputTokens: 200, reasoningTokens: 0,
 		},
-	}, () => Date.parse("2026-01-01T00:00:03.000Z")));
-	assert.match(rendered[0] ?? "", /^[·•●] investigator Trace fallback routing/);
+	};
+	const rendered = lines(call);
+	assert.match(rendered[0] ?? "", /^[·•●] Continue investigator Trace fallback routing$/);
 	assert.doesNotMatch(rendered[0] ?? "", /model-supplied-role|agent-1|Inspect the follow-up/);
-	assert.match(rendered[1] ?? "", /^└─ Running · High \(openai-codex\/gpt-5\.6-sol#high\) · 1 turn · 2 tools · ↓ 200 · 3s/);
+	assert.equal(rendered[1], "└─ Running · High (openai-codex/gpt-5.6-sol#high) · 3s · 1 turn · 2 tools · ↓ 200");
+	const narrowHeadline = stripTerminalSequences(call.render(30)[0] ?? "");
+	assert.match(narrowHeadline, /^[·•●] Continue investigator/, "Continue survives narrow-width truncation before retained identity details");
+	assert.ok(narrowHeadline.length <= 30);
 
 	const report = Array.from({ length: 11 }, (_, index) => `line ${index + 1}`).join("\n");
 	const result = lines(renderHarnessToolResult("subagent_continue", { content: [{ type: "text", text: report }] }, false, theme, false));

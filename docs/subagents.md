@@ -4,7 +4,7 @@
 
 ## Agent definitions and titles
 
-The spawn tool exposes the names and `description` fields from the loaded agent catalog. Built-in definitions live in `agent-definitions/*.md`; trusted repository definitions in `.pi/agents/*.md` can add or override agents. Selection guidance belongs in each Markdown file's frontmatter, not a separate hardcoded role table. YAML harness policy cannot override Markdown descriptions or tool allowlists. The catalog refreshes on session start and `/reload` without injecting agent prompt bodies into the main session.
+The spawn tool exposes each loaded agent's name, description, and default tier. Built-in definitions live in `agent-definitions/*.md`; trusted repository definitions in `.pi/agents/*.md` can add or override agents. Selection guidance belongs in each Markdown file's frontmatter, not a separate hardcoded role table. YAML harness policy cannot override Markdown descriptions or tool allowlists. The catalog refreshes on session start and `/reload` without injecting agent prompt bodies into the main session.
 
 ```json
 {
@@ -28,6 +28,19 @@ The spawn tool exposes the names and `description` fields from the loaded agent 
 | `model` | Select an exact registered ID or `provider/model`, optionally suffixed with `#effort`. Strict by default. Shorthand such as `luna` is not fuzzy-matched. |
 | `model` + `allowFallback: true` | Permit pre-launch substitution from the selected/default tier. |
 | `model#effort` + separate `effort` | Both values must agree; conflicts fail before launch. |
+
+### Smallest-sufficient tier guidance
+
+A caller may override an agent's default tier either up or down; the defaults and guidance are not hard caps. Choose the smallest tier sufficient for the bounded assignment:
+
+- **Low:** bounded scans, extraction, focused research, and routine checks.
+- **Medium:** ordinary implementation, review, and investigation.
+- **High:** difficult, tightly coupled work. This is the normal ceiling.
+- **Max:** a very rare exception for a specific reasoning bottleneck when High is insufficient—or when there is a concrete task-specific reason to expect High will be insufficient—and better context, tools, or safe decomposition will not solve it. Explain why High is insufficient and what benefit Max is expected to provide. If unsure between High and Max, choose High.
+
+Task size, importance or security labels, urgency, vague uncertainty, and a single failed attempt are not sufficient reasons for Max. A Nuke profile upgrades the models backing routes; it does not upgrade task tiers. Tier choice adds no mandatory field, automatic escalation, retry, workflow-task default change, or runtime cap.
+
+A custom `agent.model` remains authoritative when `tier` is supplied; `tier` does not silently replace a pinned model. Only an explicit spawn `model` replaces it. A pinned `local-llm/...` model has an effective default tier of `local`; non-local tier overrides are rejected while that model is selected. The existing exact-model, strict-by-default fallback behavior and provider isolation for `local` remain unchanged.
 
 Unsupported explicitly requested effort fails rather than being silently clamped or hidden by substitution. For an explicit model without effort, a configured model uses its route effort (selected tier first, then other non-local tiers); a registered model absent from configuration uses `off`. Supply effort when it matters.
 

@@ -11,7 +11,8 @@ function repositoryPolicy(profile: HarnessScaffoldProfile) {
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	if (profile === "economy") config.limits = { ...config.limits, maxConcurrency: 2 };
 	for (const agent of Object.values(config.agents)) delete agent.tools;
-	const { modelTierProfile: _effectiveSessionProfile, ...policy } = config;
+	// New repositories inherit user tier profiles rather than pinning today's defaults.
+	const { modelTierProfile: _effectiveSessionProfile, modelTierListProfiles: _globalTierProfiles, ...policy } = config;
 	return policy;
 }
 
@@ -168,6 +169,7 @@ export async function scaffoldHarness(repositoryRoot: string, profile: HarnessSc
 		const content = [
 			"# PiBox harness repository policy.",
 			`# Scaffold profile: ${profile}. Arrays replace inherited defaults.`,
+			"# Model tier profiles inherit global settings.json; add only intentional local overrides.",
 			stringify(repositoryPolicy(profile)).trim(),
 			"",
 		].join("\n");

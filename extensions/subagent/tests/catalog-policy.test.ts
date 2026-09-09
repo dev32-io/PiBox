@@ -102,10 +102,13 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 	try {
 		mkdirSync(join(home, ".pi", "agent", "harness"), { recursive: true });
 		mkdirSync(join(root, ".pi", "agents"), { recursive: true });
+		writeFileSync(join(home, ".pi", "agent", "settings.json"), JSON.stringify({
+			modelTierListProfiles: { profiles: { performance: { medium: ["policy/medium#off"] } } },
+		}));
 		writeFileSync(join(home, ".pi", "agent", "harness", "config.yaml"), [
 			"schemaVersion: 2",
 			"modelTiers:",
-			"  medium: [policy/medium#off]",
+			"  medium: [ignored/old-global-yaml#off]",
 			"agents:",
 			"  explorer:",
 			"    tier: high",
@@ -131,7 +134,8 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 		assert.equal(loaded.config.agents.custom?.tier, "low");
 		assert.deepEqual(loaded.config.agents.explorer?.tools, ["read", "grep", "find", "ls", "bash"], "harness files cannot replace frontmatter tools");
 		assert.deepEqual(loaded.config.agents.trusted?.tools, ["read", "mcp:context7"]);
-		assert.equal(loaded.sources.length, 4);
+		assert.equal(loaded.sources.length, 5);
+		assert.equal(loaded.diagnostics.some((diagnostic) => diagnostic.level === "warning" && /settings\.json/.test(diagnostic.message)), true);
 		assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
 
 		const resolution = resolveSubagentModel(loaded.config, [model("policy", "medium")], { tier: "medium" });

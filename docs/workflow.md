@@ -168,20 +168,17 @@ On the first explicit workflow demand in a later activation, before status, star
 
 ## Configuration
 
-Tier profiles map semantic tiers to ordered concrete routes. Plans choose a tier; configuration chooses provider/model/effort:
+Tier profiles map semantic tiers to ordered concrete routes. Plans choose a tier; configuration chooses provider/model/effort. User defaults live in `~/.pi/agent/settings.json` under `modelTierListProfiles` (`PI_CODING_AGENT_DIR` overrides the directory). The tier-profile extension populates missing defaults on session startup; read-only workflow configuration loading never writes that file.
+
+New repository scaffolds inherit those defaults. Define only intentional overrides in trusted repositories' `.pi/harness.yaml`: each same-name profile/tier route array replaces the global array, while omitted lists inherit. Explicit session profile selection wins over a repository `defaultProfile`, which wins over the global default. For example, override only `performance.medium` while configuring workflow limits:
 
 ```yaml
 schemaVersion: 2
 
 modelTierListProfiles:
-  defaultProfile: performance
   profiles:
     performance:
-      max: [openai-codex/gpt-5.6-sol#max]
-      high: [openai-codex/gpt-5.6-sol#high]
-      medium: [openai-codex/gpt-5.6-sol#medium]
-      low: [openai-codex/gpt-5.6-luna#high]
-      local: [local-llm/example#medium]
+      medium: [openai-codex/gpt-5.6-sol#high]
 
 limits:
   maxConcurrency: 4
@@ -189,6 +186,8 @@ limits:
   protocolNudges: 1
   repairRounds: 2
 ```
+
+Global `~/.pi/agent/harness/config.yaml` still supplies unrelated harness policy, but no longer supplies tier definitions. Move existing global tier customizations into `settings.json`; see [tier settings and migration](../extensions/model-tier-list-profiles/README.md). Project `.pi/settings.json` is not a tier-policy source.
 
 Agent-definition Markdown frontmatter is the sole base tool allowlist. Optional `mcp:<server>` selectors use the independently configured `pi-mcp-adapter`; absent servers degrade gracefully.
 

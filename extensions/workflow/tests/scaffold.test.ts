@@ -45,7 +45,7 @@ test("bootstraps an empty directory as a develop repository without staging outs
 		assert.equal(result.developCreated, true);
 		assert.equal(await git(root, "branch", "--show-current"), "develop");
 		assert.equal(await git(root, "status", "--porcelain"), "");
-		assert.match(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /modelTierListProfiles:/);
+		assert.doesNotMatch(await readFile(join(root, ".pi", "harness.yaml"), "utf8"), /^modelTierListProfiles:/m);
 	} finally {
 		for (const [key, value] of Object.entries({
 			GIT_AUTHOR_NAME: previous.authorName,
@@ -95,6 +95,7 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(loaded.config.limits.repairRounds, 8, "economy changes concurrency, not the bounded review/fix opportunity count");
 	const policy = await readFile(join(root, ".pi", "harness.yaml"), "utf8");
 	assert.match(policy, /Scaffold profile: economy/);
+	assert.doesNotMatch(policy, /^modelTierListProfiles:|^modelTierProfile:/m, "new repositories must inherit global tier profiles");
 	assert.doesNotMatch(policy, /\nroles:\n/);
 	assert.doesNotMatch(policy, /^\s+tools:/m, "repository harness policy must not duplicate agent frontmatter tools");
 	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
@@ -104,6 +105,27 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/events.jsonl"), "agent-artifacts/story/events.jsonl");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".pibox/probe"), ".pibox/probe");
 	assert.equal((await scaffoldHarness(root, "standard")).created, false);
+});
+
+test("new repository policy inherits later global tier edits without regeneration", async (t) => {
+	const root = await emptyRepository(t);
+	const home = await mkdtemp(join(tmpdir(), "pibox-scaffold-home-"));
+	t.after(() => rm(home, { recursive: true, force: true }));
+	await scaffoldHarness(root, "standard");
+	const settingsDirectory = join(home, ".pi", "agent");
+	await mkdir(settingsDirectory, { recursive: true });
+	for (const route of ["example/first#high", "example/second#medium"]) {
+		await writeFile(join(settingsDirectory, "settings.json"), JSON.stringify({
+			modelTierListProfiles: {
+				defaultProfile: "token-conservative",
+				profiles: { "token-conservative": { medium: [route] } },
+			},
+		}));
+		const { config } = loadHarnessConfig(root, { home });
+		assert.equal(config.modelTierProfile, "token-conservative");
+		assert.deepEqual(activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium, [route]);
+	}
+	assert.equal(await git(root, "status", "--porcelain"), "");
 });
 
 test("prepares the worktree ignore for an existing harness policy", async (t) => {

@@ -57,8 +57,7 @@ function requireTrusted(ctx: ExtensionContext): void {
 	if (!ctx.isProjectTrusted()) throw new HarnessError("CAPABILITY_DENIED", "Workflow mutations require a trusted repository");
 }
 
-async function createRuntime(ctx: Pick<ExtensionContext, "sessionManager">, identity: RepositoryIdentity, modelTierProfile?: string): Promise<HarnessRuntime> {
-	const config = loadHarnessConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}) }).config;
+async function createRuntime(ctx: Pick<ExtensionContext, "sessionManager" | "isProjectTrusted">, identity: RepositoryIdentity, config: HarnessRuntime["config"]): Promise<HarnessRuntime> {
 	const sessionId = ctx.sessionManager.getSessionId();
 	const capability = resolveSubagentServiceForConsumer({ sessionId, processInstanceId: getSubagentProcessInstanceId() });
 	if (!capability) throw new HarnessError("CAPABILITY_DENIED", "The standalone SubagentService is unavailable for this workflow activation");
@@ -89,9 +88,9 @@ export function createFirstDemandReconciler(recover: (runtime: HarnessRuntime) =
 
 export function createDemandRuntimeResolver(options: {
 	discover(cwd: string): Promise<RepositoryIdentity>;
-	create(ctx: Pick<ExtensionContext, "sessionManager">, identity: RepositoryIdentity): Promise<HarnessRuntime>;
+	create(ctx: Pick<ExtensionContext, "sessionManager" | "isProjectTrusted">, identity: RepositoryIdentity): Promise<HarnessRuntime>;
 	reconcile(runtime: HarnessRuntime): Promise<void>;
-}): { run(ctx: Pick<ExtensionContext, "cwd" | "sessionManager">): Promise<HarnessRuntime>; reset(): void } {
+}): { run(ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "isProjectTrusted">): Promise<HarnessRuntime>; reset(): void } {
 	const runtimeByCwd = new Map<string, HarnessRuntime>(); const runtimeByRoot = new Map<string, HarnessRuntime>();
 	const pendingByCwd = new Map<string, Promise<HarnessRuntime>>(); const pendingByRoot = new Map<string, Promise<HarnessRuntime>>(); const reconciler = createFirstDemandReconciler(options.reconcile);
 	return {
@@ -126,7 +125,12 @@ function formatState(state: Awaited<ReturnType<StoryRuntimeStore["readState"]>>)
 	return `${state.status}${stage ? ` · stage ${stage.id}/${stage.status}${tasks ? ` · ${tasks}` : ""}` : ""} · ${state.metrics.workflowMs}ms${state.metrics.incompleteCategories.length ? "+" : ""}`;
 }
 
-export default function workflow(pi: ExtensionAPI): void {
+export default function workflow(pi: ExtensionAPI, dependencies: {
+	discover?: typeof discoverRepository;
+	loadConfig?: typeof loadHarnessConfig;
+	create?: typeof createRuntime;
+	reconcile?: (runtime: HarnessRuntime) => Promise<void>;
+} = {}): void {
 	resetActiveFastModePolicy();
 	pi.events.on(FAST_MODE_POLICY_EVENT, (value: unknown) => { const policy = normalizeFastModePolicy(value); if (policy) setActiveFastModePolicy(policy); });
 	let modelTierProfile: string | undefined;
@@ -139,10 +143,15 @@ export default function workflow(pi: ExtensionAPI): void {
 		return;
 	}
 
-	const runtimeResolver = createDemandRuntimeResolver({ discover: discoverRepository, create: (ctx, identity) => createRuntime(ctx, identity, modelTierProfile), reconcile: async (current) => { const controls = await reconcileHarnessActivation(current); await requestWorkflowRunnerRestore(controls); } });
+	const loadConfig = dependencies.loadConfig ?? loadHarnessConfig;
+	const runtimeResolver = createDemandRuntimeResolver({
+		discover: dependencies.discover ?? discoverRepository,
+		create: async (ctx, identity) => (dependencies.create ?? createRuntime)(ctx, identity, loadConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}), includeProject: ctx.isProjectTrusted() }).config),
+		reconcile: dependencies.reconcile ?? (async (current) => { const controls = await reconcileHarnessActivation(current); await requestWorkflowRunnerRestore(controls); }),
+	});
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {
 		const current = await runtimeResolver.run(ctx);
-		if (modelTierProfile && current.config.modelTierProfile !== modelTierProfile) current.config = loadHarnessConfig(current.identity.root, { modelTierProfile }).config;
+		if (modelTierProfile && current.config.modelTierProfile !== modelTierProfile) current.config = loadConfig(current.identity.root, { modelTierProfile, includeProject: ctx.isProjectTrusted() }).config;
 		return current;
 	};
 	const serviceFor = async (ctx: ExtensionContext) => { const current = await runtimeFor(ctx); return new OrchestratorResourceService(current.identity.root, current.workItems, current.config); };

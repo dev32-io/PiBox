@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { parse } from "yaml";
 import { HarnessError } from "./errors.js";
@@ -11,7 +10,9 @@ import type {
 } from "./types.js";
 import {
 	DEFAULT_MODEL_TIER_LIST_PROFILES,
+	loadGlobalModelTierListProfiles,
 	normalizeLegacyModelTiers,
+	resolveModelTierAgentDir,
 	validateModelTierListProfiles,
 } from "../model-tier-list-profiles/profiles.js";
 import { discoverProjectAgents } from "../subagent/agent-definitions.js";
@@ -143,25 +144,58 @@ function digestConfig(config: HarnessConfig): string {
 	return `sha256:${createHash("sha256").update(JSON.stringify(config)).digest("hex")}`;
 }
 
+export interface LoadHarnessConfigOptions {
+	home?: string;
+	agentDir?: string;
+	readFile?: (path: string) => string;
+	exists?: (path: string) => boolean;
+	modelTierProfile?: string;
+	/** Repository policy and project agents are loaded only after trust. */
+	includeProject?: boolean;
+}
+
 export function loadHarnessConfig(
 	repositoryRoot: string,
-	options: { home?: string; readFile?: (path: string) => string; exists?: (path: string) => boolean; modelTierProfile?: string } = {},
+	options: LoadHarnessConfigOptions = {},
 ): LoadedHarnessConfig {
-	const home = options.home ?? homedir();
 	const readFile = options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
 	const exists = options.exists ?? existsSync;
-	const candidates = [join(home, ".pi", "agent", "harness", "config.yaml"), join(repositoryRoot, ".pi", "harness.yaml")];
+	const agentDir = resolveModelTierAgentDir(options);
 	let merged: unknown = structuredClone(DEFAULT_HARNESS_CONFIG);
 	const sources = ["built-in"];
 	const diagnostics: ConfigDiagnostic[] = [];
 
-	for (const source of candidates) {
+	try {
+		const globalProfiles = loadGlobalModelTierListProfiles(options);
+		(merged as UnknownRecord).modelTierListProfiles = globalProfiles.config;
+		if (globalProfiles.present) sources.push(globalProfiles.path);
+	} catch (error) {
+		diagnostics.push({ level: "error", source: join(agentDir, "settings.json"), message: error instanceof Error ? error.message : String(error) });
+	}
+
+	const candidates = [
+		{ source: join(agentDir, "harness", "config.yaml"), global: true },
+		...(options.includeProject === false ? [] : [{ source: join(repositoryRoot, ".pi", "harness.yaml"), global: false }]),
+	];
+	for (const { source, global } of candidates) {
 		if (!exists(source)) continue;
 		try {
 			const parsed = parse(readFile(source));
 			if (!isRecord(parsed)) throw new HarnessError("CONFIG_INVALID", "Configuration file must contain a mapping");
 			if (parsed.schemaVersion === 1 || "models" in parsed) throw new HarnessError("CONFIG_INVALID", "Legacy model aliases are unsupported; migrate this policy to schemaVersion 2 modelTierListProfiles");
-			normalizeLegacyModelTiers(parsed);
+			if (global) {
+				if ("modelTierListProfiles" in parsed || "modelTiers" in parsed) diagnostics.push({
+					level: "warning",
+					source,
+					message: "Global YAML tier routes are ignored; move modelTierListProfiles to the global Pi settings.json file",
+				});
+				delete parsed.modelTierListProfiles;
+				delete parsed.modelTiers;
+			} else {
+				const currentProfiles = isRecord(merged) && isRecord(merged.modelTierListProfiles) ? merged.modelTierListProfiles : {};
+				const inheritedDefault = typeof currentProfiles.defaultProfile === "string" ? currentProfiles.defaultProfile : DEFAULT_MODEL_TIER_LIST_PROFILES.defaultProfile;
+				normalizeLegacyModelTiers(parsed, inheritedDefault);
+			}
 			ignoreHarnessDefinitionFields(parsed);
 			if (isRecord(parsed.roles) && !isRecord(parsed.agents)) parsed.agents = parsed.roles;
 			delete parsed.roles;
@@ -172,9 +206,9 @@ export function loadHarnessConfig(
 		}
 	}
 
-	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new HarnessError("CONFIG_INVALID", diagnostics.map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"), { diagnostics });
+	if (diagnostics.some((diagnostic) => diagnostic.level === "error")) throw new HarnessError("CONFIG_INVALID", diagnostics.filter((diagnostic) => diagnostic.level === "error").map((diagnostic) => `${diagnostic.source}: ${diagnostic.message}`).join("\n"), { diagnostics });
 	const config = validateHarnessConfig(merged, options.modelTierProfile);
-	const projectAgents = discoverProjectAgents(repositoryRoot, { validateTools: validateToolSelectors });
+	const projectAgents = options.includeProject === false ? { agents: {}, diagnostics: [] } : discoverProjectAgents(repositoryRoot, { validateTools: validateToolSelectors });
 	for (const [name, definition] of Object.entries(projectAgents.agents)) config.agents[name] = definition;
 	diagnostics.push(...projectAgents.diagnostics);
 	if (Object.keys(projectAgents.agents).length > 0) sources.push(join(repositoryRoot, ".pi", "agents"));

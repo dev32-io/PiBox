@@ -45,7 +45,8 @@ test("merges maps recursively and replaces arrays", () => {
 
 test("loads user then repository tier configuration and records a stable digest", () => {
 	const files: Record<string, string> = {
-		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - local/bounded#off\nroles:\n  implementer:\n    tier: medium\n    description: YAML must not own this\n    tools: [read]\nlimits:\n  maxConcurrency: 2\n",
+		"/home/.pi/agent/settings.json": JSON.stringify({ modelTierListProfiles: { profiles: { performance: { medium: ["settings/bounded#off"] } } } }),
+		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - ignored/old-global-yaml#off\nroles:\n  implementer:\n    tier: medium\n    description: YAML must not own this\n    tools: [read]\nlimits:\n  maxConcurrency: 2\n",
 		"/repo/.pi/harness.yaml": "schemaVersion: 2\nagents:\n  e2e-tester:\n    tools: [bash]\nlimits:\n  maxConcurrency: 6\n",
 	};
 	const loaded = loadHarnessConfig("/repo", {
@@ -57,12 +58,13 @@ test("loads user then repository tier configuration and records a stable digest"
 	assert.equal(loaded.config.limits.maxActiveSubagentsPerSession, 16);
 	assert.equal(loaded.config.limits.maxSubagentDepth, 1);
 	assert.equal(loaded.config.limits.repairRounds, 8, "partial repository configuration inherits the review/fix default");
-	assert.deepEqual(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium, ["local/bounded#off"]);
+	assert.deepEqual(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium, ["settings/bounded#off"]);
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.config.agents.implementer?.description, DEFAULT_HARNESS_CONFIG.agents.implementer?.description);
 	assert.deepEqual(loaded.config.agents.implementer?.tools, DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, "harness policy cannot override frontmatter tools");
 	assert.deepEqual(loaded.config.agents["e2e-tester"]?.tools, DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, "existing repository tool lists are ignored");
-	assert.equal(loaded.sources.length, 3);
+	assert.equal(loaded.sources.length, 4);
+	assert.equal(loaded.diagnostics.some((diagnostic) => diagnostic.level === "warning" && /settings\.json/.test(diagnostic.message)), true);
 	assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);
 });
 
