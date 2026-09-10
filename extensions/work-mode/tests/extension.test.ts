@@ -179,6 +179,9 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.match(prompt, /self-contained objective, relevant context and paths, constraints, read-only or edit authority, owned outputs, dependencies, expected result and proof, and a stop condition/);
 	assert.match(prompt, /Keep `plan\.md` and `ledger\.md` parent-owned\. Children do not orchestrate recursively/);
 	assert.match(prompt, /Review is not approval\. Integrate and verify the assembled outcome yourself/);
+	assert.match(prompt, /Use the configured agent's default tier; normally omit `tier`/);
+	assert.match(prompt, /reserve upward overrides for complex architecture\/design or unusually demanding reasoning, with a brief task-specific justification/);
+	assert.doesNotMatch(prompt, /Prefer Low|prefer High when unsure|normal ceiling/);
 
 	// Safe asynchronous work and recovery from incomplete assignments.
 	assert.match(prompt, /Use foreground for a prerequisite needed next and background for independent assignments/);
