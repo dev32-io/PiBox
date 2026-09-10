@@ -1,3 +1,4 @@
+import { renderMarkdown as renderSharedMarkdown } from "../../assets/markdown.js";
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const COLUMNS = ["To do", "In progress", "Done"];
 const COMPLETE_TASK_STATUSES = new Set(["accepted", "merged", "staged", "integrated", "completed", "cancelled"]);
@@ -75,39 +76,7 @@ export function evidencePresentation(item) {
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
 }
-function safeHref(value = "") {
-  const trimmed = String(value).trim().replaceAll("&amp;", "&");
-  if (/^\/v\/story-board\/api\/evidence\?/.test(trimmed) || /^(?:https?:|mailto:)/i.test(trimmed)) return trimmed;
-  return "";
-}
-function inlineMarkdown(value) {
-  let text = escapeHtml(value);
-  text = text.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_all, alt, href) => {
-    const safe = safeHref(href);
-    return safe.startsWith("/v/story-board/api/evidence?") ? `<img src="${escapeHtml(safe)}" alt="${alt}" loading="lazy">` : `<span>${alt || "Image unavailable"}</span>`;
-  });
-  text = text.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_all, label, href) => {
-    const safe = safeHref(href);
-    return safe ? `<a href="${escapeHtml(safe)}"${/^https?:/i.test(safe) ? ' target="_blank" rel="noreferrer"' : ""}>${label}</a>` : label;
-  });
-  text = text.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  return text;
-}
-export function renderMarkdown(markdown = "") {
-  const lines = String(markdown).replace(/\r/g, "").split("\n");
-  const output = [];
-  let list = false;
-  for (const line of lines) {
-    const item = line.match(/^[-*]\s+(.+)/);
-    if (item) { if (!list) { output.push("<ul>"); list = true; } output.push(`<li>${inlineMarkdown(item[1])}</li>`); continue; }
-    if (list) { output.push("</ul>"); list = false; }
-    const heading = line.match(/^(#{1,4})\s+(.+)/);
-    if (heading) output.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`);
-    else if (line.trim()) output.push(`<p>${inlineMarkdown(line)}</p>`);
-  }
-  if (list) output.push("</ul>");
-  return output.join("");
-}
+export function renderMarkdown(markdown = "") { return renderSharedMarkdown(markdown, { story: true }); }
 
 export function renderDeliveryHistory(history) {
   if (!history) return "";
@@ -576,7 +545,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     return `<section><h3>Evidence</h3><ul class="evidence">${report.evidence.map((item) => { const mode = evidencePresentation(item); const label = item.description || item.path || item.id; const member = item.memberPath || item.path?.split(`/evidence/${report.id}/`)[1]; if (mode === "image" && member) { const src = `api/evidence?story=${encodeURIComponent(state.route.storyId)}&evaluation=${encodeURIComponent(report.id)}&path=${encodeURIComponent(member)}`; return `<li><figure><img src="${src}" alt="${escapeHtml(label)}" loading="lazy"><figcaption>${escapeHtml(label)}</figcaption></figure></li>`; } if (mode === "text" && member) return `<li><a href="api/evidence?story=${encodeURIComponent(state.route.storyId)}&evaluation=${encodeURIComponent(report.id)}&path=${encodeURIComponent(member)}" target="_blank">${escapeHtml(label)} (text evidence)</a></li>`; return `<li><strong>${escapeHtml(label)}</strong>: ${mode === "missing" ? "Evidence missing" : "Unsupported evidence type"}${diagnostics(item.diagnostics)}</li>`; }).join("")}</ul></section>`;
   }
   function reportDetail(report) {
-    return `<p>${badge(report.verdict || report.status)} ${badge(`${report.scope?.kind || "report"}${report.scope?.id ? `: ${report.scope.id}` : ""}`)}${report.attempt ? ` ${badge(`Attempt ${report.attempt}`)}` : ""}</p>${report.taskId ? `<button type="button" data-go-task="${escapeHtml(report.taskId)}">Go to task</button>` : ""}${markdownSection("Result", report.body)}${report.history?.length ? `<section><h3>Attempts</h3><ol>${report.history.map((attempt) => `<li><strong>Attempt ${attempt.attempt}</strong>${attempt.available ? renderMarkdown(attempt.body || "No detail recorded.") : " — missing"}</li>`).join("")}</ol></section>` : ""}<section><h3>Findings</h3>${report.findings?.length ? `<ul>${report.findings.map((finding) => `<li>${badge(finding.severity)} ${badge(finding.status)} <div class="markdown">${renderMarkdown(finding.summary)}</div>${finding.location ? `<code>${escapeHtml(finding.location)}</code>` : ""}</li>`).join("")}</ul>` : "<p>No findings.</p>"}</section>${markdownSection("Accepted risk", report.riskAcceptance)}${evidence(report)}${diagnostics(report.diagnostics)}`;
+    return `<p>${badge(report.verdict || report.status)} ${badge(`${report.scope?.kind || "report"}${report.scope?.id ? `: ${report.scope.id}` : ""}`)}${report.attempt ? ` ${badge(`Attempt ${report.attempt}`)}` : ""}</p>${report.taskId ? `<button type="button" data-go-task="${escapeHtml(report.taskId)}">Go to task</button>` : ""}${markdownSection("Result", report.body)}${report.history?.length ? `<section><h3>Attempts</h3><ol>${report.history.map((attempt) => `<li><strong>Attempt ${attempt.attempt}</strong>${attempt.available ? `<div class="markdown">${renderMarkdown(attempt.body || "No detail recorded.")}</div>` : " — missing"}</li>`).join("")}</ol></section>` : ""}<section><h3>Findings</h3>${report.findings?.length ? `<ul>${report.findings.map((finding) => `<li>${badge(finding.severity)} ${badge(finding.status)} <div class="markdown">${renderMarkdown(finding.summary)}</div>${finding.location ? `<code>${escapeHtml(finding.location)}</code>` : ""}</li>`).join("")}</ul>` : "<p>No findings.</p>"}</section>${markdownSection("Accepted risk", report.riskAcceptance)}${evidence(report)}${diagnostics(report.diagnostics)}`;
   }
   function drawer() {
     const id = state.route.taskId || state.route.documentId || state.route.reportId;

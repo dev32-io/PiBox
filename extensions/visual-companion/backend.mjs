@@ -1,9 +1,18 @@
 import { createReadStream, existsSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, extname, resolve, sep } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const defaultCommonAssetsDir = resolve(dirname(fileURLToPath(import.meta.url)), "assets");
+const require = createRequire(import.meta.url);
+// Resolve only these distribution files, never expose a node_modules directory.
+const markdownAssets = {
+  // Viewer-relative module imports share this exact alias in the browser.
+  "/v/assets/markdown.js": resolve(defaultCommonAssetsDir, "markdown.js"),
+  "/assets/vendor/marked.js": resolve(dirname(require.resolve("marked")), "marked.umd.js"),
+  "/assets/vendor/dompurify.js": resolve(dirname(require.resolve("dompurify")), "purify.min.js"),
+};
 const contentTypes = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -80,7 +89,7 @@ export async function createVisualCompanionBackend({
   const registry = new Map();
   const states = new Map();
   const pendingDisposals = new Set();
-  const commonStaticRoutes = normalizeRoutes(commonRoutes, "Common");
+  const commonStaticRoutes = normalizeRoutes({ ...markdownAssets, ...commonRoutes }, "Common");
   const commonDynamicHandlers = normalizeRoutes(commonHandlers, "Common handler");
   let selectedViewer;
   let closed = false;

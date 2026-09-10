@@ -3,12 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
   <title>Story Board</title>
   <link rel="stylesheet" href="/assets/design-tokens.css">
+  <link rel="stylesheet" href="/assets/markdown.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <main id="app"><p class="boundary" role="status">Loading stories…</p></main>
+  <script src="/assets/vendor/marked.js"></script>
+  <script src="/assets/vendor/dompurify.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

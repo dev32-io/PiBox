@@ -43,14 +43,25 @@ test("evidence route requires canonical evaluation membership and contained mani
 	await put(root, `${base}/evaluations/${evaluation}/evaluation.yaml`, stringify({ schemaVersion: 1, id: evaluation, type: "quality-review", scope: { workItem: story }, status: "passed", required: true, attempt: 1, methods: [], findings: [], result: { verdict: "pass", report: "report.md" } }));
 	await put(root, `${base}/evaluations/${evaluation}/report.md`, "# Fine\n");
 	await put(root, `${evidence}/files/note.md`, "<script>bad()</script>Visible");
+	const plaintext = Buffer.from('error: foo_bar.ts:10 (ENOENT)\r\n<script>alert("literal")</script> &amp; [x] *bold* # ! \\ end\n\n');
+	for (const extension of ["txt", "log"]) await put(root, `${evidence}/files/literal.${extension}`, plaintext);
 	await put(root, `${evidence}/files/archive.zip`, "zip");
 	await put(root, "outside.txt", "private");
 	await symlink(join(root, "outside.txt"), join(root, evidence, "files/link.txt"));
-	await put(root, `${evidence}/manifest.yaml`, stringify({ schemaVersion: 1, evaluation, entries: [{ id: "note", path: "files/note.md" }, { id: "archive", path: "files/archive.zip" }, { id: "link", path: "files/link.txt" }] }));
+	await put(root, `${evidence}/manifest.yaml`, stringify({ schemaVersion: 1, evaluation, entries: [...["txt", "log"].map((extension) => ({ id: extension, path: `files/literal.${extension}` })), { id: "note", path: "files/note.md" }, { id: "archive", path: "files/archive.zip" }, { id: "link", path: "files/link.txt" }] }));
 	const before = createHash("sha256").update(await readFile(join(root, evidence, "files/note.md"))).digest("hex");
 	const backend = await createVisualCompanionBackend({ viewers: [createStoryBoardViewer({ repositoryRoot: root })] }); t.after(() => backend.close());
 	const route = `${backend.url}/v/story-board/api/evidence?story=${story}&evaluation=${evaluation}&path=`;
 	const response = await fetch(`${route}${encodeURIComponent("files/note.md")}`); assert.equal(response.status, 200); assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
+	for (const extension of ["txt", "log"]) {
+		const plain = await fetch(`${route}${encodeURIComponent(`files/literal.${extension}`)}`);
+		assert.equal(plain.status, 200);
+		assert.equal(plain.headers.get("content-type"), "text/plain; charset=utf-8");
+		assert.equal(plain.headers.get("x-content-type-options"), "nosniff");
+		assert.equal(plain.headers.get("content-security-policy"), "default-src 'none'; sandbox");
+		assert.equal(plain.headers.get("content-length"), String(plaintext.byteLength));
+		assert.deepEqual(Buffer.from(await plain.arrayBuffer()), plaintext);
+	}
 	const body = await response.text(); assert.doesNotMatch(body, /<script>/); assert.match(body, /Visible/);
 	assert.equal((await fetch(`${route}${encodeURIComponent("files/archive.zip")}`)).status, 404);
 	assert.equal((await fetch(`${route}${encodeURIComponent("files/link.txt")}`)).status, 404);

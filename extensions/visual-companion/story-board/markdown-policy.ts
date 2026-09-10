@@ -1,7 +1,7 @@
+import { marked, type Token, type Tokens } from "marked";
 import type { EvidenceMetadata } from "./models.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const UNSAFE_SCHEME = /^(?:javascript|data|vbscript|file|blob):/i;
 
 export interface MarkdownPolicyContext {
 	storyId?: string;
@@ -10,17 +10,10 @@ export interface MarkdownPolicyContext {
 	viewerBase?: string;
 }
 
-function normalizedUrl(value: string): string {
-	return value.trim().replace(/&colon;/gi, ":").replace(/&#0*58;/gi, ":").replace(/[\u0000-\u0020]+/g, "");
-}
-
-/** URLs passed to the browser renderer must be navigable but never scriptable. */
+/** Only explicit external navigation is allowed without evidence authorization. */
 export function safeMarkdownLink(value: string): string | undefined {
-	const normalized = normalizedUrl(value);
-	if (!normalized || UNSAFE_SCHEME.test(normalized)) return undefined;
-	if (normalized.startsWith("//")) return undefined;
-	if (/^[a-z][a-z0-9+.-]*:/i.test(normalized) && !/^(?:https?|mailto):/i.test(normalized)) return undefined;
-	return value.trim();
+	const url = value.trim();
+	return /^(?:https?:\/\/|mailto:)/i.test(url) && !/[\u0000-\u0020\\]/.test(url) ? url : undefined;
 }
 
 function relativeEvidencePath(value: string, evaluationId: string): string | undefined {
@@ -44,22 +37,59 @@ function evidenceImage(value: string, context: MarkdownPolicyContext): string | 
 	return `${base}/api/evidence?story=${encodeURIComponent(context.storyId)}&evaluation=${encodeURIComponent(context.evaluationId)}&path=${encodeURIComponent(memberPath)}`;
 }
 
-/**
- * Produces renderer-independent safe Markdown. Raw HTML is removed, unsafe
- * links become text, and only manifest-authorized companion images remain
- * images. Every other image is represented as an inert ordinary link/text.
+/** Keep the API Markdown-shaped, but serialize parsed syntax rather than regexing
+ * source. Code tokens are opaque; references are resolved by the same GFM lexer
+ * as the browser. Authored HTML becomes visible literal text, never markup.
  */
 export function sanitizeMarkdown(markdown: string, context: MarkdownPolicyContext = {}): string {
-	let safe = markdown.replace(/<!--[\s\S]*?-->/g, "").replace(/<[^>]*>/g, "");
-	safe = safe.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (_match, alt: string, target: string) => {
-		const local = evidenceImage(target, context);
-		if (local) return `![${alt}](${local})`;
-		const link = safeMarkdownLink(target);
-		return link ? `[${alt || "External image"}](${link})` : (alt || "Image unavailable");
-	});
-	safe = safe.replace(/(?<!!)\[([^\]]+)\]\(([^)\s]+)(?:\s+["'][^"']*["'])?\)/g, (_match, label: string, target: string) => {
-		const link = safeMarkdownLink(target);
-		return link ? `[${label}](${link})` : label;
-	});
-	return safe;
+	const textLiteral = (text: string) => text.replace(/[\\`*{}\[\]()#+.!_|~-]/g, "\\$&").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	const literal = (text: string) => textLiteral(text.replace(/&/g, "&amp;"));
+	const destination = (url: string) => `<${url.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
+	const render = (tokens: Token[]): string => tokens.map((value): string => {
+		const token = value as Tokens.Generic;
+		const children = () => render(token.tokens || []);
+		switch (token.type) {
+			case "space": return token.raw;
+			case "code": return token.raw + "\n\n";
+			case "codespan": return token.raw;
+			case "html": return literal(token.text) + (token.block ? "\n\n" : "");
+			case "def": return "";
+			case "image": {
+				const local = evidenceImage(token.href, context);
+				const link = local || safeMarkdownLink(token.href);
+				const label = literal(token.text || "Image unavailable");
+				return link ? `${local ? "!" : ""}[${label}](${destination(link)})` : label;
+			}
+			case "link": {
+				const link = evidenceImage(token.href, context) || safeMarkdownLink(token.href);
+				const label = children();
+				return link ? `[${label}](${destination(link)})` : label;
+			}
+			case "heading": return `${"#".repeat(token.depth)} ${children()}\n\n`;
+			case "paragraph": return children() + "\n\n";
+			case "text": return token.tokens ? children() + (token.raw.match(/\n+$/)?.[0] || "") : textLiteral(token.raw);
+			case "checkbox": return "";
+			case "strong": case "em": {
+				// Retain each source delimiter, including in nested tokens: normalizing
+				// adjacent *a*_b_ to *a**b* changes how Markdown parses the run.
+				const marker = token.raw.slice(0, token.type === "strong" ? 2 : 1);
+				return `${marker}${children()}${marker}`;
+			}
+			case "del": return `~~${children()}~~`;
+			case "escape": case "br": case "hr": return token.raw;
+			case "blockquote": return render(token.tokens || []).trimEnd().split("\n").map((line) => `> ${line}`).join("\n") + "\n\n";
+			case "list": return (token.items as Tokens.ListItem[]).map((item, index) => {
+				const marker = token.ordered ? `${Number(token.start) + index}. ` : "- ";
+				const body = `${item.task ? `[${item.checked ? "x" : " "}] ` : ""}${render(item.tokens).trimEnd()}`;
+				return marker + body.replace(/\n/g, "\n" + " ".repeat(marker.length));
+			}).join("\n") + "\n\n";
+			case "table": {
+				const table = value as Tokens.Table;
+				const row = (cells: Tokens.TableCell[]) => "| " + cells.map((cell) => render(cell.tokens).replace(/(?<!\\)\|/g, "\\|")).join(" | ") + " |\n";
+				return row(table.header) + "| " + table.align.map((align) => align === "center" ? ":---:" : align === "right" ? "---:" : align === "left" ? ":---" : "---").join(" | ") + " |\n" + table.rows.map(row).join("") + "\n";
+			}
+			default: return literal(token.raw);
+		}
+	}).join("");
+	return render(marked.lexer(markdown, { gfm: true })).trimEnd();
 }

@@ -1,3 +1,4 @@
+import "../../tests/markdown-dom.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
@@ -6,10 +7,10 @@ import { evidencePresentation, renderMarkdown } from "../assets/app.js";
 const assets = new URL("../assets/", import.meta.url);
 
 test("safe Markdown never injects canonical HTML or auto-loads external images", () => {
-	const rendered = renderMarkdown("<script>alert(1)</script>\n![remote](https://example.test/a.png)\n[site](https://example.test)");
+	const rendered = renderMarkdown("<script>alert(1)</script>\n\n![remote](https://example.test/a.png)\n[site](https://example.test)");
 	assert.doesNotMatch(rendered, /<script>|<img[^>]+example/);
 	assert.match(rendered, /&lt;script&gt;/);
-	assert.match(rendered, /target="_blank" rel="noreferrer"/);
+	assert.match(rendered, /target="_blank" rel="noopener noreferrer"/);
 });
 
 test("evidence rendering distinguishes canonical images, text, missing, and unsupported items", () => {

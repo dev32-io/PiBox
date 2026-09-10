@@ -1,3 +1,4 @@
+import { renderedDOM } from "./markdown-dom.js";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -46,13 +47,12 @@ test("Scratch Markdown is readable without allowing embedded or local resources"
 <script>alert("no")</script>
 \`\`\``);
 	assert.match(rendered, /<h1>Heading<\/h1>/);
-	assert.match(rendered, /type="checkbox" disabled checked/);
-	assert.match(rendered, /href="https:\/\/example\.com" target="_blank" rel="noreferrer"/);
-	assert.match(rendered, /href="mailto:user@example\.com"/);
-	assert.doesNotMatch(rendered, /href="\.\.\/evidence/);
-	assert.doesNotMatch(rendered, /href="javascript:/);
-	assert.doesNotMatch(rendered, /<img|src=/);
-	assert.match(rendered, /Image: remote/);
-	assert.match(rendered, /<pre><code>&lt;script&gt;alert\(&quot;no&quot;\)&lt;\/script&gt;<\/code><\/pre>/);
-	assert.doesNotMatch(rendered, /<script>/);
+ const dom = renderedDOM(rendered);
+ assert.equal(dom.querySelectorAll('input[type="checkbox"][disabled]').length, 2);
+ assert.equal(dom.querySelectorAll('input[checked]').length, 1);
+ assert.equal(dom.querySelector('a[href="https://example.com"]')?.getAttribute("rel"), "noopener noreferrer");
+ assert.ok(dom.querySelector('a[href="mailto:user@example.com"]'));
+ assert.equal(dom.querySelectorAll('img,script,a[href^=".."],a[href^="javascript:"]').length, 0);
+ assert.match(dom.textContent || "", /Image: remote/);
+ assert.equal(dom.querySelector("pre code")?.textContent, '<script>alert("no")</script>\n');
 });

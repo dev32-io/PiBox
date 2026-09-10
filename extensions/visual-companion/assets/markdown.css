@@ -1,0 +1,23 @@
+/* Shared read-only GFM typography; viewer containers own layout and scrolling. */
+.markdown { line-height: 1.65; overflow-wrap: anywhere; min-width: 0; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown :is(h1,h2,h3,h4,h5,h6) { line-height: 1.3; margin-block: 1.4em .6em; }
+.markdown :is(p,ul,ol,blockquote,pre,.markdown-table) { margin-block: .8em; }
+.markdown :is(ul,ol) { padding-inline-start: 1.8em; }
+.markdown li > :is(ul,ol) { margin-block: .25em; }
+.markdown code { font-family: var(--font-mono, monospace); }
+.markdown pre { overflow: auto; padding: 12px; border: 1px solid var(--color-border-subtle, ButtonBorder); border-radius: 4px; background: var(--color-canvas-soft, Canvas); }
+.markdown pre code { white-space: pre; overflow-wrap: normal; }
+.markdown :not(pre) > code { padding: 1px 4px; background: var(--color-surface-strong, ButtonFace); border-radius: 4px; }
+.markdown blockquote { margin-inline: 0; padding-inline-start: 16px; border-inline-start: 3px solid var(--color-border-strong, ButtonBorder); color: var(--color-text-secondary, CanvasText); }
+.markdown input[type="checkbox"] { accent-color: var(--color-accent, Highlight); }
+.markdown hr { border: 0; border-top: 1px solid var(--color-border-subtle, ButtonBorder); margin-block: 1.5em; }
+.markdown img { max-width: 100%; height: auto; }
+.markdown-table { max-width: 100%; overflow: auto; }
+.markdown table { border-collapse: collapse; width: max-content; min-width: 100%; }
+.markdown :is(th,td) { border: 1px solid var(--color-border-subtle, ButtonBorder); padding: 6px 12px; text-align: left; }
+.markdown th { background: var(--color-canvas-soft, Canvas); }
+.markdown .align-left { text-align: left; }
+.markdown .align-center { text-align: center; }
+.markdown .align-right { text-align: right; }

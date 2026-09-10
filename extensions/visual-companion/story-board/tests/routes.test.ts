@@ -32,7 +32,7 @@ test("Story Board registration is idle and routes load progressively with single
 	assert.equal((await first.then((r) => r.json()) as any).stories[0].id, "story"); await second; assert.equal(calls.catalog, 1);
 	await fetch(`${backend.url}/v/story-board/api/workspace?story=story`); assert.equal(calls.workspace, 1); assert.equal(calls.task, 0);
 	const task = await fetch(`${backend.url}/v/story-board/api/task?story=story&task=task`).then((r) => r.json()) as any;
-	assert.equal(task.task.brief, "Brief"); assert.deepEqual(task.task.deliveryHistory, { executionMode: "worktree", completedCommit: "abcdef1234567890" });
+	assert.equal(task.task.brief, "&lt;b&gt;Brief&lt;/b&gt;"); assert.deepEqual(task.task.deliveryHistory, { executionMode: "worktree", completedCommit: "abcdef1234567890" });
 	assert.doesNotMatch(JSON.stringify(task), /private\/worktree|private-run-id|lastRunId|"worktree":/); assert.equal(calls.task, 1); assert.equal(calls.document, 0);
 	const document = await fetch(`${backend.url}/v/story-board/api/document?story=story&document=doc`).then((r) => r.json()) as any;
 	assert.doesNotMatch(document.document.body, /<script>/); assert.equal(calls.document, 1);

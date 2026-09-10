@@ -145,7 +145,7 @@ export function createStoryBoardViewer(options: StoryBoardViewerOptions): Visual
 			try {
 				const info = await handle.stat(); if (!info.isFile()) return error(response, 404, "Evidence not available"); if (info.size > MAX_EVIDENCE_BYTES) return error(response, 413, "Evidence is too large");
 				let bytes = await handle.readFile(); const extension = extname(path).toLowerCase(); const type = EVIDENCE_TYPES[extension]; if (!type) return error(response, 415, "Evidence type is unsupported");
-				if ([".md", ".txt", ".log"].includes(extension)) bytes = Buffer.from(sanitizeMarkdown(bytes.toString("utf8")));
+				if (extension === ".md") bytes = Buffer.from(sanitizeMarkdown(bytes.toString("utf8")));
 				response.writeHead(200, { "content-type": type, "content-length": bytes.byteLength, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" }); response.end(bytes);
 			} finally { await handle.close(); }
 		}),
