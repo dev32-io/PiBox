@@ -14,6 +14,7 @@ import { checkFailureSummary, createE2eScratchDirectory, createHarnessWorkflowAd
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 import { writeLedgerSubmission } from "../ledger-submission.js";
+import { readE2eReportSubmission, submitE2eReport, type E2eReportSubmission, type WorkflowE2eReportInput } from "../e2e-report-submission.js";
 
 const exec = promisify(execFile);
 
@@ -90,10 +91,31 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	};
 }
 
+async function submitE2eFixture(f: Awaited<ReturnType<typeof fixture>>, input: any, submission: WorkflowE2eReportInput): Promise<string> {
+	await mkdir(f.runtime.identity.privateRoot, { recursive: true, mode: 0o700 });
+	const directory = await mkdtemp(join(f.runtime.identity.privateRoot, "e2e-fixture-report-"));
+	await chmod(directory, 0o700);
+	const reportPath = join(directory, "report.md");
+	await submitE2eReport({ reportPath, repositoryRoot: f.root, attemptToken: input.attemptToken, storyE2e: story.e2e, submission });
+	return reportPath;
+}
+
 function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<{ text: string; exitCode?: number; stderr?: string; terminalReason?: string; reportPath?: string }>): void {
 	f.runtime.config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	f.runtime.launcher.launch = async (input: any) => {
-		const terminal = await launch(input);
+		let terminal = await launch(input);
+		if (input.action === "e2e" && !terminal.reportPath && (terminal.exitCode ?? 0) === 0) {
+			try {
+				const legacy = JSON.parse(terminal.text) as { result: string; summary?: string; findings?: Array<{ summary: string; severity?: "minor" | "major" | "critical" }>; evidenceRefs?: string[] };
+				const evidence = legacy.evidenceRefs?.map((reference) => join(f.root, "agent-artifacts", story.id, reference));
+				const findings = legacy.findings?.map((finding) => ({ summary: finding.summary, ...(finding.severity ? { severity: finding.severity } : {}) }));
+				const reportPath = await submitE2eFixture(f, input, { cases: [{ case: "E2E-001", verdict: legacy.result === "passed" ? "passed" : legacy.result === "needs_user" ? "blocked" : "failed", ...(evidence?.length ? { evidence } : {}) }], ...(legacy.summary === undefined ? {} : { summary: legacy.summary }), ...(findings?.length ? { findings } : legacy.result === "critical" || legacy.result === "unsafe" ? { findings: [{ summary: legacy.summary ?? legacy.result, severity: "critical" }] } : {}) });
+				for (const source of evidence ?? []) await rm(source, { force: true });
+				terminal = { ...terminal, reportPath };
+			} catch (error) {
+				terminal = { ...terminal, exitCode: 1, stderr: error instanceof Error ? error.message : String(error) };
+			}
+		}
 		return { exitCode: terminal.exitCode ?? 0, text: terminal.text, stderr: terminal.stderr ?? "", terminalReason: terminal.terminalReason ?? "completed", ...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}), provider: input.provider, model: input.model, effort: input.effort, serviceAttemptId: input.attemptToken };
 	};
 	f.runtime.launcher.stopStory = async () => 0;
@@ -1118,16 +1140,11 @@ test("production completion validates evidence and commits only evidence plus th
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"), 8_000);
 	const committed = (await exec("git", ["show", "--pretty=format:", "--name-only", "HEAD"], { cwd: f.root })).stdout.trim().split("\n").filter(Boolean).sort();
-	assert.equal(committed.filter((path) => path.startsWith("agent-artifacts/example/evidence/")).length, 65);
+	assert.equal(committed.filter((path) => path.startsWith("agent-artifacts/example/evidence/")).length, 66, "canonical report plus 65 attachments are retained");
 	assert.ok(committed.includes("agent-artifacts/example/outcome.md"));
-	assert.match(e2eStablePrompt, /working directory is the repository root/);
 	assert.match(e2eStablePrompt, /\$PIBOX_E2E_SCRATCH_DIR/);
-	assert.match(e2eStablePrompt, /tool-generated or intermediate output that is not retained evidence/);
-	assert.match(e2eStablePrompt, /repository changes consist exclusively of the cited evidence files/);
-	assert.match(e2eStablePrompt, /beneath agent-artifacts\/example\/evidence\//);
-	assert.match(e2eStablePrompt, /do not create a top-level evidence\/ directory/);
-	assert.match(e2eStablePrompt, /story-relative evidenceRefs such as evidence\/result\.json/);
-	assert.match(e2eStablePrompt, /without the agent-artifacts\/example\/ prefix/);
+	assert.match(e2eStablePrompt, /workflow_e2e_report/);
+	assert.match(e2eStablePrompt, /Final prose is not verdict authority/);
 	await assert.rejects(access(e2eScratchDirectory), /ENOENT/, "disposable tool output is removed after the E2E attempt");
 	assert.ok(evaluatorPrompts.length >= 3, "stage review, final review, and E2E receive dynamic attempts");
 	for (const prompt of evaluatorPrompts) {
@@ -1166,8 +1183,12 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 		caseResults: [{ id: "E2E-001", status: "failed", observations: ["Expected result missing"] }],
 		result: "blocked",
 		findings: ["Journey failed before repair"],
-		evidenceRefs: ["evidence/result.json"],
+		evidenceRefs: ["evidence/result.json", "evidence/uncited-nested.json"],
+		unknownEvaluatorField: { full: "REPORT-TAIL-SENTINEL" },
 	}, null, 2) + "\n";
+	const secondReport = JSON.stringify({ caseResults: [{ id: "E2E-002", status: "blocked", observations: ["Prerequisite unavailable"] }], extra: "SECOND-REPORT" }, null, 2) + "\n";
+	const supportJson = JSON.stringify({ witness: "SUPPORT-BODY-MUST-NOT-BE-INLINED" }) + "\n";
+	const malformedJson = "{ malformed current report\n";
 	const rerunReport = JSON.stringify({
 		caseResults: [{ id: "E2E-001", status: "passed", observations: ["Expected result visible"] }],
 		result: "passed",
@@ -1176,6 +1197,8 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 	}, null, 2) + "\n";
 	let e2eRuns = 0;
 	let retestPrompt = "";
+	let repairPrompt = "";
+	let repairStablePrompt = "";
 	let e2eStablePrompt = "";
 	let adapter!: ReturnType<typeof createHarnessWorkflowAdapter>;
 	useProductionExecutor(f, async (input) => {
@@ -1186,7 +1209,10 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 			return { text: "delivered" };
 		}
 		if (input.action === "e2e-fix") {
+			repairPrompt = input.attemptUserPrompt;
+			repairStablePrompt = input.stableSystemContext;
 			assert.deepEqual(await adapter.preflightWorkflow!("work-item:example", f.ctx), { ok: true });
+			await assert.rejects(access(join(input.cwd, "agent-artifacts", "example", "evidence", "result.json")), /ENOENT/, "canonical uncommitted report is absent from repair worktree");
 			const unrelated = join(f.root, "unrelated.tmp");
 			await writeFile(unrelated, "unrelated\n");
 			await assert.rejects(adapter.preflightWorkflow!("work-item:example", f.ctx), /outside its validated evidence set.*unrelated\.tmp/);
@@ -1202,10 +1228,12 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 			await mkdir(evidenceRoot, { recursive: true });
 			if (e2eRuns++ === 0) {
 				await writeFile(join(evidenceRoot, "result.json"), resultReport);
-				return { text: JSON.stringify({ result: "repairable", summary: "journey failed", findings: [{ id: "journey", severity: "major", code: "missing_result", summary: "Expected result missing" }], evidenceRefs: ["evidence/result.json"] }) };
+				await writeFile(join(evidenceRoot, "second.json"), secondReport);
+				await writeFile(join(evidenceRoot, "support.json"), supportJson);
+				await writeFile(join(evidenceRoot, "malformed.json"), malformedJson);
+				return { text: JSON.stringify({ result: "repairable", summary: "journey failed", findings: [{ id: "journey", severity: "major", code: "missing_result", summary: "Expected result missing" }], evidenceRefs: ["evidence/result.json", "evidence/second.json", "evidence/support.json", "evidence/malformed.json"] }) };
 			}
 			retestPrompt = input.attemptUserPrompt;
-			assert.equal(await readFile(join(evidenceRoot, "result.json"), "utf8"), resultReport);
 			await writeFile(join(evidenceRoot, "rerun-result.json"), rerunReport);
 			return { text: JSON.stringify({ result: "passed", summary: "journey passed", findings: [], evidenceRefs: ["evidence/rerun-result.json"] }) };
 		}
@@ -1215,21 +1243,158 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
 	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-	assert.deepEqual(runtime.e2e.evidenceRefs, ["evidence/result.json", "evidence/rerun-result.json"]);
-	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "result.json"), "utf8"), resultReport);
-	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "rerun-result.json"), "utf8"), rerunReport);
-	assert.match(retestPrompt, /Prior retained reports[\s\S]*evidence\/result\.json/);
-	assert.match(retestPrompt, /distinct new filenames/);
-	assert.match(e2eStablePrompt, /passed\|repairable\|critical\|needs_user\|unsafe/);
-	assert.match(e2eStablePrompt, /unique nonempty id, severity \(critical\|major\|minor\), nonempty code and summary/);
-	assert.match(e2eStablePrompt, /optionally a path string and positive integer line/);
-	assert.match(e2eStablePrompt, /top-level story-relative evidenceRefs/);
-	assert.match(e2eStablePrompt, /retained rich report JSON/);
-	assert.match(e2eStablePrompt, /do not blindly return a report file body/);
+	assert.equal(runtime.e2e.evidenceRefs.length, 7, "two reports and five attachments remain cumulative");
+	assert.deepEqual(runtime.e2e.currentFindings, []);
+	assert.equal(runtime.e2e.currentEvidenceRefs?.length, 2);
+	assert.equal(runtime.e2e.currentReportRef, runtime.e2e.currentEvidenceRefs?.[0]);
+	assert.match(runtime.e2e.currentReportRef ?? "", /^evidence\/e2e-[^/]+\/report\.json$/);
+	assert.match(retestPrompt, /Prior retained evidence[\s\S]*evidence\/e2e-/);
+	assert.match(repairPrompt, /FULL literal canonical report JSON/);
+	assert.match(repairPrompt, /"schemaVersion":1/);
+	assert.match(repairPrompt, /"result":"repairable"/);
+	assert.match(repairPrompt, /Supporting canonical root paths:/);
+	assert.match(repairPrompt, /Reproduce concrete failure or witness before patching/);
+	assert.match(repairPrompt, /unexecuted coverage or unmet prerequisites/);
+	assert.doesNotMatch(repairStablePrompt, /FULL literal canonical report JSON/, "current context stays out of stable SYSTEM prompt");
+	assert.match(e2eStablePrompt, /workflow_e2e_report/);
+	assert.match(e2eStablePrompt, /Final prose is not verdict authority/);
 	const committed = (await exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "agent-artifacts/example/evidence"], { cwd: f.root })).stdout.trim().split("\n");
-	assert.deepEqual(committed, ["agent-artifacts/example/evidence/rerun-result.json", "agent-artifacts/example/evidence/result.json"]);
+	assert.equal(committed.length, 7);
 	assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
 	assert.doesNotMatch(await readFile(join(f.root, ".gitignore"), "utf8"), /evidence/);
+});
+
+test("request_changes E2E fix uses same current-context entrance and augments it with guidance", async (t) => {
+	const f = await fixture(t, {});
+	const report = JSON.stringify({ caseResults: [{ id: "E2E-001", status: "failed", observations: ["REQUEST-REPORT"] }], extra: { retained: true } }, null, 2) + "\n";
+	let e2eRuns = 0;
+	let fixPrompt = "";
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "delivered.txt"), "before request repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+			return { text: "delivered" };
+		}
+		if (input.action === "e2e-fix") {
+			fixPrompt = input.attemptUserPrompt;
+			await writeFile(join(input.cwd, "delivered.txt"), "after request repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "requested E2E repair"], { cwd: input.cwd });
+			return { text: "repaired" };
+		}
+		if (input.role === "e2e-tester") {
+			const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
+			await mkdir(evidenceRoot, { recursive: true });
+			if (e2eRuns++ === 0) {
+				await writeFile(join(evidenceRoot, "request.json"), report);
+				return { text: JSON.stringify({ result: "repairable", summary: "request failure", findings: [{ id: "request", severity: "major", code: "request_failure", summary: "REQUEST-FINDING" }], evidenceRefs: ["evidence/request.json"] }) };
+			}
+			await writeFile(join(evidenceRoot, "request-passed.json"), JSON.stringify({ caseResults: [{ id: "E2E-001", status: "passed" }] }) + "\n");
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/request-passed.json"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(attention.e2e.currentEvidenceRefs?.length, 2);
+	assert.equal(attention.e2e.currentReportRef, attention.e2e.currentEvidenceRefs?.[0]);
+	const historicalReport = JSON.stringify({ caseResults: [{ id: "E2E-HISTORICAL", status: "failed" }], marker: "COMMITTED-HISTORICAL-BODY" }) + "\n";
+	const historicalPath = join(f.root, "agent-artifacts", "example", "evidence", "historical.json");
+	await writeFile(historicalPath, historicalReport);
+	await exec("git", ["add", "agent-artifacts/example/evidence/historical.json"], { cwd: f.root });
+	await exec("git", ["commit", "-qm", "retain historical E2E report"], { cwd: f.root });
+	const store = new StoryRuntimeStore(f.root, "example");
+	const withHistoricalEvidence = (await store.readState())!;
+	withHistoricalEvidence.e2e.evidenceRefs = ["evidence/historical.json", ...withHistoricalEvidence.e2e.evidenceRefs];
+	await store.writeState(withHistoricalEvidence);
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "REQUEST-GUIDANCE", correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "e2e" } } }, f.ctx);
+	const corrected = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.deepEqual(corrected.e2e.currentFindings, attention.e2e.currentFindings);
+	assert.deepEqual(corrected.e2e.currentEvidenceRefs, attention.e2e.currentEvidenceRefs);
+	await adapter.controlExecution!("work-item:example", "resume", "requested-e2e", f.ctx);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	assert.match(fixPrompt, /REQUEST-GUIDANCE/);
+	assert.match(fixPrompt, /REQUEST-FINDING/);
+	assert.match(fixPrompt, /FULL literal canonical report JSON/);
+	assert.match(fixPrompt, /"summary":"request failure"/);
+	assert.doesNotMatch(fixPrompt, /COMMITTED-HISTORICAL-BODY|evidence\/historical\.json/, "committed cumulative report absent from current citations stays out of prompt");
+	assert.equal(await readFile(historicalPath, "utf8"), historicalReport);
+	assert.match(fixPrompt, /## Current authoritative E2E report/);
+	assert.match(fixPrompt, /Supporting canonical root paths/);
+});
+
+test("E2E repair rejects current report mutation between prompt capture and cumulative baseline without launch", async (t) => {
+	const f = await fixture(t, {});
+	const oldReport = JSON.stringify({ caseResults: [{ id: "E2E-001", status: "failed" }], marker: "OLD-PROMPT-BODY" }) + "\n";
+	const newReport = JSON.stringify({ caseResults: [{ id: "E2E-001", status: "passed" }], marker: "NEW-FILE-BODY" }) + "\n";
+	let repairLaunches = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "delivered.txt"), "before repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+			return { text: "delivered" };
+		}
+		if (input.action === "e2e-fix") {
+			repairLaunches++;
+			return { text: "must not launch" };
+		}
+		if (input.role === "e2e-tester") {
+			const currentPath = join(f.root, "agent-artifacts", "example", "evidence", "current.json");
+			await mkdir(join(currentPath, ".."), { recursive: true });
+			await writeFile(currentPath, oldReport);
+			return { text: JSON.stringify({ result: "repairable", summary: "failed", findings: [], evidenceRefs: ["evidence/current.json"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const store = new StoryRuntimeStore(f.root, "example");
+	const attention = (await store.readState())!;
+	const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
+	const currentPath = join(f.root, "agent-artifacts", "example", attention.e2e.currentReportRef!);
+	const historicalPath = join(evidenceRoot, "historical.txt");
+	await writeFile(historicalPath, "committed historical proof\n");
+	await exec("git", ["add", "agent-artifacts/example/evidence/historical.txt"], { cwd: f.root });
+	await exec("git", ["commit", "-qm", "retain historical proof"], { cwd: f.root });
+	attention.e2e.evidenceRefs = ["evidence/historical.txt", ...attention.e2e.evidenceRefs];
+	await store.writeState(attention);
+	const headBefore = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+	let capturedCurrent = false;
+	let mutatedBetweenCaptureAndBaseline = false;
+	f.runtime.evidenceDescriptorOpened = async (openedPath: string) => {
+		const runtime = await store.readState();
+		if (runtime?.e2e.status !== "fixing") return;
+		if (openedPath === currentPath && !capturedCurrent) {
+			capturedCurrent = true;
+			return;
+		}
+		if (openedPath === historicalPath && capturedCurrent && !mutatedBetweenCaptureAndBaseline) {
+			mutatedBetweenCaptureAndBaseline = true;
+			await writeFile(currentPath, newReport);
+		}
+	};
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "repair current failure", correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "e2e" } } }, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "mutation-race", f.ctx);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => {
+		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		assert.equal(runtime.status, "attention");
+		assert.match(runtime.attention?.summary ?? "", /evidence changed after it was cited: evidence\/e2e-[^/]+\/report\.json/);
+	}, 8_000);
+	assert.equal(capturedCurrent, true);
+	assert.equal(mutatedBetweenCaptureAndBaseline, true);
+	assert.equal(repairLaunches, 0);
+	assert.equal(await readFile(currentPath, "utf8"), newReport);
+	assert.equal(await readFile(historicalPath, "utf8"), "committed historical proof\n");
+	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim(), headBefore);
 });
 
 test("completed E2E crash window permits only cited evidence during resume preflight", async (t) => {
@@ -1262,7 +1427,9 @@ test("completed E2E crash window permits only cited evidence during resume prefl
 	await writeFile(join(f.root, "uncited.tmp"), "uncited\n");
 	await assert.rejects(adapter.preflightWorkflow!("work-item:example", f.ctx), /outside its validated evidence set.*uncited\.tmp/);
 	await rm(join(f.root, "uncited.tmp"));
-	assert.deepEqual((await store.readState())!.e2e.evidenceRefs, ["evidence/accepted.json"]);
+	const retained = (await store.readState())!.e2e;
+	assert.equal(retained.evidenceRefs.length, 2);
+	assert.ok(retained.evidenceRefs.includes(retained.currentReportRef!));
 });
 
 test("E2E fix pre-merge rejects unrelated canonical dirt and preserves it", async (t) => {
@@ -1304,6 +1471,7 @@ test("E2E fix pre-merge rejects unrelated canonical dirt and preserves it", asyn
 test("E2E retest rejects mutation of prior proof and preserves both files", async (t) => {
 	const f = await fixture(t, {});
 	let e2eRuns = 0;
+	let adapter!: ReturnType<typeof createHarnessWorkflowAdapter>;
 	useProductionExecutor(f, async (input) => {
 		if (input.action === "task-launch" || input.action === "e2e-fix") {
 			await writeFile(join(input.cwd, "delivered.txt"), `${input.action}\n`);
@@ -1318,28 +1486,28 @@ test("E2E retest rejects mutation of prior proof and preserves both files", asyn
 				await writeFile(join(evidenceRoot, "result.json"), "{\"result\":\"blocked\"}\n");
 				return { text: JSON.stringify({ result: "repairable", summary: "failed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
 			}
-			await writeFile(join(evidenceRoot, "result.json"), "{\"result\":\"tampered\"}\n");
+			const current = (await adapter.snapshot("work-item:example", f.ctx)).runtime.e2e.currentReportRef!;
+			await writeFile(join(f.root, "agent-artifacts", "example", current), "{\"result\":\"tampered\"}\n");
 			await writeFile(join(evidenceRoot, "rerun-result.json"), "{\"result\":\"passed\"}\n");
 			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/rerun-result.json"] }) };
 		}
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
-	const adapter = f.create(); await start(adapter, f.ctx);
+	adapter = f.create(); await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
 	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
 	assert.equal(runtime.attention?.code, "evidence_invalid");
-	assert.match(runtime.attention?.summary ?? "", /evidence changed after it was cited: evidence\/result\.json/);
-	assert.deepEqual(runtime.e2e.evidenceRefs, ["evidence/result.json"]);
-	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "result.json"), "utf8"), "{\"result\":\"tampered\"}\n");
-	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "rerun-result.json"), "utf8"), "{\"result\":\"passed\"}\n");
+	assert.match(runtime.attention?.summary ?? "", /evidence changed after it was cited: evidence\/e2e-[^/]+\/report\.json/);
+	assert.equal(runtime.e2e.evidenceRefs.length, 2);
+	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", runtime.e2e.currentReportRef!), "utf8"), "{\"result\":\"tampered\"}\n");
 });
 
-test("E2E evidence validation blocks missing, ignored, unsafe, and nonzero uncited output", async (t) => {
-	for (const scenario of ["missing", "ignored", "unsafe", "nonzero"] as const) {
+test("E2E submission boundary pauses missing, ignored, and nonzero uncited report output", async (t) => {
+	for (const scenario of ["missing", "ignored", "nonzero"] as const) {
 		await t.test(scenario, async (t) => {
 			const f = await fixture(t, {});
 			if (scenario === "ignored") {
-				await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n/agent-artifacts/example/evidence/ignored.json\n");
+				await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n/agent-artifacts/example/evidence/e2e-*/\n");
 				await exec("git", ["add", ".gitignore"], { cwd: f.root });
 				await exec("git", ["commit", "-qm", "ignore test evidence"], { cwd: f.root });
 			}
@@ -1358,19 +1526,16 @@ test("E2E evidence validation blocks missing, ignored, unsafe, and nonzero uncit
 					await writeFile(join(evidenceRoot, "ignored.json"), "{}\n");
 					return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["evidence/ignored.json"] }) };
 				}
-				if (scenario === "unsafe") {
-					await writeFile(join(evidenceRoot, "..", "outside.json"), "{}\n");
-					return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["../outside.json"] }) };
-				}
 				await writeFile(join(evidenceRoot, "uncited.json"), "{}\n");
 				return { text: "worker failed", exitCode: 1 };
 			});
 			const adapter = f.create(); await start(adapter, f.ctx);
-			await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+			await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"), 8_000);
 			const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-			assert.equal(runtime.attention?.code, "evidence_invalid", JSON.stringify(runtime));
+			assert.equal(runtime.e2e.failure?.code, "e2e_report_protocol", JSON.stringify(runtime));
+			assert.equal(runtime.e2e.repairCount, 0);
 			assert.deepEqual(runtime.e2e.evidenceRefs, []);
-			if (scenario === "ignored") assert.match(runtime.attention?.summary ?? "", /ignored and cannot be retained/);
+			if (scenario === "ignored") assert.match(runtime.e2e.failure?.summary ?? "", /ignored/);
 			if (scenario === "nonzero") assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "uncited.json"), "utf8"), "{}\n");
 		});
 	}
@@ -1403,7 +1568,7 @@ test("production launch honors trusted custom agent prompt body before managed p
 	assert.equal(taskSystem.indexOf("# Managed Task Protocol") < taskSystem.indexOf("# Task task-a:"), true);
 });
 
-test("invalid or sensitive E2E evidence becomes outcome_failed attention", async (t) => {
+test("sensitive E2E evidence pauses as a submission protocol failure", async (t) => {
 	const f = await fixture(t, {});
 	useProductionExecutor(f, async (input) => {
 		if (input.taskId) {
@@ -1422,15 +1587,16 @@ test("invalid or sensitive E2E evidence becomes outcome_failed attention", async
 	});
 	const adapter = f.create();
 	await start(adapter, f.ctx);
-	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.status, "attention"), 8_000);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.status, "paused"), 8_000);
 	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
-	assert.equal(runtime.attention?.code, "evidence_invalid", JSON.stringify(runtime));
-	assert.equal(runtime.outcomeStatus, "failed");
+	assert.equal(runtime.e2e.failure?.code, "e2e_report_protocol", JSON.stringify(runtime));
+	assert.equal(runtime.e2e.repairCount, 0);
+	assert.equal(runtime.outcomeStatus, "pending");
 	await assert.rejects(access(join(f.root, "agent-artifacts", "example", "outcome.md")));
 });
 
-test("E2E evidence descriptor rejects FIFO, symlink, and pathname swap without blocking", async (t) => {
-	for (const scenario of ["fifo", "symlink", "swap"] as const) await t.test(scenario, async (t) => {
+test("E2E submission rejects FIFO and symlink evidence without blocking", async (t) => {
+	for (const scenario of ["fifo", "symlink"] as const) await t.test(scenario, async (t) => {
 		const f = await fixture(t, {});
 		useProductionExecutor(f, async (input) => {
 			if (input.action === "task-launch") {
@@ -1447,14 +1613,6 @@ test("E2E evidence descriptor rejects FIFO, symlink, and pathname swap without b
 				else if (scenario === "symlink") {
 					await writeFile(join(root, "target.json"), "{}\n");
 					await symlink("target.json", evidence);
-				} else {
-					await writeFile(evidence, "{\"version\":1}\n");
-					f.runtime.evidenceDescriptorOpened = async (openedPath: string) => {
-						if (openedPath !== evidence) return;
-						f.runtime.evidenceDescriptorOpened = undefined;
-						await rename(evidence, join(root, "opened.json"));
-						await writeFile(evidence, "{\"version\":2}\n");
-					};
 				}
 				return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
 			}
@@ -1462,10 +1620,11 @@ test("E2E evidence descriptor rejects FIFO, symlink, and pathname swap without b
 		});
 		const adapter = f.create();
 		await start(adapter, f.ctx);
-		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"), 8_000);
 		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-		assert.equal(runtime.attention?.code, "evidence_invalid", JSON.stringify(runtime));
-		assert.match(runtime.attention?.summary ?? "", /existing regular file/);
+		assert.equal(runtime.e2e.failure?.code, "e2e_report_protocol", JSON.stringify(runtime));
+		assert.equal(runtime.e2e.repairCount, 0);
+		assert.match(runtime.e2e.failure?.summary ?? "", /regular file|symbolic link/);
 	});
 });
 
@@ -1722,6 +1881,54 @@ test("an exhausted iOS check accepts a same-story correction and executes the ef
 	assert.equal(complete.stages[0]!.tasks[0]!.checks[0]!.status, "passed");
 	assert.equal(complete.executionCorrections?.length, 1);
 	assert.match(await readFile(join(f.root, "agent-artifacts", "example", "outcome.md"), "utf8"), /Runtime correction 1 at delivery\/task-a: effective checks/);
+});
+
+test("adapter admits exact exhausted needs_user E2E guidance in dry-run and commit", async (t) => {
+	const f = await fixture(t, { execute: async ({ action }) => action.kind === "task-launch"
+		? { result: "needs_user", failure: { code: "setup", summary: "seed attention" } }
+		: passed() });
+	f.runtime.config.limits.repairRounds = 6;
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const store = new StoryRuntimeStore(f.root, "example");
+	await store.updateState((current) => {
+		const next = structuredClone(current!);
+		const failure = { code: "needs_user", summary: "approved fixture is required" };
+		next.status = "attention";
+		next.attentionEpoch = 16;
+		next.attentionTarget = { kind: "e2e" };
+		next.attention = failure;
+		next.stages[0]!.status = "completed";
+		next.stages[0]!.tasks[0]!.status = "completed";
+		next.stages[0]!.tasks[0]!.contributionCommit = "retained-contribution";
+		next.stages[0]!.integration = { status: "completed", repairCount: 0, contributionCommits: ["retained-contribution"], integratedCommit: "retained-integration", result: { code: "passed", summary: "integrated" } };
+		next.stages[0]!.verification.status = "completed";
+		next.finalReview = { status: "completed", iteration: 1, repairCount: 0, currentFindings: [], result: { code: "passed", summary: "reviewed" } };
+		next.e2e = {
+			status: "attention", repairCount: 12, failure, evidenceRefs: ["evidence/full-report.json"],
+			currentEvidenceRefs: ["evidence/full-report.json"],
+			currentFindings: [{ id: "fixture", severity: "major", code: "prerequisite", summary: "fixture unavailable" }],
+		};
+		return next;
+	});
+	const before = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const decision = { action: "request_changes" as const, prompt: "Fixture approval is complete; use supplied fixture endpoint.", correction: { attentionEpoch: 16, target: { kind: "e2e" as const } } };
+	const projected = await adapter.resolveAttention!("work-item:example", decision, f.ctx, { dryRun: true });
+	assert.equal(projected.status, "paused");
+	assert.equal(projected.e2e.status, "fix_pending");
+	assert.equal(projected.e2e.repairCount, 12);
+	assert.deepEqual((await adapter.snapshot("work-item:example", f.ctx)).runtime, before, "dry-run does not mutate persisted state");
+	await adapter.resolveAttention!("work-item:example", decision, f.ctx);
+	const committed = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(committed.status, "paused");
+	assert.equal(committed.e2e.repairCount, 12);
+	assert.deepEqual(committed.e2e.currentFindings, before.e2e.currentFindings);
+	assert.deepEqual(committed.e2e.currentEvidenceRefs, before.e2e.currentEvidenceRefs);
+	assert.deepEqual(committed.e2e.evidenceRefs, before.e2e.evidenceRefs);
+	assert.equal(committed.stages[0]!.tasks[0]!.contributionCommit, "retained-contribution");
+	assert.deepEqual(committed.executionCorrections?.[0]?.priorFailure, before.e2e.failure);
+	assert.equal(committed.executionCorrections?.[0]?.priorRepairCount, 12);
 });
 
 test("long request_changes guidance and corrected prose survive dry-run and persistence intact", async (t) => {
@@ -2384,5 +2591,148 @@ test("different activation interrupts old ownership and explicit resume creates 
 		const runtime = (await replacement.snapshot("work-item:example", f.ctx)).runtime;
 		assert.equal(runtime?.stages[0]?.tasks[0]?.contributionCommit, "new-commit");
 		assert.equal(runtime?.outcomeStatus, "written");
+	});
+});
+
+test("tool-backed E2E report owns verdict, canonical publication, and current pointer", async (t) => {
+	const f = await fixture(t, {});
+	let token = "";
+	let e2eTools: string[] = [];
+	let reviewTools: string[] = [];
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "deliver"], { cwd: input.cwd });
+			return { text: "done" };
+		}
+		if (input.action === "e2e") {
+			token = input.attemptToken;
+			e2eTools = input.tools;
+			const witness = join(input.env.PIBOX_E2E_SCRATCH_DIR, "witness.txt");
+			await writeFile(witness, "full Unicode witness 🧪\n");
+			const reportPath = await submitE2eFixture(f, input, {
+				cases: [{ case: "E2E-001", verdict: "passed", steps: ["exercise"], expected: "visible", observed: "visible 🧪", evidence: [witness] }],
+				summary: "authoritative pass",
+			});
+			return { text: "free-form prose says failure but is irrelevant", reportPath };
+		}
+		reviewTools = input.tools;
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	const state = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const reportRef = `evidence/e2e-${token}/report.json`;
+	assert.equal(state.e2e.currentReportRef, reportRef);
+	assert.equal(state.e2e.currentEvidenceRefs?.[0], reportRef);
+	assert.ok(state.e2e.evidenceRefs.includes(reportRef));
+	assert.ok(e2eTools.includes("workflow_e2e_report"));
+	assert.equal(reviewTools.includes("workflow_e2e_report"), false);
+	const report = await readFile(join(f.root, "agent-artifacts", "example", reportRef), "utf8");
+	assert.match(report, /visible 🧪/);
+	assert.match(await readFile(join(f.root, "agent-artifacts", "example", state.e2e.currentEvidenceRefs![1]!), "utf8"), /full Unicode witness 🧪/);
+});
+
+test("publication preflight and rollback leave no invocation-owned canonical files", async (t) => {
+	for (const scenario of ["selective-ignore", "late-write", "rollback-conflict", "owner-loss", "abort"] as const) await t.test(scenario, async (t) => {
+		const f = await fixture(t, {});
+		if (scenario === "selective-ignore") {
+			await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n*.skip\n");
+			await exec("git", ["add", ".gitignore"], { cwd: f.root });
+			await exec("git", ["commit", "-qm", "ignore selected evidence"], { cwd: f.root });
+		}
+		let adapter: ReturnType<typeof createHarnessWorkflowAdapter>;
+		let staged: E2eReportSubmission | undefined;
+		let publicationDescriptors = 0;
+		let foreignDestination = "";
+		f.runtime.evidenceDescriptorOpened = async (openedPath: string) => {
+			if (!openedPath.includes(".tmp-")) return;
+			publicationDescriptors++;
+			if (publicationDescriptors !== 2) return;
+			if (scenario === "late-write" || scenario === "rollback-conflict") {
+				foreignDestination = openedPath.slice(0, openedPath.lastIndexOf(".tmp-"));
+				if (scenario === "rollback-conflict") {
+					assert.ok(staged);
+					await writeFile(join(f.root, "agent-artifacts", "example", staged.publishSources[0]!.storyRelativePath), "foreign replacement");
+				}
+				await mkdir(foreignDestination);
+			} else if (scenario === "owner-loss") {
+				f.setOwner({ sessionId: "replacement", processInstanceId: "replacement", activationId: "replacement" });
+			} else if (scenario === "abort") {
+				await adapter.controlExecution!("work-item:example", "stop", "abort-publication", f.ctx);
+			}
+		};
+		useProductionExecutor(f, async (input) => {
+			if (input.action === "task-launch") {
+				await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
+				await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+				await exec("git", ["commit", "-qm", "deliver"], { cwd: input.cwd });
+				return { text: "done" };
+			}
+			if (input.action === "e2e") {
+				const first = join(input.env.PIBOX_E2E_SCRATCH_DIR, "first.txt");
+				const second = join(input.env.PIBOX_E2E_SCRATCH_DIR, scenario === "selective-ignore" ? "second.skip" : "second.txt");
+				await writeFile(first, "first"); await writeFile(second, "second");
+				const reportPath = await submitE2eFixture(f, input, { cases: [{ case: "E2E-001", verdict: "passed", evidence: [first, second] }] });
+				staged = await readE2eReportSubmission(reportPath, input.attemptToken);
+				return { text: "submitted", reportPath };
+			}
+			return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+		});
+		adapter = f.create();
+		await start(adapter, f.ctx);
+		if (scenario === "owner-loss") await eventually(async () => { assert.ok(staged); assert.equal(publicationDescriptors, 2); assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.e2e.status, "interrupted"); }, 8_000);
+		else if (scenario === "abort") await eventually(async () => { assert.ok(staged); assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "stopped"); }, 8_000);
+		else await eventually(async () => { assert.ok(staged); assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"); }, 8_000);
+		assert.ok(staged);
+		const canonical = staged.publishSources.map((source) => join(f.root, "agent-artifacts", "example", source.storyRelativePath));
+		await eventually(async () => { for (const path of canonical) if (path !== foreignDestination && !(scenario === "rollback-conflict" && path === canonical[0])) await assert.rejects(access(path)); });
+		for (const source of staged.publishSources) await access(source.sourcePath);
+		if (scenario === "late-write" || scenario === "rollback-conflict") await stat(foreignDestination);
+		if (scenario === "rollback-conflict") {
+			assert.equal(await readFile(canonical[0]!, "utf8"), "foreign replacement");
+			assert.match((await adapter.snapshot("work-item:example", f.ctx)).runtime.e2e.failure?.summary ?? "", /rollback preserved changed or foreign paths/);
+		}
+	});
+});
+
+test("missing E2E tool submission pauses and plain resume reruns only E2E without repair charge", async (t) => {
+	for (const budget of [0, 2]) await t.test(`repair budget ${budget}`, async (t) => {
+		const f = await fixture(t, {});
+		let e2eLaunches = 0;
+		let fixerLaunches = 0;
+		useProductionExecutor(f, async (input) => {
+			if (input.action === "task-launch") {
+				await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
+				await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+				await exec("git", ["commit", "-qm", "deliver"], { cwd: input.cwd });
+				return { text: "done" };
+			}
+			if (input.action === "e2e-fix") { fixerLaunches++; return { text: "must not run" }; }
+			if (input.action === "e2e") {
+				e2eLaunches++;
+				if (e2eLaunches === 1) return { text: "forgot tool", reportPath: join(f.runtime.identity.privateRoot, "missing", "report.md") };
+				return { text: "submitted", reportPath: await submitE2eFixture(f, input, { cases: [{ case: "E2E-001", verdict: "passed" }] }) };
+			}
+			return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+		});
+		f.runtime.config.limits.repairRounds = budget;
+		const adapter = f.create();
+		await start(adapter, f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"), 8_000);
+		const paused = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		assert.equal(paused.attention, undefined);
+		assert.equal(paused.e2e.status, "interrupted");
+		assert.equal(paused.e2e.repairCount, 0);
+		assert.match(paused.e2e.failure?.summary ?? "", /invalid or unreadable|without calling/);
+		await adapter.controlExecution!("work-item:example", "resume", "resume-report", f.ctx);
+		await adapter.advanceWorkflow!("work-item:example", f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+		const completed = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		assert.equal(e2eLaunches, 2);
+		assert.equal(fixerLaunches, 0);
+		assert.equal(completed.e2e.repairCount, 0);
 	});
 });

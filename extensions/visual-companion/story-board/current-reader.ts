@@ -45,7 +45,7 @@ interface SafeState {
 	attention?: RuntimeSummaryProjection;
 	stages: SafeStageState[];
 	finalReview: SafeReview;
-	e2e: SafeOperation & { evidenceRefs: string[] };
+	e2e: SafeOperation & { evidenceRefs: string[]; currentReportRef?: string };
 	metrics: WorkflowMetricsProjection;
 }
 interface CurrentBundle { story?: StoryDocument; plan?: StoryPlanDocument; tasks: AuthoredTaskDocument[]; state?: SafeState; diagnostics: Diagnostic[] }
@@ -163,7 +163,10 @@ function stateDocument(value: unknown, storyId: string): SafeState {
 		...(state.outcomeStatus ? { outcomeStatus: state.outcomeStatus } : {}),
 		...(attention ? { attention } : {}),
 		stages: state.stages.map((stage) => ({ id: stage.id, status: stage.status, tasks: stage.tasks.map(publicTask), integration: publicOperation(stage.integration), verification: publicOperation(stage.verification), review: publicReview(stage.review) })),
-		finalReview: publicReview(state.finalReview), e2e: { ...publicOperation(state.e2e), evidenceRefs: [...state.e2e.evidenceRefs] }, metrics,
+		finalReview: publicReview(state.finalReview), e2e: {
+			...publicOperation(state.e2e), evidenceRefs: [...state.e2e.evidenceRefs],
+			...(state.e2e.currentReportRef !== undefined ? { currentReportRef: state.e2e.currentReportRef } : {}),
+		}, metrics,
 	};
 }
 
@@ -401,7 +404,7 @@ export class CurrentStoryReader {
 		const evidence = reportId === "final-e2e" ? await readCurrentEvidenceMetadata(this.repositoryRoot, storyId, state.e2e.evidenceRefs) : [];
 		const riskAcceptance = acceptedRisks.length ? ["# Accepted risks", "", ...acceptedRisks.map((risk) => `- ${risk.findingId}: ${risk.rationale}`)].join("\n") : undefined;
 		if (reportId === "final-e2e") {
-			const recordedE2E = await readCurrentE2EReport(this.repositoryRoot, storyId, state.e2e.evidenceRefs, evidence);
+			const recordedE2E = await readCurrentE2EReport(this.repositoryRoot, storyId, state.e2e.evidenceRefs, evidence, state.e2e.currentReportRef);
 			const storyDiagnostics: Diagnostic[] = []; const story = await this.readStory(storyId, root, storyDiagnostics); diagnostics.push(...storyDiagnostics); let authoredCases: Array<{ id: string; title: string }> = [];
 			try { authoredCases = story ? parseE2e(story.e2e).cases.map(({ id, title: caseTitle }) => ({ id, title: caseTitle })) : []; }
 			catch { diagnostics.push(diagnostic(`agent-artifacts/${storyId}/story.yaml`, "Authored E2E matrix is malformed")); }

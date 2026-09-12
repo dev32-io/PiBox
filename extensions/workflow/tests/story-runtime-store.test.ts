@@ -62,6 +62,14 @@ test("rejects representative corrupt nested authoritative state", async (t) => {
 		{ ...valid, finalReview: { ...valid.finalReview, currentFindings: [{ id: "f", severity: "urgent", code: "bad", summary: "invalid severity" }] } },
 		{ ...valid, e2e: { ...valid.e2e, cases: [] } },
 		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: [42] } },
+		{ ...valid, e2e: { ...valid.e2e, currentFindings: "unknown" } },
+		{ ...valid, e2e: { ...valid.e2e, currentFindings: [{ id: "same", severity: "major", code: "a", summary: "a" }, { id: "same", severity: "minor", code: "b", summary: "b" }] } },
+		{ ...valid, e2e: { ...valid.e2e, currentEvidenceRefs: ["evidence/good.json", "bad\0path"] } },
+		{ ...valid, e2e: { ...valid.e2e, currentEvidenceRefs: ["evidence/../outside.json"] } },
+		{ ...valid, e2e: { ...valid.e2e, currentEvidenceRefs: ["evidence/same.json", "evidence/same.json"] } },
+		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: ["evidence/historical.json"], currentEvidenceRefs: ["evidence/uncited-current.json"] } },
+		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: ["evidence/current.json"], currentEvidenceRefs: [], currentReportRef: "evidence/current.json" } },
+		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: [], currentReportRef: "evidence/missing.json" } },
 		{ ...valid, metrics: { ...valid.metrics, categories: { ...valid.metrics.categories, review: 1 } } },
 		{ ...valid, metrics: { ...valid.metrics, open: { category: "orchestration", since: "2026-01-01T00:00:00.000Z" } } },
 		{ ...valid, metrics: { ...valid.metrics, open: { category: "review", since: "not-a-time" } } },
@@ -116,10 +124,16 @@ test("persists large valid workflow topology and authoritative collections witho
 		verification: { status: "pending" as const, repairCount: 0, checks: index === 0 ? checks : [] },
 		review: { status: "pending" as const, iteration: 0, repairCount: 0, currentFindings: index === 0 ? findings : [] },
 	}));
+	const currentEvidenceRefs = Array.from({ length: 201 }, (_, index) => `evidence/current-${index}.json`);
 	const large: StoryRuntimeState = {
 		...state(), stages,
 		contracts: { ...state().contracts, tasks: Object.fromEntries(tasks.map((task) => [task.id, `sha256:${"c".repeat(64)}`])) },
-		e2e: { ...state().e2e, evidenceRefs: Array.from({ length: 65 }, (_, index) => `evidence/${index}`) },
+		e2e: {
+			...state().e2e,
+			evidenceRefs: [...Array.from({ length: 65 }, (_, index) => `evidence/${index}`), ...currentEvidenceRefs],
+			currentFindings: findings,
+			currentEvidenceRefs,
+		},
 	};
 	await store.writeState(large);
 	const reloaded = (await store.readState())!;
@@ -127,7 +141,26 @@ test("persists large valid workflow topology and authoritative collections witho
 	assert.equal(reloaded.stages[0]!.tasks.length, 201);
 	assert.equal(reloaded.stages[0]!.verification.checks.length, 201);
 	assert.equal(reloaded.stages[0]!.review.currentFindings.length, 201);
-	assert.equal(reloaded.e2e.evidenceRefs.length, 65);
+	assert.equal(reloaded.e2e.evidenceRefs.length, 266);
+	assert.equal(reloaded.e2e.currentFindings?.length, 201);
+	assert.equal(reloaded.e2e.currentEvidenceRefs?.length, 201);
+});
+
+test("current E2E context round-trips while legacy absence remains unknown", async (t) => {
+	const { store } = await fixture(t);
+	const legacy = state();
+	await store.writeState(legacy);
+	assert.equal((await store.readState())!.e2e.currentFindings, undefined);
+	assert.equal((await store.readState())!.e2e.currentEvidenceRefs, undefined);
+	assert.equal((await store.readState())!.e2e.currentReportRef, undefined);
+
+	const current = state();
+	current.e2e.currentFindings = [{ id: "journey", severity: "major", code: "missing", summary: "Result missing", path: "src/result.ts", line: 9 }];
+	current.e2e.evidenceRefs = ["evidence/historical.json", "evidence/e2e-token/report.json", "evidence/e2e-token/witness.txt"];
+	current.e2e.currentEvidenceRefs = ["evidence/e2e-token/report.json", "evidence/e2e-token/witness.txt"];
+	current.e2e.currentReportRef = "evidence/e2e-token/report.json";
+	await store.writeState(current);
+	assert.deepEqual((await store.readState())!.e2e, current.e2e);
 });
 
 test("loads pre-correction state and preserves complete check diagnostics", async (t) => {

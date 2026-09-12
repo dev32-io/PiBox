@@ -115,8 +115,8 @@ test("non-repository startup stays lazy and first demand returns a structured re
 	for (const handler of f.handlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
 });
 
-test("child extension registers task clarification and ledger by managed action", () => {
-	const keys = [PIBOX_RUNTIME_ROLE_ENV, "PIBOX_WORKFLOW_STORY_ID", "PIBOX_WORKFLOW_TASK_ID", "PIBOX_WORKFLOW_ATTEMPT_TOKEN", "PIBOX_WORKFLOW_ACTION"] as const;
+test("child extension registers managed worker capabilities by action", () => {
+	const keys = [PIBOX_RUNTIME_ROLE_ENV, "PIBOX_WORKFLOW_STORY_ID", "PIBOX_WORKFLOW_TASK_ID", "PIBOX_WORKFLOW_ATTEMPT_TOKEN", "PIBOX_WORKFLOW_ACTION", "PIBOX_SUBAGENT_REPORT_PATH"] as const;
 	const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
 	for (const key of keys) delete process.env[key];
 	process.env[PIBOX_RUNTIME_ROLE_ENV] = PIBOX_SUBAGENT_RUNTIME_ROLE;
@@ -131,6 +131,8 @@ test("child extension registers task clarification and ledger by managed action"
 		for (const action of ["review", "final-review", "e2e", "standalone", "custom-fix"]) {
 			process.env.PIBOX_WORKFLOW_ACTION = action; f = host(); workflow(f.pi); assert.deepEqual(f.tools, [], action);
 		}
+		process.env.PIBOX_WORKFLOW_ACTION = "e2e"; process.env.PIBOX_SUBAGENT_REPORT_PATH = "/tmp/managed-attempt/report.md";
+		f = host(); workflow(f.pi); assert.deepEqual(f.tools, ["workflow_e2e_report"]);
 	} finally {
 		for (const key of keys) { const value = previous[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 	}

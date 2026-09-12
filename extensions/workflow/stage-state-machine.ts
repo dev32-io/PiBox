@@ -50,7 +50,7 @@ export interface WorkflowAction {
 	reason?: FailureSummary;
 }
 
-export type SettlementResult = "passed" | "repairable" | "critical" | "needs_user" | "unsafe";
+export type SettlementResult = "passed" | "repairable" | "critical" | "needs_user" | "unsafe" | "interrupted";
 export interface CheckSettlement {
 	id: string;
 	status: "passed" | "failed";
@@ -67,7 +67,12 @@ export interface ActionSettlement {
 	integratedCommit?: string;
 	checks?: readonly CheckSettlement[];
 	findings?: readonly StructuredFinding[];
+	/** Cumulative validated E2E evidence history. */
 	evidenceRefs?: readonly string[];
+	/** Validated evidence produced by this evaluator attempt only. */
+	currentEvidenceRefs?: readonly string[];
+	/** Exact canonical report produced by this evaluator attempt. */
+	currentReportRef?: string;
 }
 
 export interface MachineAdvance {
@@ -397,7 +402,26 @@ function settleReview(state: StoryRuntimeState, review: ReviewRuntimeState, fixi
 }
 
 function settleE2E(state: StoryRuntimeState, fixing: boolean, settlement: ActionSettlement, budget: number, target: RuntimeCorrectionTarget): void {
-	if (!fixing && settlement.evidenceRefs) state.e2e.evidenceRefs = [...new Set([...state.e2e.evidenceRefs, ...settlement.evidenceRefs])];
+	if (!fixing && settlement.result === "interrupted") {
+		state.e2e.status = "interrupted";
+		state.e2e.interruptedFrom = "testing";
+		state.e2e.failure = failure(settlement);
+		state.status = "paused";
+		delete state.activationOwner;
+		return;
+	}
+	if (!fixing) {
+		if (settlement.evidenceRefs) state.e2e.evidenceRefs = [...new Set([...state.e2e.evidenceRefs, ...settlement.evidenceRefs])];
+		const acceptedReportMetadata = settlement.currentReportRef !== undefined || settlement.currentEvidenceRefs !== undefined || settlement.findings !== undefined;
+		if (acceptedReportMetadata) {
+			if (settlement.findings === undefined) delete state.e2e.currentFindings;
+			else state.e2e.currentFindings = structuredClone([...settlement.findings]);
+			if (settlement.currentEvidenceRefs === undefined) delete state.e2e.currentEvidenceRefs;
+			else state.e2e.currentEvidenceRefs = [...settlement.currentEvidenceRefs];
+			if (settlement.currentReportRef === undefined) delete state.e2e.currentReportRef;
+			else state.e2e.currentReportRef = settlement.currentReportRef;
+		}
+	}
 	if (settlement.result !== "passed") {
 		if (fixing) state.e2e.repairCount += 1;
 		repairOrAttention(state, state.e2e, "fix_pending", settlement, budget, target); return;
@@ -550,7 +574,21 @@ function finishAttentionResolution(state: StoryRuntimeState): void {
 	enterAttention(state, boundary.slot.failure ?? { code: "attention", summary: "Workflow runtime slot requires attention" }, remaining);
 }
 
-function applyRuntimeCorrection(original: StoryRuntimeState, next: StoryRuntimeState, correction: RuntimeExecutionCorrection): { state: StoryRuntimeState; accepted: boolean; reason?: FailureSummary } {
+export function isExhaustedE2ENeedsUserCorrectionEligible(
+	state: StoryRuntimeState,
+	target: RuntimeCorrectionTarget,
+	repairRounds: number,
+): boolean {
+	const failure = state.e2e.failure;
+	return target.kind === "e2e"
+		&& state.e2e.status === "attention"
+		&& state.e2e.repairCount >= repairRounds
+		&& failure?.code === "needs_user"
+		&& (failure.causeCode === undefined || failure.causeCode === "needs_user")
+		&& !state.e2e.currentFindings?.some((finding) => finding.severity === "critical");
+}
+
+function applyRuntimeCorrection(original: StoryRuntimeState, next: StoryRuntimeState, correction: RuntimeExecutionCorrection, repairRounds: number): { state: StoryRuntimeState; accepted: boolean; reason?: FailureSummary } {
 	const epoch = original.attentionEpoch ?? 1; // old attention states predate epochs and are exposed as epoch 1
 	if (correction.attentionEpoch !== epoch) return { state: original, accepted: false, reason: { code: "stale_attention_epoch", summary: `Correction targets attention epoch ${correction.attentionEpoch}; current epoch is ${epoch}` } };
 	const authoritativeTarget = authoritativeAttentionTarget(original);
@@ -589,7 +627,7 @@ function applyRuntimeCorrection(original: StoryRuntimeState, next: StoryRuntimeS
 			: target.kind === "stage-review" ? stage!.review
 				: target.kind === "final-review" ? next.finalReview : next.e2e;
 		if (slot.status !== "attention") return { state: original, accepted: false, reason: { code: "correction_boundary_mismatch", summary: "Guidance correction does not target the runtime slot currently requiring attention" } };
-		if (slot.failure?.code !== "repair_exhausted") return { state: original, accepted: false, reason: { code: "guidance_requires_repair_exhaustion", summary: "Runtime-slot guidance is valid only for authoritative repair-exhausted attention" } };
+		if (slot.failure?.code !== "repair_exhausted" && !isExhaustedE2ENeedsUserCorrectionEligible(original, target, repairRounds)) return { state: original, accepted: false, reason: { code: "guidance_requires_repair_exhaustion", summary: "Runtime-slot guidance is valid only for authoritative repair-exhausted attention" } };
 		if ((target.kind === "stage-review" || target.kind === "final-review") && (slot as ReviewRuntimeState).currentFindings.some((finding) => finding.severity === "critical")) return { state: original, accepted: false, reason: { code: "critical_findings_require_user_decision", summary: "Runtime-slot guidance cannot waive a retained Critical finding; use the explicit user-owned Critical handling path" } };
 		if (!correction.prompt?.trim() || correctionTargetPrompt(original, target) === correction.prompt.trim() || slot.failure?.summary === correction.prompt.trim() || original.attention?.summary === correction.prompt.trim()) return { state: original, accepted: false, reason: { code: "correction_noop", summary: "Guidance correction must provide genuinely new guidance or evidence" } };
 		fenceActiveAttemptsForCorrection(next);
@@ -614,7 +652,7 @@ export function resolveWorkflowAttention(
 	if (state.status !== "attention" && state.status !== "paused") return { state, accepted: false, reason: { code: "not_attention", summary: "Workflow has no authoritative attention state" } };
 	const next = structuredClone(state);
 	if (next.attentionEpoch === undefined && hasWorkflowAttention(next)) next.attentionEpoch = 1;
-	if (resolution.action === "request_changes" && resolution.correction) return applyRuntimeCorrection(state, next, resolution.correction);
+	if (resolution.action === "request_changes" && resolution.correction) return applyRuntimeCorrection(state, next, resolution.correction, repairRounds);
 	const target = authoritativeAttentionTarget(next);
 	if (!target) return { state, accepted: false, reason: { code: "attention_not_resolved", summary: "Workflow-level attention is not attached to a repairable runtime slot" } };
 	const boundary = attentionBoundary(next, target);

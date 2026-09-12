@@ -358,6 +358,53 @@ test("execution-correction cancellation validates first and mutates no runtime s
 	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
 });
 
+test("public exhausted needs_user E2E correction confirms, auto-resumes, and cancels without mutation", { concurrency: false }, async () => {
+	for (const confirmed of [false, true]) {
+		const f = fixture(confirmed);
+		let current = state("attention");
+		current.attentionEpoch = 16;
+		current.attentionTarget = { kind: "e2e" };
+		current.attention = { code: "needs_user", summary: "fixture approval required" };
+		current.e2e = { status: "attention", repairCount: 12, evidenceRefs: ["evidence/report.json"], failure: current.attention };
+		let dryRuns = 0; let commits = 0; let preflights = 0; let controls = 0; let advances = 0;
+		register({
+			id: "test", canHandle: () => true,
+			async snapshot(ref) { return { ref, title: "Example", status: current.status === "attention" ? "attention" : current.status === "running" ? "running" : "paused", runtime: structuredClone(current) }; },
+			async preflightWorkflow() { preflights++; return { ok: true }; },
+			async resolveAttention(_ref, decision, _ctx, options) {
+				assert.equal(decision.action, "request_changes");
+				assert.deepEqual(decision.correction?.target, { kind: "e2e" });
+				const projected = structuredClone(current);
+				projected.status = "paused"; delete projected.attention; delete projected.attentionTarget;
+				projected.e2e.status = "fix_pending";
+				if (options?.dryRun) { dryRuns++; return projected; }
+				commits++; current = projected; return structuredClone(current);
+			},
+			async controlExecution(ref) { controls++; current.status = "running"; return { workflowRef: ref, mode: "running" }; },
+			async advanceWorkflow() { advances++; }, async controlWorkflow() {},
+		});
+		await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+		const result = await f.tools.get("workflow_control").execute("e2e-guidance", {
+			ref: "test:example", action: "request_changes", prompt: "Fixture approved; use supplied endpoint.",
+			correction: { attentionEpoch: 16, target: { kind: "e2e" } },
+		}, undefined, undefined, f.ctx);
+		assert.equal(dryRuns, 1);
+		assert.equal(preflights, 1);
+		assert.equal(f.confirmations(), 1);
+		assert.equal(f.criticalConfirmations(), 0);
+		if (confirmed) {
+			assert.match(result.content[0].text, /resumed/i);
+			assert.equal(commits, 1); assert.equal(controls, 1); assert.equal(advances, 1);
+			assert.equal(current.e2e.repairCount, 12);
+		} else {
+			assert.match(result.content[0].text, /cancelled/i);
+			assert.equal(commits, 0); assert.equal(controls, 0); assert.equal(advances, 0);
+			assert.equal(current.status, "attention"); assert.equal(current.e2e.status, "attention");
+		}
+		await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+	}
+});
+
 test("a correction with remaining attention mutates without bypass confirmation and does not resume", { concurrency: false }, async () => {
 	const f = fixture(true);
 	let current = state("attention");

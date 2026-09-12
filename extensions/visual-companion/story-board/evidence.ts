@@ -4,7 +4,7 @@ import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { parseStoryRuntimeState } from "../../workflow/story-runtime-store.js";
 import type { StoryRuntimeState } from "../../workflow/story-runtime-store.js";
-import type { Diagnostic, E2ECaseEvidenceRef, E2ECaseProjection, EvidenceMetadata, RecordedE2EReportProjection } from "./models.js";
+import type { Diagnostic, E2ECaseEvidenceRef, E2ECaseProjection, E2EFindingProjection, EvidenceMetadata, RecordedE2EReportProjection } from "./models.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SUPPORTED = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".txt", ".md", ".json", ".yaml", ".yml", ".log"]);
@@ -33,7 +33,11 @@ function redactAuthorizationCredentials(value: string): string {
 		return `${key}${separator}${spacing}[REDACTED AUTHORIZATION]${suffix}`;
 	});
 }
-export function sanitizeCurrentEvidenceText(value: string): string {
+export function sanitizeCurrentEvidenceText(value: string): string;
+export function sanitizeCurrentEvidenceText(value: E2EFindingProjection): E2EFindingProjection;
+export function sanitizeCurrentEvidenceText(value: string | E2EFindingProjection): string | E2EFindingProjection;
+export function sanitizeCurrentEvidenceText(value: string | E2EFindingProjection): string | E2EFindingProjection {
+	if (typeof value !== "string") return { summary: sanitizeCurrentEvidenceText(value.summary), ...(value.severity ? { severity: sanitizeCurrentEvidenceText(value.severity) } : {}) };
 	return redactAuthorizationCredentials(value)
 		.replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[REDACTED PRIVATE MATERIAL]")
 		.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\b\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
@@ -148,26 +152,43 @@ function stringArray(value: unknown): string[] | undefined {
 	return Array.isArray(value) && value.every((item) => typeof item === "string") ? value.map((item) => sanitizeCurrentEvidenceText(item)) : undefined;
 }
 
-function parseE2EReport(value: unknown, sourcePath: string, sourceMemberPath: string, evidence: readonly EvidenceMetadata[]): RecordedE2EReportProjection | "supporting" | undefined {
+function parseE2EReport(value: unknown, sourcePath: string, sourceMemberPath: string, evidence: readonly EvidenceMetadata[], canonical = false): RecordedE2EReportProjection | "supporting" | undefined {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 	const record = value as Record<string, unknown>;
 	if (!("caseResults" in record)) return "supporting";
-	if (typeof record.result !== "string" || typeof record.summary !== "string") return undefined;
-	const findings = stringArray(record.findings); if (!findings || !Array.isArray(record.caseResults)) return undefined;
+	if (typeof record.result !== "string" || (!canonical && typeof record.summary !== "string") || (canonical && record.summary !== undefined && typeof record.summary !== "string") || !Array.isArray(record.caseResults)) return undefined;
+	let findings: RecordedE2EReportProjection["findings"] = [];
+	if (!canonical && !Array.isArray(record.findings)) return undefined;
+	if (record.findings !== undefined) {
+		if (!Array.isArray(record.findings)) return undefined;
+		for (const finding of record.findings) {
+			if (typeof finding === "string") findings.push(sanitizeCurrentEvidenceText(finding));
+			else if (canonical && finding && typeof finding === "object" && !Array.isArray(finding)) {
+				const item = finding as Record<string, unknown>;
+				if (typeof item.summary !== "string" || (item.severity !== undefined && typeof item.severity !== "string")) return undefined;
+				findings.push({ summary: sanitizeCurrentEvidenceText(item.summary), ...(typeof item.severity === "string" ? { severity: sanitizeCurrentEvidenceText(item.severity) } : {}) });
+			} else return undefined;
+		}
+	}
 	const seen = new Set<string>(); const cases: E2ECaseProjection[] = [];
 	for (const candidate of record.caseResults) {
 		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
 		const item = candidate as Record<string, unknown>;
 		const actions = stringArray(item.executedActions); const observations = stringArray(item.observations); const refs = stringArray(item.evidenceRefs);
-		if (typeof item.caseId !== "string" || !item.caseId || typeof item.status !== "string" || !item.status || !actions || !observations || !refs || seen.has(item.caseId)) return undefined;
+		if (typeof item.caseId !== "string" || !item.caseId || typeof item.status !== "string" || !item.status || !actions || !observations || !refs || seen.has(item.caseId)
+			|| (canonical && item.expected !== undefined && typeof item.expected !== "string") || (canonical && item.notes !== undefined && typeof item.notes !== "string")) return undefined;
 		seen.add(item.caseId);
 		const evidenceRefs: E2ECaseEvidenceRef[] = refs.map((label) => {
 			const authorized = evidence.find((entry) => entry.memberPath === label);
 			return { label, ...(authorized?.manifestMember && authorized.available && authorized.supported ? { memberPath: authorized.memberPath } : {}) };
 		});
-		cases.push({ caseId: sanitizeCurrentEvidenceText(item.caseId), status: sanitizeCurrentEvidenceText(item.status), executedActions: actions, observations, evidenceRefs, recorded: true });
+		cases.push({
+			caseId: sanitizeCurrentEvidenceText(item.caseId), status: sanitizeCurrentEvidenceText(item.status), executedActions: actions, observations, evidenceRefs,
+			...(canonical && typeof item.expected === "string" ? { expected: sanitizeCurrentEvidenceText(item.expected) } : {}),
+			...(canonical && typeof item.notes === "string" ? { notes: sanitizeCurrentEvidenceText(item.notes) } : {}), recorded: true,
+		});
 	}
-	return { sourcePath, sourceMemberPath, result: sanitizeCurrentEvidenceText(record.result), summary: sanitizeCurrentEvidenceText(record.summary), findings, cases, diagnostics: [] };
+	return { sourcePath, sourceMemberPath, result: sanitizeCurrentEvidenceText(record.result), summary: sanitizeCurrentEvidenceText(typeof record.summary === "string" ? record.summary : ""), findings, cases, diagnostics: [] };
 }
 
 async function readAuthorizedCurrentEvidenceJson(repositoryRoot: string, storyId: string, memberPath: string): Promise<unknown> {
@@ -185,8 +206,22 @@ async function readAuthorizedCurrentEvidenceJson(repositoryRoot: string, storyId
 	} finally { await handle.close(); }
 }
 
-/** Selects the newest usable report from exact current E2E references; it never discovers files. */
-export async function readCurrentE2EReport(repositoryRoot: string, storyId: string, evidenceRefs: readonly string[], evidence: readonly EvidenceMetadata[]): Promise<RecordedE2EReportProjection | undefined> {
+function unavailableCurrentReport(storyId: string, reference: string, message: string): RecordedE2EReportProjection {
+	return { sourcePath: "", sourceMemberPath: "", result: "Unavailable", summary: "No usable recorded E2E case report is available.", findings: [], cases: [], diagnostics: [diagnostic(`agent-artifacts/${storyId}/${reference}`, message)] };
+}
+
+/** Reads the exact current report when pointed to; old states retain legacy newest-candidate selection. */
+export async function readCurrentE2EReport(repositoryRoot: string, storyId: string, evidenceRefs: readonly string[], evidence: readonly EvidenceMetadata[], currentReportRef?: string): Promise<RecordedE2EReportProjection | undefined> {
+	if (currentReportRef !== undefined) {
+		if (!evidenceRefs.includes(currentReportRef) || extname(currentReportRef).toLowerCase() !== ".json") return unavailableCurrentReport(storyId, currentReportRef, "Current E2E report reference is not authorized by cumulative evidence");
+		const metadata = evidence.find((entry) => entry.memberPath === currentReportRef);
+		if (!metadata?.manifestMember || !metadata.available) return unavailableCurrentReport(storyId, currentReportRef, "Current E2E report is unavailable");
+		let parsed: unknown;
+		try { parsed = await readAuthorizedCurrentEvidenceJson(repositoryRoot, storyId, currentReportRef); }
+		catch { return unavailableCurrentReport(storyId, currentReportRef, "Current E2E report is unreadable or malformed"); }
+		const report = parseE2EReport(parsed, metadata.path ?? `agent-artifacts/${storyId}/${currentReportRef}`, currentReportRef, evidence, true);
+		return report && report !== "supporting" ? report : unavailableCurrentReport(storyId, currentReportRef, "Current E2E report has an invalid case-results contract");
+	}
 	const failures: Diagnostic[] = [];
 	for (const reference of [...evidenceRefs].reverse()) {
 		if (extname(reference).toLowerCase() !== ".json") continue;

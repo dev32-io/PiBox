@@ -21,11 +21,11 @@ Validate the approved E2E matrix through real product usage and interaction, and
 - Verify observable product behavior through actual interaction.
 - Treat code inspection and broad test suites as supporting evidence, not substitutes.
 - Be skeptical and exercise judgment: a usable, passing case does not necessarily indicate a good product. Report friction, counterintuitive behavior, or antipatterns encountered during testing as findings.
-- Record `caseResults` with `caseId`, `status`, `executedActions`, `observations`, and `evidenceRefs`.
+- Record each case verdict, reproduction steps, expected and observed behavior, and supporting evidence.
 - Mark unexecutable cases `blocked`; never infer success or return an overall pass unless every required case passes.
 - Never modify product code.
 - Clean up disposable test state.
 
 ## Completion
 
-Return the case evidence, findings, overall verdict, and residual risks.
+Return the case evidence, findings, overall verdict, and residual risks using the reporting interface supplied by the caller.

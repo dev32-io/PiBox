@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 
@@ -8,6 +8,7 @@ const run = Number(process.env.LOOP_RUN ?? "1");
 const reportPath = process.env.PIBOX_SUBAGENT_REPORT_PATH;
 const eventFd = Number(process.env.PIBOX_SUBAGENT_EVENT_FD ?? 3);
 if (!action || !reportPath) throw new Error("missing deterministic loop fixture environment");
+if (action === "e2e") throw new Error("E2E must use the real Pi report-tool fixture");
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 let result;
@@ -18,36 +19,25 @@ if (action === "task-launch") {
 	result = "implemented";
 } else if (action.endsWith("-fix")) {
 	const file = `repair-${action}-${run}.txt`;
-	writeFileSync(file, `${action} ${run}\n`);
+	let receipt = `${action} ${run}\n`;
+	if (action === "e2e-fix") {
+		const prompt = readFileSync(process.env.LOOP_INPUT_PATH, "utf8");
+		if (!prompt.includes(`FULL_E2E_DIAGNOSTIC_END_${run}`) || !prompt.includes(`CURRENT_E2E_FINDING_${run}`)) throw new Error("Current full E2E report and structured findings did not reach fixer entrance");
+		const witnesses = [...new Set(prompt.match(/REPORT_WITNESS_\d+_[a-f0-9-]+/g) ?? [])];
+		if (witnesses.length !== 1) throw new Error("Fixer must receive exactly the current evaluator witness, not stale report history");
+		const member = prompt.match(/agent-artifacts\/example\/(evidence\/e2e-[a-zA-Z0-9-]+\/report\.json)/)?.[1];
+		if (!member) throw new Error("Canonical report path missing from fixer prompt");
+		if (existsSync(join(process.cwd(), "agent-artifacts", "example", member))) throw new Error("Uncommitted canonical report unexpectedly exists in isolated repair worktree");
+		receipt += `${witnesses[0]}\n`;
+	}
+	writeFileSync(file, receipt);
 	git("add", file);
 	git("commit", "-qm", `${action} ${run}`);
 	result = "repaired";
-} else if (["review", "final-review", "e2e"].includes(action) && run <= 2) {
+} else if (["review", "final-review"].includes(action) && run <= Number(process.env.LOOP_REVIEW_FAILURES ?? "2")) {
 	result = JSON.stringify({ result: "repairable", summary: `${action} failure ${run}`, findings: [{ id: `${action}-${run}`, severity: "major", code: "fixture", summary: `repair ${action} ${run}` }], evidenceRefs: [] });
-} else if (action === "e2e") {
-	const evidence = join(process.cwd(), "agent-artifacts", "example", "evidence", "loop.txt");
-	mkdirSync(dirname(evidence), { recursive: true });
-	writeFileSync(evidence, "all E2E cases passed\n");
-	result = JSON.stringify({ result: "passed", summary: "E2E passed", findings: [], evidenceRefs: ["evidence/loop.txt"] });
 } else {
 	result = JSON.stringify({ result: "passed", summary: `${action} passed`, findings: [] });
-}
-
-if (action === "e2e") {
-	const terminal = JSON.parse(result);
-	const evidenceRef = `evidence/e2e-run-${run}.json`;
-	const evidence = join(process.cwd(), "agent-artifacts", "example", evidenceRef);
-	mkdirSync(dirname(evidence), { recursive: true });
-	const observedStatus = run <= 2 ? "blocked" : "passed";
-	// Rich report content intentionally differs from the small terminal control reply.
-	writeFileSync(evidence, `${JSON.stringify({
-		result: observedStatus,
-		summary: terminal.summary,
-		caseResults: [{ caseId: "E2E-001", status: observedStatus, executedActions: ["Read the delivered result"], observations: [terminal.summary], evidenceRefs: [evidenceRef] }],
-		findings: run <= 2 ? [terminal.summary] : [],
-	}, null, 2)}\n`);
-	terminal.evidenceRefs = [...(terminal.evidenceRefs ?? []), evidenceRef];
-	result = JSON.stringify(terminal);
 }
 
 writeFileSync(reportPath, result, { mode: 0o600 });

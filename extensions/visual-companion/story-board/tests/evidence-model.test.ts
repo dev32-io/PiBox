@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { stringify } from "yaml";
-import { readCurrentE2EReport, readEvidenceMetadata, resolveEvidenceMember, sanitizeCurrentEvidenceText } from "../index.js";
+import { readCurrentE2EReport, readCurrentEvidenceMetadata, readEvidenceMetadata, resolveEvidenceMember, sanitizeCurrentEvidenceText } from "../index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +64,32 @@ test("current evidence sanitization preserves authorization narrative and redact
 	for (const secret of ["top.secret-123", "continued", "tail", "dXNlcjpwYXNz", "custom-header-secret", "assignment-secret", "json-secret-value"]) assert.doesNotMatch(sanitized, new RegExp(secret));
 	assert.equal(sanitizeCurrentEvidenceText("left\r\nAuthorization: Basic crlf-secret\r\nright"), "left\r\nAuthorization: [REDACTED AUTHORIZATION]\r\nright");
 	assert.equal(sanitizeCurrentEvidenceText("access_token=othersecret /Users/private/key"), "access_token=[REDACTED] [private path]");
+});
+
+test("current E2E report pointer selects only exact authorized canonical report", async (t) => {
+	const root = await fixture(t); const base = "agent-artifacts/story";
+	await put(root, `${base}/story.yaml`, "id: story\n");
+	await put(root, `${base}/evidence/older/report.json`, JSON.stringify({ schemaVersion: 1, result: "repairable", caseResults: [{
+		caseId: "E2E-001", status: "failed", executedActions: ["Open <board>"], observations: ["Observed /Users/private/result"], evidenceRefs: [], expected: "Expected <safe>", notes: "Authorization: Bearer secret-value",
+	}], findings: [{ summary: "Unsafe <finding>", severity: "major" }] }));
+	await put(root, `${base}/evidence/newer/report.json`, JSON.stringify({ schemaVersion: 1, result: "passed", summary: "Newer pass", caseResults: [], findings: [] }));
+	const refs = ["evidence/older/report.json", "evidence/newer/report.json"];
+	const evidence = await readCurrentEvidenceMetadata(root, "story", refs);
+	const selected = await readCurrentE2EReport(root, "story", refs, evidence, "evidence/older/report.json");
+	assert.equal(selected?.sourceMemberPath, "evidence/older/report.json"); assert.equal(selected?.result, "repairable"); assert.equal(selected?.summary, "");
+	assert.deepEqual(selected?.findings, [{ summary: "Unsafe <finding>", severity: "major" }]);
+	assert.deepEqual(selected?.cases[0] && { actions: selected.cases[0].executedActions, observations: selected.cases[0].observations, expected: selected.cases[0].expected, notes: selected.cases[0].notes }, {
+		actions: ["Open <board>"], observations: ["Observed [private path]"], expected: "Expected <safe>", notes: "Authorization: [REDACTED AUTHORIZATION]",
+	});
+	const unauthorized = await readCurrentE2EReport(root, "story", refs, evidence, "evidence/not-authorized/report.json");
+	assert.equal(unauthorized?.result, "Unavailable"); assert.equal(unauthorized?.sourceMemberPath, "");
+	const missingRefs = [...refs, "evidence/missing/report.json"]; const missingEvidence = await readCurrentEvidenceMetadata(root, "story", missingRefs);
+	const missing = await readCurrentE2EReport(root, "story", missingRefs, missingEvidence, "evidence/missing/report.json");
+	assert.equal(missing?.result, "Unavailable"); assert.equal(missing?.sourceMemberPath, "");
+	await put(root, `${base}/evidence/malformed/report.json`, "{bad json");
+	const malformedRefs = [...refs, "evidence/malformed/report.json"]; const malformedEvidence = await readCurrentEvidenceMetadata(root, "story", malformedRefs);
+	const malformed = await readCurrentE2EReport(root, "story", malformedRefs, malformedEvidence, "evidence/malformed/report.json");
+	assert.equal(malformed?.result, "Unavailable"); assert.equal(malformed?.sourceMemberPath, "");
 });
 
 test("current E2E JSON reader rejects symlink and FIFO candidates without blocking", async (t) => {

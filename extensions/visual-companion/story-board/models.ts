@@ -119,7 +119,14 @@ export interface E2ECaseProjection {
 	executedActions: string[];
 	observations: string[];
 	evidenceRefs: E2ECaseEvidenceRef[];
+	expected?: string;
+	notes?: string;
 	recorded: boolean;
+}
+
+export interface E2EFindingProjection {
+	summary: string;
+	severity?: string;
 }
 
 export interface RecordedE2EReportProjection {
@@ -127,7 +134,7 @@ export interface RecordedE2EReportProjection {
 	sourceMemberPath: string;
 	result: string;
 	summary: string;
-	findings: string[];
+	findings: Array<string | E2EFindingProjection>;
 	cases: E2ECaseProjection[];
 	diagnostics: Diagnostic[];
 }

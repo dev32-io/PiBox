@@ -69,7 +69,7 @@ function safeReport(detail: ReportDetail, storyId: string): ReportDetail {
 	const recordedE2E = detail.recordedE2E ? {
 		...detail.recordedE2E,
 		result: sanitizeCurrentEvidenceText(detail.recordedE2E.result), summary: sanitizeCurrentEvidenceText(detail.recordedE2E.summary), findings: detail.recordedE2E.findings.map(sanitizeCurrentEvidenceText),
-		cases: detail.recordedE2E.cases.map((item) => ({ ...item, caseId: sanitizeCurrentEvidenceText(item.caseId), ...(item.title ? { title: sanitizeCurrentEvidenceText(item.title) } : {}), status: sanitizeCurrentEvidenceText(item.status), executedActions: item.executedActions.map(sanitizeCurrentEvidenceText), observations: item.observations.map(sanitizeCurrentEvidenceText), evidenceRefs: item.evidenceRefs.map((reference) => ({ ...reference, label: sanitizeCurrentEvidenceText(reference.label) })) })),
+		cases: detail.recordedE2E.cases.map((item) => ({ ...item, caseId: sanitizeCurrentEvidenceText(item.caseId), ...(item.title ? { title: sanitizeCurrentEvidenceText(item.title) } : {}), status: sanitizeCurrentEvidenceText(item.status), ...(item.expected !== undefined ? { expected: sanitizeCurrentEvidenceText(item.expected) } : {}), ...(item.notes !== undefined ? { notes: sanitizeCurrentEvidenceText(item.notes) } : {}), executedActions: item.executedActions.map((text) => sanitizeCurrentEvidenceText(text)), observations: item.observations.map((text) => sanitizeCurrentEvidenceText(text)), evidenceRefs: item.evidenceRefs.map((reference) => ({ ...reference, label: sanitizeCurrentEvidenceText(reference.label) })) })),
 	} : undefined;
 	return {
 		...detail,

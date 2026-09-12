@@ -13,7 +13,7 @@ import {
 	type StageMachinePlan,
 	type WorkflowAction,
 } from "../stage-state-machine.js";
-import type { RuntimeOwner, StoryRuntimeState } from "../story-runtime-store.js";
+import type { RuntimeExecutionCorrection, RuntimeOwner, StoryRuntimeState } from "../story-runtime-store.js";
 
 const ownerA: RuntimeOwner = { sessionId: "session-a", processInstanceId: "process-a", activationId: "activation-a" };
 const ownerB: RuntimeOwner = { sessionId: "session-b", processInstanceId: "process-b", activationId: "activation-b" };
@@ -189,14 +189,68 @@ test("final-review and E2E repair loops rerun their evaluator", () => {
 	assert.equal(action(state, value).kind, "final-review");
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "final-review"));
 	assert.equal(state.finalReview.iteration, 2);
-	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "repairable", { failure: { code: "e2e_failed", summary: "whole E2E contract failed" }, evidenceRefs: ["evidence/failed-run.txt"] });
+	const finding = { id: "e2e-f", severity: "major" as const, code: "missing", summary: "Result missing" };
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "repairable", {
+		failure: { code: "e2e_failed", summary: "whole E2E contract failed" }, findings: [finding],
+		evidenceRefs: ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"],
+		currentEvidenceRefs: ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"], currentReportRef: "evidence/e2e-first/report.json",
+	});
 	assert.equal(action(state, value).kind, "e2e-fix");
+	assert.deepEqual(state.e2e.currentFindings, [finding]);
+	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"]);
+	assert.equal(state.e2e.currentReportRef, "evidence/e2e-first/report.json");
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e-fix"));
 	assert.equal(action(state, value).kind, "e2e");
-	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/failed-run.txt"]);
-	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "passed", { evidenceRefs: ["evidence/rerun.txt"] });
+	assert.deepEqual(state.e2e.currentFindings, [finding], "fix settlement preserves evaluator context");
+	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"]);
+	assert.equal(state.e2e.currentReportRef, "evidence/e2e-first/report.json");
+	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"]);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "passed", {
+		findings: [], evidenceRefs: ["evidence/e2e-second/report.json"], currentEvidenceRefs: ["evidence/e2e-second/report.json"], currentReportRef: "evidence/e2e-second/report.json",
+	});
 	assert.equal(state.e2e.status, "completed");
-	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/failed-run.txt", "evidence/rerun.txt"]);
+	assert.deepEqual(state.e2e.currentFindings, []);
+	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/e2e-second/report.json"]);
+	assert.equal(state.e2e.currentReportRef, "evidence/e2e-second/report.json");
+	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt", "evidence/e2e-second/report.json"]);
+});
+
+test("report protocol interruption pauses for evaluator-only resume at every repair budget", () => {
+	for (const budget of [0, 2]) {
+		const value = plan({ stages: [] });
+		let state = initial(value);
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "final-review"));
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "interrupted", {
+			failure: { code: "e2e_report_protocol", summary: "report unavailable" },
+		}, budget);
+		assert.equal(state.status, "paused");
+		assert.equal(state.e2e.status, "interrupted");
+		assert.equal(state.e2e.interruptedFrom, "testing");
+		assert.equal(state.e2e.repairCount, 0);
+		assert.equal(state.attention, undefined);
+		state = resumeInterruptedWorkflow(state, ownerA);
+		assert.equal(state.e2e.status, "pending");
+		assert.equal(state.e2e.repairCount, 0);
+		assert.equal(action(state, value).kind, "e2e");
+	}
+});
+
+test("E2E submission protocol failure preserves last accepted report context", () => {
+	const value = plan({ stages: [] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "final-review"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "repairable", {
+		failure: { code: "observed", summary: "observed failure" },
+		findings: [{ id: "old", severity: "major", code: "old", summary: "old finding" }],
+		evidenceRefs: ["evidence/old.json"], currentEvidenceRefs: ["evidence/old.json"],
+	});
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e-fix"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "repairable", {
+		failure: { code: "worker_failed", summary: "worker failed before metadata" },
+	});
+	assert.deepEqual(state.e2e.currentFindings, [{ id: "old", severity: "major", code: "old", summary: "old finding" }]);
+	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/old.json"]);
+	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/old.json"]);
 });
 
 test("whole-branch final review advances to whole-field E2E evidence and completion", () => {
@@ -417,6 +471,76 @@ test("exhausted stage-review, final-review, and E2E guidance each run one fix an
 		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, initialKind), "passed", {}, 0);
 		assert.equal((kind === "stage-review" ? state.stages[0]!.review : kind === "final-review" ? state.finalReview : state.e2e).status, "completed");
 	}
+});
+
+test("exhausted needs_user E2E guidance is narrowly epoch-bound and preserves retained state", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [{ id: "task-a" }], checks: [], review: { mode: "skip" } }] });
+	const state = initial(value);
+	state.status = "attention";
+	state.attentionEpoch = 16;
+	state.attentionTarget = { kind: "e2e" };
+	state.attention = { code: "needs_user", summary: "fixture approval required" };
+	state.stages[0]!.status = "completed";
+	state.stages[0]!.tasks[0]!.status = "completed";
+	state.stages[0]!.tasks[0]!.contributionCommit = "retained-contribution";
+	state.e2e = {
+		status: "attention", repairCount: 12, failure: structuredClone(state.attention),
+		evidenceRefs: ["evidence/old.json"], currentEvidenceRefs: ["evidence/current.json"],
+		currentFindings: [{ id: "prerequisite", severity: "major", code: "fixture", summary: "fixture missing" }],
+	};
+	const correction: RuntimeExecutionCorrection = {
+		sequence: 1, attentionEpoch: 16, appliedAt: at, target: { kind: "e2e" },
+		prompt: "Fixture is approved and available at the documented endpoint.", priorFailure: state.e2e.failure!, priorRepairCount: 12,
+	};
+	const resolved = resolveWorkflowAttention(state, { action: "request_changes", correction }, 6);
+	assert.equal(resolved.accepted, true);
+	assert.equal(resolved.state.status, "paused");
+	assert.equal(resolved.state.e2e.status, "fix_pending");
+	assert.equal(resolved.state.e2e.repairCount, 12);
+	assert.deepEqual(resolved.state.e2e.evidenceRefs, state.e2e.evidenceRefs);
+	assert.deepEqual(resolved.state.e2e.currentEvidenceRefs, state.e2e.currentEvidenceRefs);
+	assert.deepEqual(resolved.state.e2e.currentFindings, state.e2e.currentFindings);
+	assert.equal(resolved.state.stages[0]!.tasks[0]!.contributionCommit, "retained-contribution");
+	assert.deepEqual(resolved.state.executionCorrections?.[0]?.priorFailure, state.e2e.failure);
+	assert.equal(resolved.state.executionCorrections?.[0]?.priorRepairCount, 12);
+	const explicitNeedsUserCause = structuredClone(state);
+	explicitNeedsUserCause.e2e.failure!.causeCode = "needs_user";
+	explicitNeedsUserCause.attention = structuredClone(explicitNeedsUserCause.e2e.failure!);
+	assert.equal(resolveWorkflowAttention(explicitNeedsUserCause, { action: "request_changes", correction: { ...correction, priorFailure: explicitNeedsUserCause.e2e.failure! } }, 6).accepted, true);
+
+	const denied = (candidate: StoryRuntimeState, candidateCorrection: RuntimeExecutionCorrection = correction) => {
+		const before = structuredClone(candidate);
+		const result = resolveWorkflowAttention(candidate, { action: "request_changes", correction: candidateCorrection }, 6);
+		assert.equal(result.accepted, false);
+		assert.equal(result.state, candidate);
+		assert.deepEqual(candidate, before);
+	};
+	denied(state, { ...correction, attentionEpoch: 15 });
+	denied(state, { ...correction, target: { kind: "final-review" as const } });
+	denied(state, { ...correction, prompt: "" });
+	denied(state, { ...correction, prompt: state.e2e.failure!.summary });
+	for (const causeCode of ["critical", "unsafe", "unknown_origin"]) {
+		const candidate = structuredClone(state);
+		candidate.e2e.failure!.causeCode = causeCode;
+		candidate.attention = structuredClone(candidate.e2e.failure!);
+		denied(candidate, { ...correction, priorFailure: candidate.e2e.failure! });
+	}
+	const criticalFailure = structuredClone(state);
+	criticalFailure.e2e.failure = { code: "critical", summary: "critical decision required" };
+	criticalFailure.attention = structuredClone(criticalFailure.e2e.failure!);
+	denied(criticalFailure, { ...correction, priorFailure: criticalFailure.e2e.failure });
+	const currentCritical = structuredClone(state);
+	currentCritical.e2e.currentFindings = [{ id: "critical", severity: "critical", code: "security", summary: "unsafe fixture" }];
+	denied(currentCritical);
+	const belowBudget = structuredClone(state);
+	belowBudget.e2e.repairCount = 5;
+	denied(belowBudget, { ...correction, priorRepairCount: 5 });
+	assert.equal(resolveWorkflowAttention(belowBudget, { action: "request_changes", prompt: "ordinary retry" }, 6).accepted, true);
+	const beforePlain = structuredClone(state);
+	assert.equal(resolveWorkflowAttention(state, { action: "request_changes", prompt: "plain exhausted retry" }, 6).accepted, false);
+	assert.equal(resolveWorkflowAttention(state, { action: "approve", acceptedRisks: [], acceptedAt: at }, 6).accepted, false);
+	assert.deepEqual(state, beforePlain);
+	denied(resolved.state, { ...correction, sequence: 2 });
 });
 
 test("Critical stage and final findings survive a successful requested fix until fresh review clears them", () => {

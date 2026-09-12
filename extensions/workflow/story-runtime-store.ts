@@ -165,7 +165,14 @@ export interface E2ERuntimeState {
 	attempt?: ActiveSlotAttempt;
 	interruptedFrom?: "testing" | "fixing";
 	repairCount: number;
+	/** Cumulative immutable evidence history across accepted evaluator attempts. */
 	evidenceRefs: string[];
+	/** Findings produced by current accepted evaluator attempt; absence means unknown for legacy or failed attempts. */
+	currentFindings?: StructuredFinding[];
+	/** Validated evidence cited by current accepted evaluator attempt; absence means unknown. */
+	currentEvidenceRefs?: string[];
+	/** Exact canonical report produced by current accepted tool-backed evaluator attempt. */
+	currentReportRef?: string;
 	result?: FailureSummary;
 	failure?: FailureSummary;
 }
@@ -486,6 +493,14 @@ function validFinding(value: unknown): boolean {
 		&& nonEmptyString(value.code) && nonEmptyString(value.summary) && (value.path === undefined || nonEmptyString(value.path))
 		&& (value.line === undefined || (Number.isSafeInteger(value.line) && (value.line as number) >= 1));
 }
+function validCurrentEvidenceReference(value: unknown): value is string {
+	if (!nonEmptyString(value) || value.includes("\\")) return false;
+	const segments = value.split("/");
+	return segments[0] === "evidence" && segments.length > 1 && segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+function validCurrentReportReference(value: unknown): value is string {
+	return nonEmptyString(value) && /^evidence\/e2e-[A-Za-z0-9_-]+\/report\.json$/.test(value);
+}
 function validReview(value: unknown): boolean {
 	return record(value) && onlyKeys(value, ["status", "iteration", "repairCount", "attempt", "interruptedFrom", "currentFindings", "acceptedRisks", "result", "failure"])
 		&& oneOf(value.status, ["pending", "reviewing", "fix_pending", "fixing", "interrupted", "completed", "skipped", "attention"])
@@ -521,12 +536,23 @@ function validVerification(value: unknown): boolean {
 		&& validChecks(value.checks) && validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
 function validE2E(value: unknown): boolean {
-	return record(value) && onlyKeys(value, ["status", "repairCount", "attempt", "interruptedFrom", "evidenceRefs", "result", "failure"])
-		&& oneOf(value.status, ["pending", "testing", "fix_pending", "fixing", "interrupted", "completed", "attention"])
-		&& nonNegativeInteger(value.repairCount) && validAttempt(value.attempt)
-		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["testing", "fixing"]))
-		&& Array.isArray(value.evidenceRefs) && value.evidenceRefs.every((reference) => nonEmptyString(reference))
-		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
+	if (!record(value) || !onlyKeys(value, ["status", "repairCount", "attempt", "interruptedFrom", "evidenceRefs", "currentFindings", "currentEvidenceRefs", "currentReportRef", "result", "failure"])
+		|| !oneOf(value.status, ["pending", "testing", "fix_pending", "fixing", "interrupted", "completed", "attention"])
+		|| !nonNegativeInteger(value.repairCount) || !validAttempt(value.attempt)
+		|| (value.interruptedFrom !== undefined && !oneOf(value.interruptedFrom, ["testing", "fixing"]))
+		|| !Array.isArray(value.evidenceRefs) || !value.evidenceRefs.every((reference) => nonEmptyString(reference))
+		|| (value.currentFindings !== undefined && (!Array.isArray(value.currentFindings) || !value.currentFindings.every(validFinding)))
+		|| (value.currentEvidenceRefs !== undefined && (!Array.isArray(value.currentEvidenceRefs) || !value.currentEvidenceRefs.every(validCurrentEvidenceReference)))
+		|| (value.currentReportRef !== undefined && !validCurrentReportReference(value.currentReportRef))
+		|| !validOptionalSummary(value.result) || !validOptionalSummary(value.failure)) return false;
+	if (value.currentFindings !== undefined && new Set(value.currentFindings.map((finding) => (finding as StructuredFinding).id)).size !== value.currentFindings.length) return false;
+	const evidenceRefs = value.evidenceRefs as string[];
+	if (value.currentReportRef !== undefined && !evidenceRefs.includes(value.currentReportRef as string)) return false;
+	if (value.currentEvidenceRefs === undefined) return true;
+	const currentEvidenceRefs = value.currentEvidenceRefs as string[];
+	return new Set(currentEvidenceRefs).size === currentEvidenceRefs.length
+		&& currentEvidenceRefs.every((reference) => evidenceRefs.includes(reference))
+		&& (value.currentReportRef === undefined || currentEvidenceRefs.includes(value.currentReportRef as string));
 }
 function validMetricBreakdown(value: unknown): boolean {
 	if (!record(value) || !onlyKeys(value, ["workflowMs", "categories", "incompleteIntervals", "incompleteCategories"])
