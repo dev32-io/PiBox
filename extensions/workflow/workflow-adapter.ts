@@ -1,6 +1,6 @@
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from "node:fs";
+import { constants } from "node:fs";
 import { access, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -106,18 +106,6 @@ export interface HarnessWorkflowAdapterOptions {
 	/** Explicit test/integration seam. Production defaults use the injected coordinator and native Git/check operations. */
 	executeAction?: StoryWorkflowActionExecutor;
 	now?: () => Date;
-}
-
-export interface WorkflowE2eRecoveryInput {
-	ref: string;
-	attentionEpoch: number;
-	reportPaths: string[];
-}
-
-export interface WorkflowE2eRecoveryResult {
-	workflowRef: string;
-	status: "recovered-paused";
-	nextAction: "workflow_control resume";
 }
 
 interface LoadedStory {
@@ -1130,131 +1118,6 @@ async function assertEvidenceUnchanged(repositoryRoot: string, storyId: string, 
 		const opened = await readOpenedEvidence(repositoryRoot, storyId, reference, descriptorOpened);
 		if (createHash("sha256").update(opened.contents).digest("hex") !== digest) throw new Error(`E2E evidence changed after it was cited: ${reference}`);
 	}
-}
-
-const LEGACY_E2E_RECOVERY_REF = "work-item:scheduled-messages-completion";
-const LEGACY_E2E_RECOVERY_REPORTS = [
-	"evidence/retest-complete-20260912.json",
-	"evidence/retest-complete-20260912-auth.json",
-	"evidence/retest-complete-20260912-calendar.json",
-	"evidence/retest-complete-20260912-deterministic.json",
-	"evidence/retest-complete-20260912-model.json",
-	"evidence/retest-complete-20260912-native.json",
-	"evidence/retest-complete-20260912-restart.json",
-	"evidence/retest-complete-20260912-web.json",
-] as const;
-
-function hasDurableAttempt(state: StoryRuntimeState): boolean {
-	return Boolean(state.e2e.attempt || state.finalReview.attempt || state.stages.some((stage) => stage.tasks.some((task) => task.attempt) || stage.integration.attempt || stage.verification.attempt || stage.review.attempt));
-}
-
-function assertLegacyE2eRecoveryState(state: StoryRuntimeState, loaded: LoadedStory, input: WorkflowE2eRecoveryInput): void {
-	stateMatchesPlan(state, loaded);
-	const paths = input.reportPaths;
-	if (input.ref !== LEGACY_E2E_RECOVERY_REF || loaded.story.id !== "scheduled-messages-completion") throw new Error("Temporary E2E recovery only supports work-item:scheduled-messages-completion");
-	if (input.attentionEpoch !== 17 || state.attentionEpoch !== input.attentionEpoch) throw new Error("Temporary E2E recovery requires attention epoch 17");
-	if (paths.length !== LEGACY_E2E_RECOVERY_REPORTS.length || new Set(paths).size !== paths.length || LEGACY_E2E_RECOVERY_REPORTS.some((path) => !paths.includes(path))) throw new Error("Temporary E2E recovery requires the exact eight approved report paths");
-	if (state.status !== "paused" || state.outcomeStatus !== "failed" || state.attention?.code !== "evidence_invalid" || state.attentionTarget?.kind !== "e2e"
-		|| state.e2e.status !== "attention" || state.e2e.failure?.code !== "evidence_invalid" || state.e2e.repairCount !== 13 || state.e2e.currentReportRef !== undefined
-		|| state.e2e.evidenceRefs.length !== 5 || new Set(state.e2e.evidenceRefs).size !== 5 || paths.some((path) => state.e2e.evidenceRefs.includes(path))) throw new Error("Workflow does not match approved legacy E2E recovery state");
-	if (state.stages.some((stage) => stage.status !== "completed" || stage.tasks.some((task) => task.status !== "completed") || stage.integration.status !== "completed" || stage.verification.status !== "completed" || !["completed", "skipped"].includes(stage.review.status)) || state.finalReview.status !== "completed") throw new Error("Temporary E2E recovery requires completed stages and final review");
-	if (hasDurableAttempt(state)) throw new Error("Temporary E2E recovery refuses active attempts");
-	if (Object.keys(state.ledgerRecoveries ?? {}).length) throw new Error("Temporary E2E recovery refuses pending ledger recovery");
-	const currentFindings = [...state.stages.flatMap((stage) => stage.review.currentFindings), ...state.finalReview.currentFindings, ...(state.e2e.currentFindings ?? [])];
-	if (currentFindings.some((finding) => finding.severity === "critical")) throw new Error("Temporary E2E recovery refuses a current Critical finding");
-}
-
-function hasInMemoryStoryAction(root: string, storyIdValue: string): boolean {
-	const prefix = `${runtimeKey(root, storyIdValue)}\0`;
-	return [...globals()[ACTIVE_ACTIONS].keys()].some((key) => key.startsWith(prefix));
-}
-
-function legacyRecoveryGitStatus(status: string): string[] {
-	const entries = status.split("\0").filter(Boolean);
-	const result: string[] = [];
-	for (let index = 0; index < entries.length; index += 1) {
-		const entry = entries[index]!;
-		const code = entry.slice(0, 2);
-		result.push(`${code} ${entry.slice(3).replaceAll("\\", "/")}`);
-		if (code.includes("R") || code.includes("C")) result.push(`${code} ${entries[++index]!.replaceAll("\\", "/")}`);
-	}
-	return result.sort();
-}
-
-async function legacyRecoveryDirtyEntries(root: string): Promise<string[]> {
-	return legacyRecoveryGitStatus(await runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
-}
-
-function assertRecoverySnapshotSync(root: string, storyIdValue: string, head: string, canonicalBranch: string, expectedDirty: readonly string[], digests: ReadonlyMap<string, string>): void {
-	const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-	if (git(["rev-parse", "HEAD"]).trim() !== head) throw new Error("Canonical HEAD changed during temporary E2E recovery");
-	const branch = git(["branch", "--show-current"]).trim();
-	if (branch !== canonicalBranch) throw new Error(`Workflow canonical branch is ${canonicalBranch}; current branch is ${branch || "detached HEAD"}`);
-	if (JSON.stringify(legacyRecoveryGitStatus(git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]))) !== JSON.stringify(expectedDirty)) throw new Error("Git dirt changed during temporary E2E recovery");
-	const evidenceRoot = realpathSync(join(root, "agent-artifacts", storyIdValue, "evidence"));
-	for (const [reference, digest] of digests) {
-		const path = join(root, "agent-artifacts", storyIdValue, reference); let descriptor: number | undefined;
-		try {
-			descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-			if (!fstatSync(descriptor).isFile() || !realpathSync(path).startsWith(`${evidenceRoot}${sep}`) || createHash("sha256").update(readFileSync(descriptor)).digest("hex") !== digest) throw new Error(`E2E evidence changed after it was cited: ${reference}`);
-		} finally { if (descriptor !== undefined) closeSync(descriptor); }
-	}
-}
-
-export async function recoverScheduledMessagesE2eOnce(runtime: HarnessWorkflowRuntime, input: WorkflowE2eRecoveryInput, signal?: AbortSignal): Promise<WorkflowE2eRecoveryResult> {
-	const abort = () => { if (signal?.aborted) throw signal.reason ?? new DOMException("Operation aborted", "AbortError"); };
-	abort();
-	if (input.ref !== LEGACY_E2E_RECOVERY_REF) throw new Error("Temporary E2E recovery only supports work-item:scheduled-messages-completion");
-	const id = storyId(input.ref);
-	const root = runtime.identity.root;
-	const store = storeFor(root, id);
-	return withGitLock(runtime, `story-e2e-recovery:${id}`, async () => {
-		abort();
-		const head = await runGit(root, ["rev-parse", "HEAD"]); abort();
-		const loaded = await loadStory(runtime, id); abort();
-		const before = await store.readState();
-		if (!before) throw new Error(`Workflow ${input.ref} has not been started`);
-		assertLegacyE2eRecoveryState(before, loaded, input);
-		if (hasInMemoryStoryAction(root, id)) throw new Error("Temporary E2E recovery refuses active attempts");
-		await assertCanonicalBranch(runtime, before); abort();
-		const requested = await validateEvidenceReferences(root, id, input.reportPaths, runtime.evidenceDescriptorOpened); abort();
-		if (JSON.stringify(requested) !== JSON.stringify(input.reportPaths)) throw new Error("Temporary E2E recovery report paths are not canonical");
-		const retained = await validateEvidenceReferences(root, id, before.e2e.evidenceRefs, runtime.evidenceDescriptorOpened); abort();
-		if (JSON.stringify(retained) !== JSON.stringify(before.e2e.evidenceRefs)) throw new Error("Retained E2E evidence paths are not canonical");
-		const evidenceRefs = [...retained, ...requested];
-		const expectedDirty = evidenceRefs.map((reference) => `?? agent-artifacts/${id}/${reference}`).sort();
-		const dirty = await legacyRecoveryDirtyEntries(root); abort();
-		if (JSON.stringify(dirty) !== JSON.stringify(expectedDirty)) throw new Error("Temporary E2E recovery requires Git dirt to be exactly the untracked retained evidence files");
-		const digests = await evidenceDigests(root, id, evidenceRefs, runtime.evidenceDescriptorOpened); abort();
-		const capturedState = JSON.stringify(before);
-		const revalidated = await store.readState(); abort();
-		if (!revalidated || JSON.stringify(revalidated) !== capturedState) throw new Error("Workflow state changed during temporary E2E recovery");
-		assertLegacyE2eRecoveryState(revalidated, loaded, input);
-		if (hasInMemoryStoryAction(root, id)) throw new Error("Temporary E2E recovery refuses active attempts");
-		await assertCanonicalBranch(runtime, revalidated); abort();
-		await assertEvidenceUnchanged(root, id, digests, runtime.evidenceDescriptorOpened); abort();
-		if (await runGit(root, ["rev-parse", "HEAD"]) !== head) throw new Error("Canonical HEAD changed during temporary E2E recovery");
-		const finalDirty = await legacyRecoveryDirtyEntries(root); abort();
-		if (JSON.stringify(finalDirty) !== JSON.stringify(expectedDirty)) throw new Error("Git dirt changed during temporary E2E recovery");
-		await store.updateState((current) => {
-			abort();
-			if (!current || JSON.stringify(current) !== capturedState) throw new Error("Workflow state changed during temporary E2E recovery");
-			assertLegacyE2eRecoveryState(current, loaded, input);
-			if (hasInMemoryStoryAction(root, id)) throw new Error("Temporary E2E recovery refuses active attempts");
-			assertRecoverySnapshotSync(root, id, head, current.git.canonicalBranch, expectedDirty, digests);
-			const next = structuredClone(current);
-			next.e2e.evidenceRefs = evidenceRefs;
-			next.e2e.status = "interrupted";
-			next.e2e.interruptedFrom = "testing";
-			next.status = "paused";
-			next.outcomeStatus = "pending";
-			delete next.attention;
-			delete next.attentionTarget;
-			delete next.activationOwner;
-			return next;
-		});
-		return { workflowRef: input.ref, status: "recovered-paused", nextAction: "workflow_control resume" };
-	});
 }
 
 function isE2ePhase(state: StoryRuntimeState): boolean {

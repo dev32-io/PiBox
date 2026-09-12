@@ -13,7 +13,7 @@ import { WorkItemStore } from "./work-items.js";
 import { StoryRuntimeStore } from "./story-runtime-store.js";
 import { registerWorkerCapabilities } from "./worker-capabilities.js";
 import { registerWorkflowAdapter, type WorkflowAdapterRegistration } from "../workflow-runtime/capability-registry.js";
-import { createHarnessWorkflowAdapter, reconcileHarnessActivation, recoverScheduledMessagesE2eOnce } from "./workflow-adapter.js";
+import { createHarnessWorkflowAdapter, reconcileHarnessActivation } from "./workflow-adapter.js";
 import { WorkflowSubagentLauncher } from "../workflow-runtime/subagent-launcher.js";
 import { requestWorkflowRunnerRestore } from "../workflow-runtime/runner-restoration.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "../subagent/child-extensions.js";
@@ -159,12 +159,6 @@ export default function workflow(pi: ExtensionAPI, dependencies: {
 
 	const adapter = createHarnessWorkflowAdapter({ runtimeFor });
 	let registration: WorkflowAdapterRegistration | undefined = registerWorkflowAdapter(adapter, { replace: true });
-
-	pi.registerTool({ name: "workflow_recover_e2e_once", label: "Recover Known Legacy E2E Once", description: "One-time recovery for work-item:scheduled-messages-completion after user-requested resume of its known legacy evidence_invalid failure. Registers only the eight explicit retained reports and prepares fresh E2E without launching or accepting historical verdicts. Then call normal workflow_control resume.", parameters: Type.Object({
-		ref: Type.String({ description: "Must be work-item:scheduled-messages-completion." }), attentionEpoch: Type.Integer({ description: "Must match the saved attention epoch 17." }), reportPaths: Type.Array(Type.String(), { description: "Eight story-relative paths: evidence/retest-complete-20260912.json and evidence/retest-complete-20260912-{auth,calendar,deterministic,model,native,restart,web}.json. Expand suffixes into separate paths; include all eight, not only the three named in the failure summary." }),
-	}, { additionalProperties: false }), async execute(id, params, signal, _update, ctx) {
-		try { return await mutate(ctx, id, async (current) => { const recovered = await recoverScheduledMessagesE2eOnce(current, params, signal); return result("Recovered legacy E2E evidence. Workflow remains paused. Next: call workflow_control with action=resume.", recovered); }); } catch (error) { rethrowCapabilityError(error, signal, params.ref); }
-	} });
 
 	pi.registerTool({ name: "resource_list", label: "List Workflow Resources", description: "List target stories, E2E cases, authored tasks, and ordered stages. Legacy artifacts and runtime projections are not resources.", parameters: Type.Object({ type: Type.Optional(RESOURCE_TYPE), parent: Type.Optional(Type.String()), query: Type.Optional(Type.String()) }, { additionalProperties: false }), async execute(_id, params, _signal, _update, ctx) {
 		try { const parsed = params.parent ? parseResourceRef(params.parent) : undefined; let rows = await (await serviceFor(ctx)).listSummaries(params.type as CanonicalResourceType | undefined, parsed?.workItemId); if (params.query) { const query = params.query.toLowerCase(); rows = rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)); } return result(JSON.stringify(rows, null, 2), rows); } catch (error) { throw structuredCapabilityError(error, params.parent); }
