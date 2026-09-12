@@ -10,7 +10,7 @@ import type { RuntimeOwner } from "../../subagent/api.js";
 import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { emptyWorkflowMetrics, StoryRuntimeStore } from "../story-runtime-store.js";
-import { checkFailureSummary, createE2eScratchDirectory, createHarnessWorkflowAdapter, reconcileHarnessActivation, reconcileWorkflowClockForActiveActions, runShell, selectWorkflowClockForActiveActions, workflowMetricCategoryForAction, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
+import { checkFailureSummary, createE2eScratchDirectory, createHarnessWorkflowAdapter, recoverScheduledMessagesE2eOnce, reconcileHarnessActivation, reconcileWorkflowClockForActiveActions, runShell, selectWorkflowClockForActiveActions, workflowMetricCategoryForAction, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 import { writeLedgerSubmission } from "../ledger-submission.js";
@@ -19,6 +19,7 @@ import { readE2eReportSubmission, submitE2eReport, type E2eReportSubmission, typ
 const exec = promisify(execFile);
 
 interface FixtureOptions {
+	story?: StoryDocument;
 	plan?: StoryPlanDocument;
 	tasks?: AuthoredTaskDocument[];
 	execute?: StoryWorkflowActionExecutor;
@@ -59,6 +60,7 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
 	await exec("git", ["add", ".gitignore"], { cwd: root });
 	await exec("git", ["commit", "-qm", "base"], { cwd: root });
+	const fixtureStory = options.story ?? story;
 	const tasks = options.tasks ?? [task("task-a")];
 	const plan = options.plan ?? { schemaVersion: 1, stages: [{ id: "delivery", tasks: tasks.map((entry) => entry.id), mode: "sequential", checks: [], review: { mode: "skip" } }] };
 	let owner = options.owner ?? { sessionId: `session-${root}`, processInstanceId: "process", activationId: "activation-a" };
@@ -66,12 +68,12 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	const runtime: any = {
 		identity: { id: "repo", root, privateRoot: join(root, ".git", "pibox"), commonDir: join(root, ".git") },
 		workItems: {
-			async readStory() { return story; },
+			async readStory() { return fixtureStory; },
 			async readStoryPlan() { return plan; },
 			async readAuthoredTask(_storyId: string, id: string) { return tasks.find((entry) => entry.id === id)!; },
 			async listAuthoredTasks() { return tasks; },
 			async findDelivery() { return { workingBranch: "feature/example", createdFromCommit: "fixture" }; },
-			async list() { return [{ id: story.id }]; },
+			async list() { return [{ id: fixtureStory.id }]; },
 		},
 		launcher: {
 			service: { get owner() { return owner; }, inspect() { return []; } },
@@ -85,7 +87,7 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	const ctx = { sessionManager: { getSessionId: () => owner.sessionId } } as any;
 	const create = () => createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, ...(options.execute ? { executeAction: options.execute } : {}), now: options.now ?? (() => { let tick = 0; return () => new Date(1_700_000_000_000 + tick++); })() });
 	return {
-		root, runtime, ctx, create,
+		root, runtime, ctx, create, story: fixtureStory,
 		fireCapacity() { for (const listener of capacityListeners) listener(); },
 		setOwner(value: RuntimeOwner) { owner = value; },
 	};
@@ -398,6 +400,153 @@ test("stop fences late Repair settlement from reopening or crediting clock", asy
 	const afterLate = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
 	assert.equal(afterLate.status, "stopped");
 	assert.deepEqual(afterLate.metrics, stopped.metrics);
+});
+
+const recoveryReports = [
+	"evidence/retest-complete-20260912.json",
+	"evidence/retest-complete-20260912-auth.json",
+	"evidence/retest-complete-20260912-calendar.json",
+	"evidence/retest-complete-20260912-deterministic.json",
+	"evidence/retest-complete-20260912-model.json",
+	"evidence/retest-complete-20260912-native.json",
+	"evidence/retest-complete-20260912-restart.json",
+	"evidence/retest-complete-20260912-web.json",
+];
+const recoveryOldReports = Array.from({ length: 5 }, (_, index) => `evidence/retained-${index + 1}.json`);
+const recoveryRef = "work-item:scheduled-messages-completion";
+
+async function recoveryFixture(t: test.TestContext, options: FixtureOptions = {}) {
+	const namedStory = { ...story, id: "scheduled-messages-completion", title: "Scheduled messages completion" };
+	const f = await fixture(t, { ...options, story: namedStory });
+	const initial = (await f.create().snapshot(recoveryRef, f.ctx)).runtime;
+	for (const reference of [...recoveryOldReports, ...recoveryReports]) {
+		const path = join(f.root, "agent-artifacts", namedStory.id, reference);
+		await mkdir(join(path, ".."), { recursive: true });
+		await writeFile(path, `${JSON.stringify({ reference })}\n`);
+	}
+	const failure = { code: "evidence_invalid", summary: "legacy report registration failed", diagnostic: { checkId: "e2e-evidence", command: "retain reports", exitCode: 1, stdout: "", stderr: "all eight reports rejected", outputTruncated: false } };
+	const state = structuredClone(initial);
+	state.status = "paused";
+	state.activationOwner = f.runtime.launcher.service.owner;
+	state.attention = failure;
+	state.attentionEpoch = 17;
+	state.attentionTarget = { kind: "e2e" };
+	state.outcomeStatus = "failed";
+	for (const stage of state.stages) {
+		stage.status = "completed";
+		for (const taskState of stage.tasks) { taskState.status = "completed"; taskState.contributionCommit = "retained-contribution"; }
+		stage.integration = { status: "completed", repairCount: 2, contributionCommits: ["retained-contribution"], integratedCommit: "retained-integration", result: { code: "passed", summary: "integrated" } };
+		stage.verification.status = "completed";
+		stage.review.status = stage.review.status === "skipped" ? "skipped" : "completed";
+	}
+	state.finalReview = { status: "completed", iteration: 3, repairCount: 4, currentFindings: [], result: { code: "passed", summary: "reviewed" } };
+	state.e2e = {
+		status: "attention", repairCount: 13, evidenceRefs: [...recoveryOldReports], failure,
+		currentEvidenceRefs: [recoveryOldReports[4]!],
+		currentFindings: [{ id: "legacy", severity: "major", code: "evidence", summary: "registration failed" }],
+	};
+	await new StoryRuntimeStore(f.root, namedStory.id).writeState(state);
+	return { ...f, store: new StoryRuntimeStore(f.root, namedStory.id), state };
+}
+
+const recoveryInput = () => ({ ref: recoveryRef, attentionEpoch: 17, reportPaths: [...recoveryReports] });
+
+test("one-time legacy E2E recovery changes only approved state and ordinary resume launches fresh E2E", async (t) => {
+	const actions: string[] = [];
+	const gate = deferred<StoryWorkflowActionResult>();
+	const f = await recoveryFixture(t, { execute: async ({ action }) => { actions.push(action.kind); return gate.promise; } });
+	const evidenceBefore = new Map(await Promise.all([...recoveryOldReports, ...recoveryReports].map(async (reference) => [reference, await readFile(join(f.root, "agent-artifacts", f.story.id, reference))] as const)));
+	let launches = 0; f.runtime.launcher.launch = async () => { launches++; throw new Error("recovery must not launch"); };
+	const result = await recoverScheduledMessagesE2eOnce(f.runtime, recoveryInput());
+	assert.deepEqual(result, { workflowRef: recoveryRef, status: "recovered-paused", nextAction: "workflow_control resume" });
+	assert.equal(launches, 0);
+	const recovered = (await f.store.readState())!;
+	const expected = structuredClone(f.state);
+	expected.e2e.evidenceRefs.push(...recoveryReports);
+	expected.e2e.status = "interrupted";
+	expected.e2e.interruptedFrom = "testing";
+	expected.outcomeStatus = "pending";
+	delete expected.attention; delete expected.attentionTarget; delete expected.activationOwner;
+	assert.deepEqual(recovered, expected, "state diff is limited to approved recovery fields");
+	for (const [reference, contents] of evidenceBefore) assert.deepEqual(await readFile(join(f.root, "agent-artifacts", f.story.id, reference)), contents);
+	await assert.rejects(recoverScheduledMessagesE2eOnce(f.runtime, recoveryInput()), /approved legacy E2E recovery state/);
+	const adapter = f.create();
+	assert.deepEqual(await adapter.preflightWorkflow!(recoveryRef, f.ctx), { ok: true });
+	await adapter.controlExecution!(recoveryRef, "resume", "resume", f.ctx);
+	await adapter.advanceWorkflow!(recoveryRef, f.ctx);
+	await eventually(() => assert.deepEqual(actions, ["e2e"]));
+	assert.equal((await f.store.readState())!.e2e.repairCount, 13);
+	gate.resolve({ result: "needs_user", failure: { code: "fixture_stop", summary: "stop after launch proof" } });
+	await eventually(async () => assert.equal((await f.store.readState())!.status, "attention"));
+	assert.equal(actions.some((action) => action.includes("fix")), false);
+});
+
+test("one-time legacy E2E recovery rejects mismatched, unsafe, active, dirty, and stale inputs without mutation", async (t) => {
+	const cases: Array<{ name: string; mutate?: (state: any) => void; input?: () => ReturnType<typeof recoveryInput>; prepare?: (f: Awaited<ReturnType<typeof recoveryFixture>>) => Promise<void>; pattern: RegExp }> = [
+		{ name: "wrong target", mutate: (state) => { state.attentionTarget = { kind: "final-review" }; state.finalReview.status = "attention"; }, pattern: /approved legacy E2E recovery state/ },
+		{ name: "wrong epoch", input: () => ({ ...recoveryInput(), attentionEpoch: 16 }), pattern: /epoch 17/ },
+		{ name: "wrong status", mutate: (state) => { state.status = "attention"; }, pattern: /approved legacy E2E recovery state/ },
+		{ name: "wrong path set", input: () => ({ ...recoveryInput(), reportPaths: recoveryReports.slice(0, 7) }), pattern: /exact eight/ },
+		{ name: "Critical finding", mutate: (state) => { state.e2e.currentFindings![0]!.severity = "critical"; }, pattern: /Critical/ },
+		{ name: "durable attempt", mutate: (state) => { state.e2e.attempt = { token: "active", owner: { sessionId: "s", processInstanceId: "p", activationId: "a" }, activatedAt: "2026-09-12T00:00:00.000Z" }; }, pattern: /active attempts/ },
+		{ name: "ledger recovery", mutate: (state) => { state.ledgerRecoveries = { token: { action: "e2e", attemptToken: "token", sourceRole: "e2e-tester", reportPath: "/tmp/report", error: "failed" } }; }, pattern: /ledger recovery/ },
+		{ name: "foreign dirt", prepare: async (f) => { await writeFile(join(f.root, "foreign.txt"), "foreign\n"); }, pattern: /Git dirt/ },
+		{ name: "staged report", prepare: async (f) => { await exec("git", ["add", `agent-artifacts/${f.story.id}/${recoveryReports[0]}`], { cwd: f.root }); }, pattern: /Git dirt/ },
+		{ name: "tracked modified report", prepare: async (f) => {
+			const path = `agent-artifacts/${f.story.id}/${recoveryReports[0]}`;
+			await exec("git", ["add", path], { cwd: f.root }); await exec("git", ["commit", "-qm", "track report"], { cwd: f.root });
+			await writeFile(join(f.root, path), "modified\n");
+		}, pattern: /Git dirt/ },
+		{ name: "renamed report", prepare: async (f) => {
+			const source = `agent-artifacts/${f.story.id}/${recoveryReports[0]}`;
+			const target = `agent-artifacts/${f.story.id}/${recoveryReports[1]}`;
+			await exec("git", ["add", source], { cwd: f.root }); await exec("git", ["commit", "-qm", "track report"], { cwd: f.root });
+			await rm(join(f.root, target)); await exec("git", ["mv", source, target], { cwd: f.root }); await writeFile(join(f.root, source), "replacement\n");
+		}, pattern: /Git dirt/ },
+		{ name: "ignored report", prepare: async (f) => { await writeFile(join(f.root, ".git", "info", "exclude"), `agent-artifacts/${f.story.id}/${recoveryReports[0]}\n`); }, pattern: /ignored/ },
+	];
+	for (const entry of cases) await t.test(entry.name, async (t) => {
+		const f = await recoveryFixture(t);
+		if (entry.mutate) { const changed = structuredClone(f.state); entry.mutate(changed); await f.store.writeState(changed); }
+		await entry.prepare?.(f);
+		const before = await f.store.readState();
+		await assert.rejects(recoverScheduledMessagesE2eOnce(f.runtime, (entry.input ?? recoveryInput)()), entry.pattern);
+		assert.deepEqual(await f.store.readState(), before);
+	});
+	await t.test("stale concurrent state", async (t) => {
+		const f = await recoveryFixture(t); let changed = false;
+		f.runtime.evidenceDescriptorOpened = async () => { if (changed) return; changed = true; await f.store.updateState((state) => ({ ...state!, attention: { ...state!.attention!, summary: "concurrent change" } })); };
+		await assert.rejects(recoverScheduledMessagesE2eOnce(f.runtime, recoveryInput()), /state changed/);
+		assert.equal((await f.store.readState())!.attention?.summary, "concurrent change");
+	});
+	await t.test("changed evidence", async (t) => {
+		const f = await recoveryFixture(t); let opens = 0;
+		f.runtime.evidenceDescriptorOpened = async () => { if (++opens === 27) await writeFile(join(f.root, "agent-artifacts", f.story.id, recoveryReports[0]!), "changed\n"); };
+		const before = await f.store.readState();
+		await assert.rejects(recoverScheduledMessagesE2eOnce(f.runtime, recoveryInput()), /evidence changed/);
+		assert.deepEqual(await f.store.readState(), before);
+	});
+	await t.test("contract and HEAD change during contract load", async (t) => {
+		const f = await recoveryFixture(t); let currentStory = f.story; let changed = false;
+		f.runtime.workItems.readStory = async () => {
+			const captured = currentStory;
+			if (!changed) {
+				changed = true; currentStory = { ...currentStory, title: "Changed contract" };
+				await exec("git", ["commit", "--allow-empty", "-qm", "change contracts"], { cwd: f.root });
+			}
+			return captured;
+		};
+		const before = await f.store.readState();
+		await assert.rejects(recoverScheduledMessagesE2eOnce(f.runtime, recoveryInput()), /HEAD changed/);
+		assert.deepEqual(await f.store.readState(), before);
+	});
+	await t.test("same-HEAD branch switch before serialized mutation", async (t) => {
+		const f = await recoveryFixture(t); let opens = 0;
+		f.runtime.evidenceDescriptorOpened = async () => { if (++opens === 27) await exec("git", ["switch", "-qc", "feature/same-head"], { cwd: f.root }); };
+		const before = await f.store.readState();
+		await assert.rejects(recoverScheduledMessagesE2eOnce(f.runtime, recoveryInput()), /canonical branch/);
+		assert.deepEqual(await f.store.readState(), before);
+	});
 });
 
 test("preflight is side-effect-free and never executes verification bootstrap before cancellation", async (t) => {

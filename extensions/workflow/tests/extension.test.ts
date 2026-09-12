@@ -26,10 +26,10 @@ test("managed child extension paths preserve generic context hooks", () => {
 	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[0] ?? "", /workflow\/index\.ts$/);
 });
 
-test("main session registers only target planning tools", () => {
+test("main session registers target planning tools plus bounded E2E recovery", () => {
 	const previous = process.env[PIBOX_RUNTIME_ROLE_ENV]; delete process.env[PIBOX_RUNTIME_ROLE_ENV];
 	const f = host(); try { workflow(f.pi); } finally { if (previous === undefined) delete process.env[PIBOX_RUNTIME_ROLE_ENV]; else process.env[PIBOX_RUNTIME_ROLE_ENV] = previous; }
-	assert.deepEqual(f.tools, ["resource_list", "resource_read", "story_write", "e2e_write", "task_write", "stage_write", "resource_delete", "workflow_compile", "workflow_status", "workflow_init"]);
+	assert.deepEqual(f.tools, ["workflow_recover_e2e_once", "resource_list", "resource_read", "story_write", "e2e_write", "task_write", "stage_write", "resource_delete", "workflow_compile", "workflow_status", "workflow_init"]);
 	assert.deepEqual(f.commands, ["workflow", "harness"]);
 	for (const obsolete of ["resource_write", "workflow_apply_change", "workflow_transition", "workflow_list", "workflow_get", "workflow_schema", "workflow_plan_write", "workflow_create", "workflow_patch", "workflow_delete", "workflow_checkpoint", "task_integrate", "evaluation_record", "work_item_complete", "task_checkpoint", "task_complete", "evaluation_complete", "workflow_ledger"]) assert.equal(f.tools.includes(obsolete), false, obsolete);
 });

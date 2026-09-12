@@ -1,4 +1,4 @@
-export const WORKFLOW_RUNTIME_TOOL_NAMES = ["workflow_start", "workflow_control"] as const;
+export const WORKFLOW_RUNTIME_TOOL_NAMES = ["workflow_start", "workflow_control", "workflow_recover_e2e_once"] as const;
 export const WORKFLOW_AUTHORING_TOOL_NAMES = [
 	"resource_list",
 	"resource_read",
