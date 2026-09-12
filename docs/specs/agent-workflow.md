@@ -129,16 +129,18 @@ stages:
       focus: Checkout persistence and typed failure behavior
 ```
 
-Stages are ordered. Each task set runs `sequential` or `concurrent`. A stage may omit review policy or declare `review.mode: required | skip` and optional free-form `review.focus`. Plans never contain `maxIterations`, repair rounds, evaluation resources, evaluator tasks, repair tasks, reports, handoffs, or authored final outcome projections. `.pi/harness.yaml` `limits.repairRounds` is the only retry-limit authority. Once execution initializes, state pins the reviewed story/plan/task digests; authored mutations and digest drift are refused. This version has no in-place replan; a contract change requires explicit stop and a new target story.
+Stages are ordered. Each task set runs `sequential` or `concurrent`. A stage may omit review policy or declare `review.mode: required | skip` and optional free-form `review.focus`. Plans never contain `maxIterations`, repair rounds, evaluation resources, evaluator tasks, repair tasks, reports, handoffs, or authored final outcome projections. `.pi/harness.yaml` `limits.repairRounds` bounds automatic repairs. Once execution initializes, state pins the reviewed story/plan/task digests; authored mutations and baseline digest drift are refused. Bounded runtime corrections can change effective task instructions or checks at the current failed boundary, or provide new guidance for exhausted integration/review/E2E slots, without rewriting the authored baseline or creating a replacement story. Story, E2E, topology, and assignment changes are not execution corrections.
 
 ## 4. Context and child ownership
 
-A managed child launch has stable generic agent instructions, workflow protocol, selected authoritative context, and a short attempt-specific user turn. Stable prefixes remain byte-stable across attempts when the contract is unchanged.
+A managed child launch has stable generic agent instructions, workflow protocol, selected authoritative context, and an attempt-specific user turn. Stable prefixes remain byte-stable across attempts when the contract is unchanged.
 
 - Implementers receive complete task description/scope/delivery; checks remain separate harness contract.
 - `task_clarify` provides bounded line reads and case-insensitive literal search over the selected free-form story `spec` or `design`, with range, match, and truncation metadata. It does not browse artifacts, task refs, reports, or evaluations.
-- Reviewers and fixers receive scoped task contracts, optional review focus, current findings/failure, relevant curated ledger entries, and complete story context required by their boundary.
+- Reviewers and fixers receive scoped task contracts, optional review focus, current findings/failure, and complete story context required by their boundary. Only implementers/fixers receive implementation ledger context and its append capability.
 - Final E2E actors receive the story's complete `e2e` field directly.
+- Each implementer/fixer gets the newest eight complete ledger entries and a canonical read-only path in its initial system context. Continuation keeps that initial seed; ordinary reads expose newer or additional entries. Reviewers and E2E evaluators receive neither ledger context nor ledger tools, including custom all-tools configurations.
+- Content is not rejected or silently shortened to fit a display budget; persisted instructions, findings, and correction history remain intact.
 - Debug events are never child context.
 
 The standalone `SubagentService` owns generic agent definitions, process launch, normalized live events, process groups, and activation-local delivery. Workflow depends on that service; dependency never reverses. Children do not receive workflow orchestration or recursive delegation controls and never write canonical/runtime workflow files.
@@ -170,9 +172,11 @@ whole-branch review of execution-start..current
   → outcome.md
 ```
 
+Each stage-review, whole-branch-review, and E2E loop reuses its own verifier and distinct fixer conversation while actual contract/configuration and activation remain compatible. Ledger changes do not invalidate those conversations. Re-review targets prior findings and repair regressions, not a fresh broad audit; E2E still runs every required case. Stable isolated fixer pathnames enable reuse without a mutable-cwd continuation API; clean integrated workspaces may be recreated at the next canonical base, while dirty or unintegrated work is preserved.
+
 Routine task, integration, check, repair, review, re-review, final-review, and E2E transitions advance automatically. Runtime-generated CI repair, integration repair, stage reviewer/fixer, whole-branch reviewer/fixer, and E2E/fixer work are first-class slots in state—not authored tasks or resources.
 
-The orchestrator is involved only for contradictory authority, critical/material risk, explicit risk acceptance, unsafe/destructive recovery, unanswerable clarification, consequential user-owned decisions, or exhausted configured retries.
+The orchestrator handles diagnosed task/check defects through `request_changes` corrections in the already-authorized run, including a meaningful correction after automatic repairs are exhausted. Routine corrections do not require another user checkpoint. Critical/material risk, explicit risk acceptance, unsafe/destructive recovery, unanswerable clarification, and consequential user-owned decisions still return to the user.
 
 ## 6. Story-local runtime authority
 
@@ -185,6 +189,7 @@ The orchestrator is involved only for contradictory authority, critical/material
 - retry counts and interruption status;
 - Git branches, commits, and worktree coordinates;
 - pinned digests of the reviewed story, plan, and every task contract;
+- cumulative effective execution overrides, a monotonic correction sequence, and correction history, used consistently for task context and deterministic checks;
 - pause/resume and outcome status;
 - current structured findings needed for control;
 - cumulative metrics and one open metric clock.
@@ -193,13 +198,15 @@ State replacement is atomic. There is no global workflow generation; each active
 
 ### 6.2 Ledger
 
-`ledger.yaml` is a small rewritten collection of currently relevant non-obvious findings and evidence. It is the only rolling agent handoff context. Entries are curated/upserted/pruned rather than an append-only activity feed. Routine scheduler transitions, checks, status, and completion notices never enter it.
+`ledger.yaml` is the rolling collection of currently relevant non-obvious findings and evidence. It is the only rolling agent handoff context. Entries are curated/upserted/pruned semantically rather than evicted by count or used as an append-only activity feed. Initial implementer/fixer system context selects the newest eight complete entries and supplies the canonical read-only ledger path for ordinary additional reads; the system seed remains stable across continuation. Routine scheduler transitions, checks, status, and completion notices never enter it. Implementers/fixers submit non-obvious context through append-only `workflow_ledger`; the tool stages full content privately and honestly acknowledges it as queued. Only the parent writer persists a current owned validated contribution’s submission. Reviewers/E2E cannot invoke the capability; review findings and accepted risks remain in state/outcome rather than being copied into new implementation ledger entries. Existing evidence is retained.
 
 ### 6.3 Debug journal
 
 `events.jsonl` is coarse debug/analytics logging only. It may record workflow/stage/task/integration/check/review/repair/E2E/subagent boundaries, durations, routes, usage, and compact result codes.
 
 It never stores prompts, outputs, user content, finding bodies, reports, state patches, control mutations, credentials, or secrets. Startup never replays it. State, metrics, prompts, child context, normal status, tools, and TUI rendering never derive from or include it. Only an explicit bounded filtered diagnostic read may expose it to the orchestrator.
+
+Accepted contributions whose optional ledger submission cannot persist retain token-keyed `ledgerRecoveries` in state. Recovery binds the same token and content across dry-run and commit: `request_changes` retries valid content, while `approve` acknowledges malformed optional content without waiving review risk. Concurrent recoveries do not overwrite each other. Recovery never reruns accepted code or automatically resumes; unresolved domain attention stays authoritative, and final ledger recovery leaves a paused workflow for explicit guarded resume.
 
 One serialized workflow writer owns state, ledger, and debug appends. It applies authoritative state first, then best-effort appends the corresponding debug event. A missing final event is acceptable; missing state is not.
 
@@ -217,7 +224,9 @@ The harness validates the persisted canonical feature/fix branch at start, resum
 
 Deterministic task and stage checks are authored commands. Stage review is optional reviewed policy, selected by risk, observability, reversibility, and boundary crossings. Regardless of stage policy, the runtime performs whole-branch review before final E2E.
 
-Repairable non-critical task, integration, verification, review, and E2E failures automatically enter the matching runtime repair slot. Retry budgets come only from `limits.repairRounds`. Exhaustion never silently waives a blocking failure. Critical risk acceptance and material policy/security/privacy/destructive decisions return to the user.
+Repairable non-critical task, integration, verification, review, and E2E failures automatically enter the matching runtime repair slot. Automatic repair budgets come from `limits.repairRounds`. Known check-configuration defects and repeated unchanged diagnostics require orchestrator attention rather than repeated code repair. A bounded execution correction preserves completed work and retry history, reruns the affected boundary with fresh attempt identity, and can grant a fresh attempt after exhaustion without resetting the budget. No-op corrections cannot reopen an exhausted loop. Exhaustion never silently waives a blocking failure. A successful requested review fix schedules fresh independent review even when old Critical findings remain; only that review or explicit user risk acceptance resolves them. Critical risk acceptance and material policy/security/privacy/destructive decisions return to the user.
+
+Check failures retain the full summary, underlying cause, check/command/exit identity, bounded excerpts from both output streams, and explicit truncation. The board shows the cause compactly and exposes preformatted diagnostics on demand; legacy summary-only failures remain readable.
 
 Structured findings required for control remain in state. Only intentionally retained sanitized evidence is written beneath `evidence/`. There are no authored evaluations, report files, attempt reports, evaluation handoffs, or duplicated evidence projections. Completion writes one user-facing `outcome.md`.
 
@@ -250,9 +259,13 @@ Ordinary startup performs no repository discovery, configuration loading, artifa
 
 ## 11. Metrics and TUI
 
-State stores cumulative workflow time, five exclusive category totals, and at most one open `{ category, since }` clock. Categories are `implementation`, `integration`, `verification`, `review`, and `e2e`. Category totals partition workflow wall time; parallel agents never multiply elapsed time.
+State stores cumulative workflow time, six exclusive category totals, and at most one open `{ category, since, stageId? }` clock. Categories are `implementation`, `integration`, `verification`, `review`, `e2e`, and `repair`. All six fixer actions—task, integration, verification, stage-review, whole-branch-review, and E2E repair—count as `repair`. Actual re-review and E2E retesting remain `review` and `e2e`; other non-repair actions keep their existing categories. Category totals partition recorded active workflow wall time; parallel agents never multiply elapsed time.
 
-The TUI projects live time in memory as stored base plus `now - since`. It never samples time into state or reads the debug journal. Time persists only on an existing state transition, pause/interruption, category transition, or completion. Incomplete crash intervals render with `+`.
+Clock ownership derives from durable active attempts at action activation, accepted settlement, and control boundaries. Selection and elapsed-time accounting commit atomically with the corresponding state transition. Repair takes precedence while any repair action remains active; after the last repair settles, the clock immediately returns to remaining non-repair work, or closes if nothing remains. A paused or attention-blocked workflow can still have draining active attempts; those attempts remain timed until settlement or fencing. Stale settlements cannot change timing.
+
+The boundary is the workflow action, not just its subprocess: preparation, spawn/continuation, provider fallback, validation, and repair integration belong to that action's wall time. Non-child check and integration actions use the same lifecycle. Pending work waiting for capacity and idle gaps do not own the clock. Subagent/UI notifications do not independently mutate metrics, and no new polling or event-log replay derives timing.
+
+The TUI and Story Board project live time in memory as stored base plus `now - since`; display ticks never sample time into state or select the category. Owner loss marks uncheckpointed intervals incomplete instead of guessing elapsed time; incomplete crash intervals render with `+`. Older persisted global and stage totals missing only `repair` load with `repair: 0`. Their historical totals stay unchanged: no detailed interval history exists to split previously mixed repair time.
 
 The primary workflow projection is stage-centric, showing current stage/tasks and review-loop position rather than a generic generated-step list.
 

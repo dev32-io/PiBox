@@ -111,3 +111,17 @@ test("packs only complete bounded memory rows and reports budget exclusions", ()
 	for (const skipped of packed.skipped) assert.doesNotMatch(packed.content, new RegExp(`id=${skipped.id}\\b`));
 	assert.doesNotMatch(packed.content, /x{901}/, "individual memory text is bounded before packing");
 });
+
+test("service errors retain complete diagnostics beyond the old preview boundary", async (t) => {
+	const diagnostic = `${"diagnostic detail\n".repeat(100)}ROOT_CAUSE_AT_END`;
+	const server = createServer((_request, response) => { response.statusCode = 503; response.end(diagnostic); });
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("missing server address");
+	const client = new Mem0Client({ baseUrl: `http://127.0.0.1:${address.port}` });
+	await assert.rejects(client.get("memory", "pibox", "repo"), (error: Error) => {
+		assert.equal(error.message, `Mem0 503: ${diagnostic}`);
+		return true;
+	});
+});

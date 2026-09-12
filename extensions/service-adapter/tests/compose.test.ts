@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import test from "node:test";
-import { probeServiceHealth } from "../compose.js";
+import { createComposeServiceController, probeServiceHealth } from "../compose.js";
 
 test("health probes bypass Fetch forbidden-port policy", async () => {
 	const server = createServer((_request, response) => {
@@ -22,4 +25,17 @@ test("health probes bypass Fetch forbidden-port policy", async () => {
 		globalThis.fetch = originalFetch;
 		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 	}
+});
+
+
+test("compose failures retain complete diagnostic text", async (t) => {
+ const root = await mkdtemp(join(tmpdir(), "pibox-compose-diagnostic-"));
+ t.after(() => rm(root, { recursive: true, force: true }));
+ const diagnostic = `${"compose detail\n".repeat(100)}ROOT_CAUSE_AT_END`;
+ const pi = { async exec() { return { code: 1, stdout: "", stderr: diagnostic }; } } as any;
+ const controller = createComposeServiceController(pi, { id: "test", composeFile: "compose.yaml", projectDirectory: root, healthUrl: "http://127.0.0.1:1", lockRoot: root });
+ await assert.rejects(controller.stop!({ ctx: {} as any }), (error: Error) => {
+  assert.equal(error.message, `docker compose stop failed: ${diagnostic}`);
+  return true;
+ });
 });

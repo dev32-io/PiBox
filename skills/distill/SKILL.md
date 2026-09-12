@@ -19,6 +19,8 @@ Analysis authorization is not authorization to edit guidance, documentation, rul
 
 After scope confirmation, call `distill_collect` with the exact preview token. Read `scope.json`, `manifest.json`, and bounded slices of the relevant evidence artifacts through `distill_read`. When the target is not the checked-out commit, use `distill_read sourcePath=…` for target-tree verification and never treat the working checkout as the target.
 
+Collected evidence preserves the complete selected sanitized content. Use paged reads and coherent analysis partitions rather than treating large files, sessions, or scope counts as invalid. Sanitization and scope confirmation still apply.
+
 Evidence priority is:
 
 1. Target source and tests.

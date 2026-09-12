@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import workflow, { createDemandRuntimeResolver, createFirstDemandReconciler, structuredCapabilityError, WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
+import workflow, { formatState, createDemandRuntimeResolver, createFirstDemandReconciler, structuredCapabilityError, WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
 import { HarnessError } from "../errors.js";
 import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../../subagent/tool-policy.js";
 import { MODEL_TIER_PROFILE_EVENT } from "../../model-tier-list-profiles/policy.js";
@@ -115,14 +115,31 @@ test("non-repository startup stays lazy and first demand returns a structured re
 	for (const handler of f.handlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
 });
 
-test("generic children receive no workflow tool while managed target tasks receive only task_clarify", () => {
-	const previous = { role: process.env[PIBOX_RUNTIME_ROLE_ENV], story: process.env.PIBOX_WORKFLOW_STORY_ID, task: process.env.PIBOX_WORKFLOW_TASK_ID, token: process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN };
+test("child extension registers task clarification and ledger by managed action", () => {
+	const keys = [PIBOX_RUNTIME_ROLE_ENV, "PIBOX_WORKFLOW_STORY_ID", "PIBOX_WORKFLOW_TASK_ID", "PIBOX_WORKFLOW_ATTEMPT_TOKEN", "PIBOX_WORKFLOW_ACTION"] as const;
+	const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+	for (const key of keys) delete process.env[key];
 	process.env[PIBOX_RUNTIME_ROLE_ENV] = PIBOX_SUBAGENT_RUNTIME_ROLE;
 	try {
 		let f = host(); workflow(f.pi); assert.deepEqual(f.tools, []);
 		process.env.PIBOX_WORKFLOW_STORY_ID = "story"; process.env.PIBOX_WORKFLOW_TASK_ID = "task"; process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN = "token";
 		f = host(); workflow(f.pi); assert.deepEqual(f.tools, ["task_clarify"]);
+		process.env.PIBOX_WORKFLOW_ACTION = "task-launch";
+		f = host(); workflow(f.pi); assert.deepEqual(f.tools, ["task_clarify", "workflow_ledger"]);
+		delete process.env.PIBOX_WORKFLOW_TASK_ID; process.env.PIBOX_WORKFLOW_ACTION = "review-fix";
+		f = host(); workflow(f.pi); assert.deepEqual(f.tools, ["workflow_ledger"]);
+		for (const action of ["review", "final-review", "e2e", "standalone", "custom-fix"]) {
+			process.env.PIBOX_WORKFLOW_ACTION = action; f = host(); workflow(f.pi); assert.deepEqual(f.tools, [], action);
+		}
 	} finally {
-		for (const [key, value] of [[PIBOX_RUNTIME_ROLE_ENV, previous.role], ["PIBOX_WORKFLOW_STORY_ID", previous.story], ["PIBOX_WORKFLOW_TASK_ID", previous.task], ["PIBOX_WORKFLOW_ATTEMPT_TOKEN", previous.token]] as const) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		for (const key of keys) { const value = previous[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 	}
+});
+
+ test("status text exposes authoritative correction coordinates without log payloads", () => {
+ const text = formatState({ status: "attention", stages: [], metrics: { workflowMs: 0, incompleteCategories: [] }, attentionEpoch: 3, attentionTarget: { kind: "final-review" }, attention: { code: "repair_exhausted", summary: "Review failed", diagnostic: { stderr: "PRIVATE_LOG" } } } as any);
+ assert.match(text, /"attentionEpoch":3/);
+ assert.match(text, /"attentionTarget":\{"kind":"final-review"\}/);
+ assert.match(text, /Review failed/);
+ assert.doesNotMatch(text, /PRIVATE_LOG/);
 });

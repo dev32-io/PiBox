@@ -20,6 +20,8 @@ export interface WorkflowSubagentLaunchInput {
 	tier: ModelTier;
 	cwd: string;
 	stableSystemContext: string;
+	/** Seed appended only when creating the logical agent; continuations retain the service-stored seed. */
+	initialSystemSupplement?: string;
 	attemptUserPrompt: string;
 	provider: string;
 	model: string;
@@ -42,6 +44,10 @@ export interface WorkflowSubagentResult {
 	effort: string;
 	text: string;
 	stderr: string;
+	/** Attempt-specific harness report; text remains complete for deterministic protocol parsing. */
+	reportPath?: string;
+	reportBytes?: number;
+	reportCharacters?: number;
 	terminalReason: TerminalResult["reason"];
 	serviceAttemptId: string;
 }
@@ -56,7 +62,21 @@ function splitCredentials(env: Readonly<Record<string, string>>): { environment:
 	return { environment, credentials };
 }
 function result(route: ProviderRoute, terminal: TerminalResult): WorkflowSubagentResult {
-	return { exitCode: terminal.status === "completed" ? terminal.exitCode ?? 0 : terminal.exitCode && terminal.exitCode !== 0 ? terminal.exitCode : 1, provider: route.provider, model: route.model, effort: route.effort, text: terminal.text, stderr: terminal.stderr ?? "", terminalReason: terminal.reason, serviceAttemptId: terminal.attemptId };
+	return {
+		exitCode: terminal.status === "completed" ? terminal.exitCode ?? 0 : terminal.exitCode && terminal.exitCode !== 0 ? terminal.exitCode : 1,
+		provider: route.provider,
+		model: route.model,
+		effort: route.effort,
+		text: terminal.text,
+		stderr: terminal.stderr ?? "",
+		...(terminal.reportPath ? {
+			reportPath: terminal.reportPath,
+			...(terminal.reportBytes === undefined ? {} : { reportBytes: terminal.reportBytes }),
+			...(terminal.reportCharacters === undefined ? {} : { reportCharacters: terminal.reportCharacters }),
+		} : {}),
+		terminalReason: terminal.reason,
+		serviceAttemptId: terminal.attemptId,
+	};
 }
 
 /** Narrow, in-memory workflow consumer of the process-global SubagentService. */
@@ -84,7 +104,15 @@ export class WorkflowSubagentLauncher {
 		const configured = input.providerCandidates?.length ? input.providerCandidates : [primary];
 		const routes = configured.some((route) => sameRoute(route, primary)) ? [...configured] : [primary, ...configured];
 		const workflowMetadata = { ...this.metadata(input.storyId, input.slotId), [TIER]: input.tier };
-		const { environment, credentials } = splitCredentials(input.env ?? {});
+		const { environment, credentials } = splitCredentials({
+			...(input.env ?? {}),
+			[STORY]: input.storyId,
+			[SLOT]: input.slotId,
+			[TIER]: input.tier,
+			[TOKEN]: input.attemptToken,
+			PIBOX_WORKFLOW_ACTION: input.action,
+			...(input.taskId ? { PIBOX_WORKFLOW_TASK_ID: input.taskId } : {}),
+		});
 		let last: WorkflowSubagentResult | undefined;
 
 		for (const [routeIndex, route] of routes.entries()) {
@@ -116,7 +144,7 @@ export class WorkflowSubagentLauncher {
 				const beforeSpawn = input.beforeSpawn || input.signal ? { beforeSpawn: assertSpawnAllowed } : {};
 				const started = reusable
 					? await this.service.continue({ owner: this.service.owner, handle: reusable.handle, attemptUserPrompt: input.attemptUserPrompt, attemptMetadata, env: environment, workflowCredentials: credentials, ...beforeSpawn })
-					: await this.service.launch({ owner: this.service.owner, agent: input.role, cwd: input.cwd, stableSystemContext: input.stableSystemContext, attemptUserPrompt: input.attemptUserPrompt, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: [...(input.extensionPaths ?? this.extensionPaths)], skillPaths: input.skillPaths ?? [], fast: Boolean(input.fast), continuationKey, env: environment, workflowCredentials: credentials, workflowMetadata, attemptMetadata, ...beforeSpawn });
+					: await this.service.launch({ owner: this.service.owner, agent: input.role, cwd: input.cwd, stableSystemContext: [input.stableSystemContext, input.initialSystemSupplement].filter(Boolean).join("\n\n"), attemptUserPrompt: input.attemptUserPrompt, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: [...(input.extensionPaths ?? this.extensionPaths)], skillPaths: input.skillPaths ?? [], fast: Boolean(input.fast), continuationKey, env: environment, workflowCredentials: credentials, workflowMetadata, attemptMetadata, ...beforeSpawn });
 				handle = started.handle;
 				terminalPromise = started.result;
 			}

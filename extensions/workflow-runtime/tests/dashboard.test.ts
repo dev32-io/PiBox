@@ -34,7 +34,7 @@ function state(stages: StageRuntimeState[]): StoryRuntimeState {
 		e2e: { status: "pending", repairCount: 0, evidenceRefs: [] },
 		metrics: {
 			workflowMs: 15_000,
-			categories: { implementation: 5_000, integration: 2_000, verification: 3_000, review: 4_000, e2e: 1_000 },
+			categories: { implementation: 5_000, integration: 2_000, verification: 3_000, repair: 0, review: 4_000, e2e: 1_000 },
 			incompleteIntervals: 0,
 			incompleteCategories: [],
 		},
@@ -206,13 +206,13 @@ test("matches live workflow children by durable slot beneath the active row", ()
 
 test("allocates a left-authoritative pane with quarter-width metrics capped near forty columns", () => {
 	const runtime = state([stage("delivery", "running", [task("one", "implementing")])]);
-	runtime.metrics.open = { category: "verification", since: "2026-01-01T00:00:10.000Z" };
+	runtime.metrics.open = { category: "repair", since: "2026-01-01T00:00:10.000Z" };
 	const value = snapshot(runtime);
 	const now = Date.parse("2026-01-01T00:00:15.000Z");
 
 	const narrow = visible(workflowDashboardLines(value, ctx, 80, 0, now));
 	assert.equal(narrow.some((line) => line.includes("│")), false);
-	assert.match(narrow[1]!, /^ Time · 20s · Verification 8s/);
+	assert.match(narrow[1]!, /^ Time · 20s · Repair 5s/);
 
 	const medium = visible(workflowDashboardLines(value, ctx, 100, 0, now));
 	const mediumDivider = medium[0]!.indexOf("│");
@@ -222,6 +222,7 @@ test("allocates a left-authoritative pane with quarter-width metrics capped near
 	const wide = visible(workflowDashboardLines(value, ctx, 160, 0, now));
 	const wideDivider = wide[0]!.indexOf("│");
 	assert.ok(wideDivider >= 115 && wideDivider <= 119, `wide divider at ${wideDivider}`);
+	assert.ok(wide.some((line) => /Repair\s+5s$/.test(line)), "wide metrics show live repair total");
 
 	const veryWide = visible(workflowDashboardLines(value, ctx, 240, 0, now));
 	const veryWideDivider = veryWide[0]!.indexOf("│");

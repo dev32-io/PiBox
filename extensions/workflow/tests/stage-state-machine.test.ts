@@ -196,7 +196,7 @@ test("final-review and E2E repair loops rerun their evaluator", () => {
 	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/failed-run.txt"]);
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "passed", { evidenceRefs: ["evidence/rerun.txt"] });
 	assert.equal(state.e2e.status, "completed");
-	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/rerun.txt"]);
+	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/failed-run.txt", "evidence/rerun.txt"]);
 });
 
 test("whole-branch final review advances to whole-field E2E evidence and completion", () => {
@@ -271,6 +271,251 @@ test("attention request-changes returns only the authoritative slot to bounded r
 	assert.equal(resolveWorkflowAttention(state, { action: "request_changes" }, 0).accepted, false);
 });
 
+test("exhausted check attention accepts a genuinely changed checks-only correction without resetting history", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [{ id: "task-a", checks: [{ id: "ios" }] }], checks: [], review: { mode: "skip" } }] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "task-launch"), "passed", { contributionCommit: "original" }, 0);
+	const diagnostic = { checkId: "ios", command: "xcodebuild -destination old", exitCode: 70, stdout: "", stderr: "error: unavailable destination", outputTruncated: false };
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "task-check"), "repairable", { failure: { code: "check_failed", causeCode: "check_configuration", summary: "destination unavailable", diagnostic }, checks: [{ id: "ios", status: "failed" }] }, 0);
+	assert.equal(state.attention?.code, "repair_exhausted");
+	assert.equal(state.attention?.causeCode, "check_configuration");
+	assert.deepEqual(state.attention?.diagnostic, diagnostic);
+	const correction = {
+		sequence: 1,
+		attentionEpoch: state.attentionEpoch!,
+		appliedAt: at,
+		target: { kind: "task" as const, stageId: "stage-a", taskId: "task-a" },
+		task: { checks: [{ id: "ios", command: "xcodebuild -destination corrected" }] },
+		priorFailure: state.stages[0]!.tasks[0]!.failure!,
+	};
+	const resolved = resolveWorkflowAttention(state, { action: "request_changes", correction }, 0);
+	assert.equal(resolved.accepted, true);
+	assert.equal(resolved.state.stages[0]!.tasks[0]!.status, "check_pending");
+	assert.equal(resolved.state.stages[0]!.tasks[0]!.repairCount, 0);
+	assert.equal(resolved.state.stages[0]!.tasks[0]!.contributionCommit, "original");
+	assert.deepEqual(resolved.state.executionCorrections, [correction]);
+	assert.equal(resolveWorkflowAttention(state, { action: "request_changes", correction: { ...correction, attentionEpoch: correction.attentionEpoch + 1 } }, 0).reason?.code, "stale_attention_epoch");
+});
+
+test("checks-only correction is rejected without both contribution and failed-check evidence", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [{ id: "task-a", checks: [{ id: "unit" }] }], checks: [], review: { mode: "skip" } }] });
+	const failure = { code: "repair_exhausted", summary: "launch failed before checks" };
+	const state = initial(value);
+	state.status = "attention"; state.attention = failure; state.attentionEpoch = 1;
+	state.stages[0]!.status = "attention";
+	const task = state.stages[0]!.tasks[0]!; task.status = "attention"; task.failure = failure;
+	const correction = {
+		sequence: 1, attentionEpoch: 1, appliedAt: at,
+		target: { kind: "task" as const, stageId: "stage-a", taskId: "task-a" },
+		task: { checks: [{ id: "unit", command: "npm test" }] }, priorFailure: failure,
+	};
+	assert.equal(resolveWorkflowAttention(state, { action: "request_changes", correction }, 0).reason?.code, "correction_requires_implementation");
+	task.contributionCommit = "unvalidated";
+	assert.equal(resolveWorkflowAttention(state, { action: "request_changes", correction }, 0).reason?.code, "correction_requires_implementation");
+});
+
+test("new integration guidance grants exactly one fresh exhausted repair without resetting history", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [], checks: [], review: { mode: "skip" } }] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "integration"), "repairable", { failure: { code: "report_too_large", summary: "integration report exceeded transport" } }, 0);
+	const correction = {
+		sequence: 1, attentionEpoch: state.attentionEpoch!, appliedAt: at,
+		target: { kind: "integration" as const, stageId: "stage-a" }, prompt: "Transport now supports the bounded report; retry with the attached compact evidence.",
+		priorFailure: state.stages[0]!.integration.failure!, priorRepairCount: 0,
+	};
+	const resolved = resolveWorkflowAttention(state, { action: "request_changes", correction }, 0);
+	assert.equal(resolved.accepted, true);
+	assert.equal(resolved.state.stages[0]!.integration.status, "repair_pending");
+	assert.equal(resolved.state.stages[0]!.integration.repairCount, 0);
+	let resumed = startWorkflow(resolved.state, ownerA);
+	const repair = action(resumed, value, "integration-repair");
+	resumed = settle(advanceStageStateMachine(value, resumed).state, value, repair, "repairable", { failure: { code: "still_large", summary: "still too large" } }, 0);
+	assert.equal(resumed.stages[0]!.integration.repairCount, 1);
+	assert.equal(resumed.status, "attention");
+	assert.equal(resolveWorkflowAttention(resumed, { action: "request_changes", correction: { ...correction, sequence: 2, attentionEpoch: resumed.attentionEpoch! } }, 0).reason?.code, "correction_noop");
+});
+
+test("concurrent failures require exact epoch targets and present each remaining attention boundary", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "concurrent", tasks: [{ id: "a" }, { id: "b" }], checks: [], review: { mode: "skip" } }] });
+	let state = initial(value);
+	state.stages[0]!.status = "running";
+	for (const task of state.stages[0]!.tasks) {
+		task.status = "repair_pending";
+		task.contributionCommit = `contribution-${task.id}`;
+		task.failure = { code: "prior", summary: `prior-${task.id}` };
+	}
+	const projected = advanceStageStateMachine(value, state);
+	const actionA = projected.actions[0]!; const actionB = projected.actions[1]!;
+	state = activateWorkflowAction(projected.state, actionA, "repair-a", ownerA, at);
+	state = activateWorkflowAction(state, actionB, "repair-b", ownerA, at);
+	state = settleWorkflowAction(state, { action: actionA, token: "repair-a", owner: ownerA, result: "repairable", failure: { code: "failure-a", summary: "actual A failed" } }, 1).state;
+	assert.deepEqual(state.attentionTarget, { kind: "task", stageId: "stage-a", taskId: "a" });
+	state = settleWorkflowAction(state, { action: actionB, token: "repair-b", owner: ownerA, result: "repairable", failure: { code: "failure-b", summary: "actual B failed" } }, 1).state;
+	assert.equal(state.attentionEpoch, 2);
+	assert.deepEqual(state.attentionTarget, { kind: "task", stageId: "stage-a", taskId: "b" });
+	const beforeStale = structuredClone(state);
+	const correctionA = {
+		sequence: 1, attentionEpoch: 2, appliedAt: at,
+		target: { kind: "task" as const, stageId: "stage-a", taskId: "a" }, prompt: "repair A now", task: { description: "Correct A." },
+		priorFailure: state.stages[0]!.tasks[0]!.failure!, priorRepairCount: 1,
+	};
+	const staleTarget = resolveWorkflowAttention(state, { action: "request_changes", correction: correctionA }, 1);
+	assert.equal(staleTarget.accepted, false);
+	assert.equal(staleTarget.reason?.code, "correction_boundary_mismatch");
+	assert.equal(staleTarget.state, state);
+	assert.deepEqual(state, beforeStale, "a stale target cannot mutate either attention slot");
+	const taskB = state.stages[0]!.tasks[1]!;
+	const correctionB = { ...correctionA, target: { kind: "task" as const, stageId: "stage-a", taskId: "b" }, prompt: "repair B now", task: { description: "Correct B." }, priorFailure: taskB.failure! };
+	const first = resolveWorkflowAttention(state, { action: "request_changes", correction: correctionB }, 1);
+	assert.equal(first.accepted, true);
+	assert.equal(first.state.status, "attention");
+	assert.equal(first.state.attentionEpoch, 3);
+	assert.deepEqual(first.state.attentionTarget, correctionA.target);
+	assert.equal(first.state.stages[0]!.tasks[0]!.failure?.summary, "actual A failed");
+	assert.equal(first.state.stages[0]!.tasks[1]!.failure?.summary, "repair B now");
+	assert.equal(startWorkflow(first.state, ownerA), first.state, "remaining attention must not resume");
+	const second = resolveWorkflowAttention(first.state, { action: "request_changes", correction: { ...correctionA, sequence: 2, attentionEpoch: 3 } }, 1);
+	assert.equal(second.accepted, true);
+	assert.equal(second.state.status, "paused");
+	assert.equal(second.state.attentionTarget, undefined);
+	assert.deepEqual(second.state.executionCorrections?.map((entry) => entry.priorFailure.summary), ["actual B failed", "actual A failed"]);
+	for (const task of second.state.stages[0]!.tasks) assert.equal(task.repairCount, 1);
+	assert.deepEqual(second.state.stages[0]!.tasks.map((task) => task.contributionCommit), ["contribution-a", "contribution-b"]);
+	assert.equal(startWorkflow(second.state, ownerA).status, "running", "resume becomes available only after all attention is resolved");
+});
+
+test("exhausted stage-review, final-review, and E2E guidance each run one fix and rerun their evaluator", () => {
+	const scenarios = ["stage-review", "final-review", "e2e"] as const;
+	for (const kind of scenarios) {
+		const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [], checks: [], review: { mode: kind === "stage-review" ? "required" : "skip" } }] });
+		let state = initial(value);
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "integration"), "passed", { integratedCommit: "preserved" });
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification"));
+		if (kind !== "stage-review") state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "final-review"));
+		const initialKind = kind === "stage-review" ? "review" : kind === "final-review" ? "final-review" : "e2e";
+		if (kind === "final-review") {
+			// Rewind the passing setup settlement so this scenario exhausts final review itself.
+			state.finalReview.status = "pending";
+			delete state.finalReview.result;
+		}
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, initialKind), "repairable", { failure: { code: `${kind}_failed`, summary: `${kind} failed` } }, 0);
+		assert.equal(state.attention?.code, "repair_exhausted");
+		assert.deepEqual(state.attentionTarget, kind === "stage-review" ? { kind, stageId: "stage-a" } : { kind });
+		const correction = {
+			sequence: 1, attentionEpoch: state.attentionEpoch!, appliedAt: at,
+			target: kind === "stage-review" ? { kind, stageId: "stage-a" } : { kind }, prompt: `new ${kind} evidence`,
+			priorFailure: state.attention!, priorRepairCount: 0,
+		};
+		let resolved = resolveWorkflowAttention(state, { action: "request_changes", correction }, 0);
+		assert.equal(resolved.accepted, true);
+		state = startWorkflow(resolved.state, ownerA);
+		const fixKind = kind === "stage-review" ? "review-fix" : kind === "final-review" ? "final-review-fix" : "e2e-fix";
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, fixKind), "passed", {}, 0);
+		const slot = kind === "stage-review" ? state.stages[0]!.review : kind === "final-review" ? state.finalReview : state.e2e;
+		assert.equal(slot.repairCount, 1);
+		assert.equal(slot.status, "pending");
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, initialKind), "passed", {}, 0);
+		assert.equal((kind === "stage-review" ? state.stages[0]!.review : kind === "final-review" ? state.finalReview : state.e2e).status, "completed");
+	}
+});
+
+test("Critical stage and final findings survive a successful requested fix until fresh review clears them", () => {
+	for (const target of ["stage", "final"] as const) {
+		const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [], checks: [], review: { mode: target === "stage" ? "required" : "skip" } }] });
+		let state = initial(value);
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "integration"), "passed", { integratedCommit: "integrated" });
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification"));
+		const reviewKind = target === "stage" ? "review" : "final-review";
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, reviewKind), "critical", {
+			findings: [{ id: "critical", severity: "critical", code: "security", summary: "must be independently cleared" }],
+		});
+		const requested = resolveWorkflowAttention(state, { action: "request_changes", prompt: "Fix the Critical issue." }, 2);
+		assert.equal(requested.accepted, true);
+		state = startWorkflow(requested.state, ownerA);
+		const fixKind = target === "stage" ? "review-fix" : "final-review-fix";
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, fixKind), "passed", { findings: [{ id: "critical", severity: "minor", code: "fixer-claim", summary: "fixer cannot self-clear" }] });
+		const afterFix = target === "stage" ? state.stages[0]!.review : state.finalReview;
+		assert.equal(afterFix.repairCount, 1);
+		assert.equal(afterFix.status, "pending");
+		assert.equal(afterFix.currentFindings[0]?.id, "critical");
+		state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, reviewKind), "passed", { findings: [] });
+		const cleared = target === "stage" ? state.stages[0]!.review : state.finalReview;
+		assert.equal(cleared.status, "completed");
+		assert.deepEqual(cleared.currentFindings, []);
+	}
+});
+
+test("runtime-slot guidance rejects normal Critical attention and retained Critical exhaustion", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [], checks: [], review: { mode: "required" } }] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "integration"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "review"), "critical", { findings: [{ id: "critical", severity: "critical", code: "security", summary: "do not waive" }] }, 0);
+	const correction = {
+		sequence: 1, attentionEpoch: state.attentionEpoch!, appliedAt: at, target: { kind: "stage-review" as const, stageId: "stage-a" },
+		prompt: "try different guidance", priorFailure: state.stages[0]!.review.failure!, priorRepairCount: 0,
+	};
+	assert.equal(resolveWorkflowAttention(state, { action: "request_changes", correction }, 0).reason?.code, "guidance_requires_repair_exhaustion");
+	state.stages[0]!.review.failure = { code: "repair_exhausted", causeCode: "security", summary: "wrapper" };
+	state.attention = state.stages[0]!.review.failure;
+	assert.equal(resolveWorkflowAttention(state, { action: "request_changes", correction: { ...correction, priorFailure: state.attention } }, 0).reason?.code, "critical_findings_require_user_decision");
+});
+
+test("a correction fences concurrent sibling attempts for fresh-token resume", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "concurrent", tasks: [{ id: "a" }, { id: "b" }], checks: [], review: { mode: "skip" } }] });
+	const projected = advanceStageStateMachine(value, initial(value));
+	const actionA = projected.actions[0]!; const actionB = projected.actions[1]!;
+	let state = activateWorkflowAction(projected.state, actionA, "old-a", ownerA, at);
+	state = activateWorkflowAction(state, actionB, "old-b", ownerA, at);
+	state = settleWorkflowAction(state, { action: actionA, token: "old-a", owner: ownerA, result: "unsafe", failure: { code: "unsafe", summary: "correct the capsule" } }, 2).state;
+	const correction = {
+		sequence: 1, attentionEpoch: state.attentionEpoch!, appliedAt: at,
+		target: { kind: "task" as const, stageId: "stage-a", taskId: "a" }, task: { description: "Corrected." },
+		priorFailure: state.stages[0]!.tasks[0]!.failure!,
+	};
+	const corrected = resolveWorkflowAttention(state, { action: "request_changes", correction }, 2).state;
+	assert.equal(corrected.stages[0]!.tasks[1]!.status, "interrupted");
+	assert.equal(corrected.stages[0]!.tasks[1]!.attempt, undefined);
+	const resumed = resumeInterruptedWorkflow(corrected, ownerA);
+	const freshB = action(resumed, value, "task-launch");
+	const active = activateWorkflowAction(advanceStageStateMachine(value, resumed).state, freshB, "fresh-b", ownerA, at);
+	assert.notEqual(active.stages[0]!.tasks.find((task) => task.id === "b")?.attempt?.token, "old-b");
+});
+
+test("a stage-check correction preserves integration and reruns verification directly", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [], checks: [{ id: "ios" }], review: { mode: "skip" } }] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "integration"), "passed", { integratedCommit: "preserved-integration" }, 0);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "verification"), "repairable", { failure: { code: "check_failed", summary: "wrong destination" }, checks: [{ id: "ios", status: "failed" }] }, 0);
+	const correction = {
+		sequence: 1, attentionEpoch: state.attentionEpoch!, appliedAt: at,
+		target: { kind: "stage-verification" as const, stageId: "stage-a" },
+		stageVerification: { checks: [{ id: "ios", command: "corrected destination" }] },
+		priorFailure: state.stages[0]!.verification.failure!,
+	};
+	const resolved = resolveWorkflowAttention(state, { action: "request_changes", correction }, 0);
+	assert.equal(resolved.accepted, true);
+	assert.equal(resolved.state.stages[0]!.verification.status, "pending");
+	assert.equal(resolved.state.stages[0]!.integration.integratedCommit, "preserved-integration");
+	assert.equal(resolved.state.stages[0]!.verification.repairCount, 0);
+});
+
+test("a prose correction schedules one fresh repair after exhaustion without resetting its count", () => {
+	const value = plan({ stages: [{ id: "stage-a", mode: "sequential", tasks: [{ id: "task-a" }], checks: [], review: { mode: "skip" } }] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "task-launch"), "repairable", { failure: { code: "worker_failed", summary: "old capsule failed" } }, 0);
+	const correction = {
+		sequence: 1, attentionEpoch: state.attentionEpoch!, appliedAt: at,
+		target: { kind: "task" as const, stageId: "stage-a", taskId: "task-a" },
+		prompt: "Use the corrected factual API name.", task: { description: "Use the corrected API." },
+		priorFailure: state.stages[0]!.tasks[0]!.failure!,
+	};
+	const resolved = resolveWorkflowAttention(state, { action: "request_changes", correction }, 0);
+	assert.equal(resolved.accepted, true);
+	assert.equal(resolved.state.stages[0]!.tasks[0]!.status, "repair_pending");
+	assert.equal(resolved.state.stages[0]!.tasks[0]!.repairCount, 0);
+});
+
 test("critical review approval requires and persists every explicit risk rationale", () => {
 	const value = plan({ stages: [] });
 	let state = initial(value);
@@ -279,9 +524,10 @@ test("critical review approval requires and persists every explicit risk rationa
 		findings: [{ id: "risk-a", severity: "critical", code: "security", summary: "critical security risk" }],
 	});
 	assert.equal(resolveWorkflowAttention(state, { action: "approve", acceptedRisks: [], acceptedAt: at }, 2).accepted, false);
-	const approved = resolveWorkflowAttention(state, { action: "approve", acceptedRisks: [{ findingId: "risk-a", rationale: "User accepts this bounded deployment risk." }], acceptedAt: at }, 2);
+	const rationale = `risk-start-${"r".repeat(4_500)}-risk-end`;
+	const approved = resolveWorkflowAttention(state, { action: "approve", acceptedRisks: [{ findingId: "risk-a", rationale }], acceptedAt: at }, 2);
 	assert.equal(approved.accepted, true);
 	assert.equal(approved.state.status, "paused");
 	assert.equal(approved.state.finalReview.status, "completed");
-	assert.deepEqual(approved.state.finalReview.acceptedRisks, [{ findingId: "risk-a", rationale: "User accepts this bounded deployment risk.", acceptedAt: at }]);
+	assert.deepEqual(approved.state.finalReview.acceptedRisks, [{ findingId: "risk-a", rationale, acceptedAt: at }]);
 });

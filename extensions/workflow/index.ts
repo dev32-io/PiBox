@@ -11,7 +11,7 @@ import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import { OrchestratorResourceService, parseResourceRef, type CanonicalResourceType } from "./orchestrator-resources.js";
 import { WorkItemStore } from "./work-items.js";
 import { StoryRuntimeStore } from "./story-runtime-store.js";
-import { registerWorkerCapabilities, isTargetTaskProcess } from "./worker-capabilities.js";
+import { registerWorkerCapabilities } from "./worker-capabilities.js";
 import { registerWorkflowAdapter, type WorkflowAdapterRegistration } from "../workflow-runtime/capability-registry.js";
 import { createHarnessWorkflowAdapter, reconcileHarnessActivation } from "./workflow-adapter.js";
 import { WorkflowSubagentLauncher } from "../workflow-runtime/subagent-launcher.js";
@@ -118,11 +118,11 @@ export function createDemandRuntimeResolver(options: {
 	};
 }
 
-function formatState(state: Awaited<ReturnType<StoryRuntimeStore["readState"]>>): string {
+export function formatState(state: Awaited<ReturnType<StoryRuntimeStore["readState"]>>): string {
 	if (!state) return "not started";
 	const stage = state.stages.find((candidate) => candidate.status !== "completed");
 	const tasks = stage?.tasks.map((task) => `${task.id}=${task.status}`).join(" · ");
-	return `${state.status}${stage ? ` · stage ${stage.id}/${stage.status}${tasks ? ` · ${tasks}` : ""}` : ""} · ${state.metrics.workflowMs}ms${state.metrics.incompleteCategories.length ? "+" : ""}`;
+	return `${state.status}${stage ? ` · stage ${stage.id}/${stage.status}${tasks ? ` · ${tasks}` : ""}` : ""} · ${state.metrics.workflowMs}ms${state.metrics.incompleteCategories.length ? "+" : ""}${state.attention ? `\n${JSON.stringify({ attentionEpoch: state.attentionEpoch ?? 1, attentionTarget: state.attentionTarget ?? null, attention: { code: state.attention.code, summary: state.attention.summary } })}` : ""}`;
 }
 
 export default function workflow(pi: ExtensionAPI, dependencies: {
@@ -138,7 +138,7 @@ export default function workflow(pi: ExtensionAPI, dependencies: {
 	pi.on("tool_call", (event) => { if (event.toolName !== "mcp") return; const allowed = configuredMcpServerAllowlist(); if (allowed) return authorizeMcpProxyCall(event.input as Record<string, unknown>, allowed); });
 
 	if (isSubagentRuntime(process.env)) {
-		if (isTargetTaskProcess()) registerWorkerCapabilities(pi);
+		registerWorkerCapabilities(pi);
 		pi.on("session_shutdown", () => resetActiveFastModePolicy());
 		return;
 	}

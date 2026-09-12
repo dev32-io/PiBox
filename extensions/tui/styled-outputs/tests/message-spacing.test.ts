@@ -121,7 +121,9 @@ test("top-level messages own one leading boundary while sibling tool calls stay 
 	assert.equal(leadingRows(inlineTool), 0, "a tool following text in the same assistant message does not create an internal gap");
 });
 
-test("native tool expansion toggles subagent prompts while streaming and after settlement", () => {
+test("native tool expansion toggles subagent prompts while streaming and after settlement", (t) => {
+	// Compare expansion state, not a spinner frame that can advance between renders.
+	t.mock.method(Date, "now", () => 1_000);
 	initTheme("dark", false);
 	install();
 	const task = "x".repeat(500) + "PROMPT_END";

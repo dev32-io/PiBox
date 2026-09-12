@@ -83,6 +83,13 @@ function register(adapter: WorkflowAdapter): void {
 	registerWorkflowAdapter(adapter, { replace: true });
 }
 
+test("workflow correction tool schema does not impose prose or collection ceilings", { concurrency: false }, () => {
+	const f = fixture(false);
+	const schema = JSON.stringify(f.tools.get("workflow_control").parameters);
+	assert.doesNotMatch(schema, /\"maxItems\"|\"maxLength\"/);
+	assert.match(schema, /\"minLength\":1/);
+});
+
 test("permission cancellation occurs after pure validation and before state ownership or child scheduling", { concurrency: false }, async () => {
 	const f = fixture(false);
 	assert.deepEqual([...f.tools.keys()], ["workflow_start", "workflow_control"]);
@@ -308,6 +315,149 @@ test("attention resolution cancellation validates before confirmation and leaves
 	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
 });
 
+test("execution-correction cancellation validates first and mutates no runtime state", { concurrency: false }, async () => {
+	const f = fixture(false);
+	const attention = state("attention");
+	attention.attentionEpoch = 3;
+	attention.attention = { code: "repair_exhausted", causeCode: "check_configuration", summary: "old destination" };
+	attention.stages[0]!.status = "attention";
+	attention.stages[0]!.tasks[0]!.status = "attention";
+	attention.stages[0]!.tasks[0]!.failure = attention.attention;
+	let dryRuns = 0; let commits = 0; let controls = 0; let decisionSeen: any; let projectedPreflight: StoryRuntimeState | undefined;
+	register({
+		id: "test", canHandle: () => true,
+		async preflightWorkflow(_ref, _ctx, options) { projectedPreflight = options?.projectedRuntime; return { ok: true }; },
+		async snapshot(ref) { return { ref, title: "Example", status: "attention", runtime: structuredClone(attention) }; },
+		async resolveAttention(_ref, decision, _ctx, options) {
+			decisionSeen = decision; if (options?.dryRun) dryRuns++; else commits++;
+			const projected = structuredClone(attention); projected.executionCorrections = [];
+			projected.status = "paused"; delete projected.attention;
+			projected.stages[0]!.status = "running"; projected.stages[0]!.tasks[0]!.status = "check_pending";
+			return projected;
+		},
+		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running" }; },
+		async advanceWorkflow() {}, async controlWorkflow() {},
+	});
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	const prompt = `prompt-${"p".repeat(4_500)}-end`;
+	const description = `description-${"d".repeat(12_500)}-end`;
+	const checks = Array.from({ length: 201 }, (_, index) => ({ id: `check-${index}`, command: `echo ${index}` }));
+	const result = await f.tools.get("workflow_control").execute("correction-cancel", {
+		ref: "test:example", action: "request_changes", prompt,
+		correction: { attentionEpoch: 3, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { description, checks } },
+	}, undefined, undefined, f.ctx);
+	assert.match(result.content[0].text, /cancelled/i);
+	assert.equal(dryRuns, 1); assert.equal(commits, 0); assert.equal(controls, 0);
+	assert.equal(decisionSeen.prompt, prompt);
+	assert.equal(decisionSeen.correction.task.description, description);
+	assert.equal(decisionSeen.correction.task.checks.length, 201);
+	assert.equal(decisionSeen.correction.attentionEpoch, 3);
+	assert.deepEqual(projectedPreflight?.executionCorrections, [], "guard preflight uses the validated corrected projection rather than stale checks");
+	assert.equal(f.confirmations(), 1);
+	assert.equal(f.mode(), "enforce");
+	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+});
+
+test("a correction with remaining attention mutates without bypass confirmation and does not resume", { concurrency: false }, async () => {
+	const f = fixture(true);
+	let current = state("attention");
+	current.attentionEpoch = 2;
+	current.attention = { code: "repair_exhausted", summary: "B failed" };
+	current.attentionTarget = { kind: "task", stageId: "delivery", taskId: "b" };
+	current.stages[0]!.status = "attention";
+	current.stages[0]!.tasks = [
+		{ id: "a", status: "attention", repairCount: 1, checks: [], failure: { code: "repair_exhausted", summary: "A failed" } },
+		{ id: "b", status: "attention", repairCount: 1, checks: [], failure: current.attention! },
+	];
+	let dryRuns = 0; let commits = 0; let controls = 0; let advances = 0; let preflights = 0;
+	const project = (target: string) => {
+		const next = structuredClone(current);
+		const task = next.stages[0]!.tasks.find((entry) => entry.id === target)!;
+		task.status = "repair_pending";
+		if (target === "b") {
+			next.attentionEpoch = 3; next.attentionTarget = { kind: "task", stageId: "delivery", taskId: "a" }; next.attention = next.stages[0]!.tasks[0]!.failure!;
+		} else {
+			next.status = "paused"; next.stages[0]!.status = "running"; delete next.attention; delete next.attentionTarget;
+		}
+		return next;
+	};
+	register({
+		id: "test", canHandle: () => true,
+		async preflightWorkflow() { preflights++; return { ok: true }; },
+		async snapshot(ref) { return { ref, title: "Example", status: current.status === "attention" ? "attention" : current.status === "running" ? "running" : "paused", runtime: structuredClone(current) }; },
+		async resolveAttention(_ref, decision, _ctx, options) {
+			if (options?.dryRun) dryRuns++; else commits++;
+			const next = project(decision.correction!.target.kind === "task" ? decision.correction!.target.taskId : "");
+			if (!options?.dryRun) current = next;
+			return next;
+		},
+		async controlExecution(ref) { controls++; current.status = "running"; return { workflowRef: ref, mode: "running" }; },
+		async advanceWorkflow() { advances++; }, async controlWorkflow() {},
+	});
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	const first = await f.tools.get("workflow_control").execute("correct-b", { ref: "test:example", action: "request_changes", correction: { attentionEpoch: 2, target: { kind: "task", stageId: "delivery", taskId: "b" }, task: { description: "B" } } }, undefined, undefined, f.ctx);
+	assert.match(first.content[0].text, /remaining attention/i);
+	assert.match(first.content[0].text, /"attentionEpoch":3/);
+	assert.match(first.content[0].text, /"attentionTarget":\{"kind":"task","stageId":"delivery","taskId":"a"\}/);
+	assert.equal(dryRuns, 1); assert.equal(commits, 1); assert.equal(controls, 0); assert.equal(advances, 0); assert.equal(preflights, 0); assert.equal(f.confirmations(), 0);
+	const second = await f.tools.get("workflow_control").execute("correct-a", { ref: "test:example", action: "request_changes", correction: { attentionEpoch: 3, target: { kind: "task", stageId: "delivery", taskId: "a" }, task: { description: "A" } } }, undefined, undefined, f.ctx);
+	assert.match(second.content[0].text, /resumed/i);
+	assert.equal(dryRuns, 2); assert.equal(commits, 2); assert.equal(controls, 1); assert.equal(advances, 1); assert.equal(preflights, 1); assert.equal(f.confirmations(), 1);
+	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+});
+
+test("public ledger acknowledgement bypasses neither permission nor Critical gates and remains paused", { concurrency: false }, async () => {
+	const f = fixture(false);
+	let current = state("attention");
+	current.attention = { code: "ledger_persistence_failed", summary: "malformed optional note" };
+	current.ledgerRecoveries = { token: { action: "task-launch", attemptToken: "token", sourceRole: "implementer", reportPath: "/tmp/report.md", error: "malformed" } };
+	let dryRuns = 0; let commits = 0; let controls = 0; let advances = 0; let preflights = 0;
+	register({
+		id: "test", canHandle: (ref) => ref === "test:example",
+		async snapshot(ref) { return { ref, title: "Example", status: current.status === "paused" ? "paused" : "attention", runtime: structuredClone(current) }; },
+		async preflightWorkflow() { preflights++; return { ok: true }; },
+		async resolveAttention(_ref, decision, _ctx, options) {
+			assert.equal(decision.action, "approve");
+			const projected = structuredClone(current); delete projected.ledgerRecoveries; projected.status = "paused"; delete projected.attention;
+			if (options?.dryRun) { dryRuns++; return projected; }
+			commits++; current = projected; return structuredClone(current);
+		},
+		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running" }; },
+		async advanceWorkflow() { advances++; }, async controlWorkflow() {},
+	});
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	const acknowledged = await f.tools.get("workflow_control").execute("ledger-ack", { ref: "test:example", action: "approve" }, undefined, undefined, f.ctx);
+	assert.match(acknowledged.content[0].text, /remains paused until explicit resume/i);
+	assert.equal(dryRuns, 1); assert.equal(commits, 1); assert.equal(controls, 0); assert.equal(advances, 0); assert.equal(preflights, 0);
+	assert.equal(f.confirmations(), 0); assert.equal(f.criticalConfirmations(), 0); assert.equal(f.mode(), "enforce");
+	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+});
+
+test("public ledger retry rejects stale recovery after dry-run without launch permission", { concurrency: false }, async () => {
+	const f = fixture(false);
+	const current = state("attention");
+	current.attention = { code: "ledger_persistence_failed", summary: "write failed" };
+	current.ledgerRecoveries = { token: { action: "task-launch", attemptToken: "token", sourceRole: "implementer", reportPath: "/tmp/report.md", error: "first", submission: { summary: "retain" } } };
+	let calls = 0; let controls = 0; let advances = 0; let forwardedBinding: unknown;
+	register({
+		id: "test", canHandle: (ref) => ref === "test:example",
+		async snapshot(ref) { return { ref, title: "Example", status: "attention", runtime: structuredClone(current) }; },
+		async resolveAttention(_ref, decision, _ctx, options) {
+			assert.equal(decision.action, "request_changes"); calls++;
+			assert.equal(options?.expectedLedgerRecovery?.attemptToken, "token");
+			if (options?.dryRun) { forwardedBinding = options.expectedLedgerRecovery; current.ledgerRecoveries!.token!.error = "changed concurrently"; const projected = structuredClone(current); delete projected.ledgerRecoveries; projected.status = "paused"; delete projected.attention; return projected; }
+			assert.equal(options?.expectedLedgerRecovery, forwardedBinding, "public boundary forwards the exact validated recovery binding to commit");
+			throw new Error("Ledger recovery changed before settlement");
+		},
+		async controlExecution(ref) { controls++; return { workflowRef: ref, mode: "running" }; },
+		async advanceWorkflow() { advances++; }, async controlWorkflow() {},
+	});
+	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
+	await assert.rejects(f.tools.get("workflow_control").execute("ledger-retry", { ref: "test:example", action: "request_changes" }, undefined, undefined, f.ctx), /changed before settlement/);
+	assert.equal(calls, 2); assert.equal(controls, 0); assert.equal(advances, 0); assert.equal(f.confirmations(), 0); assert.equal(f.mode(), "enforce");
+	await f.handlers.get("session_shutdown")?.({ reason: "quit" }, f.ctx);
+});
+
 test("Critical approval requires explicit user confirmation even when permission mode is already bypass", { concurrency: false }, async () => {
 	const f = fixture(true, { initialMode: "bypass", criticalConfirmed: false });
 	let dryRuns = 0; let commits = 0; let controls = 0; let advances = 0; let preflights = 0;
@@ -323,7 +473,8 @@ test("Critical approval requires explicit user confirmation even when permission
 		async advanceWorkflow() { advances++; }, async controlWorkflow() {},
 	});
 	await f.handlers.get("session_start")?.({ reason: "startup" }, f.ctx);
-	const result = await f.tools.get("workflow_control").execute("critical-approval", { ref: "test:example", action: "approve", acceptedRisks: [{ findingId: "critical-risk", rationale: "explicit rationale" }] }, undefined, undefined, f.ctx);
+	const rationale = `explicit-risk-${"r".repeat(4_500)}-end`;
+	const result = await f.tools.get("workflow_control").execute("critical-approval", { ref: "test:example", action: "approve", acceptedRisks: [{ findingId: "critical-risk", rationale }] }, undefined, undefined, f.ctx);
 	assert.match(result.content[0].text, /Critical risk was not accepted/i);
 	assert.equal(dryRuns, 1, "domain validation precedes the user-owned confirmation");
 	assert.equal(f.criticalConfirmations(), 1);

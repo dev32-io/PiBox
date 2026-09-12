@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { chmod, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { basename, dirname, resolve, sep } from "node:path";
 import { sameRuntimeOwner } from "./activation.js";
 import type {
 	ContinuationSpec,
@@ -23,11 +23,13 @@ import type {
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
 import { ContinuationCapabilityStore, type ContinuationReservation } from "./continuations.js";
 import { SubagentEventBuffer } from "./events.js";
-import { createPiInvocationResolver, stableSystemPromptPath, type SubagentInvocation, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
+import { attemptUserPromptPath, createPiInvocationResolver, stableSystemPromptPath, type SubagentInvocation, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
 import { JsonlStreamParser } from "./jsonl.js";
 import { promptContextHashes } from "./prompt-context.js";
 import { SUBAGENT_PROTOCOL_VERSION } from "./registry.js";
 import { normalizeSubagentTitle } from "./presentation.js";
+import { SUBAGENT_EVENT_FD, SUBAGENT_EVENT_FD_ENV, SUBAGENT_REPORT_PATH_ENV } from "./report-bridge.js";
+import { readPrivateReport } from "./report.js";
 
 const DEFAULT_MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_EVENT_TEXT_CHARACTERS = 16 * 1024;
@@ -41,6 +43,8 @@ export interface SubagentProcessManagerOptions {
 	readonly maximumJsonlLineCharacters?: number;
 	readonly terminationGraceMs?: number;
 	readonly idFactory?: () => string;
+	/** Test seam for deterministic cancellation during private report allocation. */
+	readonly reportPathAllocator?: () => Promise<string>;
 }
 
 interface AgentRecord {
@@ -84,6 +88,7 @@ interface AttemptRecord {
 	readonly attemptId: string;
 	readonly contextHashes: PromptContextHashes;
 	readonly child: ChildProcessWithoutNullStreams;
+	readonly reportPath: string;
 	readonly writerCapability: string;
 	readonly continuation: boolean;
 	readonly publicResult: Deferred<TerminalResult>;
@@ -91,6 +96,7 @@ interface AttemptRecord {
 	stopRequested: boolean;
 	terminationReason: Extract<TerminalReason, "explicit_stop" | "owner_lost"> | undefined;
 	termSent: boolean;
+	finalizing: boolean;
 	settled: boolean;
 }
 
@@ -110,6 +116,7 @@ export class SubagentProcessManager implements SubagentService {
 	private readonly maximumJsonlLineCharacters: number;
 	private readonly terminationGraceMs: number;
 	private readonly idFactory: () => string;
+	private readonly reportPathAllocator: () => Promise<string>;
 	private readonly events: SubagentEventBuffer;
 	private readonly capabilities: ContinuationCapabilityStore<AgentRecord>;
 	private readonly agents = new Map<string, AgentRecord>();
@@ -125,6 +132,7 @@ export class SubagentProcessManager implements SubagentService {
 		this.maximumJsonlLineCharacters = positiveInteger(options.maximumJsonlLineCharacters ?? 1024 * 1024, "maximumJsonlLineCharacters");
 		this.terminationGraceMs = nonNegativeNumber(options.terminationGraceMs ?? 1_500, "terminationGraceMs");
 		this.idFactory = options.idFactory ?? randomUUID;
+		this.reportPathAllocator = options.reportPathAllocator ?? createAttemptReportPath;
 		this.events = new SubagentEventBuffer(this.owner, { agents: [] }, options.eventCapacity ?? 256);
 		this.capabilities = new ContinuationCapabilityStore<AgentRecord>(this.idFactory);
 	}
@@ -176,7 +184,10 @@ export class SubagentProcessManager implements SubagentService {
 		} catch (error) {
 			this.agents.delete(agentId);
 			this.capabilities.revoke(this.owner, record.handle);
-			await rm(stableSystemPromptPath(record.transcriptPath), { force: true }).catch(() => undefined);
+			await Promise.all([
+				rm(stableSystemPromptPath(record.transcriptPath), { force: true }).catch(() => undefined),
+				rm(attemptUserPromptPath(record.transcriptPath, launching.attemptId), { force: true }).catch(() => undefined),
+			]);
 			throw error;
 		}
 	}
@@ -197,6 +208,7 @@ export class SubagentProcessManager implements SubagentService {
 			return { handle: structuredClone(record.handle), result: attempt.publicResult.promise };
 		} catch (error) {
 			try { reservation.release(); } catch { /* a spawned attempt already consumed it */ }
+			await rm(attemptUserPromptPath(record.transcriptPath, launching.attemptId), { force: true }).catch(() => undefined);
 			throw error;
 		}
 	}
@@ -247,6 +259,10 @@ export class SubagentProcessManager implements SubagentService {
 		}
 		const attempt = record.active;
 		if (!attempt || attempt.writerCapability !== handle.continuationCapability) throw new Error("Unknown or inactive logical agent handle");
+		if (attempt.finalizing) {
+			await attempt.completion.promise;
+			return;
+		}
 		if (!attempt.stopRequested) {
 			attempt.stopRequested = true;
 			attempt.terminationReason = "explicit_stop";
@@ -298,6 +314,7 @@ export class SubagentProcessManager implements SubagentService {
 		}
 		const attempts = records.flatMap((record) => record.active ? [record.active] : []);
 		for (const attempt of attempts) {
+			if (attempt.finalizing) continue;
 			attempt.stopRequested = true;
 			attempt.terminationReason = "owner_lost";
 			attempt.child.stdin.end();
@@ -352,6 +369,8 @@ export class SubagentProcessManager implements SubagentService {
 		beforeSpawn?: () => void | Promise<void>,
 	): Promise<AttemptRecord | LaunchingAttemptRecord> {
 		let invocation: SubagentInvocation;
+		let reportPath: string | undefined;
+		const userPromptPath = attemptUserPromptPath(record.transcriptPath, launching.attemptId);
 		try {
 			const normalizedAttemptMetadata = attemptMetadata ? cloneStringRecord(attemptMetadata, "attemptMetadata") : undefined;
 			record.lastAttemptMetadata = publicAttemptMetadata(normalizedAttemptMetadata);
@@ -369,16 +388,42 @@ export class SubagentProcessManager implements SubagentService {
 				...(normalizedAttemptMetadata ? { attemptMetadata: normalizedAttemptMetadata } : {}),
 				...(attemptWorkflowCredentials ? { workflowCredentials: cloneStringRecord(attemptWorkflowCredentials, "workflowCredentials") } : {}),
 			};
-			const resolved = await this.raceLaunchingStage(launching, () => this.invocationResolver(request));
-			if (resolved.cancelled) return launching;
+			const invocationResolution = Promise.resolve().then(() => this.invocationResolver(request));
+			const resolved = await this.raceLaunchingStage(launching, () => invocationResolution);
+			if (resolved.cancelled) {
+				void invocationResolution.finally(() => rm(userPromptPath, { force: true })).catch(() => undefined);
+				return launching;
+			}
 			invocation = resolved.value;
 			validateInvocation(invocation);
+
+			const allocation = Promise.resolve().then(() => this.reportPathAllocator());
+			const allocated = await this.raceLaunchingStage(launching, () => allocation);
+			if (allocated.cancelled) {
+				void allocation.then((latePath) => cleanupAttemptAllocation(latePath)).catch(() => undefined);
+				await rm(userPromptPath, { force: true }).catch(() => undefined);
+				return launching;
+			}
+			reportPath = requireText(allocated.value, "reportPath");
+
 			if (beforeSpawn) {
 				const fenced = await this.raceLaunchingStage(launching, beforeSpawn);
-				if (fenced.cancelled) return launching;
+				if (fenced.cancelled) {
+					await Promise.all([cleanupAttemptAllocation(reportPath), rm(userPromptPath, { force: true })]);
+					return launching;
+				}
 			}
-			if (launching.terminalized || record.launching !== launching || this.closed) return launching;
+			// No asynchronous work may occur between this final ownership fence and
+			// spawn: stop/teardown must never terminalize an unpublished child.
+			if (launching.terminalized || record.launching !== launching || this.closed) {
+				await Promise.all([cleanupAttemptAllocation(reportPath), rm(userPromptPath, { force: true })]);
+				return launching;
+			}
 		} catch (error) {
+			await Promise.all([
+				reportPath ? cleanupAttemptAllocation(reportPath) : Promise.resolve(),
+				rm(userPromptPath, { force: true }).catch(() => undefined),
+			]);
 			if (launching.terminalized) return launching;
 			this.failLaunching(record, launching);
 			throw error;
@@ -389,11 +434,17 @@ export class SubagentProcessManager implements SubagentService {
 			child = spawn(invocation.command, [...invocation.args], {
 				cwd: record.cwd,
 				detached: false,
-				env: { ...process.env, ...invocation.env },
+				env: {
+					...process.env,
+					...invocation.env,
+					[SUBAGENT_REPORT_PATH_ENV]: reportPath,
+					[SUBAGENT_EVENT_FD_ENV]: String(SUBAGENT_EVENT_FD),
+				},
 				shell: false,
-				stdio: ["pipe", "pipe", "pipe"],
-			});
+				stdio: ["pipe", "pipe", "pipe", "pipe"],
+			}) as unknown as ChildProcessWithoutNullStreams;
 		} catch (error) {
+			await Promise.all([cleanupAttemptAllocation(reportPath), rm(userPromptPath, { force: true })]);
 			this.failLaunching(record, launching);
 			throw error;
 		}
@@ -401,6 +452,7 @@ export class SubagentProcessManager implements SubagentService {
 			attemptId: launching.attemptId,
 			contextHashes: launching.contextHashes,
 			child,
+			reportPath,
 			writerCapability: launching.writerCapability,
 			continuation: launching.continuation,
 			publicResult: deferred<TerminalResult>(),
@@ -408,6 +460,7 @@ export class SubagentProcessManager implements SubagentService {
 			stopRequested: false,
 			terminationReason: undefined,
 			termSent: false,
+			finalizing: false,
 			settled: false,
 		};
 		record.launching = undefined;
@@ -477,8 +530,7 @@ export class SubagentProcessManager implements SubagentService {
 	private observeProcess(record: AgentRecord, attempt: AttemptRecord): void {
 		let stderr = "";
 		let diagnostics = "";
-		let finalText = "";
-		let finalSeen = false;
+		let reportEvidence: { bytes: number; sha256: string } | undefined;
 		let malformedOutput = false;
 		let assistantError: string | undefined;
 		let agentSettled = false;
@@ -489,7 +541,7 @@ export class SubagentProcessManager implements SubagentService {
 			maximumLineCharacters: this.maximumJsonlLineCharacters,
 			onMalformed: (line, reason) => {
 				malformedOutput = true;
-				diagnose(`Malformed child JSONL (${reason}): ${boundedText(line, 2_048)}`);
+				diagnose(`Malformed child event channel (${reason}): ${boundedText(line, 2_048)}`);
 			},
 			onValue: (raw) => {
 				if (this.closed || attempt.settled || !raw || typeof raw !== "object") return;
@@ -527,48 +579,53 @@ export class SubagentProcessManager implements SubagentService {
 					}
 					return;
 				}
+				if (value.type === "report_error") {
+					malformedOutput = true;
+					diagnose(`Child report write failed: ${typeof value.error === "string" ? boundedText(value.error, 2_048) : "unknown error"}`);
+					return;
+				}
 				if (value.type === "message_end") {
 					const message = value.message as Record<string, unknown> | undefined;
-					if (message?.role !== "assistant") return;
-					if (!Array.isArray(message.content)) {
+					const report = value.report as Record<string, unknown> | undefined;
+					if (message?.role !== "assistant" || !Number.isSafeInteger(report?.bytes) || (report!.bytes as number) < 0 || typeof report?.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(report.sha256)) {
 						malformedOutput = true;
-						diagnose("Malformed assistant message_end: message.content must be an array");
+						diagnose("Malformed assistant message_end on child event channel");
 						return;
 					}
-					finalText = assistantText(message.content);
-					finalSeen = true;
+					reportEvidence = { bytes: report.bytes as number, sha256: report.sha256 };
 					assistantError = message.stopReason === "error" || message.stopReason === "aborted"
 						? (typeof message.errorMessage === "string" ? message.errorMessage : `Assistant request ${message.stopReason}`)
 						: undefined;
 					this.append(record, attempt, "final_message", {
-						text: boundedText(finalText, DEFAULT_EVENT_TEXT_CHARACTERS),
+						reportBytes: reportEvidence.bytes,
 						...(typeof message.stopReason === "string" ? { stopReason: message.stopReason } : {}),
 					});
-					record.summary = boundedText(finalText, 512);
+					record.summary = `Report captured (${reportEvidence.bytes} bytes)`;
 					return;
 				}
 				if (value.type === "agent_settled") agentSettled = true;
 			},
 		});
 
-		attempt.child.stdout.on("data", (chunk: Buffer) => parser.write(chunk));
-		attempt.child.stdout.once("end", () => parser.end());
+		// Native Pi JSON can contain cumulative multi-megabyte events. It is drained
+		// without buffering; fd 3 is the sole compact lifecycle transport.
+		attempt.child.stdout.resume();
+		const channel = attempt.child.stdio[SUBAGENT_EVENT_FD] as NodeJS.ReadableStream;
+		channel.on("data", (chunk: Buffer) => parser.write(chunk));
+		channel.once("end", () => parser.end());
 		attempt.child.stderr.on("data", (chunk: Buffer) => { stderr = retainUtf8Tail(stderr, chunk.toString("utf8"), this.maximumStderrBytes); });
 		attempt.child.once("error", (error) => diagnose(`Child process error: ${error.message}`));
 		attempt.child.once("exit", () => { exitAt = new Date().toISOString(); });
 		attempt.child.once("close", (code, signal) => {
 			parser.end();
-			// Missing Pi terminal evidence is diagnostic for an unexpected exit, not
-			// for an explicit termination that intentionally interrupts the protocol.
-			if (!attempt.terminationReason && !finalSeen) diagnose("Child exited without a final assistant message_end");
+			if (!attempt.terminationReason && !reportEvidence) diagnose("Child exited without a final assistant message_end");
 			if (!attempt.terminationReason && !agentSettled) diagnose("Child exited without agent_settled");
-			this.finishAttempt(record, attempt, {
+			void this.finishAttempt(record, attempt, {
 				code,
 				signal,
 				exitAt: exitAt ?? new Date().toISOString(),
 				stderr: retainUtf8Tail(stderr, diagnostics, this.maximumStderrBytes),
-				finalText: finalSeen ? finalText : "",
-				finalSeen,
+				reportEvidence,
 				malformedOutput,
 				assistantError,
 				agentSettled,
@@ -576,25 +633,40 @@ export class SubagentProcessManager implements SubagentService {
 		});
 	}
 
-	private finishAttempt(record: AgentRecord, attempt: AttemptRecord, outcome: {
+	private async finishAttempt(record: AgentRecord, attempt: AttemptRecord, outcome: {
 		code: number | null;
 		signal: NodeJS.Signals | null;
 		exitAt: string;
 		stderr: string;
-		finalText: string;
-		finalSeen: boolean;
+		reportEvidence: { bytes: number; sha256: string } | undefined;
 		malformedOutput: boolean;
 		assistantError: string | undefined;
 		agentSettled: boolean;
-	}): void {
-		if (attempt.settled) return;
+	}): Promise<void> {
+		if (attempt.settled || attempt.finalizing) return;
+		attempt.finalizing = true;
+		let report: Awaited<ReturnType<typeof readPrivateReport>> | undefined;
+		let reportDiagnostic = "";
+		if (outcome.reportEvidence) {
+			try { report = await readPrivateReport(attempt.reportPath, outcome.reportEvidence); }
+			catch (error) { reportDiagnostic = `Child report validation failed: ${error instanceof Error ? error.message : String(error)}`; }
+		}
+		// close means the child and all stdio have drained, so cleanup cannot race
+		// report writes. Keep a validated report; remove failed allocations and
+		// abandoned atomic-write fragments only.
+		await rm(attemptUserPromptPath(record.transcriptPath, attempt.attemptId), { force: true }).catch(() => undefined);
+		if (report && !attempt.terminationReason) await cleanupAttemptPartials(attempt.reportPath);
+		else {
+			await cleanupAttemptAllocation(attempt.reportPath);
+			report = undefined;
+		}
 		attempt.settled = true;
 		record.progress = markAgentProcessExited(record.progress ?? initialAgentProgress(outcome.exitAt), outcome.exitAt);
 		record.updatedAt = outcome.exitAt;
 
 		const status: TerminalStatus = attempt.stopRequested
 			? "cancelled"
-			: outcome.code === 0 && outcome.finalSeen && outcome.agentSettled && !outcome.malformedOutput && !outcome.assistantError
+			: outcome.code === 0 && report !== undefined && outcome.agentSettled && !outcome.malformedOutput && !outcome.assistantError
 				? "completed"
 				: "failed";
 		const reason: TerminalReason = attempt.terminationReason ?? (status === "completed" ? "completed" : "failure");
@@ -606,11 +678,12 @@ export class SubagentProcessManager implements SubagentService {
 		if (!this.closed && attempt.continuation) record.handle = this.capabilities.issue(this.owner, record.agentId, record);
 		record.state = status;
 		const terminationSummary = reason === "explicit_stop" ? "Stopped by user." : reason === "owner_lost" ? "Stopped because the owning activation ended." : undefined;
-		const resultText = terminationSummary ?? outcome.finalText;
-		record.summary = boundedText(resultText || outcome.assistantError || outcome.stderr, 512);
+		const resultText = terminationSummary ?? report?.text ?? "";
+		const diagnosticStderr = reportDiagnostic ? `${outcome.stderr && !outcome.stderr.endsWith("\n") ? "\n" : ""}${reportDiagnostic}` : "";
+		record.summary = boundedText(resultText || outcome.assistantError || reportDiagnostic || outcome.stderr, 512);
 		const resultStderr = retainUtf8Tail(
 			outcome.stderr,
-			outcome.assistantError ? `${outcome.stderr && !outcome.stderr.endsWith("\n") ? "\n" : ""}${outcome.assistantError}` : "",
+			`${diagnosticStderr}${outcome.assistantError ? `${outcome.stderr || diagnosticStderr ? "\n" : ""}${outcome.assistantError}` : ""}`,
 			this.maximumStderrBytes,
 		);
 		const result: TerminalResult = {
@@ -622,15 +695,14 @@ export class SubagentProcessManager implements SubagentService {
 			reason,
 			exitCode: outcome.code,
 			text: resultText,
+			...(report ? { reportPath: attempt.reportPath, reportBytes: report.bytes, reportCharacters: report.characters, reportSha256: report.sha256 } : {}),
 			...(resultStderr ? { stderr: resultStderr } : {}),
 			...(record.progress ? { progress: structuredClone(record.progress) } : {}),
 		};
 		record.lastResult = result;
-		// Exclusivity ends only after exit, output drain, and capability rotation,
-		// immediately before the terminal event can synchronously wake subscribers.
 		record.active = undefined;
 		this.transcriptWriters.delete(record.transcriptPath);
-		if (!this.closed) this.append(record, attempt, "terminal", { status, reason, exitCode: outcome.code, agentSettled: outcome.agentSettled, ...attempt.contextHashes });
+		if (!this.closed) this.append(record, attempt, "terminal", { status, reason, exitCode: outcome.code, agentSettled: outcome.agentSettled, ...(report ? { reportPath: attempt.reportPath, reportBytes: report.bytes, reportCharacters: report.characters } : {}), ...attempt.contextHashes });
 		attempt.publicResult.resolve(result);
 		attempt.completion.resolve(undefined);
 	}
@@ -643,6 +715,10 @@ export class SubagentProcessManager implements SubagentService {
 
 	private async escalateAndConfirm(attempt: AttemptRecord): Promise<void> {
 		if (attempt.settled) return;
+		if (attempt.finalizing) {
+			await attempt.completion.promise;
+			return;
+		}
 		const settledDuringGrace = await Promise.race([
 			attempt.completion.promise.then(() => true),
 			delay(this.terminationGraceMs).then(() => false),
@@ -758,13 +834,25 @@ function safeToolName(value: unknown): string | undefined {
 	return normalized || undefined;
 }
 
-function assistantText(content: unknown): string {
-	if (!Array.isArray(content)) return "";
-	return content.flatMap((part) => {
-		if (!part || typeof part !== "object") return [];
-		const value = part as Record<string, unknown>;
-		return value.type === "text" && typeof value.text === "string" ? [value.text] : [];
-	}).join("\n");
+async function createAttemptReportPath(): Promise<string> {
+	const directory = await mkdtemp("/tmp/pibox-subagent-attempt-");
+	await chmod(directory, 0o700);
+	return resolve(directory, "report.md");
+}
+
+async function cleanupAttemptAllocation(reportPath: string): Promise<void> {
+	await rm(dirname(reportPath), { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function cleanupAttemptPartials(reportPath: string): Promise<void> {
+	const directory = dirname(reportPath);
+	const prefix = `${basename(reportPath)}.tmp-`;
+	let names: string[];
+	try { names = await readdir(directory); }
+	catch { return; }
+	await Promise.all(names
+		.filter((name) => name.startsWith(prefix))
+		.map((name) => rm(resolve(directory, name), { recursive: true, force: true }).catch(() => undefined)));
 }
 
 function retainUtf8Tail(current: string, addition: string, maximum: number): string {

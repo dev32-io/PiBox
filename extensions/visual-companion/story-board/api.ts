@@ -4,17 +4,17 @@ import { open } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { pipeline } from "node:stream/promises";
 import type { VisualCompanionRouteHandler, VisualCompanionViewer } from "../backend.mjs";
 import { StoryBoardCache } from "./cache.js";
 import type { CurrentStateObservation } from "./current-reader.js";
-import { resolveCurrentEvidenceMember, resolveEvidenceMember } from "./evidence.js";
+import { resolveCurrentEvidenceMember, resolveEvidenceMember, sanitizeCurrentEvidenceText } from "./evidence.js";
 import { sanitizeMarkdown } from "./markdown-policy.js";
 import type { DocumentDetail, ReportDetail, StoryWorkspace, TaskDetail } from "./models.js";
 import { projectDeliveryHistory, StoryBoardReader } from "./reader.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const ASSETS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "assets");
-const MAX_EVIDENCE_BYTES = 10 * 1024 * 1024;
 const EVIDENCE_TYPES: Record<string, string> = {
 	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
 	".txt": "text/plain; charset=utf-8", ".md": "text/markdown; charset=utf-8", ".json": "application/json; charset=utf-8", ".yaml": "application/yaml; charset=utf-8", ".yml": "application/yaml; charset=utf-8", ".log": "text/plain; charset=utf-8",
@@ -61,14 +61,25 @@ function safeTask(detail: TaskDetail): TaskDetail {
 	return { ...safe, ...(safe.brief ? { brief: sanitizeMarkdown(safe.brief) } : {}), ...(safe.scope ? { scope: sanitizeMarkdown(safe.scope) } : {}), ...(safe.delivery ? { delivery: sanitizeMarkdown(safe.delivery) } : {}), ...(safe.acceptance ? { acceptance: sanitizeMarkdown(safe.acceptance) } : {}), ...(deliveryHistory ? { deliveryHistory } : {}) };
 }
 function safeDocument(detail: DocumentDetail): DocumentDetail { return { ...detail, ...(detail.body ? { body: sanitizeMarkdown(detail.body) } : {}) }; }
+function safeRuntimeSummary(value: ReportDetail["failure"]): ReportDetail["failure"] {
+	return value ? { ...value, summary: sanitizeCurrentEvidenceText(value.summary), ...(value.details ? { details: sanitizeCurrentEvidenceText(value.details) } : {}), ...(value.diagnostic ? { diagnostic: { ...value.diagnostic, command: sanitizeCurrentEvidenceText(value.diagnostic.command), stdout: sanitizeCurrentEvidenceText(value.diagnostic.stdout), stderr: sanitizeCurrentEvidenceText(value.diagnostic.stderr) } } : {}) } : undefined;
+}
 function safeReport(detail: ReportDetail, storyId: string): ReportDetail {
 	const context = { storyId, evaluationId: detail.id, evidence: detail.evidence };
+	const recordedE2E = detail.recordedE2E ? {
+		...detail.recordedE2E,
+		result: sanitizeCurrentEvidenceText(detail.recordedE2E.result), summary: sanitizeCurrentEvidenceText(detail.recordedE2E.summary), findings: detail.recordedE2E.findings.map(sanitizeCurrentEvidenceText),
+		cases: detail.recordedE2E.cases.map((item) => ({ ...item, caseId: sanitizeCurrentEvidenceText(item.caseId), ...(item.title ? { title: sanitizeCurrentEvidenceText(item.title) } : {}), status: sanitizeCurrentEvidenceText(item.status), executedActions: item.executedActions.map(sanitizeCurrentEvidenceText), observations: item.observations.map(sanitizeCurrentEvidenceText), evidenceRefs: item.evidenceRefs.map((reference) => ({ ...reference, label: sanitizeCurrentEvidenceText(reference.label) })) })),
+	} : undefined;
 	return {
 		...detail,
 		...(detail.body ? { body: sanitizeMarkdown(detail.body, context) } : {}),
 		findings: detail.findings.map((finding) => ({ ...finding, summary: sanitizeMarkdown(finding.summary, context) })),
 		...(detail.riskAcceptance ? { riskAcceptance: sanitizeMarkdown(detail.riskAcceptance, context) } : {}),
 		history: detail.history.map((attempt) => ({ ...attempt, ...(attempt.body ? { body: sanitizeMarkdown(attempt.body, context) } : {}) })),
+		...(detail.id === "final-e2e" && detail.failure ? { failure: safeRuntimeSummary(detail.failure)! } : {}),
+		...(detail.currentE2E ? { currentE2E: { ...detail.currentE2E, ...(detail.currentE2E.lastAction ? { lastAction: safeRuntimeSummary(detail.currentE2E.lastAction)! } : {}) } } : {}),
+		...(recordedE2E ? { recordedE2E } : {}),
 	};
 }
 
@@ -143,10 +154,16 @@ export function createStoryBoardViewer(options: StoryBoardViewerOptions): Visual
 			const path = metadata.memberPath ? await resolveCurrentEvidenceMember(options.repositoryRoot, story, memberPath) : await resolveEvidenceMember(options.repositoryRoot, story, evaluation, memberPath); if (!path) return error(response, 404, "Evidence not available");
 			const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 			try {
-				const info = await handle.stat(); if (!info.isFile()) return error(response, 404, "Evidence not available"); if (info.size > MAX_EVIDENCE_BYTES) return error(response, 413, "Evidence is too large");
-				let bytes = await handle.readFile(); const extension = extname(path).toLowerCase(); const type = EVIDENCE_TYPES[extension]; if (!type) return error(response, 415, "Evidence type is unsupported");
-				if (extension === ".md") bytes = Buffer.from(sanitizeMarkdown(bytes.toString("utf8")));
-				response.writeHead(200, { "content-type": type, "content-length": bytes.byteLength, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" }); response.end(bytes);
+				const info = await handle.stat(); if (!info.isFile()) return error(response, 404, "Evidence not available");
+				const extension = extname(path).toLowerCase(); const type = EVIDENCE_TYPES[extension]; if (!type) return error(response, 415, "Evidence type is unsupported");
+				const headers = { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" };
+				if (extension === ".md") {
+					const bytes = Buffer.from(sanitizeMarkdown((await handle.readFile()).toString("utf8")));
+					response.writeHead(200, { ...headers, "content-length": bytes.byteLength }); response.end(bytes);
+				} else {
+					response.writeHead(200, { ...headers, "content-length": info.size });
+					await pipeline(handle.createReadStream({ autoClose: false }), response);
+				}
 			} finally { await handle.close(); }
 		}),
 	};

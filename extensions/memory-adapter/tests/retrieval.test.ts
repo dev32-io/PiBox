@@ -12,6 +12,9 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	await writeFile(join(root, "audio.ts"), "export const queue = [];\n");
 	await writeFile(join(root, "untracked.ts"), "export const unsafe = true;\n");
 	t.after(() => rm(root, { recursive: true, force: true }));
+	const evidence = ["audio.ts", ...Array.from({ length: 39 }, (_, index) => `proof-${index}.ts`)];
+	for (const path of evidence.slice(1)) await writeFile(join(root, path), "proof\n");
+	let stored: any;
 	let searches = 0;
 	let query = "";
 	const server = createServer((request, response) => {
@@ -20,11 +23,15 @@ test("retrieves once per run and injects memory ephemerally before the current u
 		request.on("end", () => {
 			response.setHeader("content-type", "application/json");
 			if (request.url === "/health") return response.end(JSON.stringify({ status: "ok" }));
+			if (request.url === "/memories" && request.method === "POST") {
+				stored = JSON.parse(body);
+				return response.end(JSON.stringify([{ id: "stored", memory: stored.messages[0].content }]));
+			}
 			if (request.url === "/search") {
 				searches++;
 				query = JSON.parse(body).query;
 				return response.end(JSON.stringify([
-					{ id: "audio-contract", memory: "Interrupted playback must clear the local queue.", score: 0.74, metadata: { status: "active", type: "audio-contract", evidence_paths: ["audio.ts"], verified_commit: "abc123" } },
+					{ id: "audio-contract", memory: "Interrupted playback must clear the local queue.", score: 0.74, metadata: { status: "active", type: "audio-contract", evidence_paths: evidence, verified_commit: "abc123" } },
 					{ id: "untracked", memory: "Claim backed only by an untracked file.", score: 0.72, metadata: { status: "active", type: "audio-contract", evidence_paths: ["untracked.ts"], verified_commit: "abc123" } },
 					{ id: "unverified", memory: "Unverified but similar audio claim.", score: 0.7, metadata: { status: "active", type: "audio-contract", evidence_paths: [] } },
 					{ id: "weak", memory: "Generic unrelated fact.", score: 0.5, metadata: { status: "active", type: "misc", evidence_paths: [] } },
@@ -48,9 +55,10 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	});
 
 	const handlers = new Map<string, (...args: any[]) => any>();
+	let tool: any;
 	const bus = new Map<string, (value: unknown) => void>();
 	const pi = {
-		registerTool() {}, registerCommand() {}, sendUserMessage() {}, sendMessage() {},
+		registerTool(definition: any) { tool = definition; }, registerCommand() {}, sendUserMessage() {}, sendMessage() {},
 		events: { on(name: string, handler: (value: unknown) => void) { bus.set(name, handler); }, emit(name: string, value: unknown) { bus.get(name)?.(value); } },
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		async exec(_command: string, args: string[]) {
@@ -91,5 +99,11 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	assert.equal(provider.id, "mem0");
 	const compared = await provider.search("interrupted playback", { cwd: root, limit: 3 });
 	assert.equal(compared[0]?.id, "audio-contract");
-	assert.deepEqual(compared[0]?.evidence, ["audio.ts"]);
+	assert.deepEqual(compared[0]?.evidence, evidence, "all evidence remains available beyond the context preview");
+	assert.equal(tool.parameters.properties.evidencePaths.maxItems, undefined);
+	const memory = "Full memory " + "x".repeat(20_000);
+	await tool.execute("remember", { action: "remember", memory, evidencePaths: evidence }, undefined, undefined, ctx);
+	assert.deepEqual(stored.metadata.evidence_paths, evidence);
+	assert.equal(stored.messages[0].content, memory);
+	await assert.rejects(tool.execute("escape", { action: "remember", memory, evidencePaths: ["../outside"] }, undefined, undefined, ctx), /Evidence path must stay inside/);
 });

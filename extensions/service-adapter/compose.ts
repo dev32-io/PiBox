@@ -100,7 +100,7 @@ export function createComposeServiceController(pi: ExtensionAPI, config: Compose
 			timeout: 600_000,
 			...(operation.signal ? { signal: operation.signal } : {}),
 		});
-		if (result.code !== 0) throw new Error(`docker compose ${args.join(" ")} failed: ${result.stderr.trim().slice(0, 500)}`);
+		if (result.code !== 0) throw new Error(`docker compose ${args.join(" ")} failed: ${result.stderr.trim()}`);
 	};
 	const health = (operation: ServiceOperationContext) => probeServiceHealth(config.healthUrl, config.healthTimeoutMs ?? 3_000, operation.signal);
 	const waitUntilReady = async (operation: ServiceOperationContext): Promise<ServiceSnapshot> => {

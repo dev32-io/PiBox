@@ -13,5 +13,7 @@ export function createRequestGate(): {
 };
 export function evidencePresentation(item: { available?: boolean; supported?: boolean; manifestMember?: boolean; mediaType?: string }): "missing" | "unsupported" | "image" | "text";
 export function renderDeliveryHistory(history?: { executionMode?: string; completedCommit?: string; mergedCommit?: string; [key: string]: unknown }): string;
+export function renderFailureSummary(failure?: { code?: string; summary?: string; causeCode?: string; failedCheckId?: string; diagnostic?: { checkId?: string; exitCode?: number } }): string;
+export function renderFailureDetails(failure?: { code?: string; summary?: string; causeCode?: string; failedCheckId?: string; details?: string; diagnostic?: { checkId: string; command: string; exitCode: number; stdout: string; stderr: string; outputTruncated: boolean } }, detailIdentity?: string): string;
 export function renderMarkdown(markdown?: string): string;
 export function createStoryBoardApp(options: { root: HTMLElement; fetchImpl?: typeof fetch; navigationWindow?: Window }): { state: Record<string, unknown>; loadRoute(): Promise<void>; destroy(): void };

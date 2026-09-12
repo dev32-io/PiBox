@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { createRequestGate, parseRoute, pathFor } from "../assets/app.js";
+import { JSDOM } from "jsdom";
+import { createRequestGate, createStoryBoardApp, parseRoute, pathFor } from "../assets/app.js";
 import * as appModule from "../assets/app.js";
 
 const { stageDefaultExpanded, stageDisclosureLifecycle, stageHasActiveChildWork, stageIsExpanded } = appModule as unknown as {
@@ -117,6 +118,65 @@ test("reactive workflow client uses one conditional timeout chain and bounded co
 	assert.match(app, /if \(state\.route\.taskId \|\| state\.route\.reportId\) void loadDetail\(interaction, \{ preserveContent: true \}\)/);
 	assert.match(app, /response\.status === 304[\s\S]*refreshTimingLabels\(\)/);
 	assert.match(app, /data-timing-segment/); assert.match(app, /caption\.textContent/);
+});
+
+test("failure disclosure participates in focus trapping and survives only same-detail live refreshes", async (t) => {
+	const dom = new JSDOM('<main id="app"></main>', { url: "http://localhost/story-board/focus-story/workflow/task/task-one", pretendToBeVisual: true });
+	const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window"); const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document"); let app: ReturnType<typeof createStoryBoardApp> | undefined;
+	Object.defineProperty(globalThis, "window", { configurable: true, value: dom.window }); Object.defineProperty(globalThis, "document", { configurable: true, value: dom.window.document });
+	t.after(() => { app?.destroy(); if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow); else delete (globalThis as any).window; if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument); else delete (globalThis as any).document; dom.window.close(); });
+	const timers = new Map<number, () => void>(); let timerId = 0;
+	const originalSetTimeout = globalThis.setTimeout; const originalClearTimeout = globalThis.clearTimeout;
+	(globalThis as any).setTimeout = (callback: () => void) => { timerId += 1; timers.set(timerId, callback); return timerId; };
+	(globalThis as any).clearTimeout = (id: number) => timers.delete(id);
+	t.after(() => { globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout; });
+	let workspaceCalls = 0; let detailCalls = 0;
+	const failure = (taskId: string) => ({ code: "repair_exhausted", causeCode: "unavailable_destination", summary: "No matching destination.", diagnostic: { checkId: taskId === "task-one" ? "check-1" : "check-2", command: `check ${taskId}`, exitCode: 70, stdout: "one\ntwo", stderr: "three\nfour", outputTruncated: true } });
+	const workspace = { story: { id: "focus-story", title: "Focus", format: "current", degraded: false }, workflow: { status: "attention", outcomeStatus: "pending", attention: { total: 1 }, totals: { tasks: { total: 0, completed: 0 }, repairs: 0 }, metrics: {} }, stages: [], tasks: [], columns: { "To do": [], "In progress": [], Done: [] }, documentGroups: [], reports: [], diagnostics: [] };
+	const fetchImpl = async (input: string | URL | Request) => {
+		const url = String(input);
+		if (url.includes("api/workspace")) { workspaceCalls += 1; return new Response(JSON.stringify({ workspace, observation: { status: "attention", outcomeStatus: "pending" } }), { status: 200, headers: { "content-type": "application/json", etag: `W/\"${workspaceCalls}\"` } }); }
+		if (url.includes("api/task")) { detailCalls += 1; const taskId = new URL(url, "http://localhost").searchParams.get("task") || "task-one"; return new Response(JSON.stringify({ task: { id: taskId, title: taskId, status: "attention", dependsOn: [], verification: { methods: [], taskChecks: [] }, relatedReportIds: [], diagnostics: [], failure: failure(taskId) } }), { status: 200, headers: { "content-type": "application/json" } }); }
+		throw new Error(`Unexpected request ${url}`);
+	};
+	const root = dom.window.document.querySelector<HTMLElement>("#app")!; app = createStoryBoardApp({ root, fetchImpl: fetchImpl as typeof fetch, navigationWindow: dom.window as unknown as Window });
+	const waitFor = async (predicate: () => boolean) => { for (let count = 0; count < 50 && !predicate(); count += 1) await new Promise<void>((resolve) => originalSetTimeout(resolve, 0)); assert.equal(predicate(), true); };
+	await waitFor(() => detailCalls === 1 && Boolean(root.querySelector("summary[data-disclosure-summary]")));
+	let close = root.querySelector<HTMLElement>('.drawer [data-action="close-detail"]')!; let summary = root.querySelector<HTMLElement>("summary[data-disclosure-summary]")!;
+	close.focus(); close.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true })); assert.equal(dom.window.document.activeElement, summary, "Shift+Tab wraps to the native summary");
+	summary.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true })); assert.equal(dom.window.document.activeElement, close, "Tab wraps from summary to close");
+	const details = summary.closest("details")!; details.open = true; summary.focus(); const stdout = details.querySelector<HTMLElement>('[data-detail-scroll$=":stdout"]')!; stdout.scrollTop = 37;
+	const pendingPolls = [...timers.values()]; assert.ok(pendingPolls.length); for (const poll of pendingPolls) poll();
+	await waitFor(() => workspaceCalls >= 2 && detailCalls >= 2);
+	summary = root.querySelector<HTMLElement>("summary[data-disclosure-summary]")!; const refreshedDetails = summary.closest("details")!;
+	assert.equal(refreshedDetails.open, true); assert.equal(refreshedDetails.querySelector<HTMLElement>('[data-detail-scroll$=":stdout"]')!.scrollTop, 37); assert.equal(dom.window.document.activeElement, summary);
+	const firstKey = refreshedDetails.dataset.disclosureKey;
+	dom.window.history.pushState({}, "", "/story-board/focus-story/workflow/task/task-two"); await app.loadRoute(); await waitFor(() => detailCalls >= 3 && Boolean(root.querySelector("[data-disclosure-key]")));
+	const unrelated = root.querySelector<HTMLDetailsElement>("details[data-disclosure-key]")!; assert.notEqual(unrelated.dataset.disclosureKey, firstKey); assert.equal(unrelated.open, false); assert.equal(unrelated.querySelector<HTMLElement>('[data-detail-scroll$=":stdout"]')!.scrollTop, 0);
+});
+
+test("eight logical E2E cases expand across the table and preserve disclosure, focus, and scroll on live refresh", async (t) => {
+	const dom = new JSDOM('<main id="app"></main>', { url: "http://localhost/story-board/focus-story/workflow/report/final-e2e", pretendToBeVisual: true });
+	const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window"); const originalDocument = Object.getOwnPropertyDescriptor(globalThis, "document"); let app: ReturnType<typeof createStoryBoardApp> | undefined;
+	Object.defineProperty(globalThis, "window", { configurable: true, value: dom.window }); Object.defineProperty(globalThis, "document", { configurable: true, value: dom.window.document });
+	t.after(() => { app?.destroy(); if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow); else delete (globalThis as any).window; if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument); else delete (globalThis as any).document; dom.window.close(); });
+	const timers = new Map<number, () => void>(); let timerId = 0; const originalSetTimeout = globalThis.setTimeout; const originalClearTimeout = globalThis.clearTimeout;
+	(globalThis as any).setTimeout = (callback: () => void) => { timerId += 1; timers.set(timerId, callback); return timerId; }; (globalThis as any).clearTimeout = (id: number) => timers.delete(id);
+	t.after(() => { globalThis.setTimeout = originalSetTimeout; globalThis.clearTimeout = originalClearTimeout; });
+	let workspaceCalls = 0; let reportCalls = 0;
+	const cases = Array.from({ length: 8 }, (_, index) => ({ caseId: `E2E-${String(index + 1).padStart(3, "0")}`, title: `Journey ${index + 1}`, status: index === 7 ? "blocked" : "passed", executedActions: [`Action ${index + 1}`], observations: [index === 7 ? `<script>bad()</script> ${"Long observation ".repeat(80)}` : `Observed ${index + 1}`], evidenceRefs: index === 7 ? [{ label: "evidence/proof.txt", memberPath: "evidence/proof.txt" }] : [], recorded: true }));
+	const workspace = { story: { id: "focus-story", title: "Focus", format: "current", degraded: false }, workflow: { status: "attention", outcomeStatus: "pending", attention: { total: 1 }, totals: { tasks: { total: 0, completed: 0 }, repairs: 1 }, metrics: {} }, stages: [], tasks: [], columns: { "To do": [], "In progress": [], Done: [] }, documentGroups: [], reports: [{ id: "final-e2e", status: "testing", available: true, scope: { kind: "e2e" }, findingCount: 0, hasRiskAcceptance: false }], diagnostics: [] };
+	const report = { id: "final-e2e", title: "Final E2E", status: "testing", available: true, scope: { kind: "e2e" }, findingCount: 0, hasRiskAcceptance: false, findings: [], history: [], evidence: [], currentE2E: { phase: "testing", repairCount: 1, priorContext: false }, recordedE2E: { sourcePath: "evidence/report.json", sourceMemberPath: "evidence/report.json", result: "blocked", summary: "Recorded", findings: ["Finding"], cases, diagnostics: [] }, diagnostics: [] };
+	const fetchImpl = async (input: string | URL | Request) => { const url = String(input); if (url.includes("api/workspace")) { workspaceCalls += 1; return new Response(JSON.stringify({ workspace, observation: { status: "attention", outcomeStatus: "pending" } }), { status: 200, headers: { "content-type": "application/json", etag: `W/\"${workspaceCalls}\"` } }); } if (url.includes("api/report")) { reportCalls += 1; return new Response(JSON.stringify({ report }), { status: 200, headers: { "content-type": "application/json" } }); } throw new Error(`Unexpected request ${url}`); };
+	const root = dom.window.document.querySelector<HTMLElement>("#app")!; app = createStoryBoardApp({ root, fetchImpl: fetchImpl as typeof fetch, navigationWindow: dom.window as unknown as Window });
+	const waitFor = async (predicate: () => boolean) => { for (let count = 0; count < 50 && !predicate(); count += 1) await new Promise<void>((resolve) => originalSetTimeout(resolve, 0)); assert.equal(predicate(), true); };
+	await waitFor(() => reportCalls === 1 && root.querySelectorAll("[data-e2e-case-disclosure]").length === 8);
+	let button = root.querySelectorAll<HTMLButtonElement>("[data-e2e-case-disclosure]")[7]!; button.click(); button.focus();
+	let detailRow = root.querySelectorAll<HTMLTableRowElement>("[data-e2e-case-detail-row]")[7]!; assert.equal(detailRow.hidden, false); assert.equal(detailRow.querySelector("td")?.colSpan, 4); assert.match(detailRow.textContent || "", /Long observation/); assert.equal(detailRow.querySelector("script"), null); assert.equal(detailRow.querySelectorAll("a").length, 1);
+	const drawer = root.querySelector<HTMLElement>(".drawer-content")!; drawer.scrollTop = 61; for (const poll of [...timers.values()]) poll();
+	await waitFor(() => workspaceCalls >= 2 && reportCalls >= 2);
+	button = root.querySelectorAll<HTMLButtonElement>("[data-e2e-case-disclosure]")[7]!; detailRow = root.querySelectorAll<HTMLTableRowElement>("[data-e2e-case-detail-row]")[7]!;
+	assert.equal(button.getAttribute("aria-expanded"), "true"); assert.equal(detailRow.hidden, false); assert.equal(root.querySelector<HTMLElement>(".drawer-content")!.scrollTop, 61); assert.equal(dom.window.document.activeElement, button);
 });
 
 test("polling stops outside a visible active current workflow and validates shell messages", async () => {

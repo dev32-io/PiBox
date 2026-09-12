@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { StoryRuntimeState } from "../workflow/story-runtime-store.js";
+import type { PendingLedgerRecovery, RuntimeCorrectionTarget, StoryRuntimeState } from "../workflow/story-runtime-store.js";
+import type { VerificationCheckSpec } from "../workflow/types.js";
 
 export const WORKFLOW_CONTROL_EVENT = "pibox:workflow:control";
 export const WORKFLOW_LIFECYCLE_EVENT = "pibox:workflow:lifecycle";
@@ -49,9 +50,22 @@ export interface WorkflowExecutionControl {
 	ownerActivationId?: string;
 }
 
+export interface WorkflowExecutionCorrectionInput {
+	attentionEpoch: number;
+	target: RuntimeCorrectionTarget;
+	task?: {
+		description?: string;
+		scope?: string;
+		delivery?: string;
+		checks?: readonly VerificationCheckSpec[];
+	};
+	stageVerification?: { checks: readonly VerificationCheckSpec[] };
+}
+
 export interface WorkflowAttentionDecision {
 	action: "request_changes" | "approve";
 	prompt?: string;
+	correction?: WorkflowExecutionCorrectionInput;
 	acceptedRisks?: readonly { findingId: string; rationale: string }[];
 }
 
@@ -71,8 +85,8 @@ export interface WorkflowAdapter {
 	controlExecution(ref: string, command: "start" | "pause" | "resume" | "stop" | "complete" | "detach" | "attach", operationId: string, ctx: ExtensionContext): Promise<WorkflowExecutionControl>;
 	reconcileWorkflow?(ref: string, ctx: ExtensionContext): Promise<void>;
 	advanceWorkflow(ref: string, ctx: ExtensionContext): Promise<void>;
-	resolveAttention?(ref: string, decision: WorkflowAttentionDecision, ctx: ExtensionContext, options?: { dryRun?: boolean }): Promise<StoryRuntimeState>;
-	preflightWorkflow?(ref: string, ctx: ExtensionContext): Promise<WorkflowPreflight>;
+	resolveAttention?(ref: string, decision: WorkflowAttentionDecision, ctx: ExtensionContext, options?: { dryRun?: boolean; expectedLedgerRecovery?: PendingLedgerRecovery }): Promise<StoryRuntimeState>;
+	preflightWorkflow?(ref: string, ctx: ExtensionContext, options?: { projectedRuntime?: StoryRuntimeState }): Promise<WorkflowPreflight>;
 	prepareWorkflow?(ref: string, ctx: ExtensionContext, onUpdate?: (progress: WorkflowStartProgress) => void): Promise<void>;
 	completionPrompt?(ref: string, ctx: ExtensionContext): Promise<string>;
 	snapshot(ref: string, ctx: ExtensionContext): Promise<WorkflowSnapshot>;

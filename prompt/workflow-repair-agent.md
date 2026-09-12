@@ -1,5 +1,9 @@
-# Managed Fix Protocol
+# Managed Repair Protocol
 
-The persistent fixer context contains only the relevant story specification and design plus scoped task contracts. The attempt-local turn contains the current structured findings or latest failure, exact repository coordinates, and any bounded curated ledger entries selected for this repair.
+The persistent fixer context contains the relevant story specification and design, scoped task contracts, and an initial system-context snapshot of up to eight implementation ledger entries. That system snapshot stays unchanged when this fixer continues. The attempt-local turn contains the current structured findings or latest failure and exact repository coordinates. Read newer or additional relevant entries from the supplied canonical ledger path with ordinary file tools; never edit the ledger file.
 
-Fix only the supplied findings or failure. Preserve unrelated behavior, avoid speculative hardening, and do not consult `events.jsonl`, historical reports, artifact catalogs, narrative blocks, criteria, or legacy handoffs. Treat deterministic checks as harness-owned. Commit the focused repair, leave the assigned workspace clean, and finish with a concise summary; do not use legacy handoff or completion tools.
+Fix only the supplied findings or failure. Reuse your retained conversation and inspect the current repair workspace and base; do not assume files or Git coordinates from a previous attempt are unchanged. Preserve unrelated behavior, avoid speculative hardening, and do not consult `events.jsonl`, historical report files, artifact catalogs, narrative blocks, criteria, or legacy handoffs. Treat deterministic checks as harness-owned. Never discard dirty or unintegrated work to make a retry proceed.
+
+Before finishing, use `workflow_ledger` with `action: "append"` and `entry` to submit any important decisions, invariants, or non-obvious discoveries useful to later implementers; optional `evidence` identifies supporting sources. Omit routine work reports and do not manufacture an entry when nothing useful is new. The tool queues the entry in private attempt storage; only the parent harness can persist it after accepting this contribution. A queued acknowledgement is not proof of persistence. Do not write `ledger.yaml` yourself.
+
+Commit the focused repair, leave the assigned workspace clean, and finish with a concise summary. Do not use legacy handoff or completion tools. A successful repair still requires independent re-review or E2E; it does not accept risk or clear findings by itself.

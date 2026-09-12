@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { renderDeliveryHistory } from "../assets/app.js";
+import { renderDeliveryHistory, renderFailureDetails, renderFailureSummary } from "../assets/app.js";
 import { projectTaskCard } from "../projector.js";
 
 const appPath = new URL("../assets/app.js", import.meta.url);
@@ -15,6 +15,39 @@ test("task board keeps exactly three semantic columns and preserves projected st
 	assert.deepEqual(tasks.map((task) => task.column), ["To do", "In progress", "Done"]);
 	assert.deepEqual(tasks.map((task) => task.status), ["ready", "running", "integrated"]);
 	assert.equal(new Set(tasks.map((task) => task.id)).size, tasks.length);
+});
+
+test("failure cards stay concise and diagnostics are safely disclosed with their check command", () => {
+	const inventory = Array.from({ length: 300 }, (_, index) => `iPhone ${index}`).join(" ");
+	const failure = {
+		code: "repair_exhausted", causeCode: "unavailable_destination", summary: `No matching iOS Simulator destination.\n${inventory}`,
+		diagnostic: { checkId: "check-2", command: "xcodebuild test -destination 'platform=iOS Simulator,name=iPhone 16 Plus'", exitCode: 70, stdout: "first stdout line\nsecond stdout line", stderr: "<script>alert('no')</script>\n[private path]", outputTruncated: true },
+	};
+	const card = renderFailureSummary(failure); const detail = renderFailureDetails(failure);
+	assert.match(card, /Cause: unavailable_destination/); assert.match(card, /Check: check-2/); assert.match(card, /Exit: 70/);
+	assert.doesNotMatch(card, /iPhone 299|repair_exhausted|<script>/);
+	assert.match(detail, /<details class="failure-disclosure" data-disclosure-key=/); assert.match(detail, /Diagnostic output for check check-2/);
+	assert.match(detail, /<dt>Command<\/dt>[\s\S]*xcodebuild test/); assert.match(detail, /<dt>Exit code<\/dt>[\s\S]*70/);
+	assert.match(detail, /first stdout line\nsecond stdout line/); assert.match(detail, /&lt;script&gt;alert\(&#39;no&#39;\)&lt;\/script&gt;/);
+	assert.match(detail, /Output was truncated by the workflow runtime/); assert.doesNotMatch(detail, /<script>alert|\/Users\/private|<button|data-action=/);
+});
+
+test("failure navigation keeps the task card as the only control and discloses diagnostics in detail", async () => {
+	const app = await readFile(appPath, "utf8");
+	const taskCard = app.slice(app.indexOf("function workflowTask"), app.indexOf("function gateDetails"));
+	const taskDetailStart = app.indexOf("function taskDetail");
+	const taskDetail = app.slice(taskDetailStart, app.indexOf("function evidence(", taskDetailStart));
+	assert.match(taskCard, /<button type="button" data-task=/); assert.match(taskCard, /renderFailureSummary\(task\?\.failure\)/);
+	assert.doesNotMatch(taskCard, /<details|data-related-report|<button[^>]*<button/);
+	assert.match(taskDetail, /renderFailureDetails\(task\.failure, `task:\$\{task\.id\}`\)/);
+});
+
+test("legacy oversized failure text is compact on cards and progressively disclosed", () => {
+	const oversized = `Legacy check failed\n${"inventory ".repeat(500)}`;
+	const card = renderFailureSummary({ code: "check_failed", summary: oversized, failedCheckId: "legacy-check" });
+	const detail = renderFailureDetails({ code: "check_failed", summary: "Legacy check failed", failedCheckId: "legacy-check", details: oversized });
+	assert.match(card, /Cause: check_failed · Check: legacy-check/); assert.doesNotMatch(card, /inventory/);
+	assert.match(detail, /Recorded failure details/); assert.match(detail, /inventory inventory/);
 });
 
 test("task delivery history renders only allowlisted projected fields", () => {
@@ -59,6 +92,31 @@ test("workflow markup makes execution primary with compact modes, tasks, and pha
 	assert.deepEqual(orderedCalls, [...orderedCalls].sort((left, right) => left - right), "execution and assurance precede activity timing");
 	assert.match(app, /class="timing-bar"/); assert.match(app, /data-tooltip=/);
 	assert.match(app, /class="timing-\$\{category\}" tabindex="0"/); assert.doesNotMatch(app, /class="timing-segment[^`]*tabindex/);
+});
+
+test("current Final E2E has distinct live and recorded truth with an accessible responsive case matrix", async () => {
+	const [app, styles] = await Promise.all([readFile(appPath, "utf8"), readFile(stylesPath, "utf8")]);
+	assert.match(app, /Current final E2E/); assert.match(app, /Recorded E2E report/); assert.match(app, /Evidence verdict/);
+	assert.match(app, /Action, not E2E verdict/); assert.match(app, /Prior E2E failure context retained while the recheck is active/);
+	assert.match(app, /<table class="e2e-case-table"><caption>/); assert.match(app, /<th scope="col">Case/); assert.match(app, /<th scope="row" data-label="Case">/);
+	assert.match(app, /data-e2e-case-disclosure=.*aria-expanded="false".*aria-controls=/); assert.match(app, /class="e2e-case-detail-row".*hidden><td colspan="4">/);
+	assert.match(app, /setE2eCaseExpanded\(target, target\.getAttribute\("aria-expanded"\) !== "true"\)/); assert.match(app, /e2eCases: Object\.fromEntries/);
+	assert.match(app, /ref\.memberPath \? `<a href=/, "nested links require projected authorization");
+	assert.match(app, /finalE2E \? `\$\{number\(report\.repairCount\)\}.*repair/);
+	assert.match(styles, /\.e2e-table-wrap \{[^}]*max-width: 100%;[^}]*overflow: hidden/);
+	assert.match(styles, /@media \(max-width: 620px\)[\s\S]*\.e2e-case-table/);
+});
+
+test("repair timing appears in overall six-category chart and stage timing without changing phase semantics", async () => {
+	const [app, styles] = await Promise.all([readFile(appPath, "utf8"), readFile(stylesPath, "utf8")]);
+	assert.match(app, /const categories = \[\["Implementation", "implementation"\], \["Integration", "integration"\], \["Verification", "verification"\], \["Repair", "repair"\], \["Review", "review"\]\];/, "stage timing includes Repair");
+	assert.match(app, /const categories = \[\["Implementation", "implementation"\], \["Integration", "integration"\], \["Verification", "verification"\], \["Repair", "repair"\], \["Review", "review"\], \["E2E", "e2e"\]\];/, "overall timing has six categories");
+	assert.match(app, /distributed across implementation, integration, verification, repair, review, and E2E/);
+	assert.match(app, /number\(category \? timing\.categories\?\.\[category\] : timing\.workflowMs\)/, "missing legacy Repair totals render as zero");
+	assert.match(styles, /--workflow-color-repair:\s*var\(--color-danger\)/);
+	assert.match(styles, /\.timing-segment\.timing-repair, \.timing-repair dt > span \{ background: var\(--workflow-color-repair\); \}/);
+	assert.match(styles, /\.timing-repair dt > span \{[^}]*clip-path: polygon\(50% 0, 100% 50%, 50% 100%, 0 50%\)/, "Repair has a distinct non-color shape");
+	assert.doesNotMatch(app, /currentPhase[^\n]*repair|phase-repair/, "Repair remains a metric, not a scheduler phase");
 });
 
 test("stage timing truthfully says interrupted intervals were excluded", async () => {
@@ -158,6 +216,9 @@ test("task and report details are action-loaded with an accessible centered moda
 	const [app, styles] = await Promise.all([readFile(appPath, "utf8"), readFile(stylesPath, "utf8")]);
 	assert.match(app, /data-task=/);
 	assert.match(app, /data-report=/);
+	assert.match(app, /class="e2e-prior-context" role="note"/);
+	assert.match(styles, /\.e2e-case-table caption,[^\n]*\.e2e-case-table th:nth-child\(1\)[^\n]*\{ display: block; width: 100%; \}/, "mobile captions and case headers override desktop table sizing");
+	assert.doesNotMatch(app, /class="boundary" role="note">Prior E2E/, "E2E prior context is a compact note, not a half-height empty-state panel");
 	assert.match(app, /role="dialog"/);
 	assert.match(app, /aria-modal="true"/);
 	assert.match(app, /focusTarget \? root\.querySelector\(focusTarget\)/);

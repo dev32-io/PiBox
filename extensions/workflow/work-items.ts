@@ -120,7 +120,7 @@ export function parseStoryPlanDocument(content: string, source = "plan.yaml", op
 	return { schemaVersion: 1, stages };
 }
 
-export async function validateEvidenceSource(repositoryRoot: string, source: string): Promise<string> {
+export async function validateEvidenceSource(repositoryRoot: string, source: string, suppliedContent?: Uint8Array): Promise<string> {
 	let lexical = resolve(repositoryRoot, source);
 	let absolute = await realpath(lexical).catch(() => undefined);
 	if (!absolute) {
@@ -132,8 +132,8 @@ export async function validateEvidenceSource(repositoryRoot: string, source: str
 	if (!allowedRoots.some((root) => absolute !== root && absolute.startsWith(`${root}${sep}`))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source resolves outside the repository or operating-system temporary directory: ${source}`);
 	if (SENSITIVE_EVIDENCE_NAME.test(basename(absolute)) || SENSITIVE_EVIDENCE_NAME.test(basename(lexical))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source looks sensitive: ${source}. Provide a sanitized minimal artifact instead.`);
 	if (!(await stat(absolute)).isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence path is not a regular file: ${source}`);
-	const content = await readFile(absolute);
-	if (SENSITIVE_EVIDENCE_CONTENT.test(content.subarray(0, 128 * 1024).toString("utf8"))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source contains an obvious credential or private material: ${source}`);
+	const content = suppliedContent ?? await readFile(absolute);
+	if (SENSITIVE_EVIDENCE_CONTENT.test(Buffer.from(content.buffer, content.byteOffset, Math.min(content.byteLength, 128 * 1024)).toString("utf8"))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source contains an obvious credential or private material: ${source}`);
 	return absolute;
 }
 

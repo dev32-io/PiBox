@@ -49,6 +49,7 @@ const CATEGORY_LABELS: Record<WorkflowMetricCategory, string> = {
 	implementation: "Implementation",
 	integration: "Integration",
 	verification: "Verification",
+	repair: "Repair",
 	review: "Review",
 	e2e: "E2E",
 };

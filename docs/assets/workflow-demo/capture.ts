@@ -90,7 +90,7 @@ function baseState(): StoryRuntimeState {
 		e2e: { status: "pending", repairCount: 0, evidenceRefs: [] },
 		metrics: {
 			workflowMs: 0,
-			categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+			categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0, repair: 0 },
 			incompleteIntervals: 0,
 			incompleteCategories: [],
 		},
@@ -120,6 +120,8 @@ function applyMetrics(
 		verification: (seconds.verification ?? 0) * 1_000,
 		review: (seconds.review ?? 0) * 1_000,
 		e2e: (seconds.e2e ?? 0) * 1_000,
+		// This historical run did not record separate repair time; do not guess a split.
+		repair: (seconds.repair ?? 0) * 1_000,
 	};
 	state.metrics = {
 		workflowMs: Object.values(categories).reduce((total, value) => total + value, 0),

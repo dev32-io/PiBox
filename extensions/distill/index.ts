@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -9,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteFile, discoverRepository, isGitPathIgnored, readTextIfExists } from "../workflow/repository.js";
 import { RepositoryMutex } from "../workflow/canonical-mutation.js";
 import {
-	MAX_ARTIFACT_CHARS, assessInstruction, assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, listDistillRuns, resolveDistillScope, sanitizeDistillText,
+	assessInstruction, assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, listDistillRuns, resolveDistillScope, sanitizeDistillText,
 	type DistillScopeInput, type GitRunner, type ResolvedDistillScope,
 } from "./core.js";
 import {
@@ -17,23 +18,23 @@ import {
 } from "./provider.js";
 
 const SCOPE_FIELDS = {
-	target: Type.Optional(Type.String({ maxLength: 240 })),
-	baseline: Type.Optional(Type.String({ maxLength: 240 })),
-	since: Type.Optional(Type.String({ maxLength: 100 })),
-	until: Type.Optional(Type.String({ maxLength: 100 })),
-	paths: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 50 })),
-	workItems: Type.Optional(Type.Array(Type.String({ maxLength: 128 }), { maxItems: 20 })),
+	target: Type.Optional(Type.String()),
+	baseline: Type.Optional(Type.String()),
+	since: Type.Optional(Type.String()),
+	until: Type.Optional(Type.String()),
+	paths: Type.Optional(Type.Array(Type.String())),
+	workItems: Type.Optional(Type.Array(Type.String())),
 	includeDirty: Type.Optional(Type.Boolean()),
 	includeSession: Type.Optional(Type.Boolean()),
-	sessionIds: Type.Optional(Type.Array(Type.String({ maxLength: 200 }), { maxItems: 20 })),
-	sessionStartEntry: Type.Optional(Type.String({ maxLength: 200 })),
-	sessionEndEntry: Type.Optional(Type.String({ maxLength: 200 })),
-	knowledgeProviders: Type.Optional(Type.Array(Type.String({ maxLength: 128 }), { maxItems: 8 })),
-	focus: Type.Optional(Type.Array(StringEnum(["knowledge", "architecture", "failure-modes", "instructions", "contradictions", "process", "release-summary", "current-state"] as const), { maxItems: 8 })),
+	sessionIds: Type.Optional(Type.Array(Type.String())),
+	sessionStartEntry: Type.Optional(Type.String()),
+	sessionEndEntry: Type.Optional(Type.String()),
+	knowledgeProviders: Type.Optional(Type.Array(Type.String())),
+	focus: Type.Optional(Type.Array(StringEnum(["knowledge", "architecture", "failure-modes", "instructions", "contradictions", "process", "release-summary", "current-state"] as const))),
 };
 
 const result = (text: string, details: unknown) => ({ content: [{ type: "text" as const, text }], details });
-const ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const ID = /^[a-z0-9][a-z0-9._-]*$/;
 const DISTILL_SKILL = parseFrontmatter(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../skills/distill/SKILL.md"), "utf8")).body.trim();
 
 function activeEntryBranch(entries: any[]): any[] {
@@ -83,10 +84,9 @@ export async function selectedSessionEntries(ctx: ExtensionContext, scope: Resol
 		}
 		if (!directory) throw new Error(`Cannot locate persisted session ${id} from this headless session.`);
 		let matched: any[] | undefined;
-		for (const name of (await readdir(directory)).filter((entry) => entry.endsWith(".jsonl")).slice(0, 2_000)) {
+		for (const name of (await readdir(directory)).filter((entry) => entry.endsWith(".jsonl"))) {
 			const path = resolve(directory, name);
 			const info = await stat(path);
-			if (info.size > 10_000_000) continue;
 			const handle = await open(path, "r");
 			const buffer = Buffer.alloc(Math.min(4_096, info.size));
 			try { await handle.read(buffer, 0, buffer.length, 0); } finally { await handle.close(); }
@@ -130,30 +130,44 @@ function instructionTarget(root: string, path: string): string {
 	return target;
 }
 
+export function gitRunnerFor(pi: ExtensionAPI, cwd: string): GitRunner {
+	return async (args, options) => {
+		if (options?.stdin === undefined) {
+			const response = await pi.exec("git", args, { cwd, timeout: 20_000 });
+			return { code: response.code, stdout: response.stdout, stderr: response.stderr };
+		}
+		return new Promise((resolve) => {
+			const child = spawn("git", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+			const stdout: Buffer[] = []; const stderr: Buffer[] = [];
+			let stdinError: Error | undefined;
+			const timer = setTimeout(() => child.kill(), 20_000);
+			child.stdout.on("data", (chunk) => stdout.push(chunk));
+			child.stderr.on("data", (chunk) => stderr.push(chunk));
+			child.stdin.on("error", (error) => { stdinError = error; });
+			child.on("error", (error) => { clearTimeout(timer); resolve({ code: 1, stdout: "", stderr: error.message }); });
+			child.on("close", (code) => {
+				clearTimeout(timer);
+				const gitError = Buffer.concat(stderr).toString("utf8");
+				resolve({ code: code === 0 && stdinError ? 1 : code ?? 1, stdout: Buffer.concat(stdout).toString("utf8"), stderr: gitError || stdinError?.message || "" });
+			});
+			child.stdin.end(options.stdin);
+		});
+	};
+}
+
 export default function distillExtension(pi: ExtensionAPI): void {
 	const previews = new Map<string, { scope: ResolvedDistillScope; repositoryId: string; repositoryRoot: string }>();
 	const providers = new Map<string, DistillKnowledgeProvider>();
 
 	const repository = async (ctx: ExtensionContext) => discoverRepository(ctx.cwd);
-	const gitFor = (pi: ExtensionAPI, cwd: string): GitRunner => async (args) => {
-		const response = await pi.exec("git", args, { cwd, timeout: 20_000 });
-		const cap = 2_000_000;
-		return {
-			code: response.code,
-			stdout: response.stdout.length > cap ? `${response.stdout.slice(0, cap)}\n… [git output cap reached]` : response.stdout,
-			stderr: response.stderr.length > 20_000 ? `${response.stderr.slice(0, 20_000)}\n… [stderr cap reached]` : response.stderr,
-		};
-	};
+	const gitFor = gitRunnerFor;
 	const discoverProviders = () => {
 		providers.clear();
 		pi.events.emit(DISTILL_KNOWLEDGE_DISCOVERY_EVENT, {
 			register(provider: DistillKnowledgeProvider) {
 				if (!ID.test(provider.id)) throw new Error(`Invalid distillation knowledge provider ID: ${provider.id}`);
 				if (!["local", "remote"].includes(provider.locality) || !provider.description?.trim()) throw new Error(`Invalid distillation knowledge provider metadata: ${provider.id}`);
-				if (!providers.has(provider.id)) {
-					if (providers.size >= 16) throw new Error("At most 16 distillation knowledge providers may register.");
-					providers.set(provider.id, provider);
-				}
+				if (!providers.has(provider.id)) providers.set(provider.id, provider);
 			},
 		} satisfies DistillKnowledgeDiscovery);
 	};
@@ -224,8 +238,8 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_read", label: "Read Distillation Artifact",
-		description: "List local distillation runs or read a bounded slice of one ignored run artifact.",
-		parameters: Type.Object({ runId: Type.Optional(Type.String()), path: Type.Optional(Type.String()), sourcePath: Type.Optional(Type.String({ maxLength: 500 })), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30_000 })) }, { additionalProperties: false }),
+		description: "List local distillation runs or read a bounded presentation slice of one ignored run artifact or immutable source file.",
+		parameters: Type.Object({ runId: Type.Optional(Type.String()), path: Type.Optional(Type.String()), sourcePath: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30_000 })) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const identity = await repository(ctx);
 			if (!params.runId) {
@@ -241,13 +255,10 @@ export default function distillExtension(pi: ExtensionAPI): void {
 				const scopePath = await assertSafeArtifactPath(identity.privateRoot, params.runId, "scope.json");
 				const scope = JSON.parse(await readFile(scopePath, "utf8")) as ResolvedDistillScope;
 				const object = `${scope.target.commit}:${params.sourcePath}`;
-				const size = await gitFor(pi, identity.root)(["cat-file", "-s", object]);
-				if (size.code !== 0) throw new Error(`Target source not found: ${params.sourcePath}`);
-				if (Number(size.stdout.trim()) > MAX_ARTIFACT_CHARS) throw new Error(`Target source exceeds the ${MAX_ARTIFACT_CHARS}-character read budget.`);
 				const source = await gitFor(pi, identity.root)(["show", object]);
 				if (source.code !== 0) throw new Error(`Target source not found: ${params.sourcePath}`);
 				if (source.stdout.includes("\0")) throw new Error("Target source is binary and cannot be distilled as text.");
-				content = sanitizeDistillText(source.stdout, MAX_ARTIFACT_CHARS);
+				content = sanitizeDistillText(source.stdout);
 				selectedPath = `source:${params.sourcePath}`;
 			} else {
 				const path = await assertSafeArtifactPath(identity.privateRoot, params.runId, params.path!);
@@ -268,7 +279,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 		description: "Persist an analyst report, synthesis, knowledge comparison, or user decision inside an existing ignored distillation run. This never edits source guidance or memory.",
 		parameters: Type.Object({
 			runId: Type.String(), category: StringEnum(["finding", "synthesis", "comparison", "decision"] as const),
-			id: Type.Optional(Type.String({ maxLength: 128 })), content: Type.String({ minLength: 1, maxLength: MAX_ARTIFACT_CHARS }),
+			id: Type.Optional(Type.String()), content: Type.String({ minLength: 1 }),
 		}, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const identity = await repository(ctx);
@@ -279,15 +290,16 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			const relativePath = params.category === "finding" ? `findings/${id}.md` : params.category === "comparison" ? `comparisons/${id}.md` : params.category === "decision" ? `decisions/${id}.md` : "synthesis.md";
 			const path = await assertSafeArtifactPath(identity.privateRoot, params.runId, relativePath);
 			if (!existsSync(dirname(path))) await import("node:fs/promises").then(({ mkdir }) => mkdir(dirname(path), { recursive: true, mode: 0o700 }));
-			await atomicWriteFile(path, sanitizeDistillText(params.content, MAX_ARTIFACT_CHARS), 0o600);
-			return result(`Recorded ${relativePath} for ${params.runId}.`, { runId: params.runId, path: relativePath, chars: params.content.length });
+			const content = sanitizeDistillText(params.content);
+			await atomicWriteFile(path, content, 0o600);
+			return result(`Recorded ${relativePath} for ${params.runId}.`, { runId: params.runId, path: relativePath, chars: content.length, inputChars: params.content.length });
 		},
 	});
 
 	pi.registerTool({
 		name: "distill_compare", label: "Compare Distilled Knowledge",
 		description: "Search optional registered knowledge providers for existing items related to proposed findings. Works without a memory provider and never mutates knowledge.",
-		parameters: Type.Object({ runId: Type.String(), claims: Type.Array(Type.Object({ id: Type.String({ maxLength: 128 }), query: Type.String({ minLength: 3, maxLength: 1_000 }) }, { additionalProperties: false }), { minItems: 1, maxItems: 20 }), limitPerProvider: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false }),
+		parameters: Type.Object({ runId: Type.String(), claims: Type.Array(Type.Object({ id: Type.String(), query: Type.String({ minLength: 3 }) }, { additionalProperties: false }), { minItems: 1 }), limitPerProvider: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false }),
 		async execute(_id, params, signal, _update, ctx) {
 			const identity = await repository(ctx);
 			await assertCollectedRun(identity.privateRoot, params.runId);
@@ -298,42 +310,31 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			const selectedProviders = scope.knowledgeProviders.map((id) => ({ id, provider: providers.get(id) })).filter((entry): entry is { id: string; provider: DistillKnowledgeProvider } => Boolean(entry.provider) && entry.provider!.locality === confirmedLocality.get(entry.id)).map((entry) => entry.provider);
 			const missingProviders = scope.knowledgeProviders.filter((id) => !providers.has(id) || providers.get(id)!.locality !== confirmedLocality.get(id));
 			const comparisons: Array<{ claimId: string; providers: Record<string, DistillKnowledgeItem[]> }> = [];
-			let remainingItems = 30;
-			let remainingCharacters = MAX_ARTIFACT_CHARS - 8_000;
 			let truncated = false;
 			for (const claim of params.claims) {
 				if (!ID.test(claim.id)) throw new Error(`Invalid claim id: ${claim.id}`);
 				const found: Record<string, DistillKnowledgeItem[]> = {};
 				for (const provider of selectedProviders) {
-					if (remainingItems <= 0 || remainingCharacters <= 0) { truncated = true; break; }
 					try {
-						const requestLimit = Math.min(params.limitPerProvider ?? 5, remainingItems);
+						const requestLimit = params.limitPerProvider ?? 5;
 						const items = await provider.search(claim.query, { cwd: identity.root, limit: requestLimit, ...(signal ? { signal } : {}) });
-						found[provider.id] = [];
-						for (const item of items.slice(0, requestLimit)) {
-							const normalized: DistillKnowledgeItem = {
-								provider: provider.id, id: sanitizeDistillText(String(item.id), 160), kind: sanitizeDistillText(String(item.kind), 80),
-								content: sanitizeDistillText(String(item.content), Math.min(4_000, remainingCharacters)),
-								evidence: item.evidence.filter((path) => typeof path === "string").slice(0, 20).map((path) => sanitizeDistillText(path, 500)),
-								...(item.metadata ? { metadata: Object.fromEntries(Object.entries(item.metadata).filter(([key, value]) => ["score", "status", "verified_at", "verified_commit", "type", "source"].includes(key) && ["string", "number", "boolean"].includes(typeof value))) } : {}),
-							};
-							const size = JSON.stringify(normalized).length;
-							if (size > remainingCharacters) { truncated = true; break; }
-							found[provider.id]!.push(normalized);
-							remainingCharacters -= size;
-							remainingItems--;
-						}
+						if (items.length > requestLimit) truncated = true;
+						found[provider.id] = items.slice(0, requestLimit).map((item): DistillKnowledgeItem => ({
+							provider: provider.id,
+							id: sanitizeDistillText(String(item.id)),
+							kind: sanitizeDistillText(String(item.kind)),
+							content: sanitizeDistillText(String(item.content)),
+							evidence: item.evidence.filter((path) => typeof path === "string").map((path) => sanitizeDistillText(path)),
+							...(item.metadata ? { metadata: Object.fromEntries(Object.entries(item.metadata).filter(([key, value]) => ["score", "status", "verified_at", "verified_commit", "type", "source"].includes(key) && ["string", "number", "boolean"].includes(typeof value))) } : {}),
+						}));
 					} catch (error) {
-						const item = { provider: provider.id, id: "provider-error", kind: "error", content: sanitizeDistillText(error instanceof Error ? error.message : String(error), 1_000), evidence: [] };
-						found[provider.id] = [item]; remainingCharacters -= JSON.stringify(item).length; remainingItems--;
+						found[provider.id] = [{ provider: provider.id, id: "provider-error", kind: "error", content: sanitizeDistillText(error instanceof Error ? error.message : String(error)), evidence: [] }];
 					}
 				}
 				comparisons.push({ claimId: claim.id, providers: found });
-				if (remainingItems <= 0 || remainingCharacters <= 0) { truncated = true; break; }
 			}
 			const payload = { generatedAt: new Date().toISOString(), selectedProviders: scope.knowledgeProviders, missingProviders, truncated, comparisons };
 			const serialized = `${JSON.stringify(payload, null, 2)}\n`;
-			if (serialized.length > MAX_ARTIFACT_CHARS) throw new Error("Knowledge comparison exceeded its aggregate artifact budget.");
 			const path = await assertSafeArtifactPath(identity.privateRoot, params.runId, "comparisons/providers.json");
 			await import("node:fs/promises").then(({ mkdir }) => mkdir(dirname(path), { recursive: true, mode: 0o700 }));
 			await atomicWriteFile(path, serialized, 0o600);
@@ -345,8 +346,8 @@ export default function distillExtension(pi: ExtensionAPI): void {
 		name: "distill_instruction_check", label: "Measure Instruction Promotion",
 		description: "Apply the exceptional AGENTS.md/rule admission gate and measure exact context burden. It rejects examples and explanatory prose, but remains advisory and never edits guidance.",
 		parameters: Type.Object({
-			candidate: Type.String({ minLength: 1, maxLength: 2_000 }), destination: StringEnum(["agents", "rule"] as const), targetPath: Type.String({ maxLength: 500 }),
-			paths: Type.Optional(Type.Array(Type.String({ maxLength: 500 }), { maxItems: 50 })), evidencePaths: Type.Array(Type.String({ maxLength: 500 }), { minItems: 1, maxItems: 20 }), criticality: Type.String({ maxLength: 2_000 }), nonObviousness: Type.String({ maxLength: 2_000 }), repeatedApplicability: Type.String({ maxLength: 2_000 }), failureImpact: Type.String({ maxLength: 2_000 }),
+			candidate: Type.String({ minLength: 1 }), destination: StringEnum(["agents", "rule"] as const), targetPath: Type.String(),
+			paths: Type.Optional(Type.Array(Type.String())), evidencePaths: Type.Array(Type.String(), { minItems: 1 }), criticality: Type.String(), nonObviousness: Type.String(), repeatedApplicability: Type.String(), failureImpact: Type.String(),
 		}, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const identity = await repository(ctx);

@@ -55,7 +55,7 @@ Write one flat task or stage at a time through `task_write` and `stage_write`; i
 
 Start/resume uses the extension-owned permission-bypass confirmation before launching unattended children whenever the current session is not already in bypass. Cancellation launches nothing.
 
-The runtime advances ordered stages through implementation/check repair, integration, stage checks, optional stage review/fix, whole-branch review/fix, and final E2E/fix. The main session does not reproduce the scheduler. It intervenes only for contradictory authority, material user-owned decisions, critical risk, unsafe/destructive recovery, unanswerable clarification, or exhausted retries.
+The runtime advances ordered stages through implementation/check repair, integration, stage checks, optional stage review/fix, whole-branch review/fix, and final E2E/fix. The main session does not reproduce the scheduler. It resolves diagnosed task/check defects and supplies new guidance for exhausted runtime slots through bounded corrections in the already-authorized run, preserving completed work and retry history without replacement-story ceremony. Material user-owned decisions, critical risk, unsafe/destructive recovery, and unanswerable clarification still return to the user.
 
 Workers receive complete task description/scope/delivery in stable context. `task_clarify` is an exceptional bounded line-read/literal-search surface over story `spec` or `design`. Final E2E receives `e2e` directly.
 
@@ -66,7 +66,7 @@ Completion produces one `outcome.md` and a briefing covering delivered behavior,
 - Authorization belongs to phases, not acknowledgements.
 - First story persistence always returns to user review before planning.
 - Planning never authorizes execution.
-- Start and resume require a clear user request and any required bypass confirmation.
+- Start and explicit resume require a clear user request and any required bypass confirmation; routine correction-and-resume within an already-authorized run does not add a user checkpoint.
 - Material outcome, scope, policy, privacy/security, irreversible, destructive, or critical-risk decisions return to the user.
 - New evidence returns to the phase that owns it rather than being buried downstream.
 

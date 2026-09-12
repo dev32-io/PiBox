@@ -39,6 +39,8 @@ export interface DeliveryHistory {
 }
 
 export interface TaskDetail extends TaskCard {
+	failure?: RuntimeSummaryProjection;
+	executionCorrected?: boolean;
 	brief?: string;
 	scope?: string;
 	delivery?: string;
@@ -96,6 +98,7 @@ export interface ReportSummary {
 	status: string;
 	verdict?: string;
 	attempt?: number;
+	repairCount?: number;
 	scope: { kind: "task" | "stage" | "story" | "final" | "e2e" | "unknown"; id?: string };
 	taskId?: string;
 	findingCount: number;
@@ -104,13 +107,49 @@ export interface ReportSummary {
 	diagnostics: Diagnostic[];
 }
 
+export interface E2ECaseEvidenceRef {
+	label: string;
+	memberPath?: string;
+}
+
+export interface E2ECaseProjection {
+	caseId: string;
+	title?: string;
+	status: string;
+	executedActions: string[];
+	observations: string[];
+	evidenceRefs: E2ECaseEvidenceRef[];
+	recorded: boolean;
+}
+
+export interface RecordedE2EReportProjection {
+	sourcePath: string;
+	sourceMemberPath: string;
+	result: string;
+	summary: string;
+	findings: string[];
+	cases: E2ECaseProjection[];
+	diagnostics: Diagnostic[];
+}
+
+export interface CurrentE2EProjection {
+	phase: "pending" | "testing" | "fixing" | "attention" | "passed";
+	repairCount: number;
+	priorContext: boolean;
+	lastAction?: RuntimeSummaryProjection;
+}
+
 export interface ReportDetail extends ReportSummary {
+	title?: string;
 	body?: string;
+	failure?: RuntimeSummaryProjection;
 	findings: Finding[];
 	riskAcceptance?: string;
 	history: Array<{ attempt: number; path: string; body?: string; available: boolean }>;
 	evidence: EvidenceMetadata[];
 	caseResults?: Array<{ caseId: string; status: string; executedActions: string[]; observations: string[]; evidenceRefs: string[] }>;
+	currentE2E?: CurrentE2EProjection;
+	recordedE2E?: RecordedE2EReportProjection;
 }
 
 export interface CheckAggregate {
@@ -127,12 +166,25 @@ export interface FindingCounts {
 	total: number;
 }
 
+export interface FailureDiagnosticProjection {
+	checkId: string;
+	command: string;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	outputTruncated: boolean;
+}
+
 export interface RuntimeSummaryProjection {
 	code: string;
 	summary: string;
+	causeCode?: string;
+	failedCheckId?: string;
+	details?: string;
+	diagnostic?: FailureDiagnosticProjection;
 }
 
-export type WorkflowTimingCategory = "implementation" | "integration" | "verification" | "review" | "e2e";
+export type WorkflowTimingCategory = "implementation" | "integration" | "verification" | "repair" | "review" | "e2e";
 
 export interface StageTimingProjection {
 	workflowMs: number;

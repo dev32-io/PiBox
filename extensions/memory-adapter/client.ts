@@ -58,7 +58,7 @@ export class Mem0Client {
 		if (this.apiKey) headers.set("x-api-key", this.apiKey);
 		const response = await fetch(`${this.baseUrl}${path}`, { ...init, headers, signal: combined, redirect: "manual" });
 		const text = await response.text();
-		if (!response.ok) throw new Error(`Mem0 ${response.status}: ${text.slice(0, 500)}`);
+		if (!response.ok) throw new Error(`Mem0 ${response.status}: ${text}`);
 		return text ? JSON.parse(text) : undefined;
 	}
 

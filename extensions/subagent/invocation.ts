@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALL_TOOLS_SUBAGENT_ENV, PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE, SUBAGENT_CONTROL_TOOLS, usesAllTools } from "./tool-policy.js";
+import { SUBAGENT_EVENT_FD, SUBAGENT_EVENT_FD_ENV, SUBAGENT_PROMPT_PATH_ENV, SUBAGENT_PROMPT_TOKEN } from "./report-bridge.js";
 
 export interface SubagentInvocationRequest {
 	readonly agentId: string;
@@ -40,12 +41,18 @@ export interface PiInvocationResolverOptions {
 }
 
 export const LIFETIME_WRAPPER_PATH = fileURLToPath(new URL("./lifetime-wrapper.mjs", import.meta.url));
+export const REPORT_BRIDGE_EXTENSION_PATH = fileURLToPath(new URL("./report-bridge.ts", import.meta.url));
 /** Consumed by the standalone fast-mode extension when explicitly loaded. */
 export const SUBAGENT_FAST_ENV = "PIBOX_FAST_CHILD_ENABLED";
 
 /** Private sidecar consumed by Pi's documented file-valued prompt option. */
 export function stableSystemPromptPath(transcriptPath: string): string {
 	return `${transcriptPath}.append-system-prompt.md`;
+}
+
+/** Attempt-specific sidecar transformed into the exact user message by the child bridge. */
+export function attemptUserPromptPath(transcriptPath: string, attemptId: string): string {
+	return `${transcriptPath}.${attemptId}.user-prompt.md`;
 }
 
 /** Wrap an invocation in the stdin liveness-lease helper. */
@@ -66,17 +73,20 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 	return async (request) => {
 		const pi = options.piInvocation ?? currentPiInvocation();
 		let stableSystemContextPath: string | undefined;
+		const userPromptPath = attemptUserPromptPath(request.transcriptPath, request.attemptId);
+		await mkdir(dirname(userPromptPath), { recursive: true, mode: 0o700 });
 		if (request.stableSystemContext) {
 			stableSystemContextPath = stableSystemPromptPath(request.transcriptPath);
-			await mkdir(dirname(stableSystemContextPath), { recursive: true, mode: 0o700 });
 			await writeFile(stableSystemContextPath, request.stableSystemContext, { encoding: "utf8", mode: 0o600 });
 		}
+		await writeFile(userPromptPath, request.attemptUserPrompt, { encoding: "utf8", mode: 0o600 });
 		const allTools = usesAllTools(request.tools);
 		const toolArgs = allTools
 			? ["--exclude-tools", SUBAGENT_CONTROL_TOOLS.join(",")]
 			: request.tools.length > 0 ? ["--tools", request.tools.join(",")] : ["--no-tools"];
 		const args = [
 			...pi.args,
+			"--extension", REPORT_BRIDGE_EXTENSION_PATH,
 			...request.extensionPaths.flatMap((path) => ["--extension", path]),
 			"--mode", "json", "-p",
 			"--session", request.transcriptPath,
@@ -87,7 +97,7 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 			...toolArgs,
 			...(stableSystemContextPath ? ["--append-system-prompt", stableSystemContextPath] : []),
 			...request.skillPaths.flatMap((path) => ["--skill", path]),
-			"--", request.attemptUserPrompt,
+			"--", SUBAGENT_PROMPT_TOKEN,
 		];
 		const env = {
 			...pi.env,
@@ -98,6 +108,8 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 			...(allTools ? { [ALL_TOOLS_SUBAGENT_ENV]: "1" } : {}),
 			[PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE,
 			[SUBAGENT_FAST_ENV]: request.fast ? "1" : "0",
+			[SUBAGENT_EVENT_FD_ENV]: String(SUBAGENT_EVENT_FD),
+			[SUBAGENT_PROMPT_PATH_ENV]: userPromptPath,
 		};
 		return createLifetimeWrappedInvocation({ command: pi.command, args, env }, options.lifetimeTermGraceMs);
 	};

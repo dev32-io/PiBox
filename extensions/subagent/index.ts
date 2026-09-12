@@ -19,9 +19,9 @@ import { assertTreeNavigationAllowed, sameRuntimeOwner, type ActivationLifecycle
 import type { LogicalAgentHandle, LogicalAgentSnapshot, RuntimeOwner, SubagentRoutingMetadata, SubagentService, TerminalResult } from "./api.js";
 import { loadSubagentCatalog, type LoadSubagentCatalogOptions } from "./catalog.js";
 import { subagentSpawnToolDescription } from "./catalog-description.js";
-import { MAX_SUBAGENT_TITLE_CHARACTERS, normalizeSubagentTitle } from "./presentation.js";
+import { normalizeSubagentTitle } from "./presentation.js";
 import { formatSubagentFallback } from "./display.js";
-import { DEFAULT_REPORT_CHARACTERS, MAX_REPORT_CHARACTERS, readReportPage, terminalReportText } from "./report.js";
+import { DEFAULT_REPORT_CHARACTERS, MAX_REPORT_CHARACTERS, readReportPage, readTerminalReport, terminalReportText } from "./report.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "./child-extensions.js";
 import { assemblePromptContext } from "./prompt-context.js";
 import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
@@ -53,6 +53,8 @@ import {
 
 const MAX_STATUS_AGENTS = 20;
 const MAX_TOOL_OUTPUT_BYTES = 48 * 1024;
+const MAX_INLINE_REPORT_BYTES = 16 * 1024;
+const MAX_REPORT_PREVIEW_BYTES = 8 * 1024;
 const ACTIVE_STATES = new Set(["launching", "running", "stopping"]);
 const WORKFLOW_STORY_ID = "PIBOX_WORKFLOW_STORY_ID";
 const WORKFLOW_SLOT_ID = "PIBOX_WORKFLOW_SLOT_ID";
@@ -174,6 +176,16 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 
 	const toolDetails = (current: SessionBinding, agentId: string, terminal?: TerminalResult) => {
 		const snapshot = agentSnapshot(current, agentId);
+		const terminalMetadata = terminal ? {
+			status: terminal.status,
+			reason: terminal.reason,
+			attemptId: terminal.attemptId,
+			exitCode: terminal.exitCode,
+			...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}),
+			...(terminal.reportBytes === undefined ? {} : { reportBytes: terminal.reportBytes }),
+			...(terminal.reportCharacters === undefined ? {} : { reportCharacters: terminal.reportCharacters }),
+			...(terminal.progress ? { progress: terminal.progress } : {}),
+		} : undefined;
 		return {
 			agentId,
 			uiRef: { owner: structuredClone(current.owner), agentId },
@@ -187,7 +199,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 				...(snapshot.progress ? { progress: snapshot.progress } : {}),
 				processStatus: ACTIVE_STATES.has(snapshot.state) ? (snapshot.progress?.processStartedAt ? "active" : "starting") : undefined,
 			} : {}),
-			...(terminal ? { terminal } : {}),
+			...(terminalMetadata ? { terminal: terminalMetadata } : {}),
 		};
 	};
 
@@ -217,15 +229,19 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	const terminalResult = (current: SessionBinding, agentId: string, terminal: TerminalResult) => {
 		const snapshot = agentSnapshot(current, agentId);
 		const identity = `${snapshot?.agent ?? "Subagent"}${snapshot?.title ? ` · ${snapshot.title}` : ""} (${agentId})`;
-		const report = boundedUtf8(terminalReportText(terminal), MAX_TOOL_OUTPUT_BYTES - 2_000);
-		const text = `${identity} · ${terminal.status}\n${routingNotice(snapshot?.routing)}${report}\n\nRead this existing report with subagent_read (agentId: ${agentId}, attemptId: ${terminal.attemptId}); use subagent_continue only for new work.`;
+		const report = terminalReportPreview(terminal, MAX_TOOL_OUTPUT_BYTES - 2_000);
+		const reference = terminal.reportPath
+			? `Report: ${terminal.reportPath}\nUse normal read/grep for the complete report; subagent_read remains a compatibility reader.`
+			: `Read this existing report with subagent_read (agentId: ${agentId}, attemptId: ${terminal.attemptId}); use subagent_continue only for new work.`;
+		const text = `${identity} · ${terminal.status}\n${routingNotice(snapshot?.routing)}${report}\n\n${reference}`;
 		if (terminal.status === "failed") throw new Error(text);
 		return result(text, toolDetails(current, agentId, terminal));
 	};
 
 	const formatSettlements = (settlements: readonly PendingBackgroundSettlement[]) => {
-		const details = settlements.map(({ delivery, outcome }) => {
-			const status = "terminal" in outcome ? outcome.terminal.status : "failed";
+		const items = settlements.map(({ delivery, outcome }) => {
+			const terminal = "terminal" in outcome ? outcome.terminal : undefined;
+			const status = terminal?.status ?? "failed";
 			const snapshot = binding?.active && sameRuntimeOwner(binding.owner, delivery.owner)
 				? agentSnapshot(binding, delivery.agentId) : undefined;
 			const summary = boundedUtf8("terminal" in outcome ? terminalReportText(outcome.terminal) : outcome.error, 1_200);
@@ -234,14 +250,22 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 				agentId: boundedUtf8(delivery.agentId, 256),
 				...(snapshot?.title ? { title: snapshot.title } : {}),
 				...(snapshot?.routing ? { routing: snapshot.routing } : {}),
-				...("terminal" in outcome ? { attemptId: outcome.terminal.attemptId } : {}),
+				...(terminal ? {
+					attemptId: terminal.attemptId,
+					reason: terminal.reason,
+					...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}),
+					...(terminal.reportBytes === undefined ? {} : { reportBytes: terminal.reportBytes }),
+					...(terminal.reportCharacters === undefined ? {} : { reportCharacters: terminal.reportCharacters }),
+					...(terminal.progress ? { progress: terminal.progress } : {}),
+				} : {}),
 				status,
 				summary,
 			};
 		});
-		const text = boundedUtf8(details.map((item) =>
-			`[Subagent ${item.status}]\n${item.agent}${item.title ? ` · ${item.title}` : ""} (${item.agentId})\n${routingNotice(item.routing)}${item.summary}${item.attemptId ? `\nRead the existing report with subagent_read (agentId: ${item.agentId}, attemptId: ${item.attemptId}); no new model turn needed.` : ""}`,
+		const text = boundedUtf8(items.map((item) =>
+			`[Subagent ${item.status}]\n${item.agent}${item.title ? ` · ${item.title}` : ""} (${item.agentId})\n${routingNotice(item.routing)}${item.summary}${item.reportPath ? `\nReport: ${item.reportPath}\nUse normal read/grep for the complete report; subagent_read remains compatible.` : item.attemptId ? `\nRead the existing report with subagent_read (agentId: ${item.agentId}, attemptId: ${item.attemptId}); no new model turn needed.` : ""}`,
 		).join("\n\n"), MAX_TOOL_OUTPUT_BYTES);
+		const details = items.map(({ summary: _summary, ...metadata }) => metadata);
 		return { text, details };
 	};
 
@@ -305,7 +329,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		],
 		parameters: Type.Object({
 			agent: Type.String({ description: "Exact configured agent name" }),
-			title: Type.Optional(Type.String({ maxLength: MAX_SUBAGENT_TITLE_CHARACTERS, description: "Optional short display label (3–7 words). Not an agent name or assignment; retained across continuation." })),
+			title: Type.Optional(Type.String({ description: "Optional display label (prefer 3–7 words). Not an agent name or assignment; retained across continuation." })),
 			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions. Use readable prose with normal word spacing." }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
 			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Override the agent default up or down; guidance, not a cap. Does not replace an agent's configured model. Local never uses paid providers." })),
@@ -477,7 +501,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "subagent_read",
 		label: "Read Subagent Report",
-		description: "Read a bounded page of a settled standalone subagent's latest existing terminal report in this activation. No model turn, wait, or continuation. Offsets count Unicode characters; pages contain at most 12,000 characters / 48KB. Supply the returned attemptId on later pages to reject a replaced report.",
+		description: "Compatibility reader for a bounded page of the same settled standalone report advertised by its /tmp report path. Prefer normal read/grep. No model turn, wait, or continuation. Offsets count Unicode characters; pages contain at most 12,000 characters / 48KB. Supply the returned attemptId on later pages to reject a replaced report.",
 		parameters: Type.Object({
 			agentId: Type.String(),
 			attemptId: Type.Optional(Type.String({ description: "Expected report attempt ID; prevents mixing pages after a continuation" })),
@@ -496,12 +520,14 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			if (binding !== current || !current.active) throw new Error("Report belongs to an ended session activation");
 			if (signal?.aborted) throw abortError(signal);
 			if (params.attemptId && params.attemptId !== terminal.attemptId) throw new Error("Report attempt changed; read again from offset 0 without the old attemptId");
-			const { text, ...page } = readReportPage(terminalReportText(terminal), params.offset, params.limit);
+			const report = await readTerminalReport(terminal);
+			if (binding !== current || !current.active) throw new Error("Report belongs to an ended session activation");
+			const { text, ...page } = readReportPage(report, params.offset, params.limit);
 			const identity = `${target.agent}${target.title ? ` · ${target.title}` : ""} (${params.agentId})`;
 			const next = page.nextOffset === undefined ? "End of report." : `Next: subagent_read agentId=${params.agentId} attemptId=${terminal.attemptId} offset=${page.nextOffset}`;
-			return result(`${identity} · ${terminal.status} · attempt ${terminal.attemptId}\nCharacters ${page.offset}–${page.offset + page.count} of ${page.totalCharacters}. ${next}\n\n${text}`, {
+			return result(`${identity} · ${terminal.status} · attempt ${terminal.attemptId}${terminal.reportPath ? `\nReport: ${terminal.reportPath}` : ""}\nCharacters ${page.offset}–${page.offset + page.count} of ${page.totalCharacters}. ${next}\n\n${text}`, {
 				agentId: params.agentId, agent: target.agent, title: target.title,
-				state: terminal.status, routing: target.routing, attemptId: terminal.attemptId, ...page,
+				state: terminal.status, routing: target.routing, attemptId: terminal.attemptId, ...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}), ...page,
 			});
 		},
 	});
@@ -731,12 +757,19 @@ function waitForDuration(durationMs: number, signal: AbortSignal | undefined): P
 	});
 }
 
+function terminalReportPreview(terminal: TerminalResult, maximumBytes: number): string {
+	const text = terminalReportText(terminal);
+	const bytes = Buffer.byteLength(text, "utf8");
+	if (!terminal.reportPath || bytes <= Math.min(maximumBytes, MAX_INLINE_REPORT_BYTES)) return boundedUtf8(text, maximumBytes);
+	return `${boundedUtf8(text, Math.min(maximumBytes, MAX_REPORT_PREVIEW_BYTES))}\n\n[Preview only; complete report is at ${terminal.reportPath}.]`;
+}
+
 function boundedUtf8(value: string, maximumBytes: number): string {
 	const buffer = Buffer.from(value, "utf8");
 	if (buffer.length <= maximumBytes) return value;
 	let text = buffer.subarray(0, maximumBytes).toString("utf8");
 	while (text.endsWith("�")) text = text.slice(0, -1);
-	return `${text}\n\n[Subagent output truncated; use subagent_read to retrieve the existing report without another model turn.]`;
+	return `${text}\n\n[Subagent output truncated.]`;
 }
 
 export * from "./activation.js";

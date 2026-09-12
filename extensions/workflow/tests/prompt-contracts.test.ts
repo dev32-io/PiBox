@@ -39,10 +39,15 @@ test("agent definitions stay generic while workflow protocols remain launch-time
 	assert.doesNotMatch(task, /latest ten entries|Context Source Manifest/i);
 	assert.match(task, /Do not seek `events\.jsonl`, historical reports,[\s\S]+legacy handoffs/i);
 	assert.match(task, /do not use legacy `task_checkpoint` or `task_complete`/i);
+	assert.match(task, /initial system context[\s\S]+eight complete implementation ledger entries/i);
+	assert.match(task, /`workflow_ledger`[\s\S]+action: "append"[\s\S]+queues the entry[\s\S]+parent harness persists/i);
+	assert.match(task, /do not manufacture an entry/i);
 	const repair = await readFile(join(root, "prompt/workflow-repair-agent.md"), "utf8");
 	assert.match(repair, /current structured findings or latest failure[\s\S]+exact repository coordinates/i);
 	assert.match(repair, /Fix only the supplied findings or failure/i);
 	assert.match(repair, /do not consult `events\.jsonl`/i);
+	assert.match(repair, /system snapshot stays unchanged[\s\S]+fixer continues/i);
+	assert.match(repair, /`workflow_ledger`[\s\S]+queues the entry[\s\S]+queued acknowledgement is not proof of persistence/i);
 	const review = await readFile(join(root, "prompt/workflow-review-agent.md"), "utf8");
 	assert.match(review, /exact role and contract boundary/i);
 	assert.match(review, /stage review[\s\S]+scoped task contracts[\s\S]+full story specification and design/i);
@@ -50,6 +55,10 @@ test("agent definitions stay generic while workflow protocols remain launch-time
 	assert.match(review, /complete rendered story E2E contract[\s\S]+Preserve every authored `E2E-NNN` case ID/i);
 	assert.match(review, /Do not consult `events\.jsonl`/i);
 	assert.doesNotMatch(review, /caseResults|approved matrix case|evaluation_context/i);
+	assert.match(review, /Reviewers and E2E evaluators receive no implementation ledger context or ledger tools/i);
+	assert.match(review, /do not read `ledger\.yaml` or call `workflow_ledger`/i);
+	assert.match(review, /For re-review[\s\S]+do not restart a broad initial audit/i);
+	assert.match(review, /On retest[\s\S]+still exercise every required case/i);
 	const implementer = await readFile(join(root, "agent-definitions/implementer.md"), "utf8");
 	assert.match(implementer, /smallest correct change, not merely the shortest diff/i);
 	assert.match(implementer, /avoid speculative features, abstractions, compatibility layers, dependencies, and drive-by refactors/i);

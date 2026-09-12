@@ -1,16 +1,35 @@
-import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
 
 const mode = process.argv[2] ?? "success";
 const prompt = process.env.FAKE_PROMPT ?? "prompt";
 const transcript = process.env.FAKE_TRANSCRIPT;
 const signalLog = process.env.FAKE_SIGNAL_LOG;
-const emit = (value, newline = true) => process.stdout.write(`${JSON.stringify(value)}${newline ? "\n" : ""}`);
+const reportPath = process.env.PIBOX_SUBAGENT_REPORT_PATH;
+const eventFd = Number(process.env.PIBOX_SUBAGENT_EVENT_FD ?? 3);
+const channel = (value, newline = true) => writeSync(eventFd, `${JSON.stringify(value)}${newline ? "\n" : ""}`);
+const emit = (value, newline = true) => {
+	process.stdout.write(`${JSON.stringify(value)}${newline ? "\n" : ""}`);
+	if (value.type === "message_end" && value.message?.role === "assistant" && Array.isArray(value.message.content)) {
+		const text = value.message.content.flatMap((part) => part?.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n");
+		if (reportPath) writeFileSync(reportPath, text, { mode: 0o600 });
+		channel({
+			type: "message_end",
+			message: { role: "assistant", ...(value.message.stopReason ? { stopReason: value.message.stopReason } : {}), ...(value.message.errorMessage ? { errorMessage: value.message.errorMessage } : {}) },
+			report: { bytes: Buffer.byteLength(text), sha256: createHash("sha256").update(text).digest("hex") },
+		}, newline);
+		return;
+	}
+	channel(value, newline);
+};
 
 if (transcript) appendFileSync(transcript, `${JSON.stringify({ type: "fake_turn", prompt })}\n`, { mode: 0o600 });
 
 switch (mode) {
 	case "success":
+	case "success-partial":
 		emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "display draft" } });
+		if (mode === "success-partial" && reportPath) writeFileSync(`${reportPath}.tmp-stale`, "partial", { mode: 0o600 });
 		emit({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "final answer" }] } });
 		emit({ type: "agent_settled" });
 		break;
@@ -28,7 +47,7 @@ switch (mode) {
 		emit({ type: "agent_settled" });
 		break;
 	case "malformed":
-		process.stdout.write("{not-json}\n");
+		writeSync(eventFd, "{not-json}\n");
 		emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "recovered" }] } });
 		emit({ type: "agent_settled" });
 		break;
@@ -38,6 +57,15 @@ switch (mode) {
 		break;
 	case "continuation":
 		emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: `reply:${prompt}` }] } });
+		emit({ type: "agent_settled" });
+		break;
+	case "report-error":
+		channel({ type: "report_error", error: "simulated write failure" });
+		emit({ type: "agent_settled" });
+		break;
+	case "missing-report":
+		emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "vanished" }] } });
+		if (reportPath) rmSync(reportPath, { force: true });
 		emit({ type: "agent_settled" });
 		break;
 	case "empty":

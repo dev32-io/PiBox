@@ -3,6 +3,8 @@ import { Type } from "typebox";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository } from "./repository.js";
 import { WorkItemStore } from "./work-items.js";
+import { isLedgerWriterAction, writeLedgerSubmission } from "./ledger-submission.js";
+import { isSubagentRuntime } from "../subagent/tool-policy.js";
 
 const MAX_CLARIFICATION_BYTES = 16 * 1024;
 const DEFAULT_LINE_COUNT = 200;
@@ -106,6 +108,24 @@ export function isTargetTaskProcess(): boolean {
 	return Boolean(process.env.PIBOX_WORKFLOW_STORY_ID && process.env.PIBOX_WORKFLOW_TASK_ID && process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN);
 }
 
+const TASK_LEDGER_ACTIONS = new Set(["task-launch", "task-repair"]);
+
+function ledgerAttemptIdentity(): { storyId: string; action: string; attemptToken: string; taskId?: string } {
+	if (!isSubagentRuntime(process.env)) throw new HarnessError("CAPABILITY_DENIED", "workflow_ledger requires managed subagent runtime identity");
+	const storyId = process.env.PIBOX_WORKFLOW_STORY_ID;
+	const action = process.env.PIBOX_WORKFLOW_ACTION;
+	const attemptToken = process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN;
+	if (!storyId || !action || !attemptToken || !isLedgerWriterAction(action)) throw new HarnessError("CAPABILITY_DENIED", "workflow_ledger requires an eligible managed workflow writer attempt");
+	const taskId = process.env.PIBOX_WORKFLOW_TASK_ID;
+	if (TASK_LEDGER_ACTIONS.has(action) && !taskId) throw new HarnessError("CAPABILITY_DENIED", `workflow_ledger ${action} requires managed task identity`);
+	return { storyId, action, attemptToken, ...(taskId ? { taskId } : {}) };
+}
+
+export function isLedgerWriterProcess(): boolean {
+	try { ledgerAttemptIdentity(); return true; }
+	catch { return false; }
+}
+
 async function targetTaskStore(ctx: ExtensionContext): Promise<{ store: WorkItemStore; storyId: string }> {
 	const storyId = process.env.PIBOX_WORKFLOW_STORY_ID;
 	const taskId = process.env.PIBOX_WORKFLOW_TASK_ID;
@@ -117,7 +137,7 @@ async function targetTaskStore(ctx: ExtensionContext): Promise<{ store: WorkItem
 }
 
 export function registerWorkerCapabilities(pi: ExtensionAPI): void {
-	pi.registerTool({
+	if (isTargetTaskProcess()) pi.registerTool({
 		name: "task_clarify",
 		label: "Task Clarification",
 		description: "Exceptionally search or read a bounded line range from the free-form story spec or design when the assigned task and repository leave a concrete ambiguity. Search uses a case-insensitive literal and returns bounded matching passages. This tool cannot list or mutate resources.",
@@ -125,6 +145,27 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _update, ctx) {
 			try { const target = await targetTaskStore(ctx); return result(await readTaskClarification(target.store, target.storyId, params)); }
 			catch (error) { throw new Error(describeHarnessError(error)); }
+		},
+	});
+
+	if (isLedgerWriterProcess()) pi.registerTool({
+		name: "workflow_ledger",
+		label: "Queue Workflow Ledger Note",
+		description: "Queue one optional non-obvious finding with supporting evidence for harness validation and persistence when this managed writer attempt settles.",
+		parameters: Type.Object({
+			action: Type.Literal("append"),
+			entry: Type.String({ minLength: 1 }),
+			evidence: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+		}, { additionalProperties: false }),
+		async execute(_id, params) {
+			try {
+				ledgerAttemptIdentity();
+				if (params.action !== "append") throw new HarnessError("CAPABILITY_DENIED", "workflow_ledger supports append only");
+				const reportPath = process.env.PIBOX_SUBAGENT_REPORT_PATH;
+				if (!reportPath) throw new HarnessError("CAPABILITY_DENIED", "workflow_ledger requires harness-managed attempt report path");
+				await writeLedgerSubmission(reportPath, { summary: params.entry, ...(params.evidence === undefined ? {} : { evidence: params.evidence }) });
+				return result("Queued for harness persistence when this attempt settles; not yet persisted.");
+			} catch (error) { throw new Error(describeHarnessError(error)); }
 		},
 	});
 }

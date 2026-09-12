@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -143,7 +145,7 @@ class FakeService implements SubagentService {
 		this.emit(agentId, snapshot.attemptId!, "usage");
 	}
 
-	finish(agentId: string, status: TerminalStatus = "completed", text = "done"): void {
+	finish(agentId: string, status: TerminalStatus = "completed", text = "done", reportPath?: string, stderr?: string): void {
 		const snapshot = this.snapshots.get(agentId);
 		const pending = this.attempts.get(agentId);
 		if (!snapshot || !pending) return;
@@ -152,7 +154,18 @@ class FakeService implements SubagentService {
 		this.snapshots.set(agentId, { ...snapshot, handle, state: status, updatedAt: now, summary: text });
 		this.emit(agentId, snapshot.attemptId!, "terminal", { status });
 		this.attempts.delete(agentId);
-		const terminal = { owner: this.owner, handle, attemptId: snapshot.attemptId!, status, exitCode: status === "completed" ? 0 : null, text } as TerminalResult;
+		const terminal = {
+			owner: this.owner, handle, attemptId: snapshot.attemptId!, status,
+			reason: status === "completed" ? "completed" : status === "cancelled" ? "explicit_stop" : "failure",
+			exitCode: status === "completed" ? 0 : null, text,
+			...(stderr ? { stderr } : {}),
+			...(reportPath ? {
+				reportPath,
+				reportBytes: Buffer.byteLength(text),
+				reportCharacters: Array.from(text).length,
+				reportSha256: createHash("sha256").update(text, "utf8").digest("hex"),
+			} : {}),
+		} as TerminalResult;
 		this.terminals.set(agentId, terminal);
 		pending.resolve(terminal);
 	}
@@ -296,6 +309,7 @@ test("runtime role alone selects the standalone main or child surface", () => {
 
 test("spawn routing schema makes tier freedom and configured-model precedence explicit", () => {
 	const spawn = harness().tools.get("subagent_spawn");
+	assert.equal(spawn.parameters.properties.title.maxLength, undefined, "display heading length does not reject a logical label");
 	assert.match(spawn.parameters.properties.tier.description, /override the agent default up or down/i);
 	assert.match(spawn.parameters.properties.tier.description, /does not replace an agent's configured model/i);
 	assert.match(spawn.parameters.properties.tier.description, /Local never uses paid providers/);
@@ -356,6 +370,78 @@ test("background returns immediately and steers one terminal batch to the same b
 	assert.equal(f.sent.length, 1);
 	assert.match(f.sent[0].message.content, /background report/);
 	assert.deepEqual(f.sent[0].delivery, { deliverAs: "steer", triggerTurn: true });
+});
+
+test("foreground and background results advertise the harness report and subagent_read reads that same file", async (t) => {
+	const root = await mkdtemp(join("/tmp", "pibox-extension-reports-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+
+	const foregroundText = "small foreground report";
+	const foregroundPath = join(root, "foreground.md");
+	await writeFile(foregroundPath, foregroundText, { mode: 0o600 });
+	const foregroundPending = f.tools.get("subagent_spawn").execute("foreground", { agent: "general-purpose", task: "Foreground" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	f.services[0]!.finish("agent-1", "completed", foregroundText, foregroundPath);
+	const foreground = await foregroundPending;
+	assert.match(foreground.content[0].text, new RegExp(`Report: ${foregroundPath}`));
+	assert.match(foreground.content[0].text, /small foreground report/);
+	assert.equal(foreground.details.terminal.reportPath, foregroundPath);
+	const compatibilityRead = await f.tools.get("subagent_read").execute("read", { agentId: "agent-1" }, undefined, undefined, f.ctx);
+	assert.equal(compatibilityRead.details.reportPath, foregroundPath);
+	assert.ok(compatibilityRead.content[0].text.endsWith(foregroundText));
+	await rm(foregroundPath);
+	await assert.rejects(f.tools.get("subagent_read").execute("missing", { agentId: "agent-1" }, undefined, undefined, f.ctx), /report file is missing/i);
+
+	const backgroundText = "🙂".repeat(20_000);
+	const backgroundPath = join(root, "background.md");
+	await writeFile(backgroundPath, backgroundText, { mode: 0o600 });
+	const background = await f.tools.get("subagent_spawn").execute("background", { agent: "general-purpose", task: "Background", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(background.details.agentId, "completed", backgroundText, backgroundPath);
+	await waitUntil(() => f.sent.length === 1, "background report was not delivered");
+	assert.match(f.sent[0].message.content, new RegExp(`Report: ${backgroundPath}`));
+	assert.ok(Buffer.byteLength(f.sent[0].message.content) < 48 * 1024);
+	assert.equal(f.sent[0].message.details.settlements[0].reportPath, backgroundPath);
+	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("tool transcript details retain terminal metadata without complete reports or diagnostics", async (t) => {
+	const root = await mkdtemp(join("/tmp", "pibox-extension-detail-bounds-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	const sentinel = "PRIVATE-OVERSIZED-TERMINAL-SENTINEL";
+	const oversized = `${"x".repeat(24_000)}${sentinel}`;
+
+	const foregroundPath = join(root, "foreground.md");
+	await writeFile(foregroundPath, oversized, { mode: 0o600 });
+	const foregroundPending = f.tools.get("subagent_spawn").execute("foreground", { agent: "general-purpose", task: "Foreground" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	f.services[0]!.finish("agent-1", "completed", oversized, foregroundPath, `diagnostic-${sentinel}`);
+	const foreground = await foregroundPending;
+	assert.equal(JSON.stringify(foreground.details).includes(sentinel), false);
+	assert.deepEqual(Object.keys(foreground.details.terminal).sort(), ["attemptId", "exitCode", "reason", "reportBytes", "reportCharacters", "reportPath", "status"]);
+	assert.equal(foreground.details.terminal.status, "completed", "the TUI terminal-state metadata remains available");
+
+	const continuationPath = join(root, "continuation.md");
+	await writeFile(continuationPath, oversized, { mode: 0o600 });
+	const continuing = f.tools.get("subagent_continue").execute("continue", { agentId: "agent-1", task: "Continue" }, undefined, undefined, f.ctx);
+	await f.services[0]!.continuationSpawned.promise;
+	f.services[0]!.finish("agent-1", "completed", oversized, continuationPath, `diagnostic-${sentinel}`);
+	const continued = await continuing;
+	assert.equal(JSON.stringify(continued.details).includes(sentinel), false);
+	assert.equal(continued.details.terminal.attemptId, "attempt-3");
+
+	const backgroundPath = join(root, "background.md");
+	await writeFile(backgroundPath, oversized, { mode: 0o600 });
+	const background = await f.tools.get("subagent_spawn").execute("background", { agent: "general-purpose", task: "Background", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(background.details.agentId, "completed", oversized, backgroundPath, `diagnostic-${sentinel}`);
+	await waitUntil(() => f.sent.length === 1, "background report was not delivered");
+	assert.equal(JSON.stringify(f.sent[0].message.details).includes(sentinel), false);
+	assert.equal("summary" in f.sent[0].message.details.settlements[0], false);
+	assert.equal(f.sent[0].message.details.settlements[0].reportBytes, Buffer.byteLength(oversized));
+	await f.fire("session_shutdown", { reason: "quit" });
 });
 
 test("production workflow launch projects whitelisted provenance and configured tier without duplicating the footer", async () => {
@@ -471,7 +557,7 @@ test("wait subscribes once to background settlement and consumes automatic deliv
 	assert.equal(typeof settled.details.elapsedMs, "number");
 	assert.equal(settled.details.pendingCount, 1);
 	assert.deepEqual(settled.details.settlements, [
-		{ agent: "general-purpose", agentId: "agent-1", attemptId: "attempt-1", routing: f.services[0]!.launches[0]!.routing, status: "completed", summary: "dependency report" },
+		{ agent: "general-purpose", agentId: "agent-1", attemptId: "attempt-1", reason: "completed", routing: f.services[0]!.launches[0]!.routing, status: "completed" },
 	]);
 	assert.equal(f.sent.length, 0, "the wait result is the sole model-visible delivery");
 });

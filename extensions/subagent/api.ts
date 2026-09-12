@@ -86,7 +86,14 @@ export interface TerminalResult {
 	/** Semantic cause, preserved independently from the transport exit code. */
 	readonly reason: TerminalReason;
 	readonly exitCode: number | null;
+	/** Complete latest assistant text; structured workflow consumers must not receive a preview. */
 	readonly text: string;
+	/** Harness-authored, attempt-specific private report reference when capture succeeded. */
+	readonly reportPath?: string;
+	readonly reportBytes?: number;
+	readonly reportCharacters?: number;
+	/** Digest captured before settlement for safe later paging. */
+	readonly reportSha256?: string;
 	readonly stderr?: string;
 	readonly progress?: AgentProgress;
 }
@@ -180,7 +187,7 @@ export interface SubagentService {
 	/** Inspect live in-memory agents without exposing transcript paths or credentials. */
 	inspect(owner: RuntimeOwner, query?: SubagentInspection): readonly LogicalAgentSnapshot[];
 	stop(owner: RuntimeOwner, handle: LogicalAgentHandle): Promise<void>;
-	/** Release a settled logical agent and delete its private transcript and diagnostics. */
+	/** Release a settled logical agent and delete its private transcript; attempt reports remain in /tmp. */
 	release(owner: RuntimeOwner, handle: LogicalAgentHandle): Promise<void>;
 	replay(owner: RuntimeOwner, afterCursor?: number): SubagentReplay;
 	subscribe(owner: RuntimeOwner, afterCursor: number, listener: SubagentEventListener): SubagentSubscription;

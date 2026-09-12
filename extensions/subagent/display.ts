@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatAgentProgressSegments, type AgentProgress } from "./agent-progress.js";
-import { normalizeSubagentTitle } from "./presentation.js";
+import { shortSubagentTitle } from "./presentation.js";
 import type { SubagentUiAgentProjection, SubagentUiRouting } from "./ui-projection.js";
 
 export const SUBAGENT_STARTING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -40,7 +40,7 @@ export function formatSubagentRoute(tier: string | undefined, resolved?: { provi
 
 /** Defense-in-depth for restored or externally projected display metadata. */
 export function sanitizeSubagentTitle(value: unknown): string | undefined {
-	return typeof value === "string" ? normalizeSubagentTitle(value) : undefined;
+	return typeof value === "string" ? shortSubagentTitle(value) : undefined;
 }
 
 function routingFailureReason(routing: SubagentUiRouting): string | undefined {

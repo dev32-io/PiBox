@@ -125,7 +125,8 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 			"    tier: low",
 			"",
 		].join("\n"));
-		writeFileSync(join(root, ".pi", "agents", "trusted.md"), "---\nname: trusted\ndescription: Trusted repository helper\ntools: read, mcp:context7\ntier: high\n---\n\nComplete the assignment.\n");
+		const trustedDescription = `Trusted repository helper ${"with complete selection context ".repeat(20)}`.trim();
+		writeFileSync(join(root, ".pi", "agents", "trusted.md"), `---\nname: trusted\ndescription: ${trustedDescription}\ntools: read, mcp:context7\ntier: high\n---\n\nComplete the assignment.\n`);
 
 		const loaded = loadSubagentCatalog(root, { home });
 		assert.match(loaded.config.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
@@ -134,6 +135,7 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 		assert.equal(loaded.config.agents.custom?.tier, "low");
 		assert.deepEqual(loaded.config.agents.explorer?.tools, ["read", "grep", "find", "ls", "bash"], "harness files cannot replace frontmatter tools");
 		assert.deepEqual(loaded.config.agents.trusted?.tools, ["read", "mcp:context7"]);
+		assert.equal(loaded.config.agents.trusted?.description, trustedDescription, "descriptions are not rejected or shortened for presentation");
 		assert.equal(loaded.sources.length, 5);
 		assert.equal(loaded.diagnostics.some((diagnostic) => diagnostic.level === "warning" && /settings\.json/.test(diagnostic.message)), true);
 		assert.match(loaded.digest, /^sha256:[a-f0-9]{64}$/);

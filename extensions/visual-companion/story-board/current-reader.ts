@@ -2,11 +2,12 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
-import { parseStoryRuntimeState } from "../../workflow/story-runtime-store.js";
-import type { E2ERuntimeState, IntegrationRuntimeState, ReviewRuntimeState, StoryRuntimeState, TaskRuntimeState, VerificationRuntimeState, WorkflowMetricCategory } from "../../workflow/story-runtime-store.js";
+import { effectiveExecutionOverrides, parseStoryRuntimeState } from "../../workflow/story-runtime-store.js";
+import type { E2ERuntimeState, FailureSummary, IntegrationRuntimeState, ReviewRuntimeState, StoryRuntimeState, TaskRuntimeState, VerificationRuntimeState } from "../../workflow/story-runtime-store.js";
+import { parseE2e } from "../../workflow/authored-markdown.js";
 import { parseAuthoredTaskDocument, parseStoryDocument, parseStoryPlanDocument } from "../../workflow/work-items.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../../workflow/types.js";
-import { readBoundedCurrentRuntimeState, readCurrentEvidenceMetadata } from "./evidence.js";
+import { readCurrentE2EReport, readCurrentEvidenceMetadata, readCurrentRuntimeState, sanitizeCurrentEvidenceText } from "./evidence.js";
 import type { CheckAggregate, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, FindingCounts, ReportDetail, ReportSummary, RuntimeSummaryProjection, StageOperationProjection, StageProjection, StageTimingProjection, StorySummary, StoryWorkspace, TaskCard, TaskDetail, WorkflowMetricsProjection, WorkflowOverview } from "./models.js";
 import { orderDocuments, orderReports, orderTaskCards, projectStorySummary, projectTaskCard } from "./projector.js";
 
@@ -21,6 +22,9 @@ function publicRuntimeText(value: string): string {
 	return quoted.replace(/(^|[\s=(\[\]{},;])((?:[A-Za-z]:[\\/]|\/)[^\s"'`),;\]}]*)/g, "$1[private path]");
 }
 function contractDigest(value: unknown): string { return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`; }
+function e2ePhase(status: string): "pending" | "testing" | "fixing" | "attention" | "passed" {
+	return status === "completed" ? "passed" : status === "testing" ? "testing" : status === "fixing" || status === "fix_pending" ? "fixing" : status === "attention" || status === "interrupted" ? "attention" : "pending";
+}
 
 async function regularFile(path: string, root: string, repositoryRoot: string): Promise<boolean> {
 	const info = await lstat(path).catch(() => undefined); if (!info?.isFile() || info.isSymbolicLink()) return false;
@@ -28,14 +32,15 @@ async function regularFile(path: string, root: string, repositoryRoot: string): 
 	return Boolean(actual && actualRoot && repository && inside(repository, actualRoot) && inside(actualRoot, actual));
 }
 
-interface SafeCheck { id: string; status: string; failure?: { code: string; summary: string } }
-interface SafeOperation { status: string; repairCount: number; checks?: SafeCheck[]; result?: { code: string; summary: string }; failure?: { code: string; summary: string }; integratedCommit?: string }
+interface SafeCheck { id: string; status: string; failure?: RuntimeSummaryProjection }
+interface SafeOperation { status: string; repairCount: number; checks?: SafeCheck[]; result?: RuntimeSummaryProjection; failure?: RuntimeSummaryProjection; integratedCommit?: string }
 interface SafeTaskState extends SafeOperation { id: string; checks: SafeCheck[]; contributionCommit?: string }
 interface SafeReview extends SafeOperation { iteration: number; currentFindings: Finding[]; acceptedRisks: Array<{ findingId: string; rationale: string }> }
 interface SafeStageState { id: string; status: string; tasks: SafeTaskState[]; integration: SafeOperation; verification: SafeOperation; review: SafeReview }
 interface SafeState {
 	status: StoryRuntimeState["status"];
 	contracts: StoryRuntimeState["contracts"];
+	taskCorrections: Record<string, NonNullable<StoryRuntimeState["executionCorrections"]>[number]["task"]>;
 	outcomeStatus?: "pending" | "written" | "failed";
 	attention?: RuntimeSummaryProjection;
 	stages: SafeStageState[];
@@ -53,15 +58,61 @@ export interface CurrentStateObservation {
 }
 
 type RuntimeOperation = TaskRuntimeState | IntegrationRuntimeState | VerificationRuntimeState | ReviewRuntimeState | E2ERuntimeState;
-function publicSummary(value: RuntimeOperation["result"]): { code: string; summary: string } | undefined {
-	return value ? { code: value.code, summary: publicRuntimeText(value.summary) } : undefined;
+function compactRuntimeSummary(value: string): string {
+	const firstLine = value.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "Failure details recorded";
+	return firstLine.length > 180 ? `${firstLine.slice(0, 179).trimEnd()}…` : firstLine;
+}
+function publicSummary(source: FailureSummary | undefined): RuntimeSummaryProjection | undefined {
+	if (!source) return undefined;
+	const details = publicRuntimeText(source.summary); const summary = compactRuntimeSummary(details);
+	const diagnostic = source.diagnostic ? {
+		checkId: source.diagnostic.checkId,
+		command: publicRuntimeText(source.diagnostic.command),
+		exitCode: source.diagnostic.exitCode,
+		stdout: publicRuntimeText(source.diagnostic.stdout),
+		stderr: publicRuntimeText(source.diagnostic.stderr),
+		outputTruncated: source.diagnostic.outputTruncated,
+	} : undefined;
+	return {
+		code: source.code, summary,
+		...(source.causeCode ? { causeCode: source.causeCode } : {}),
+		...(details !== summary ? { details } : {}),
+		...(diagnostic ? { diagnostic, failedCheckId: diagnostic.checkId } : {}),
+	};
+}
+function publicE2eAction(source: FailureSummary | undefined): RuntimeSummaryProjection | undefined {
+	if (!source) return undefined;
+	const base = publicSummary(source)!;
+	const projected: RuntimeSummaryProjection = {
+		...base, summary: sanitizeCurrentEvidenceText(base.summary),
+		...(base.details ? { details: sanitizeCurrentEvidenceText(base.details) } : {}),
+		...(base.diagnostic ? { diagnostic: { ...base.diagnostic, command: sanitizeCurrentEvidenceText(base.diagnostic.command), stdout: sanitizeCurrentEvidenceText(base.diagnostic.stdout), stderr: sanitizeCurrentEvidenceText(base.diagnostic.stderr) } } : {}),
+	};
+	let structured: string | undefined;
+	try {
+		const value = JSON.parse(source.summary) as unknown;
+		if (value && typeof value === "object" && !Array.isArray(value)) {
+			const record = value as Record<string, unknown>;
+			const parts = [record.result, record.summary].filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+			if (parts.length) structured = parts.join(" — ");
+		}
+	} catch {}
+	if (!structured) return projected;
+	const details = sanitizeCurrentEvidenceText(source.summary);
+	return { ...projected, summary: compactRuntimeSummary(sanitizeCurrentEvidenceText(structured)), ...(details !== structured ? { details } : {}) };
 }
 function publicChecks(value: TaskRuntimeState["checks"] | VerificationRuntimeState["checks"]): SafeCheck[] {
-	return value.map((check) => ({ id: check.id, status: check.status, ...(check.failure ? { failure: { code: check.failure.code, summary: publicRuntimeText(check.failure.summary) } } : {}) }));
+	return value.map((check) => {
+		const failure = publicSummary(check.failure);
+		return { id: check.id, status: check.status, ...(failure ? { failure } : {}) };
+	});
 }
 function publicOperation(value: RuntimeOperation): SafeOperation {
-	const result = publicSummary(value.result); const failure = publicSummary(value.failure);
-	return { status: value.status, repairCount: value.repairCount, ...("checks" in value ? { checks: publicChecks(value.checks) } : {}), ...(result ? { result } : {}), ...(failure ? { failure } : {}), ...("integratedCommit" in value && /^[a-f0-9]{7,64}$/i.test(value.integratedCommit ?? "") ? { integratedCommit: value.integratedCommit } : {}) };
+	const result = publicSummary(value.result); let failure = publicSummary(value.failure);
+	const checks = "checks" in value ? publicChecks(value.checks) : undefined;
+	const failedCheckId = checks?.find((check) => check.status === "failed")?.id;
+	if (failure && failedCheckId && !failure.failedCheckId) failure = { ...failure, failedCheckId };
+	return { status: value.status, repairCount: value.repairCount, ...(checks ? { checks } : {}), ...(result ? { result } : {}), ...(failure ? { failure } : {}), ...("integratedCommit" in value && /^[a-f0-9]{7,64}$/i.test(value.integratedCommit ?? "") ? { integratedCommit: value.integratedCommit } : {}) };
 }
 function publicReview(value: ReviewRuntimeState): SafeReview {
 	const currentFindings = value.currentFindings.map((finding): Finding => { const safePath = finding.path && !isAbsolute(finding.path) && !/^[A-Za-z]:[\\/]/.test(finding.path) && !finding.path.split(/[\\/]/).includes("..") ? finding.path : undefined; return { id: finding.id, severity: finding.severity, status: "open", summary: publicRuntimeText(finding.summary), ...(safePath ? { location: `${safePath}${finding.line === undefined ? "" : `:${finding.line}`}` } : {}) }; });
@@ -79,7 +130,7 @@ function publicTiming(value: StoryRuntimeState["metrics"], stageId?: string): St
 		incompleteCategories: [...source.incompleteCategories],
 	} : {
 		workflowMs: 0,
-		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+		categories: { implementation: 0, integration: 0, verification: 0, repair: 0, review: 0, e2e: 0 },
 		incompleteIntervals: 0,
 		incompleteCategories: [],
 	};
@@ -96,10 +147,21 @@ function stateDocument(value: unknown, storyId: string): SafeState {
 		...(state.metrics.open?.stageId ? { activeStageId: state.metrics.open.stageId } : {}),
 		...(state.metrics.stageBreakdown ? { stageBreakdown: Object.fromEntries(Object.keys(state.metrics.stageBreakdown).map((stageId) => [stageId, publicTiming(state.metrics, stageId)])) } : {}),
 	};
+	const attention = publicSummary(state.attention);
+	const taskCorrections: SafeState["taskCorrections"] = {};
+	for (const correction of effectiveExecutionOverrides(state).tasks) {
+		const patch = correction.task;
+		taskCorrections[correction.taskId] = {
+			...(patch.description !== undefined ? { description: publicRuntimeText(patch.description) } : {}),
+			...(patch.scope !== undefined ? { scope: publicRuntimeText(patch.scope) } : {}),
+			...(patch.delivery !== undefined ? { delivery: publicRuntimeText(patch.delivery) } : {}),
+			...(patch.checks !== undefined ? { checks: patch.checks.map((check) => typeof check === "string" ? publicRuntimeText(check) : { ...check, command: publicRuntimeText(check.command) }) } : {}),
+		};
+	}
 	return {
-		status: state.status, contracts: { story: state.contracts.story, plan: state.contracts.plan, tasks: { ...state.contracts.tasks } },
+		status: state.status, contracts: { story: state.contracts.story, plan: state.contracts.plan, tasks: { ...state.contracts.tasks } }, taskCorrections,
 		...(state.outcomeStatus ? { outcomeStatus: state.outcomeStatus } : {}),
-		...(state.attention ? { attention: { code: state.attention.code, summary: publicRuntimeText(state.attention.summary) } } : {}),
+		...(attention ? { attention } : {}),
 		stages: state.stages.map((stage) => ({ id: stage.id, status: stage.status, tasks: stage.tasks.map(publicTask), integration: publicOperation(stage.integration), verification: publicOperation(stage.verification), review: publicReview(stage.review) })),
 		finalReview: publicReview(state.finalReview), e2e: { ...publicOperation(state.e2e), evidenceRefs: [...state.e2e.evidenceRefs] }, metrics,
 	};
@@ -123,11 +185,11 @@ export class CurrentStoryReader {
 		return this.observeState(storyId, root);
 	}
 
-	private boundedState(storyId: string, root: string): Promise<{ bytes: Buffer; state: StoryRuntimeState }> { return readBoundedCurrentRuntimeState(this.repositoryRoot, storyId, root); }
+	private currentState(storyId: string, root: string): Promise<{ bytes: Buffer; state: StoryRuntimeState }> { return readCurrentRuntimeState(this.repositoryRoot, storyId, root); }
 
 	async observeState(storyId: string, root: string): Promise<CurrentStateObservation | undefined> {
 		try {
-			const { bytes, state } = await this.boundedState(storyId, root);
+			const { bytes, state } = await this.currentState(storyId, root);
 			return {
 				versionSeed: createHash("sha256").update(bytes).digest("hex"),
 				status: state.status,
@@ -166,8 +228,8 @@ export class CurrentStoryReader {
 	}
 	private async readState(storyId: string, root: string, diagnostics: Diagnostic[]): Promise<SafeState | undefined> {
 		const display = `agent-artifacts/${storyId}/state.yaml`; const path = join(root, "state.yaml"); const info = await lstat(path).catch(() => undefined); if (!info) return undefined;
-		try { return stateDocument((await this.boundedState(storyId, root)).state, storyId); }
-		catch { diagnostics.push(diagnostic(display, "Runtime state is malformed, unsupported, oversized, or not a contained regular file")); return undefined; }
+		try { return stateDocument((await this.currentState(storyId, root)).state, storyId); }
+		catch { diagnostics.push(diagnostic(display, "Runtime state is malformed, unsupported, or not a contained regular file")); return undefined; }
 	}
 	private async bundle(storyId: string, root: string): Promise<CurrentBundle> {
 		const diagnostics: Diagnostic[] = []; const story = await this.readStory(storyId, root, diagnostics); const plan = await this.readPlan(storyId, root, diagnostics); const tasks = await this.readTasks(storyId, root, diagnostics); const state = await this.readState(storyId, root, diagnostics);
@@ -205,7 +267,7 @@ export class CurrentStoryReader {
 			for (const [kind, value] of [["integration", stage.integration], ["verification", stage.verification], ["review", stage.review]] as const) reports.push({ id: this.reportId(kind, stage.id), type: `stage-${kind}`, status: value.status, scope: { kind: "stage", id: stage.id }, ...this.reportMetadata(value), findingCount: kind === "review" ? value.currentFindings.length : 0, hasRiskAcceptance: kind === "review" && value.acceptedRisks.length > 0, available: true, diagnostics: [] });
 		}
 		reports.push({ id: "final-review", type: "final-review", status: state.finalReview.status, scope: { kind: "final" }, ...this.reportMetadata(state.finalReview), findingCount: state.finalReview.currentFindings.length, hasRiskAcceptance: state.finalReview.acceptedRisks.length > 0, available: true, diagnostics: [] });
-		reports.push({ id: "final-e2e", type: "final-e2e", status: state.e2e.status, scope: { kind: "e2e" }, ...this.reportMetadata(state.e2e), findingCount: 0, hasRiskAcceptance: false, available: true, diagnostics: [] });
+		reports.push({ id: "final-e2e", type: "final-e2e", status: e2ePhase(state.e2e.status), repairCount: state.e2e.repairCount, scope: { kind: "e2e" }, findingCount: 0, hasRiskAcceptance: false, available: true, diagnostics: [] });
 		return orderReports(reports);
 	}
 	private checkAggregate(checks: SafeCheck[] = [], pendingTotal = 0): CheckAggregate {
@@ -267,14 +329,14 @@ export class CurrentStoryReader {
 		const operations: SafeOperation[] = stages.flatMap((stage) => [...stage.tasks, stage.integration, stage.verification, stage.review]);
 		operations.push(state.finalReview, state.e2e);
 		const current = stages.find((stage) => stage.status === "running" || stage.status === "attention");
-		let currentPhase: WorkflowMetricCategory | undefined;
+		let currentPhase: WorkflowOverview["currentPhase"];
 		if (current?.tasks.some((task) => !["pending", "completed"].includes(task.status))) currentPhase = "implementation";
 		else if (current && !["pending", "completed"].includes(current.integration.status)) currentPhase = "integration";
 		else if (current && !["pending", "completed"].includes(current.verification.status)) currentPhase = "verification";
 		else if (current && !["pending", "completed", "skipped"].includes(current.review.status)) currentPhase = "review";
 		else if (!["pending", "completed", "skipped"].includes(state.finalReview.status)) currentPhase = "review";
 		else if (!["pending", "completed"].includes(state.e2e.status)) currentPhase = "e2e";
-		else currentPhase = state.metrics.activeCategory;
+		else currentPhase = state.metrics.activeCategory === "repair" ? undefined : state.metrics.activeCategory;
 		const attentionOperation = operations.find((operation) => operation.status === "attention");
 		const attention = state.attention ?? attentionOperation?.failure ?? attentionOperation?.result;
 		const checks = operations.flatMap((operation) => operation.checks ?? []);
@@ -304,9 +366,10 @@ export class CurrentStoryReader {
 		const columns = { "To do": [] as TaskCard[], "In progress": [] as TaskCard[], Done: [] as TaskCard[] }; for (const task of tasks) columns[task.column].push(task);
 		const documents = this.documents(storyId, bundle, outcomeAvailable); const groups = new Map<DocumentGroup, DocumentSummary[]>(); for (const document of documents) groups.set(document.group, [...(groups.get(document.group) ?? []), document]);
 		const documentGroups = (["Intent and scope", "Specifications", "Design", "Decisions", "Journey cases", "Outcome"] as DocumentGroup[]).flatMap((group) => groups.has(group) ? [{ group, documents: groups.get(group)! }] : []);
+		const finalE2E = bundle.state ? this.operation(bundle.state.e2e, "final-e2e") : undefined; if (finalE2E) { finalE2E.status = e2ePhase(bundle.state!.e2e.status); delete finalE2E.result; }
 		return {
 			story, ...(bundle.state ? { workflow: this.overview(bundle.state) } : {}), stages: this.stages(bundle.plan, bundle.state, bundle.tasks),
-			...(bundle.state ? { finalReview: this.reviewOperation(bundle.state.finalReview, "pending", "final-review"), finalE2E: this.operation(bundle.state.e2e, "final-e2e") } : {}),
+			...(bundle.state && finalE2E ? { finalReview: this.reviewOperation(bundle.state.finalReview, "pending", "final-review"), finalE2E } : {}),
 			columns, tasks, documentGroups, reports, diagnostics: bundle.diagnostics,
 		};
 	}
@@ -316,7 +379,8 @@ export class CurrentStoryReader {
 		if (state?.contracts.tasks[task.id] && contractDigest(task) !== state.contracts.tasks[task.id]) diagnostics.push(diagnostic(`agent-artifacts/${storyId}/tasks/${task.id}.yaml`, "Task content differs from the authoritative runtime contract"));
 		const status = this.taskStatus(task.id, state); const stage = this.taskStage(task.id, plan, state); const card = projectTaskCard({ id: task.id, title: task.title, status, dependsOn: task.dependsOn, stage, relatedReportIds: runtimeTask ? [this.reportId("task", task.id)] : [], diagnostics });
 		const runtimeStage = state?.stages.find((item) => item.tasks.some((candidate) => candidate.id === task.id)); const completedCommit = runtimeTask?.contributionCommit; const mergedCommit = runtimeStage?.integration.integratedCommit;
-		return { ...card, brief: task.description, scope: task.scope, delivery: task.delivery, assignment: { agent: task.assignment.agent, tier: task.assignment.tier, rationale: task.assignment.rationale }, verification: { methods: [], taskChecks: task.checks.map((check) => typeof check === "string" ? check : check.command) }, ...(completedCommit || mergedCommit ? { deliveryHistory: { ...(completedCommit ? { completedCommit } : {}), ...(mergedCommit ? { mergedCommit } : {}) } } : {}) };
+		const correction = state?.taskCorrections[task.id]; const effective = correction ? { ...task, ...correction } : task;
+		return { ...card, ...(runtimeTask?.failure ? { failure: runtimeTask.failure } : {}), ...(correction ? { executionCorrected: true } : {}), brief: effective.description, scope: effective.scope, delivery: effective.delivery, assignment: { agent: task.assignment.agent, tier: task.assignment.tier, rationale: task.assignment.rationale }, verification: { methods: [], taskChecks: effective.checks.map((check) => typeof check === "string" ? check : check.command) }, ...(completedCommit || mergedCommit ? { deliveryHistory: { ...(completedCommit ? { completedCommit } : {}), ...(mergedCommit ? { mergedCommit } : {}) } } : {}) };
 	}
 	async readDocumentDetail(storyId: string, root: string, documentId: string): Promise<DocumentDetail | undefined> {
 		const diagnostics: Diagnostic[] = []; const story = await this.readStory(storyId, root, diagnostics); if (story) {
@@ -336,6 +400,21 @@ export class CurrentStoryReader {
 		else { const stage = state.stages.find((item) => item.id === summaryReport.scope.id); if (!stage) return undefined; if (reportId.endsWith("-integration")) { value = stage.integration; title = `Stage ${stage.id} integration`; } else if (reportId.endsWith("-verification")) { value = stage.verification; title = `Stage ${stage.id} verification`; } else { value = stage.review; title = `Stage ${stage.id} review`; findings = stage.review.currentFindings; acceptedRisks = stage.review.acceptedRisks; } }
 		const evidence = reportId === "final-e2e" ? await readCurrentEvidenceMetadata(this.repositoryRoot, storyId, state.e2e.evidenceRefs) : [];
 		const riskAcceptance = acceptedRisks.length ? ["# Accepted risks", "", ...acceptedRisks.map((risk) => `- ${risk.findingId}: ${risk.rationale}`)].join("\n") : undefined;
-		return { ...summaryReport, body: this.body(title, value.status, value), findings, ...(riskAcceptance ? { riskAcceptance } : {}), history: [], evidence };
+		if (reportId === "final-e2e") {
+			const recordedE2E = await readCurrentE2EReport(this.repositoryRoot, storyId, state.e2e.evidenceRefs, evidence);
+			const storyDiagnostics: Diagnostic[] = []; const story = await this.readStory(storyId, root, storyDiagnostics); diagnostics.push(...storyDiagnostics); let authoredCases: Array<{ id: string; title: string }> = [];
+			try { authoredCases = story ? parseE2e(story.e2e).cases.map(({ id, title: caseTitle }) => ({ id, title: caseTitle })) : []; }
+			catch { diagnostics.push(diagnostic(`agent-artifacts/${storyId}/story.yaml`, "Authored E2E matrix is malformed")); }
+			if (recordedE2E) {
+				const byId = new Map(recordedE2E.cases.map((item) => [item.caseId, item])); const authoredIds = new Set(authoredCases.map((item) => item.id));
+				recordedE2E.cases = [...authoredCases.map(({ id, title: caseTitle }) => {
+					const recorded = byId.get(id); return recorded ? { ...recorded, title: caseTitle } : { caseId: id, title: caseTitle, status: "Not recorded", executedActions: [], observations: [], evidenceRefs: [], recorded: false };
+				}), ...recordedE2E.cases.filter((item) => !authoredIds.has(item.caseId))];
+			}
+			const status = state.e2e.status; const phase = e2ePhase(status);
+			const recheck = status === "testing" || status === "fixing" || status === "fix_pending"; const lastAction = publicE2eAction(value.result);
+			return { ...summaryReport, title, ...(value.failure ? { failure: value.failure } : {}), findings: [], history: [], evidence, currentE2E: { phase, repairCount: state.e2e.repairCount, priorContext: Boolean(recheck && value.failure), ...(lastAction ? { lastAction } : {}) }, ...(recordedE2E ? { recordedE2E } : {}), diagnostics: [...summaryReport.diagnostics, ...diagnostics] };
+		}
+		return { ...summaryReport, body: this.body(title, value.status, value), ...(value.failure ? { failure: value.failure } : {}), findings, ...(riskAcceptance ? { riskAcceptance } : {}), history: [], evidence };
 	}
 }

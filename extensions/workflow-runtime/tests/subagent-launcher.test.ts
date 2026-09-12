@@ -30,6 +30,55 @@ test("direct service launcher rebinds the exact attempt token and continues only
 	assert.equal(service.inspect(fakeOwner)[0]?.workflowMetadata?.PIBOX_WORKFLOW_TIER, "high", "the logical agent preserves tier metadata after continuation");
 });
 
+test("mutable initial seed does not break compatible continuation and workflow identity reaches child environment", async () => {
+	const service = new FakeSubagentService(() => ({ status: "completed", reason: "completed", exitCode: 0, text: "done" }));
+	const launcher = new WorkflowSubagentLauncher(service);
+	await launcher.launch({ ...common, initialSystemSupplement: "ledger version one" });
+	await launcher.launch({ ...common, attemptToken: "token-two", action: "task-repair", attemptUserPrompt: "repair", initialSystemSupplement: "ledger version two" });
+	assert.deepEqual(service.requests.map((request) => request.kind), ["launch", "continue"]);
+	assert.equal(service.requests[0]!.agentId, service.requests[1]!.agentId);
+	const first = service.requests[0];
+	assert.equal(first?.kind, "launch");
+	if (first?.kind === "launch") {
+		assert.equal(first.spec.stableSystemContext, "stable\n\nledger version one");
+		assert.deepEqual({
+			story: first.spec.env?.PIBOX_WORKFLOW_STORY_ID,
+			slot: first.spec.env?.PIBOX_WORKFLOW_SLOT_ID,
+			token: first.spec.workflowCredentials?.PIBOX_WORKFLOW_ATTEMPT_TOKEN,
+			action: first.spec.env?.PIBOX_WORKFLOW_ACTION,
+		}, { story: "story", slot: "task:one", token: "token-one", action: "task-launch" });
+	}
+	const second = service.requests[1];
+	assert.equal(second?.kind, "continue");
+	if (second?.kind === "continue") {
+		assert.equal(second.spec.workflowCredentials?.PIBOX_WORKFLOW_ATTEMPT_TOKEN, "token-two");
+		assert.equal(second.spec.env?.PIBOX_WORKFLOW_ACTION, "task-repair");
+	}
+});
+
+test("workflow results preserve the complete protocol text and attempt report reference", async () => {
+	const text = `${"protocol-line\n".repeat(100_000)}🙂`;
+	const service = new FakeSubagentService(() => ({ status: "completed", reason: "completed", exitCode: 0, text }));
+	const launch = service.launch.bind(service);
+	service.launch = async (spec) => {
+		const started = await launch(spec);
+		return {
+			...started,
+			result: started.result.then((terminal) => ({
+				...terminal,
+				reportPath: "/tmp/pibox-subagent-attempt-test/report.md",
+				reportBytes: Buffer.byteLength(text),
+				reportCharacters: Array.from(text).length,
+			})),
+		};
+	};
+	const settled = await new WorkflowSubagentLauncher(service).launch(common);
+	assert.equal(settled.text, text);
+	assert.equal(settled.reportPath, "/tmp/pibox-subagent-attempt-test/report.md");
+	assert.equal(settled.reportBytes, Buffer.byteLength(text));
+	assert.equal(settled.reportCharacters, Array.from(text).length);
+});
+
 test("the workflow abort signal is rechecked by the service pre-spawn fence", async () => {
 	let enterService!: () => void;
 	let releaseService!: () => void;

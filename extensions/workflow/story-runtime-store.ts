@@ -5,7 +5,7 @@ import { parse, stringify } from "yaml";
 import { atomicWriteFile, readTextIfExists } from "./repository.js";
 import type { RuntimeOwner } from "../subagent/api.js";
 
-export const WORKFLOW_METRIC_CATEGORIES = ["implementation", "integration", "verification", "review", "e2e"] as const;
+export const WORKFLOW_METRIC_CATEGORIES = ["implementation", "integration", "verification", "review", "e2e", "repair"] as const;
 export type WorkflowMetricCategory = (typeof WORKFLOW_METRIC_CATEGORIES)[number];
 
 export interface WorkflowMetricBreakdown {
@@ -30,9 +30,66 @@ export interface ActiveSlotAttempt {
 	activatedAt: string;
 }
 
+export interface CheckDiagnostic {
+	checkId: string;
+	command: string;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+	outputTruncated: boolean;
+}
+
 export interface FailureSummary {
 	code: string;
 	summary: string;
+	/** The concrete cause remains available when code is replaced by repair_exhausted. */
+	causeCode?: string;
+	diagnostic?: CheckDiagnostic;
+}
+
+export type RuntimeCorrectionTarget =
+	| { kind: "task"; stageId: string; taskId: string }
+	| { kind: "stage-verification"; stageId: string }
+	| { kind: "integration"; stageId: string }
+	| { kind: "stage-review"; stageId: string }
+	| { kind: "final-review" }
+	| { kind: "e2e" };
+
+export type RuntimeGuidanceTarget = Exclude<RuntimeCorrectionTarget, { kind: "task" } | { kind: "stage-verification" }>;
+
+export interface RuntimeTaskCorrection {
+	description?: string;
+	scope?: string;
+	delivery?: string;
+	checks?: import("./types.js").VerificationCheckSpec[];
+}
+
+export interface RuntimeTaskExecutionOverride {
+	stageId: string;
+	taskId: string;
+	task: RuntimeTaskCorrection;
+	prompt?: string;
+}
+
+export interface RuntimeExecutionOverrides {
+	tasks: RuntimeTaskExecutionOverride[];
+	stageVerifications: Array<{ stageId: string; checks: import("./types.js").VerificationCheckSpec[] }>;
+	guidance: Array<{ target: RuntimeGuidanceTarget; prompt: string }>;
+}
+
+export interface RuntimeExecutionCorrection {
+	sequence: number;
+	attentionEpoch: number;
+	appliedAt: string;
+	target: RuntimeCorrectionTarget;
+	prompt?: string;
+	task?: RuntimeTaskCorrection;
+	stageVerification?: { checks: import("./types.js").VerificationCheckSpec[] };
+	priorFailure: FailureSummary;
+	/** Failed-check evidence captured before effective check vectors are replaced. */
+	priorChecks?: DurableCheckState[];
+	priorChecksTruncated?: boolean;
+	priorRepairCount?: number;
 }
 
 export type DurableCheckStatus = "pending" | "running" | "passed" | "failed";
@@ -129,12 +186,33 @@ export interface StoryContractDigests {
 	tasks: Record<string, string>;
 }
 
+export interface PendingLedgerRecovery {
+	action: string;
+	attemptToken: string;
+	sourceRole: string;
+	reportPath: string;
+	error: string;
+	submission?: { summary: string; evidence?: string[] };
+}
+
 export interface StoryRuntimeState {
 	schemaVersion: 1;
 	storyId: string;
 	status: "ready" | "running" | "paused" | "attention" | "completed" | "failed" | "stopped";
 	activationOwner?: RuntimeOwner;
 	attention?: FailureSummary;
+	/** Monotonic attention boundary used to reject stale corrections. */
+	attentionEpoch?: number;
+	/** Exact runtime slot authoritative for the current attention epoch. Absent for workflow-level attention. */
+	attentionTarget?: RuntimeCorrectionTarget;
+	/** Accepted contributions whose optional attempt notes still need explicit settlement, keyed by attempt token. */
+	ledgerRecoveries?: Record<string, PendingLedgerRecovery>;
+	/** Monotonic correction sequence. */
+	correctionSequence?: number;
+	/** Cumulative effective runtime overrides over the immutable authored baseline. */
+	executionOverrides?: RuntimeExecutionOverrides;
+	/** Complete audit history for corrections recorded by this runtime version. */
+	executionCorrections?: RuntimeExecutionCorrection[];
 	contracts: StoryContractDigests;
 	git: {
 		canonicalBranch: string;
@@ -149,8 +227,63 @@ export interface StoryRuntimeState {
 	outcomeStatus?: "pending" | "written" | "failed";
 }
 
+export function sameCorrectionTarget(left: RuntimeCorrectionTarget, right: RuntimeCorrectionTarget): boolean {
+	return left.kind === right.kind
+		&& (!("stageId" in left) || ("stageId" in right && left.stageId === right.stageId))
+		&& (!("taskId" in left) || ("taskId" in right && left.taskId === right.taskId));
+}
+
+/** Resolve the persisted target, or deterministically migrate a legacy slot-attention state in memory. */
+export function authoritativeAttentionTarget(state: StoryRuntimeState): RuntimeCorrectionTarget | undefined {
+	if (state.attentionTarget) return structuredClone(state.attentionTarget);
+	for (const stage of state.stages) {
+		for (const task of stage.tasks) if (task.status === "attention") return { kind: "task", stageId: stage.id, taskId: task.id };
+		if (stage.integration.status === "attention") return { kind: "integration", stageId: stage.id };
+		if (stage.verification.status === "attention") return { kind: "stage-verification", stageId: stage.id };
+		if (stage.review.status === "attention") return { kind: "stage-review", stageId: stage.id };
+	}
+	if (state.finalReview.status === "attention") return { kind: "final-review" };
+	if (state.e2e.status === "attention") return { kind: "e2e" };
+	return undefined;
+}
+
+function mergeExecutionCorrection(overrides: RuntimeExecutionOverrides, correction: RuntimeExecutionCorrection): void {
+	const target = correction.target;
+	if (target.kind === "task" && correction.task) {
+		const index = overrides.tasks.findIndex((entry) => entry.stageId === target.stageId && entry.taskId === target.taskId);
+		const prior = index >= 0 ? overrides.tasks[index]! : { stageId: target.stageId, taskId: target.taskId, task: {} };
+		const merged: RuntimeTaskExecutionOverride = {
+			...prior,
+			task: { ...prior.task, ...structuredClone(correction.task) },
+			...(correction.prompt !== undefined ? { prompt: correction.prompt } : {}),
+		};
+		if (index >= 0) overrides.tasks[index] = merged; else overrides.tasks.push(merged);
+	} else if (target.kind === "stage-verification" && correction.stageVerification) {
+		const index = overrides.stageVerifications.findIndex((entry) => entry.stageId === target.stageId);
+		const merged = { stageId: target.stageId, checks: structuredClone(correction.stageVerification.checks) };
+		if (index >= 0) overrides.stageVerifications[index] = merged; else overrides.stageVerifications.push(merged);
+	} else if (correction.prompt && !correction.task && !correction.stageVerification) {
+		const target = correction.target as RuntimeGuidanceTarget;
+		const index = overrides.guidance.findIndex((entry) => sameCorrectionTarget(entry.target, target));
+		const merged = { target: structuredClone(target), prompt: correction.prompt };
+		if (index >= 0) overrides.guidance[index] = merged; else overrides.guidance.push(merged);
+	}
+}
+
+/**
+ * Project cumulative effective overrides for readers. New states materialize this
+ * projection; legacy states are upgraded in memory from their correction history.
+ */
+export function effectiveExecutionOverrides(state: Pick<StoryRuntimeState, "executionOverrides" | "executionCorrections">): RuntimeExecutionOverrides {
+	const overrides: RuntimeExecutionOverrides = state.executionOverrides
+		? structuredClone(state.executionOverrides)
+		: { tasks: [], stageVerifications: [], guidance: [] };
+	for (const correction of state.executionCorrections ?? []) mergeExecutionCorrection(overrides, correction);
+	return overrides;
+}
+
 export function hasWorkflowAttention(state: StoryRuntimeState): boolean {
-	return state.status === "attention" || Boolean(state.attention)
+	return state.status === "attention" || Boolean(state.attention) || Object.keys(state.ledgerRecoveries ?? {}).length > 0
 		|| state.stages.some((stage) => stage.tasks.some((task) => task.status === "attention")
 			|| stage.integration.status === "attention" || stage.verification.status === "attention" || stage.review.status === "attention")
 		|| state.finalReview.status === "attention" || state.e2e.status === "attention";
@@ -208,7 +341,6 @@ export interface DebugTailFilter {
 }
 
 export interface StoryRuntimeStoreOptions {
-	maxLedgerEntries?: number;
 	maxDebugTailEntries?: number;
 	maxDebugReadBytes?: number;
 	now?: () => Date;
@@ -221,8 +353,6 @@ export interface StoryStateWriteResult {
 }
 
 const STORY_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const DEFAULT_MAX_LEDGER_ENTRIES = 32;
-const ABSOLUTE_MAX_LEDGER_ENTRIES = 100;
 const DEFAULT_MAX_DEBUG_TAIL_ENTRIES = 50;
 const ABSOLUTE_MAX_DEBUG_TAIL_ENTRIES = 200;
 const DEFAULT_MAX_DEBUG_READ_BYTES = 256 * 1024;
@@ -230,7 +360,7 @@ const DEFAULT_MAX_DEBUG_READ_BYTES = 256 * 1024;
 export function emptyWorkflowMetrics(): StoryWorkflowMetrics {
 	return {
 		workflowMs: 0,
-		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0, repair: 0 },
 		incompleteIntervals: 0,
 		incompleteCategories: [],
 	};
@@ -245,7 +375,7 @@ function timestamp(value: string): number {
 function emptyMetricBreakdown(): WorkflowMetricBreakdown {
 	return {
 		workflowMs: 0,
-		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0 },
+		categories: { implementation: 0, integration: 0, verification: 0, review: 0, e2e: 0, repair: 0 },
 		incompleteIntervals: 0,
 		incompleteCategories: [],
 	};
@@ -309,8 +439,8 @@ function onlyKeys(value: Record<string, unknown>, allowed: readonly string[]): b
 	const permitted = new Set(allowed);
 	return Object.keys(value).every((key) => permitted.has(key));
 }
-function boundedString(value: unknown, maximum = 2_000): value is string {
-	return typeof value === "string" && value.length > 0 && value.length <= maximum && !value.includes("\0");
+function nonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
 function oneOf(value: unknown, allowed: readonly string[]): boolean {
 	return typeof value === "string" && allowed.includes(value);
@@ -321,29 +451,39 @@ function nonNegativeInteger(value: unknown): boolean {
 function boundedArray(value: unknown, maximum: number): value is unknown[] {
 	return Array.isArray(value) && value.length <= maximum;
 }
+function validDiagnostic(value: unknown): boolean {
+	return record(value) && onlyKeys(value, ["checkId", "command", "exitCode", "stdout", "stderr", "outputTruncated"])
+		&& nonEmptyString(value.checkId) && nonEmptyString(value.command) && Number.isSafeInteger(value.exitCode)
+		&& typeof value.stdout === "string" && !value.stdout.includes("\0")
+		&& typeof value.stderr === "string" && !value.stderr.includes("\0")
+		&& typeof value.outputTruncated === "boolean";
+}
 function validSummary(value: unknown): boolean {
-	return record(value) && onlyKeys(value, ["code", "summary"]) && boundedString(value.code, 80) && boundedString(value.summary);
+	return record(value) && onlyKeys(value, ["code", "summary", "causeCode", "diagnostic"])
+		&& nonEmptyString(value.code) && nonEmptyString(value.summary)
+		&& (value.causeCode === undefined || nonEmptyString(value.causeCode))
+		&& (value.diagnostic === undefined || validDiagnostic(value.diagnostic));
 }
 function validOptionalSummary(value: unknown): boolean {
 	return value === undefined || validSummary(value);
 }
 function validOwner(value: unknown): boolean {
-	return record(value) && onlyKeys(value, ["sessionId", "processInstanceId", "activationId"]) && boundedString(value.sessionId, 200) && boundedString(value.processInstanceId, 200) && boundedString(value.activationId, 200);
+	return record(value) && onlyKeys(value, ["sessionId", "processInstanceId", "activationId"]) && nonEmptyString(value.sessionId) && nonEmptyString(value.processInstanceId) && nonEmptyString(value.activationId);
 }
 function validAttempt(value: unknown): boolean {
-	return value === undefined || (record(value) && onlyKeys(value, ["token", "owner", "activatedAt"]) && boundedString(value.token, 200) && boundedString(value.activatedAt, 80)
+	return value === undefined || (record(value) && onlyKeys(value, ["token", "owner", "activatedAt"]) && nonEmptyString(value.token) && nonEmptyString(value.activatedAt)
 		&& Number.isFinite(Date.parse(value.activatedAt as string)) && validOwner(value.owner));
 }
 function validCheck(value: unknown): boolean {
-	return record(value) && onlyKeys(value, ["id", "status", "failure"]) && boundedString(value.id, 200) && oneOf(value.status, ["pending", "running", "passed", "failed"])
+	return record(value) && onlyKeys(value, ["id", "status", "failure"]) && nonEmptyString(value.id) && oneOf(value.status, ["pending", "running", "passed", "failed"])
 		&& validOptionalSummary(value.failure);
 }
 function validChecks(value: unknown): boolean {
-	return boundedArray(value, 200) && value.every(validCheck);
+	return Array.isArray(value) && value.every(validCheck);
 }
 function validFinding(value: unknown): boolean {
-	return record(value) && onlyKeys(value, ["id", "severity", "code", "summary", "path", "line"]) && boundedString(value.id, 200) && oneOf(value.severity, ["critical", "major", "minor"])
-		&& boundedString(value.code, 80) && boundedString(value.summary) && (value.path === undefined || boundedString(value.path, 500))
+	return record(value) && onlyKeys(value, ["id", "severity", "code", "summary", "path", "line"]) && nonEmptyString(value.id) && oneOf(value.severity, ["critical", "major", "minor"])
+		&& nonEmptyString(value.code) && nonEmptyString(value.summary) && (value.path === undefined || nonEmptyString(value.path))
 		&& (value.line === undefined || (Number.isSafeInteger(value.line) && (value.line as number) >= 1));
 }
 function validReview(value: unknown): boolean {
@@ -351,9 +491,9 @@ function validReview(value: unknown): boolean {
 		&& oneOf(value.status, ["pending", "reviewing", "fix_pending", "fixing", "interrupted", "completed", "skipped", "attention"])
 		&& nonNegativeInteger(value.iteration) && nonNegativeInteger(value.repairCount) && validAttempt(value.attempt)
 		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["reviewing", "fixing"]))
-		&& boundedArray(value.currentFindings, 200) && value.currentFindings.every(validFinding)
-		&& (value.acceptedRisks === undefined || (boundedArray(value.acceptedRisks, 200) && value.acceptedRisks.every((risk) => record(risk) && onlyKeys(risk, ["findingId", "rationale", "acceptedAt"])
-			&& boundedString(risk.findingId, 200) && boundedString(risk.rationale) && boundedString(risk.acceptedAt, 80) && Number.isFinite(Date.parse(risk.acceptedAt as string)))))
+		&& Array.isArray(value.currentFindings) && value.currentFindings.every(validFinding)
+		&& (value.acceptedRisks === undefined || (Array.isArray(value.acceptedRisks) && value.acceptedRisks.every((risk) => record(risk) && onlyKeys(risk, ["findingId", "rationale", "acceptedAt"])
+			&& nonEmptyString(risk.findingId) && nonEmptyString(risk.rationale) && nonEmptyString(risk.acceptedAt) && Number.isFinite(Date.parse(risk.acceptedAt as string)))))
 		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
 function validTask(value: unknown): boolean {
@@ -361,7 +501,7 @@ function validTask(value: unknown): boolean {
 		&& oneOf(value.status, ["pending", "implementing", "check_pending", "checking", "repair_pending", "repairing", "interrupted", "completed", "attention"])
 		&& nonNegativeInteger(value.repairCount) && validAttempt(value.attempt)
 		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["implementing", "checking", "repairing"]))
-		&& validChecks(value.checks) && (value.contributionCommit === undefined || boundedString(value.contributionCommit, 200))
+		&& validChecks(value.checks) && (value.contributionCommit === undefined || nonEmptyString(value.contributionCommit))
 		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
 function validIntegration(value: unknown): boolean {
@@ -369,8 +509,8 @@ function validIntegration(value: unknown): boolean {
 		&& oneOf(value.status, ["pending", "integrating", "repair_pending", "repairing", "interrupted", "completed", "attention"])
 		&& nonNegativeInteger(value.repairCount) && validAttempt(value.attempt)
 		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["integrating", "repairing"]))
-		&& boundedArray(value.contributionCommits, 200) && value.contributionCommits.every((commit) => boundedString(commit, 200))
-		&& (value.integratedCommit === undefined || boundedString(value.integratedCommit, 200))
+		&& Array.isArray(value.contributionCommits) && value.contributionCommits.every((commit) => nonEmptyString(commit))
+		&& (value.integratedCommit === undefined || nonEmptyString(value.integratedCommit))
 		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
 function validVerification(value: unknown): boolean {
@@ -385,7 +525,7 @@ function validE2E(value: unknown): boolean {
 		&& oneOf(value.status, ["pending", "testing", "fix_pending", "fixing", "interrupted", "completed", "attention"])
 		&& nonNegativeInteger(value.repairCount) && validAttempt(value.attempt)
 		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["testing", "fixing"]))
-		&& boundedArray(value.evidenceRefs, 64) && value.evidenceRefs.every((reference) => boundedString(reference, 500))
+		&& Array.isArray(value.evidenceRefs) && value.evidenceRefs.every((reference) => nonEmptyString(reference))
 		&& validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
 function validMetricBreakdown(value: unknown): boolean {
@@ -404,16 +544,37 @@ function validMetrics(value: unknown): boolean {
 	if (!record(value) || !onlyKeys(value, ["workflowMs", "categories", "open", "incompleteIntervals", "incompleteCategories", "stageBreakdown"])) return false;
 	const { open, stageBreakdown, ...breakdown } = value;
 	if (!validMetricBreakdown(breakdown)) return false;
-	if (stageBreakdown !== undefined && (!record(stageBreakdown) || Object.keys(stageBreakdown).length > 100
+	if (stageBreakdown !== undefined && (!record(stageBreakdown)
 		|| Object.entries(stageBreakdown).some(([stageId, stage]) => !STORY_ID.test(stageId) || !validMetricBreakdown(stage)))) return false;
 	return open === undefined || (record(open) && onlyKeys(open, ["category", "since", "stageId"]) && oneOf(open.category, WORKFLOW_METRIC_CATEGORIES)
-		&& boundedString(open.since, 80) && Number.isFinite(Date.parse(open.since)) && (open.stageId === undefined || (typeof open.stageId === "string" && STORY_ID.test(open.stageId))));
+		&& nonEmptyString(open.since) && Number.isFinite(Date.parse(open.since)) && (open.stageId === undefined || (typeof open.stageId === "string" && STORY_ID.test(open.stageId))));
+}
+
+const LEGACY_WORKFLOW_METRIC_CATEGORIES = WORKFLOW_METRIC_CATEGORIES.filter((category) => category !== "repair");
+
+/** Add only missing Repair totals from five-category persisted states; never infer a historical split. */
+function normalizeLegacyWorkflowMetrics(value: unknown): unknown {
+	if (!record(value) || !record(value.categories)) return value;
+	const next = structuredClone(value);
+	const normalizeBreakdown = (breakdown: Record<string, unknown>): void => {
+		if (!record(breakdown.categories)) return;
+		const keys = Object.keys(breakdown.categories);
+		if (keys.length === LEGACY_WORKFLOW_METRIC_CATEGORIES.length
+			&& LEGACY_WORKFLOW_METRIC_CATEGORIES.every((category) => keys.includes(category))) {
+			breakdown.categories.repair = 0;
+		}
+	};
+	normalizeBreakdown(next);
+	if (record(next.stageBreakdown)) {
+		for (const stage of Object.values(next.stageBreakdown)) if (record(stage)) normalizeBreakdown(stage);
+	}
+	return next;
 }
 function validGit(value: unknown): boolean {
 	return record(value) && onlyKeys(value, ["canonicalBranch", "baseCommit", "integrationBranch", "integrationWorktree"])
-		&& boundedString(value.canonicalBranch, 500) && boundedString(value.baseCommit, 200)
-		&& (value.integrationBranch === undefined || boundedString(value.integrationBranch, 500))
-		&& (value.integrationWorktree === undefined || boundedString(value.integrationWorktree, 2_000));
+		&& nonEmptyString(value.canonicalBranch) && nonEmptyString(value.baseCommit)
+		&& (value.integrationBranch === undefined || nonEmptyString(value.integrationBranch))
+		&& (value.integrationWorktree === undefined || nonEmptyString(value.integrationWorktree));
 }
 function validDigest(value: unknown): value is string {
 	return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
@@ -421,7 +582,101 @@ function validDigest(value: unknown): value is string {
 function validContracts(value: unknown): boolean {
 	if (!record(value) || !onlyKeys(value, ["story", "plan", "tasks"]) || !validDigest(value.story) || !validDigest(value.plan) || !record(value.tasks)) return false;
 	const entries = Object.entries(value.tasks);
-	return entries.length <= 200 && entries.every(([id, digest]) => STORY_ID.test(id) && validDigest(digest));
+	return entries.every(([id, digest]) => STORY_ID.test(id) && validDigest(digest));
+}
+function validCorrectionChecks(value: unknown): boolean {
+	if (!Array.isArray(value)) return false;
+	return value.every((check) => typeof check === "string"
+		? nonEmptyString(check)
+		: record(check) && onlyKeys(check, ["id", "command", "profile"])
+			&& (check.id === undefined || (typeof check.id === "string" && STORY_ID.test(check.id)))
+			&& nonEmptyString(check.command)
+			&& (check.profile === undefined || (typeof check.profile === "string" && STORY_ID.test(check.profile))));
+}
+function validCorrectionTarget(value: unknown): boolean {
+	if (!record(value)) return false;
+	if (value.kind === "task") return onlyKeys(value, ["kind", "stageId", "taskId"])
+		&& typeof value.stageId === "string" && STORY_ID.test(value.stageId) && typeof value.taskId === "string" && STORY_ID.test(value.taskId);
+	if (["stage-verification", "integration", "stage-review"].includes(value.kind as string)) return onlyKeys(value, ["kind", "stageId"])
+		&& typeof value.stageId === "string" && STORY_ID.test(value.stageId);
+	return (value.kind === "final-review" || value.kind === "e2e") && onlyKeys(value, ["kind"]);
+}
+function validCorrection(value: unknown): boolean {
+	if (!record(value) || !onlyKeys(value, ["sequence", "attentionEpoch", "appliedAt", "target", "prompt", "task", "stageVerification", "priorFailure", "priorChecks", "priorChecksTruncated", "priorRepairCount"])
+		|| !nonNegativeInteger(value.sequence) || (value.sequence as number) < 1 || !nonNegativeInteger(value.attentionEpoch) || (value.attentionEpoch as number) < 1
+		|| !nonEmptyString(value.appliedAt) || !Number.isFinite(Date.parse(value.appliedAt)) || !validCorrectionTarget(value.target)
+		|| (value.prompt !== undefined && !nonEmptyString(value.prompt)) || !validSummary(value.priorFailure)
+		|| (value.priorChecks !== undefined && (!Array.isArray(value.priorChecks) || !value.priorChecks.every(validCheck)))
+		|| (value.priorChecksTruncated !== undefined && typeof value.priorChecksTruncated !== "boolean")
+		|| (value.priorRepairCount !== undefined && !nonNegativeInteger(value.priorRepairCount))) return false;
+	if (value.task !== undefined && (!record(value.task) || !onlyKeys(value.task, ["description", "scope", "delivery", "checks"])
+		|| ![value.task.description, value.task.scope, value.task.delivery].every((field) => field === undefined || nonEmptyString(field))
+		|| (value.task.checks !== undefined && !validCorrectionChecks(value.task.checks)))) return false;
+	if (value.stageVerification !== undefined && (!record(value.stageVerification) || !onlyKeys(value.stageVerification, ["checks"]) || !validCorrectionChecks(value.stageVerification.checks))) return false;
+	const target = value.target as RuntimeCorrectionTarget;
+	if (target.kind === "task") return value.stageVerification === undefined && value.task !== undefined;
+	if (target.kind === "stage-verification") return value.task === undefined && value.stageVerification !== undefined;
+	return value.task === undefined && value.stageVerification === undefined && nonEmptyString(value.prompt);
+}
+function validExecutionOverrides(value: unknown): boolean {
+	if (!record(value) || !onlyKeys(value, ["tasks", "stageVerifications", "guidance"])
+		|| !Array.isArray(value.tasks) || !Array.isArray(value.stageVerifications) || !Array.isArray(value.guidance)) return false;
+	const tasksValid = value.tasks.every((entry) => record(entry) && onlyKeys(entry, ["stageId", "taskId", "task", "prompt"])
+		&& typeof entry.stageId === "string" && STORY_ID.test(entry.stageId) && typeof entry.taskId === "string" && STORY_ID.test(entry.taskId)
+		&& record(entry.task) && onlyKeys(entry.task, ["description", "scope", "delivery", "checks"])
+		&& [entry.task.description, entry.task.scope, entry.task.delivery].every((field) => field === undefined || nonEmptyString(field))
+		&& (entry.task.checks === undefined || validCorrectionChecks(entry.task.checks))
+		&& (entry.prompt === undefined || nonEmptyString(entry.prompt)));
+	const stagesValid = value.stageVerifications.every((entry) => record(entry) && onlyKeys(entry, ["stageId", "checks"])
+		&& typeof entry.stageId === "string" && STORY_ID.test(entry.stageId) && validCorrectionChecks(entry.checks));
+	const guidanceValid = value.guidance.every((entry) => record(entry) && onlyKeys(entry, ["target", "prompt"])
+		&& validCorrectionTarget(entry.target) && !["task", "stage-verification"].includes((entry.target as Record<string, unknown>).kind as string)
+		&& nonEmptyString(entry.prompt));
+	if (!tasksValid || !stagesValid || !guidanceValid) return false;
+	return new Set(value.tasks.map((entry) => `${(entry as RuntimeTaskExecutionOverride).stageId}\0${(entry as RuntimeTaskExecutionOverride).taskId}`)).size === value.tasks.length
+		&& new Set(value.stageVerifications.map((entry) => (entry as { stageId: string }).stageId)).size === value.stageVerifications.length
+		&& new Set(value.guidance.map((entry) => JSON.stringify((entry as { target: RuntimeGuidanceTarget }).target))).size === value.guidance.length;
+}
+function validCorrectionReferences(state: Record<string, unknown>): boolean {
+	const corrections = state.executionCorrections as RuntimeExecutionCorrection[] | undefined;
+	const overrides = state.executionOverrides as RuntimeExecutionOverrides | undefined;
+	if (!corrections?.length && !overrides) return true;
+	if (!nonNegativeInteger(state.attentionEpoch)) return false;
+	const stages = state.stages as Array<Record<string, unknown>>;
+	const validTargetReference = (target: RuntimeCorrectionTarget): boolean => {
+		if (target.kind === "final-review" || target.kind === "e2e") return true;
+		const stage = stages.find((candidate) => candidate.id === target.stageId);
+		if (!stage) return false;
+		return target.kind !== "task" || (stage.tasks as Array<Record<string, unknown>>).some((task) => task.id === target.taskId);
+	};
+	return (corrections ?? []).every((correction) => correction.attentionEpoch <= (state.attentionEpoch as number) && validTargetReference(correction.target))
+		&& (overrides?.tasks ?? []).every((entry) => validTargetReference({ kind: "task", stageId: entry.stageId, taskId: entry.taskId }))
+		&& (overrides?.stageVerifications ?? []).every((entry) => validTargetReference({ kind: "stage-verification", stageId: entry.stageId }))
+		&& (overrides?.guidance ?? []).every((entry) => validTargetReference(entry.target));
+}
+function validLedgerRecovery(value: unknown): value is PendingLedgerRecovery {
+	return record(value) && onlyKeys(value, ["action", "attemptToken", "sourceRole", "reportPath", "error", "submission"])
+		&& nonEmptyString(value.action) && nonEmptyString(value.attemptToken) && nonEmptyString(value.sourceRole)
+		&& nonEmptyString(value.reportPath) && nonEmptyString(value.error)
+		&& (value.submission === undefined || (record(value.submission) && onlyKeys(value.submission, ["summary", "evidence"])
+			&& nonEmptyString(value.submission.summary)
+			&& (value.submission.evidence === undefined || (Array.isArray(value.submission.evidence) && value.submission.evidence.every(nonEmptyString)))));
+}
+function validLedgerRecoveries(value: unknown): boolean {
+	return record(value) && Object.entries(value).every(([token, recovery]) => nonEmptyString(token) && validLedgerRecovery(recovery) && recovery.attemptToken === token);
+}
+function validAttentionReference(state: Record<string, unknown>): boolean {
+	const target = state.attentionTarget as RuntimeCorrectionTarget | undefined;
+	if (!target) return true;
+	const runtime = state as unknown as StoryRuntimeState;
+	if (target.kind === "final-review") return runtime.finalReview.status === "attention";
+	if (target.kind === "e2e") return runtime.e2e.status === "attention";
+	const stage = runtime.stages.find((candidate) => candidate.id === target.stageId);
+	if (!stage) return false;
+	if (target.kind === "task") return stage.tasks.some((task) => task.id === target.taskId && task.status === "attention");
+	if (target.kind === "integration") return stage.integration.status === "attention";
+	if (target.kind === "stage-verification") return stage.verification.status === "attention";
+	return stage.review.status === "attention";
 }
 function validMetricStageReferences(state: Record<string, unknown>): boolean {
 	const stageIds = new Set((state.stages as Array<Record<string, unknown>>).map((stage) => stage.id as string));
@@ -442,32 +697,51 @@ function validMetricStageReferences(state: Record<string, unknown>): boolean {
 	return Object.values(stageBreakdown).every((stage) => stage.incompleteCategories.every((category) => globalIncompleteCategories.has(category)));
 }
 function validStateShape(state: Record<string, unknown>): boolean {
-	return onlyKeys(state, ["schemaVersion", "storyId", "status", "activationOwner", "attention", "contracts", "git", "stages", "finalReview", "e2e", "metrics", "outcomeStatus"])
+	const recent = state.executionCorrections as RuntimeExecutionCorrection[] | undefined;
+	const total = state.correctionSequence as number | undefined;
+	const sequenceValid = recent === undefined || (Array.isArray(recent) && recent.every(validCorrection)
+		&& (total === undefined
+			? recent.every((entry, index) => entry.sequence === index + 1)
+			: recent.every((entry, index) => entry.sequence === total - recent.length + index + 1)));
+	return onlyKeys(state, ["schemaVersion", "storyId", "status", "activationOwner", "attention", "attentionEpoch", "attentionTarget", "ledgerRecoveries", "correctionSequence", "executionOverrides", "executionCorrections", "contracts", "git", "stages", "finalReview", "e2e", "metrics", "outcomeStatus"])
 		&& oneOf(state.status, ["ready", "running", "paused", "attention", "completed", "failed", "stopped"])
 		&& (state.activationOwner === undefined || validOwner(state.activationOwner)) && validOptionalSummary(state.attention)
-		&& validContracts(state.contracts) && validGit(state.git) && validMetrics(state.metrics) && boundedArray(state.stages, 100)
+		&& (state.attentionEpoch === undefined || (nonNegativeInteger(state.attentionEpoch) && (state.attentionEpoch as number) >= 1))
+		&& (state.attentionTarget === undefined || validCorrectionTarget(state.attentionTarget))
+		&& (state.ledgerRecoveries === undefined || validLedgerRecoveries(state.ledgerRecoveries))
+		&& (total === undefined || (nonNegativeInteger(total) && total >= 1 && total >= (recent?.length ?? 0)))
+		&& ((state.executionOverrides === undefined) === (total === undefined))
+		&& (state.executionOverrides === undefined || validExecutionOverrides(state.executionOverrides))
+		&& sequenceValid
+		&& validContracts(state.contracts) && validGit(state.git) && validMetrics(state.metrics) && Array.isArray(state.stages)
 		&& state.stages.every((stage) => record(stage) && onlyKeys(stage, ["id", "status", "tasks", "integration", "verification", "review"])
 			&& typeof stage.id === "string" && STORY_ID.test(stage.id) && oneOf(stage.status, ["pending", "running", "completed", "attention"])
-			&& boundedArray(stage.tasks, 200) && stage.tasks.every(validTask) && validIntegration(stage.integration)
+			&& Array.isArray(stage.tasks) && stage.tasks.every(validTask) && validIntegration(stage.integration)
 			&& validVerification(stage.verification) && validReview(stage.review))
 		&& validReview(state.finalReview) && validE2E(state.e2e)
 		&& (state.outcomeStatus === undefined || oneOf(state.outcomeStatus, ["pending", "written", "failed"]))
-		&& validMetricStageReferences(state);
+		&& validAttentionReference(state) && validCorrectionReferences(state) && validMetricStageReferences(state);
 }
 export function parseStoryRuntimeState(value: unknown, storyId: string): StoryRuntimeState {
-	if (!record(value) || value.schemaVersion !== 1 || value.storyId !== storyId || !validStateShape(value)) {
+	const normalized = record(value) ? { ...value, metrics: normalizeLegacyWorkflowMetrics(value.metrics) } : value;
+	if (!record(normalized) || normalized.schemaVersion !== 1 || normalized.storyId !== storyId || !validStateShape(normalized)) {
 		throw new Error(`Unsupported or invalid runtime state for ${storyId}`);
 	}
-	return value as unknown as StoryRuntimeState;
+	const state = normalized as unknown as StoryRuntimeState;
+	if (!state.attentionTarget) {
+		const migrated = authoritativeAttentionTarget(state);
+		if (migrated) state.attentionTarget = migrated;
+	}
+	return state;
 }
 
 const validateState = parseStoryRuntimeState;
 
 function validateLedgerEntry(entry: LedgerEntry): void {
 	if (!record(entry) || !onlyKeys(entry as unknown as Record<string, unknown>, ["id", "summary", "sourceRole", "updatedAt", "evidence"])) throw new Error("Ledger entries contain unsupported fields");
-	if (typeof entry.id !== "string" || !entry.id.trim() || entry.id.length > 120 || typeof entry.summary !== "string" || !entry.summary.trim() || entry.summary.length > 2_000) throw new Error("Ledger entries require a bounded id and summary");
-	if (typeof entry.sourceRole !== "string" || !entry.sourceRole.trim() || entry.sourceRole.length > 80 || typeof entry.updatedAt !== "string" || !Number.isFinite(Date.parse(entry.updatedAt))) throw new Error("Ledger entries require a role and timestamp");
-	if (entry.evidence !== undefined && (!Array.isArray(entry.evidence) || entry.evidence.length > 16 || entry.evidence.some((reference) => typeof reference !== "string" || reference.length > 500 || reference.includes("\0")))) throw new Error("Ledger evidence references exceed their bound");
+	if (!nonEmptyString(entry.id) || !entry.id.trim() || !nonEmptyString(entry.summary) || !entry.summary.trim()) throw new Error("Ledger entries require a non-empty id and summary");
+	if (!nonEmptyString(entry.sourceRole) || !entry.sourceRole.trim() || typeof entry.updatedAt !== "string" || !Number.isFinite(Date.parse(entry.updatedAt))) throw new Error("Ledger entries require a role and timestamp");
+	if (entry.evidence !== undefined && (!Array.isArray(entry.evidence) || entry.evidence.some((reference) => !nonEmptyString(reference)))) throw new Error("Ledger evidence references must be non-empty strings");
 }
 
 function validateLedger(value: unknown, storyId: string): StoryLedger {
@@ -490,7 +764,6 @@ export class StoryRuntimeStore {
 	readonly ledgerPath: string;
 	readonly eventsPath: string;
 	readonly #storyId: string;
-	readonly #maxLedgerEntries: number;
 	readonly #maxDebugTailEntries: number;
 	readonly #maxDebugReadBytes: number;
 	readonly #now: () => Date;
@@ -503,7 +776,6 @@ export class StoryRuntimeStore {
 		this.statePath = join(this.storyRoot, "state.yaml");
 		this.ledgerPath = join(this.storyRoot, "ledger.yaml");
 		this.eventsPath = join(this.storyRoot, "events.jsonl");
-		this.#maxLedgerEntries = boundedPositiveInteger(options.maxLedgerEntries, DEFAULT_MAX_LEDGER_ENTRIES, ABSOLUTE_MAX_LEDGER_ENTRIES);
 		this.#maxDebugTailEntries = boundedPositiveInteger(options.maxDebugTailEntries, DEFAULT_MAX_DEBUG_TAIL_ENTRIES, ABSOLUTE_MAX_DEBUG_TAIL_ENTRIES);
 		this.#maxDebugReadBytes = boundedPositiveInteger(options.maxDebugReadBytes, DEFAULT_MAX_DEBUG_READ_BYTES);
 		this.#now = options.now ?? (() => new Date());
@@ -538,7 +810,7 @@ export class StoryRuntimeStore {
 			const current = await this.#readLedgerUnlocked();
 			const entries = current.entries.filter((candidate) => candidate.id !== entry.id);
 			entries.push(structuredClone(entry));
-			const ledger: StoryLedger = { schemaVersion: 1, entries: entries.slice(-this.#maxLedgerEntries) };
+			const ledger: StoryLedger = { schemaVersion: 1, entries };
 			await atomicWriteFile(this.ledgerPath, stringify(ledger), 0o600);
 			return ledger;
 		});

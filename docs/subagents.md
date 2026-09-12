@@ -16,7 +16,7 @@ The spawn tool exposes each loaded agent's name, description, and default tier. 
 }
 ```
 
-`title` is optional display text: preferably 3–7 words, at most 80 characters. It is normalized to one plain-text line. It does not enter the child prompt, select a role, grant permissions, or replace the opaque `agentId`. Spawn, continuation, background delivery and footer rows retain the title alongside the original agent type. Untitled historical entries still render.
+`title` is optional display text: preferably 3–7 words, without a hard character ceiling. It is normalized to one plain-text line. It does not enter the child prompt, select a role, grant permissions, or replace the opaque `agentId`. Spawn, continuation, background delivery and footer rows retain the title alongside the original agent type. Untitled historical entries still render.
 
 ## Models, effort and fallback
 
@@ -56,12 +56,28 @@ Standalone fallback is **pre-launch availability resolution only**. Runtime prov
 
 `subagent_continue` sends a **new assignment** to a settled logical agent, waits for it, and retains the original agent type, title, resolved model/effort, tool configuration and transcript. Changing the tier profile does not reroute an existing agent. Spawn a new logical agent to change its routing or role.
 
-Background report previews are bounded to 1,200 bytes. To retrieve the already-produced report, use `subagent_read`, not another continuation:
+The shared subagent extension deterministically saves the latest assistant response as plain text in a private, attempt-specific `/tmp/pibox-subagent-attempt-*/report.md`. It does not ask the model to write a report, and the file contains neither the full conversation nor reasoning/tool-event payloads. Each continuation gets a new report path, so earlier report references stay stable.
+
+Foreground results inline small reports; large results return a bounded preview and the full report path. Background previews remain bounded to 1,200 bytes and include the path. Prefer ordinary `read` and `grep` on that path to retrieve or search the existing response without another subagent turn:
+
+```json
+{ "path": "/tmp/pibox-subagent-attempt-EXAMPLE/report.md", "offset": 1, "limit": 200 }
+```
+
+`subagent_read` remains a compatibility reader of the same saved report, not a second report store:
 
 ```json
 { "agentId": "<handle>", "limit": 8000 }
 ```
 
-The result includes `attemptId`, zero-based Unicode-character `offset`, `count`, `totalCharacters`, and `nextOffset` when another page exists. Subsequent reads should supply the returned `attemptId` and `nextOffset`; a newer continuation report rejects the old attempt ID rather than mixing pages. Pages contain at most 12,000 Unicode characters / 48KB of report text, plus a small identity/pagination header.
+Its result includes `attemptId`, zero-based Unicode-character `offset`, `count`, `totalCharacters`, and `nextOffset` when another page exists. Supply `attemptId` on later pages to reject a newer continuation result rather than mixing reports. Pages contain at most 12,000 Unicode characters / 48KB of report text, plus a small header. Services without file metadata retain their in-memory compatibility path.
 
-Reading does not launch a model, consume a continuation capability, or wait for active work. It works for completed, failed and cancelled terminal reports, and reads only the latest settled report for that standalone agent. Reports and titles survive same-activation `/reload`; released agents and replacement activations cannot be read. No transcript paths, credentials, workflow state, or event replay are exposed by the tool.
+Reports have `0600` permissions in private `0700` directories. Release and teardown do not delete them; `/tmp` retention is OS-managed and best effort, with no PiBox cleanup job or durability promise. Ordinary file reads remain possible while the file exists, independently of a live agent handle. `subagent_read` is still activation/handle-scoped. Missing files and report capture failures are reported explicitly. Failure or cancellation status is separate from any captured response: an existing file does not mean the attempt succeeded.
+
+## Transport and completion
+
+Agent descriptions and assignment text are not rejected because of arbitrary character counts. Full prompt content uses file-backed input rather than a potentially oversized process argument; display previews remain independent of the content delivered to the child.
+
+A child-only extension sends bounded progress and lifecycle records over a dedicated event channel. Native Pi JSON output is drained without accumulating cumulative `agent_end` or tool payloads. Large reports travel through the report file, not one size-limited JSON record. This boundary is shared by standalone and workflow children; deterministic workflow consumers still receive complete final text rather than a preview.
+
+`agent_end` alone is not completion: Pi may retry, compact, or process follow-ups. A successful result requires the final report, `agent_settled`, successful process exit, and drained output. Malformed compact protocol, missing settlement, and failed report capture remain failures rather than being silently accepted.

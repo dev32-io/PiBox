@@ -22,7 +22,6 @@ const AUTO_RECALL_MAX_QUERY_CHARS = 3_000;
 const AUTO_RECALL_MAX_CONTEXT_CHARS = 4_000;
 const MAX_RECALL_LIMIT = 10;
 const MAX_AUDIT_CANDIDATES = 50;
-const MAX_EVIDENCE_PATHS = 20;
 
 export interface RecallSelection {
 	selected: MemoryRecord[];
@@ -49,7 +48,7 @@ const parameters = Type.Object({
 	id: Type.Optional(Type.String()),
 	type: Type.Optional(Type.String()),
 	source: Type.Optional(Type.String()),
-	evidencePaths: Type.Optional(Type.Array(Type.String(), { maxItems: MAX_EVIDENCE_PATHS })),
+	evidencePaths: Type.Optional(Type.Array(Type.String())),
 	expiresAt: Type.Optional(Type.String({ description: "Optional YYYY-MM-DD expiration date." })),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_RECALL_LIMIT })),
 });
@@ -71,7 +70,6 @@ async function ensureRunning(ctx: ExtensionContext, signal?: AbortSignal): Promi
 }
 
 function validateEvidencePaths(scope: RepositoryScope, paths: string[] | undefined): void {
-	if ((paths?.length ?? 0) > MAX_EVIDENCE_PATHS) throw new Error(`At most ${MAX_EVIDENCE_PATHS} evidence paths are allowed.`);
 	for (const path of paths ?? []) {
 		const fromRoot = relative(scope.root, resolve(scope.root, path));
 		if (!path || fromRoot === ".." || fromRoot.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
@@ -182,9 +180,7 @@ async function deterministicAudit(pi: ExtensionAPI, records: MemoryRecord[], sco
 		else if (verifiedAt < staleBefore) reasons.push("verification older than 90 days");
 		const verifiedCommit = typeof metadata.verified_commit === "string" ? metadata.verified_commit : undefined;
 		if (!verifiedCommit) reasons.push("missing verified commit");
-		const allEvidence = Array.isArray(metadata.evidence_paths) ? metadata.evidence_paths.filter((path): path is string => typeof path === "string") : [];
-		if (allEvidence.length > MAX_EVIDENCE_PATHS) reasons.push(`too many evidence paths (${allEvidence.length}; maximum ${MAX_EVIDENCE_PATHS})`);
-		const evidence = allEvidence.slice(0, MAX_EVIDENCE_PATHS);
+		const evidence = Array.isArray(metadata.evidence_paths) ? metadata.evidence_paths.filter((path): path is string => typeof path === "string") : [];
 		if (evidence.length === 0) reasons.push("no evidence paths");
 		for (const path of evidence) if (!existsSync(resolve(scope.root, path))) reasons.push(`missing evidence: ${path}`);
 		if (verifiedCommit) {
@@ -243,10 +239,6 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 					: [];
 				if (!evidence.length) {
 					selection.skipped.push({ id: record.id, reason: "automatic recall requires repository evidence" });
-					continue;
-				}
-				if (evidence.length > MAX_EVIDENCE_PATHS) {
-					selection.skipped.push({ id: record.id, reason: `evidence exceeds the ${MAX_EVIDENCE_PATHS}-path limit` });
 					continue;
 				}
 				const verifiedCommit = typeof record.metadata?.verified_commit === "string" ? record.metadata.verified_commit : undefined;

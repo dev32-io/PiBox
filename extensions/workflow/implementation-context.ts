@@ -1,38 +1,26 @@
-import { HarnessError } from "./errors.js";
 import { renderBuiltInPrompt } from "./prompt-loader.js";
 import type { AuthoredExecutionStage, AuthoredTaskDocument, StoryDocument, VerificationCheckSpec } from "./types.js";
 import { renderVerificationCheck } from "./verification-checks.js";
 import { WorkItemStore } from "./work-items.js";
 import type { LedgerEntry, StructuredFinding } from "./story-runtime-store.js";
 
-export const TASK_CONTEXT_BUDGET_BYTES = 128 * 1024;
-export const REVIEW_CONTEXT_BUDGET_BYTES = 512 * 1024;
-export interface ContextBudgetOptions { maxBytes?: number }
 export interface AttemptCoordinates { baseCommit?: string; branch?: string; worktree?: string; headCommit?: string }
 export type ManagedContextRole = "stage-reviewer" | "stage-fixer" | "final-reviewer" | "e2e";
 export interface RolePersistentContextInput { role: ManagedContextRole; story: StoryDocument; tasks?: readonly AuthoredTaskDocument[]; stage?: AuthoredExecutionStage }
 export interface RoleAttemptContextInput extends AttemptCoordinates { failure?: string; findings?: readonly StructuredFinding[]; ledger?: readonly LedgerEntry[]; previousReviewedCommit?: string }
 
-function boundedContext(kind: "task" | "review", rendered: string, budgetBytes: number): string {
-	if (!Number.isInteger(budgetBytes) || budgetBytes < 1) throw new HarnessError("INVALID_ARTIFACT", `${kind} context budget must be a positive byte count`);
-	const packet = `${rendered}\n`;
-	const bytes = Buffer.byteLength(packet, "utf8");
-	if (bytes > budgetBytes) throw new HarnessError("INVALID_ARTIFACT", `${kind} stable context requires ${bytes} bytes, exceeding its explicit ${budgetBytes}-byte budget; binding content was not truncated`, { budgetBytes, actualBytes: bytes });
-	return packet;
-}
-
 function renderTaskContract(task: AuthoredTaskDocument): string {
 	return [`### ${task.id} — ${task.title}`, "", "#### Description", "", task.description, "", "#### Scope", "", task.scope, "", "#### Delivery", "", task.delivery].join("\n");
 }
 
-export async function buildTaskPersistentContext(store: WorkItemStore, workItemId: string, task: Pick<AuthoredTaskDocument, "id">, options: ContextBudgetOptions = {}): Promise<string> {
+export async function buildTaskPersistentContext(store: WorkItemStore, workItemId: string, task: Pick<AuthoredTaskDocument, "id">): Promise<string> {
 	const authored = await store.readAuthoredTask(workItemId, task.id);
-	return boundedContext("task", renderBuiltInPrompt("implementation-context", { task: `${authored.id} — ${authored.title}`, description: authored.description, scope: authored.scope, delivery: authored.delivery }), options.maxBytes ?? TASK_CONTEXT_BUDGET_BYTES);
+	return `${renderBuiltInPrompt("implementation-context", { task: `${authored.id} — ${authored.title}`, description: authored.description, scope: authored.scope, delivery: authored.delivery })}\n`;
 }
 
 function renderChecks(checks: readonly VerificationCheckSpec[]): string { return checks.length ? checks.map((check) => `- ${renderVerificationCheck(check)}`).join("\n") : "- None declared."; }
 
-export function buildRolePersistentContext(input: RolePersistentContextInput, options: ContextBudgetOptions = {}): string {
+export function buildRolePersistentContext(input: RolePersistentContextInput): string {
 	let boundary: string;
 	if (input.role === "e2e") boundary = ["## Complete E2E Contract", "", input.story.e2e].join("\n");
 	else {
@@ -41,7 +29,7 @@ export function buildRolePersistentContext(input: RolePersistentContextInput, op
 		const stageContext = input.role === "stage-reviewer" && input.stage ? [`## Stage ${input.stage.id}`, "", "### Harness-Owned Checks", "", renderChecks(input.stage.checks), "", "### Review Focus", "", input.stage.review?.focus || "General correctness and contract fit within this stage."].join("\n") : "";
 		boundary = [storyContext, "## Scoped Task Contracts", "", taskContext, stageContext].filter(Boolean).join("\n\n");
 	}
-	return boundedContext("review", renderBuiltInPrompt("review-context", { role: input.role, boundary }), options.maxBytes ?? REVIEW_CONTEXT_BUDGET_BYTES);
+	return `${renderBuiltInPrompt("review-context", { role: input.role, boundary })}\n`;
 }
 
 export function buildRoleAttemptContext(input: RoleAttemptContextInput): string {

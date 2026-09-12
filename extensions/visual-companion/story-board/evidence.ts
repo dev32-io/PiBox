@@ -4,10 +4,9 @@ import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { parseStoryRuntimeState } from "../../workflow/story-runtime-store.js";
 import type { StoryRuntimeState } from "../../workflow/story-runtime-store.js";
-import type { Diagnostic, EvidenceMetadata } from "./models.js";
+import type { Diagnostic, E2ECaseEvidenceRef, E2ECaseProjection, EvidenceMetadata, RecordedE2EReportProjection } from "./models.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const MAX_CURRENT_STATE_BYTES = 2 * 1024 * 1024;
 const SUPPORTED = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".txt", ".md", ".json", ".yaml", ".yml", ".log"]);
 const MIME: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml", ".txt": "text/plain", ".md": "text/markdown", ".json": "application/json", ".yaml": "application/yaml", ".yml": "application/yaml", ".log": "text/plain" };
 
@@ -19,6 +18,29 @@ function inside(root: string, candidate: string): boolean {
 	return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 function diagnostic(path: string, message: string): Diagnostic { return { path, message }; }
+function redactAuthorizationCredentials(value: string): string {
+	const quotedKey = String.raw`(?:"authorization"|'authorization'|\bauthorization\b)`;
+	let sanitized = value;
+	for (const quote of ['"', "'", "`"]) {
+		const escapedQuote = quote === "`" ? "`" : `\\${quote}`;
+		const quotedValue = new RegExp(`(${quotedKey}\\s*[:=]\\s*)${escapedQuote}((?:\\\\.|[^${escapedQuote}\\\\\\r\\n])*)${escapedQuote}`, "gi");
+		sanitized = sanitized.replace(quotedValue, `$1${quote}[REDACTED AUTHORIZATION]${quote}`);
+	}
+	return sanitized.replace(new RegExp(`(${quotedKey}\\s*)([:=])(\\s*)(?!["'\\x60])([^\\r\\n]*)`, "gi"), (match, key: string, separator: string, spacing: string, credential: string) => {
+		if (!credential) return match;
+		const suffixAt = separator === "=" ? credential.search(/[;,]/) : -1;
+		const suffix = suffixAt >= 0 ? credential.slice(suffixAt) : "";
+		return `${key}${separator}${spacing}[REDACTED AUTHORIZATION]${suffix}`;
+	});
+}
+export function sanitizeCurrentEvidenceText(value: string): string {
+	return redactAuthorizationCredentials(value)
+		.replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[REDACTED PRIVATE MATERIAL]")
+		.replace(/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\b\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+		.replace(/\b(?:sk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b/g, "[REDACTED TOKEN]")
+		.replace(/(["'`])((?:[A-Za-z]:[\\/]|\/)[^"'`\r\n]*)\1/g, (_match, quote: string) => `${quote}[private path]${quote}`)
+		.replace(/(^|[\s=(\[\]{},;])((?:[A-Za-z]:[\\/]|\/)[^\s"'`),;\]}]*)/g, "$1[private path]");
+}
 async function regularMember(root: string, path: string) {
 	let current = root; const parts = path.split("/");
 	for (const [index, part] of parts.entries()) {
@@ -122,8 +144,71 @@ export async function readCurrentEvidenceMetadata(repositoryRoot: string, storyI
 	}));
 }
 
-/** Reads authoritative current state through one contained, no-follow, byte-bounded descriptor. */
-export async function readBoundedCurrentRuntimeState(repositoryRoot: string, storyId: string, storyRoot = join(resolve(repositoryRoot), "agent-artifacts", storyId)): Promise<{ bytes: Buffer; state: StoryRuntimeState }> {
+function stringArray(value: unknown): string[] | undefined {
+	return Array.isArray(value) && value.every((item) => typeof item === "string") ? value.map((item) => sanitizeCurrentEvidenceText(item)) : undefined;
+}
+
+function parseE2EReport(value: unknown, sourcePath: string, sourceMemberPath: string, evidence: readonly EvidenceMetadata[]): RecordedE2EReportProjection | "supporting" | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	if (!("caseResults" in record)) return "supporting";
+	if (typeof record.result !== "string" || typeof record.summary !== "string") return undefined;
+	const findings = stringArray(record.findings); if (!findings || !Array.isArray(record.caseResults)) return undefined;
+	const seen = new Set<string>(); const cases: E2ECaseProjection[] = [];
+	for (const candidate of record.caseResults) {
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+		const item = candidate as Record<string, unknown>;
+		const actions = stringArray(item.executedActions); const observations = stringArray(item.observations); const refs = stringArray(item.evidenceRefs);
+		if (typeof item.caseId !== "string" || !item.caseId || typeof item.status !== "string" || !item.status || !actions || !observations || !refs || seen.has(item.caseId)) return undefined;
+		seen.add(item.caseId);
+		const evidenceRefs: E2ECaseEvidenceRef[] = refs.map((label) => {
+			const authorized = evidence.find((entry) => entry.memberPath === label);
+			return { label, ...(authorized?.manifestMember && authorized.available && authorized.supported ? { memberPath: authorized.memberPath } : {}) };
+		});
+		cases.push({ caseId: sanitizeCurrentEvidenceText(item.caseId), status: sanitizeCurrentEvidenceText(item.status), executedActions: actions, observations, evidenceRefs, recorded: true });
+	}
+	return { sourcePath, sourceMemberPath, result: sanitizeCurrentEvidenceText(record.result), summary: sanitizeCurrentEvidenceText(record.summary), findings, cases, diagnostics: [] };
+}
+
+async function readAuthorizedCurrentEvidenceJson(repositoryRoot: string, storyId: string, memberPath: string): Promise<unknown> {
+	if (!ID.test(storyId) || !safeRelative(memberPath) || !memberPath.startsWith("evidence/")) throw new Error("unsafe evidence path");
+	const repository = resolve(repositoryRoot); const storyRoot = join(repository, "agent-artifacts", storyId);
+	const [repositoryReal, storyReal] = await Promise.all([realpath(repository), realpath(storyRoot)]);
+	if (!inside(repositoryReal, storyReal)) throw new Error("story is not contained");
+	const member = await regularMember(storyRoot, memberPath);
+	if (member.invalid || !member.info?.isFile() || !member.real || !inside(storyReal, member.real)) throw new Error("evidence is not contained");
+	const handle = await open(join(storyRoot, memberPath), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+	try {
+		const descriptor = await handle.stat();
+		if (!descriptor.isFile() || descriptor.dev !== member.info.dev || descriptor.ino !== member.info.ino) throw new Error("evidence changed while opening");
+		return JSON.parse((await handle.readFile()).toString("utf8"));
+	} finally { await handle.close(); }
+}
+
+/** Selects the newest usable report from exact current E2E references; it never discovers files. */
+export async function readCurrentE2EReport(repositoryRoot: string, storyId: string, evidenceRefs: readonly string[], evidence: readonly EvidenceMetadata[]): Promise<RecordedE2EReportProjection | undefined> {
+	const failures: Diagnostic[] = [];
+	for (const reference of [...evidenceRefs].reverse()) {
+		if (extname(reference).toLowerCase() !== ".json") continue;
+		const metadata = evidence.find((entry) => entry.memberPath === reference);
+		if (!metadata?.manifestMember || !metadata.available) {
+			failures.push(diagnostic(`agent-artifacts/${storyId}/${reference}`, "Recorded E2E report candidate is unavailable"));
+			continue;
+		}
+		let parsed: unknown;
+		try { parsed = await readAuthorizedCurrentEvidenceJson(repositoryRoot, storyId, reference); }
+		catch { failures.push(diagnostic(`agent-artifacts/${storyId}/${reference}`, "Recorded E2E report candidate is unreadable or malformed")); continue; }
+		const report = parseE2EReport(parsed, metadata.path ?? `agent-artifacts/${storyId}/${reference}`, reference, evidence);
+		if (report === "supporting") continue;
+		if (!report) { failures.push(diagnostic(`agent-artifacts/${storyId}/${reference}`, "Recorded E2E report candidate has an invalid case-results contract")); continue; }
+		if (failures.length) report.diagnostics.push(...failures, diagnostic(report.sourcePath, "Showing this earlier report because a newer candidate was unavailable or malformed"));
+		return report;
+	}
+	return failures.length ? { sourcePath: "", sourceMemberPath: "", result: "Unavailable", summary: "No usable recorded E2E case report is available.", findings: [], cases: [], diagnostics: failures } : undefined;
+}
+
+/** Reads authoritative current state through one contained, no-follow descriptor. */
+export async function readCurrentRuntimeState(repositoryRoot: string, storyId: string, storyRoot = join(resolve(repositoryRoot), "agent-artifacts", storyId)): Promise<{ bytes: Buffer; state: StoryRuntimeState }> {
 	if (!ID.test(storyId)) throw new Error("invalid story id");
 	const repository = resolve(repositoryRoot); const storyInfo = await lstat(storyRoot).catch(() => undefined);
 	const [repositoryReal, storyReal] = await Promise.all([realpath(repository).catch(() => undefined), realpath(storyRoot).catch(() => undefined)]);
@@ -132,8 +217,8 @@ export async function readBoundedCurrentRuntimeState(repositoryRoot: string, sto
 	if (stateMember.invalid || !stateMember.info?.isFile() || !stateMember.real || !inside(storyReal, stateMember.real)) throw new Error("state is not contained");
 	const handle = await open(join(storyRoot, "state.yaml"), constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 	try {
-		const info = await handle.stat(); if (!info.isFile() || info.size > MAX_CURRENT_STATE_BYTES) throw new Error("state exceeds the supported size");
-		const bytes = await handle.readFile(); if (bytes.byteLength > MAX_CURRENT_STATE_BYTES) throw new Error("state exceeds the supported size");
+		const info = await handle.stat(); if (!info.isFile()) throw new Error("state is not a regular file");
+		const bytes = await handle.readFile();
 		return { bytes, state: parseStoryRuntimeState(parse(bytes.toString("utf8")), storyId) };
 	} finally { await handle.close(); }
 }
@@ -143,7 +228,7 @@ export async function resolveCurrentEvidenceMember(repositoryRoot: string, story
 	if (!ID.test(storyId) || !safeRelative(memberPath) || !memberPath.startsWith("evidence/")) return undefined;
 	const repository = resolve(repositoryRoot); const storyRoot = join(repository, "agent-artifacts", storyId); const storyInfo = await lstat(storyRoot).catch(() => undefined);
 	const [repositoryReal, storyReal] = await Promise.all([realpath(repository).catch(() => undefined), realpath(storyRoot).catch(() => undefined)]); if (!storyInfo?.isDirectory() || storyInfo.isSymbolicLink() || !repositoryReal || !storyReal || !inside(repositoryReal, storyReal)) return undefined;
-	let evidenceRefs: readonly string[]; try { evidenceRefs = (await readBoundedCurrentRuntimeState(repositoryRoot, storyId, storyRoot)).state.e2e.evidenceRefs; } catch { return undefined; }
+	let evidenceRefs: readonly string[]; try { evidenceRefs = (await readCurrentRuntimeState(repositoryRoot, storyId, storyRoot)).state.e2e.evidenceRefs; } catch { return undefined; }
 	if (!evidenceRefs.includes(memberPath)) return undefined;
 	const { info, real, invalid } = await regularMember(storyRoot, memberPath); if (invalid || !info?.isFile() || !real || !inside(storyReal, real)) return undefined;
 	return join(storyRoot, memberPath);

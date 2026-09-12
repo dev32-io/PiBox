@@ -52,7 +52,7 @@ function runtimeState(storyId: string, status: "ready" | "running" = "ready"): s
 	});
 }
 
-test("current-state observation is bounded to a valid contained regular state file and ignores ledger and events", async (t) => {
+test("current-state observation reads a valid contained regular state file of any supported content size and ignores ledger and events", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "story-state-observation-")); const outside = await mkdtemp(join(tmpdir(), "story-state-observation-outside-"));
 	t.after(() => Promise.all([rm(root, { recursive: true, force: true }), rm(outside, { recursive: true, force: true })]));
 	const story = "observed-story"; const base = `agent-artifacts/${story}`; const statePath = join(root, base, "state.yaml"); const bytes = runtimeState(story);
@@ -65,8 +65,9 @@ test("current-state observation is bounded to a valid contained regular state fi
 	await writeFile(statePath, runtimeState(story, "running")); const changed = await reader.observeWorkspace(story); assert.equal(changed?.status, "running"); assert.notEqual(changed?.versionSeed, initial.versionSeed);
 
 	await writeFile(statePath, "not: valid runtime state\n"); assert.equal(await reader.observeWorkspace(story), undefined, "malformed state disables observation");
-	await writeFile(statePath, "x".repeat(2 * 1024 * 1024 + 1)); assert.equal(await reader.observeWorkspace(story), undefined, "oversized state disables observation");
-	const oversized = await reader.readWorkspace(story, join(root, base)); assert.equal(oversized.workflow, undefined, "oversized state is never parsed into a projection"); assert.ok(oversized.diagnostics.some((item) => item.path.endsWith("/state.yaml") && item.message.includes("oversized")));
+	const largeValidState = `${runtimeState(story)}# ${"valid-state-padding".repeat(140_000)}\n`; assert.ok(Buffer.byteLength(largeValidState) > 2 * 1024 * 1024);
+	await writeFile(statePath, largeValidState); const large = await reader.observeWorkspace(story); assert.equal(large?.status, "ready", "valid state larger than 2 MiB remains observable");
+	const projected = await reader.readWorkspace(story, join(root, base)); assert.ok(projected.workflow, "valid large state remains projectable");
 	await unlink(statePath); assert.equal(await reader.observeWorkspace(story), undefined, "missing state disables observation");
 	const outsideState = join(outside, "state.yaml"); await writeFile(outsideState, bytes); await symlink(outsideState, statePath);
 	assert.equal(await reader.observeWorkspace(story), undefined, "symlinked state disables observation");

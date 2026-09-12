@@ -45,7 +45,7 @@ export function discoverAgentDefinitions(
 		try {
 			const { frontmatter, body } = parseFrontmatter<AgentFrontmatter>(readFileSync(source, "utf8"));
 			if (typeof frontmatter.name !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(frontmatter.name)) throw new Error("name must be a lowercase kebab-case identifier");
-			if (typeof frontmatter.description !== "string" || !frontmatter.description.trim() || frontmatter.description.length > 240) throw new Error("description must be a non-empty string of at most 240 characters");
+			if (typeof frontmatter.description !== "string" || !frontmatter.description.trim()) throw new Error("description must be a non-empty string");
 			if (!body.trim()) throw new Error("agent prompt body must not be empty");
 			if (frontmatter.model !== undefined && (typeof frontmatter.model !== "string" || !frontmatter.model.trim())) throw new Error("model must be a non-empty string");
 			if (frontmatter.tier !== undefined && (typeof frontmatter.tier !== "string" || !TIERS.has(frontmatter.tier as CapabilityTier))) throw new Error("tier must be one of low, medium, high, or max");

@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
 	LIFETIME_WRAPPER_PATH,
+	REPORT_BRIDGE_EXTENSION_PATH,
 	SubagentProcessManager,
+	attemptUserPromptPath,
 	createPiInvocationResolver,
 	stableSystemPromptPath,
 	type RuntimeOwner,
 	type SubagentInvocation,
 	type SubagentInvocationRequest,
 } from "../index.js";
+import { normalizeSubagentTitle } from "../presentation.js";
 
 const FAKE_CHILD = resolve("extensions/subagent/tests/support/fake-child.mjs");
+const PRODUCTION_BRIDGE_CHILD = resolve("extensions/subagent/tests/support/production-bridge-child.mjs");
+const REAL_PI_PROVIDER = resolve("extensions/subagent/tests/support/real-pi-provider.ts");
 const EXECUTION = {
 	provider: "test-provider",
 	model: "test-model",
@@ -54,12 +60,45 @@ async function fixture(t: TestContext, options: { terminationGraceMs?: number; s
 			};
 		},
 	});
-	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		const reportDirectories: string[] = [];
+		try {
+			for (const snapshot of manager.inspect(owner())) {
+				if (["launching", "running", "stopping"].includes(snapshot.state)) continue;
+				const terminal = await manager.wait(owner(), snapshot.handle);
+				if (terminal.reportPath) reportDirectories.push(dirname(terminal.reportPath));
+			}
+		} catch { /* A test may already have torn down the manager. */ }
+		await manager.teardown();
+		await Promise.all(reportDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
+		await rm(root, { recursive: true, force: true });
+	});
 	return { manager, root, sessionDirectory, invocations };
 }
 
 function launch(manager: SubagentProcessManager, agent: string, prompt = "first prompt") {
 	return manager.launch({ owner: owner(), agent, cwd: process.cwd(), stableSystemContext: "stable agent contract", attemptUserPrompt: prompt, continuationKey: "stable-config", ...EXECUTION });
+}
+
+async function productionBridgeFixture(t: TestContext, mode: string, finalText?: string) {
+	const root = await mkdtemp(join(tmpdir(), "pibox-production-bridge-"));
+	const resolver = createPiInvocationResolver({
+		piInvocation: {
+			command: process.execPath,
+			args: ["--import", "tsx", PRODUCTION_BRIDGE_CHILD],
+			env: { FAKE_PI_MODE: mode, ...(finalText === undefined ? {} : { FAKE_FINAL_TEXT: finalText }) },
+		},
+		lifetimeTermGraceMs: 50,
+	});
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: resolver,
+		maximumJsonlLineCharacters: 32 * 1024,
+		terminationGraceMs: 100,
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+	return manager;
 }
 
 async function eventTypes(manager: SubagentProcessManager): Promise<string[]> {
@@ -96,6 +135,7 @@ test("release deletes a settled child transcript and retained diagnostics", asyn
 	const started = await launch(manager, "success");
 	const terminal = await started.result;
 	const transcript = invocations[0]!.transcriptPath;
+	t.after(() => terminal.reportPath ? rm(dirname(terminal.reportPath), { recursive: true, force: true }) : undefined);
 	await manager.release(owner(), terminal.handle);
 	await assert.rejects(access(transcript), /ENOENT/);
 	assert.equal(manager.inspect(owner()).length, 0);
@@ -138,7 +178,178 @@ test("the last final assistant message is authoritative over deltas and earlier 
 	const result = await (await launch(manager, "authoritative")).result;
 	assert.equal(result.text, "authoritative final");
 	const finalEvents = manager.replay(owner(), 0).events.filter((event) => event.type === "final_message");
-	assert.deepEqual(finalEvents.map((event) => event.data?.text), ["first final", "authoritative final"]);
+	assert.deepEqual(finalEvents.map((event) => event.data?.reportBytes), [11, 19]);
+});
+
+test("production bridge drains oversized cumulative, tool, and final events into a private complete report", async (t) => {
+	const manager = await productionBridgeFixture(t, "oversized");
+	const terminal = await (await launch(manager, "bridge")).result;
+	assert.equal(terminal.status, "completed");
+	assert.equal(Array.from(terminal.text).length, 1_700_001);
+	assert.match(terminal.text, /^🙂中🙂中/);
+	assert.ok(terminal.text.endsWith("z".repeat(100)));
+	assert.match(terminal.reportPath ?? "", /^\/tmp\/pibox-subagent-attempt-[^/]+\/report\.md$/);
+	assert.equal(terminal.reportBytes, Buffer.byteLength(terminal.text));
+	assert.equal(terminal.reportCharacters, 1_700_001);
+	assert.equal(await readFile(terminal.reportPath!, "utf8"), terminal.text);
+	assert.equal((await stat(dirname(terminal.reportPath!))).mode & 0o777, 0o700);
+	assert.equal((await stat(terminal.reportPath!)).mode & 0o777, 0o600);
+	assert.equal(terminal.text.includes("private reasoning"), false);
+	assert.equal(terminal.progress?.toolCalls, 1);
+	assert.doesNotMatch(terminal.stderr ?? "", /configured limit|agent_end/);
+	const retainedPath = terminal.reportPath!;
+	await manager.release(owner(), terminal.handle);
+	await access(retainedPath);
+	await manager.teardown();
+	await access(retainedPath);
+	t.after(() => rm(dirname(retainedPath), { recursive: true, force: true }));
+});
+
+test("real Pi CLI loads the provider and report bridge, selects a tool, and settles oversized native events", { skip: process.platform === "win32" }, async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-real-pi-bridge-"));
+	const marker = join(root, "tool-selected.log");
+	const piCommand = resolve("node_modules/.bin/pi");
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: createPiInvocationResolver({
+			piInvocation: {
+				command: piCommand,
+				args: ["--offline", "--no-context-files", "--no-skills"],
+				env: { PI_OFFLINE: "1", PIBOX_REAL_PI_TOOL_MARKER: marker },
+			},
+			lifetimeTermGraceMs: 50,
+		}),
+		maximumJsonlLineCharacters: 32 * 1024,
+		terminationGraceMs: 200,
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+	const stableSystemContext = "Stable context survives file transport: π🙂";
+	const attemptUserPrompt = `-leading-dash\n@/literal/not-an-attachment\nUnicode: π🙂中\n${"prompt-body-".repeat(270_000)}\n  exact trailing whitespace  \n`;
+	assert.ok(Buffer.byteLength(attemptUserPrompt) > 3 * 1024 * 1024, "fixture must exceed ordinary argv budgets");
+	const started = await manager.launch({
+		owner: owner(),
+		agent: "real-cli",
+		cwd: root,
+		stableSystemContext,
+		attemptUserPrompt,
+		provider: "pibox-real-cli-test",
+		model: "fixture-model",
+		effort: "off",
+		tools: ["oversized_fixture_tool"],
+		extensionPaths: [REAL_PI_PROVIDER],
+		skillPaths: [],
+		fast: false,
+	});
+	const terminal = await started.result;
+	assert.equal(terminal.status, "completed", terminal.stderr);
+	const markerLines = (await readFile(marker, "utf8")).trim().split("\n");
+	assert.deepEqual(JSON.parse(markerLines[0]!), {
+		promptBytes: Buffer.byteLength(attemptUserPrompt),
+		promptSha256: createHash("sha256").update(attemptUserPrompt).digest("hex"),
+		stableContextPresent: true,
+	}, "the provider received the exact prompt as one user message and the stable context");
+	assert.equal(markerLines[1], "selected", "the real agent loop executed the selected extension tool");
+	assert.equal(terminal.progress?.toolCalls, 1);
+	assert.equal(terminal.text.endsWith("REAL_PI_FINAL_SENTINEL"), true);
+	assert.ok((terminal.reportBytes ?? 0) > 1_000_000);
+	assert.equal(await readFile(terminal.reportPath!, "utf8"), terminal.text);
+	await assert.rejects(access(attemptUserPromptPath(join(root, "sessions", `${started.handle.agentId}.jsonl`), terminal.attemptId)), /ENOENT/, "the consumed prompt sidecar is removed");
+	assert.doesNotMatch(terminal.stderr ?? "", /configured limit|Malformed child event channel|agent_settled|E2BIG/);
+	const lifecycle = await eventTypes(manager);
+	assert.ok(lifecycle.includes("final_message"), "real message_end reached the bridge");
+	assert.equal(lifecycle.at(-1), "terminal", "real agent_settled allowed completion");
+	t.after(() => rm(dirname(terminal.reportPath!), { recursive: true, force: true }));
+});
+
+test("production report paths remain attempt-specific and old reports stay stable after continuation", async (t) => {
+	const manager = await productionBridgeFixture(t, "continuation");
+	const first = await (await launch(manager, "bridge", "one")).result;
+	const firstPath = first.reportPath!;
+	const firstText = await readFile(firstPath, "utf8");
+	const second = await (await manager.continue({ owner: owner(), handle: first.handle, attemptUserPrompt: "two" })).result;
+	assert.equal(firstText, "reply:one");
+	assert.equal(second.text, "reply:two");
+	assert.notEqual(second.reportPath, firstPath);
+	assert.equal(await readFile(firstPath, "utf8"), firstText);
+	assert.equal(await readFile(second.reportPath!, "utf8"), "reply:two");
+	t.after(async () => {
+		await Promise.all([firstPath, second.reportPath!].map((path) => rm(dirname(path), { recursive: true, force: true })));
+	});
+});
+
+test("production bridge makes report write, missing file, malformed channel, and missing settlement failures explicit", async (t) => {
+	for (const [mode, diagnostic] of [
+		["report-error", /Child report write failed/],
+		["missing-report", /report file is missing/],
+		["malformed-channel", /Malformed child event channel/],
+		["missing-settlement", /agent_settled/],
+	] as const) {
+		const manager = await productionBridgeFixture(t, mode, "final text");
+		const terminal = await (await launch(manager, "bridge")).result;
+		assert.equal(terminal.status, "failed", mode);
+		assert.match(terminal.stderr ?? "", diagnostic, mode);
+		if (terminal.reportPath) t.after(() => rm(dirname(terminal.reportPath!), { recursive: true, force: true }));
+	}
+});
+
+test("failed, terminated, and partial report allocations are cleaned only after child drain", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-report-cleanup-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	let sequence = 0;
+	const createManager = (mode: string) => {
+		const allocationDirectory = join(root, `attempt-${++sequence}`);
+		const reportPath = join(allocationDirectory, "report.md");
+		const manager = new SubagentProcessManager({
+			owner: owner(),
+			sessionDirectory: join(root, `sessions-${sequence}`),
+			terminationGraceMs: 30,
+			invocationResolver: (request) => ({
+				command: process.execPath,
+				args: [FAKE_CHILD, mode],
+				env: { FAKE_PROMPT: request.attemptUserPrompt, FAKE_TRANSCRIPT: request.transcriptPath },
+			}),
+			async reportPathAllocator() {
+				await mkdir(allocationDirectory, { recursive: true, mode: 0o700 });
+				return reportPath;
+			},
+		});
+		return { manager, allocationDirectory, reportPath };
+	};
+
+	const missing = createManager("missing-report");
+	const missingTerminal = await (await launch(missing.manager, "missing")).result;
+	assert.equal(missingTerminal.status, "failed");
+	assert.equal(missingTerminal.reportPath, undefined);
+	await assert.rejects(access(missing.allocationDirectory), /ENOENT/);
+	await missing.manager.teardown();
+
+	const terminated = createManager("wait");
+	const running = await launch(terminated.manager, "wait");
+	await waitForEvent(terminated.manager, "message_delta");
+	await terminated.manager.stop(owner(), running.handle);
+	assert.equal((await running.result).reason, "explicit_stop");
+	await assert.rejects(access(terminated.allocationDirectory), /ENOENT/);
+	await terminated.manager.teardown();
+
+	const captured = createManager("success-partial");
+	const capturedTerminal = await (await launch(captured.manager, "success-partial")).result;
+	assert.equal(capturedTerminal.status, "completed");
+	assert.equal(await readFile(captured.reportPath, "utf8"), "final answer");
+	await assert.rejects(access(`${captured.reportPath}.tmp-stale`), /ENOENT/);
+	await captured.manager.teardown();
+	await access(captured.reportPath);
+});
+
+test("assistant failure metadata stays separate from captured report contents", async (t) => {
+	const manager = await productionBridgeFixture(t, "assistant-error", "safe final text");
+	const terminal = await (await launch(manager, "bridge")).result;
+	assert.equal(terminal.status, "failed");
+	assert.equal(terminal.text, "safe final text");
+	assert.match(terminal.stderr ?? "", /provider failed/);
+	assert.equal(await readFile(terminal.reportPath!, "utf8"), "safe final text");
+	assert.doesNotMatch(await readFile(terminal.reportPath!, "utf8"), /provider failed|private reasoning/);
+	t.after(() => rm(dirname(terminal.reportPath!), { recursive: true, force: true }));
 });
 
 test("malformed output fails with bounded diagnostics while EOF drains a valid partial record", async (t) => {
@@ -146,7 +357,7 @@ test("malformed output fails with bounded diagnostics while EOF drains a valid p
 	const malformed = await (await launch(malformedFixture.manager, "malformed")).result;
 	assert.equal(malformed.status, "failed");
 	assert.equal(malformed.text, "recovered");
-	assert.match(malformed.stderr ?? "", /Malformed child JSONL/);
+	assert.match(malformed.stderr ?? "", /Malformed child event channel/);
 	assert.ok(Buffer.byteLength(malformed.stderr ?? "") <= 64 * 1024);
 
 	const partialFixture = await fixture(t);
@@ -281,6 +492,75 @@ test("a late beforeSpawn completion cannot spawn or publish after launch stop", 
 	await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
 	await assert.rejects(access(marker), /ENOENT/);
 	assert.deepEqual(await eventTypes(manager), ["stop_requested", "terminal"]);
+});
+
+test("stop during report allocation terminalizes without spawning and cleans the late allocation", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-allocation-stop-"));
+	const allocationDirectory = join(root, "attempt");
+	const reportPath = join(allocationDirectory, "report.md");
+	const marker = join(root, "spawned");
+	let allocationEntered!: () => void;
+	let releaseAllocation!: () => void;
+	const entered = new Promise<void>((resolveEntered) => { allocationEntered = resolveEntered; });
+	const gate = new Promise<void>((resolveGate) => { releaseAllocation = resolveGate; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: () => ({ command: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned")`] }),
+		async reportPathAllocator() {
+			allocationEntered();
+			await gate;
+			await mkdir(allocationDirectory, { recursive: true, mode: 0o700 });
+			return reportPath;
+		},
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+
+	const launching = launch(manager, "allocation");
+	await entered;
+	const handle = manager.inspect(owner())[0]!.handle;
+	await promptly(manager.stop(owner(), handle));
+	const started = await promptly(launching);
+	assert.equal((await promptly(started.result)).reason, "explicit_stop");
+	releaseAllocation();
+	await waitForMissing(allocationDirectory);
+	await assert.rejects(access(marker), /ENOENT/);
+	assert.deepEqual(await eventTypes(manager), ["stop_requested", "terminal"]);
+});
+
+test("teardown during report allocation terminalizes without spawning and cleans the late allocation", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-allocation-teardown-"));
+	const allocationDirectory = join(root, "attempt");
+	const reportPath = join(allocationDirectory, "report.md");
+	const marker = join(root, "spawned");
+	let allocationEntered!: () => void;
+	let releaseAllocation!: () => void;
+	const entered = new Promise<void>((resolveEntered) => { allocationEntered = resolveEntered; });
+	const gate = new Promise<void>((resolveGate) => { releaseAllocation = resolveGate; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: () => ({ command: process.execPath, args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "spawned")`] }),
+		async reportPathAllocator() {
+			allocationEntered();
+			await gate;
+			await mkdir(allocationDirectory, { recursive: true, mode: 0o700 });
+			return reportPath;
+		},
+	});
+	t.after(() => rm(root, { recursive: true, force: true }));
+
+	const launching = launch(manager, "allocation");
+	await entered;
+	const handle = manager.inspect(owner())[0]!.handle;
+	const waiting = manager.wait(owner(), handle);
+	await promptly(manager.teardown());
+	const started = await promptly(launching);
+	assert.equal((await promptly(started.result)).reason, "owner_lost");
+	assert.equal((await promptly(waiting)).reason, "owner_lost");
+	releaseAllocation();
+	await waitForMissing(allocationDirectory);
+	await assert.rejects(access(marker), /ENOENT/);
 });
 
 test("teardown is terminal cancellation, terminates children, and fences later delivery", async (t) => {
@@ -502,19 +782,23 @@ test("production Pi resolver uses JSON print mode, a private prompt file, and th
 	assert.equal(invocation.command, process.execPath);
 	assert.deepEqual(invocation.args, [
 		LIFETIME_WRAPPER_PATH, "--", "pi-test", "--base",
+		"--extension", REPORT_BRIDGE_EXTENSION_PATH,
 		"--extension", "/ext/one.ts", "--extension", "/ext/two.ts",
 		"--mode", "json", "-p", "--session", transcriptPath, "--name", "reviewer",
 		"--provider", "provider", "--model", "model", "--thinking", "max", "--tools", "read,grep",
-		"--append-system-prompt", stableSystemPromptPath(transcriptPath), "--skill", "/skill/one", "--", "dynamic",
+		"--append-system-prompt", stableSystemPromptPath(transcriptPath), "--skill", "/skill/one", "--", "pibox-subagent-user-prompt",
 	]);
 	assert.equal(await readFile(stableSystemPromptPath(transcriptPath), "utf8"), "stable");
+	assert.equal(await readFile(attemptUserPromptPath(transcriptPath, "attempt"), "utf8"), "dynamic");
+	assert.equal((await stat(attemptUserPromptPath(transcriptPath, "attempt"))).mode & 0o777, 0o600);
 	assert.deepEqual(invocation.env, {
 		BASE_ENV: "base", WORKFLOW_TOKEN: "token", WORKFLOW_REF: "item", ATTEMPT_REF: "attempt",
-		PIBOX_RUNTIME_ROLE: "subagent", PIBOX_FAST_CHILD_ENABLED: "1", PIBOX_LIFETIME_TERM_GRACE_MS: "75",
+		PIBOX_RUNTIME_ROLE: "subagent", PIBOX_FAST_CHILD_ENABLED: "1", PIBOX_SUBAGENT_EVENT_FD: "3",
+		PIBOX_SUBAGENT_PROMPT_PATH: attemptUserPromptPath(transcriptPath, "attempt"), PIBOX_LIFETIME_TERM_GRACE_MS: "75",
 	});
 });
 
-test("production Pi resolver keeps task and review limit prompts byte-exact and off argv", async (t) => {
+test("production Pi resolver keeps stable and attempt prompts byte-exact and off argv", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-pi-large-prompt-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const resolver = createPiInvocationResolver({ piInvocation: { command: "pi-test", args: [] } });
@@ -522,36 +806,91 @@ test("production Pi resolver keeps task and review limit prompts byte-exact and 
 		const stableSystemContext = "π".repeat(bytes / 2);
 		assert.equal(Buffer.byteLength(stableSystemContext), bytes);
 		const transcriptPath = join(root, `${bytes}.jsonl`);
+		const attemptUserPrompt = `-leading\n@literal/path\nπ🙂中\n${"x".repeat(bytes)}\ntrailing  \n`;
 		const invocation = await resolver({
 			agentId: `agent-${bytes}`, attemptId: "attempt", agent: "reviewer", cwd: root,
-			stableSystemContext, attemptUserPrompt: "dynamic", transcriptPath, continuation: false,
+			stableSystemContext, attemptUserPrompt, transcriptPath, continuation: false,
 			provider: "provider", model: "model", effort: "high", tools: [], extensionPaths: [], skillPaths: [], fast: false,
 		});
 		assert.equal(await readFile(stableSystemPromptPath(transcriptPath), "utf8"), stableSystemContext);
+		assert.equal(await readFile(attemptUserPromptPath(transcriptPath, "attempt"), "utf8"), attemptUserPrompt);
 		assert.equal(invocation.args.includes(stableSystemContext), false, "stable prompt bytes never consume the OS argument budget");
+		assert.equal(invocation.args.includes(attemptUserPrompt), false, "attempt prompt bytes never consume the OS argument budget");
 		assert.equal(invocation.args[invocation.args.indexOf("--append-system-prompt") + 1], stableSystemPromptPath(transcriptPath));
+		assert.equal(invocation.env?.PIBOX_SUBAGENT_PROMPT_PATH, attemptUserPromptPath(transcriptPath, "attempt"));
 	}
 });
 
-test("the real child boundary classifies an oversized argv failure as E2BIG", { skip: process.platform === "win32" }, async (t) => {
+test("pre-spawn cancellation removes an already-created prompt sidecar", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-prompt-cancel-"));
+	let entered!: () => void;
+	let release!: () => void;
+	const atFence = new Promise<void>((resolveEntered) => { entered = resolveEntered; });
+	const gate = new Promise<void>((resolveGate) => { release = resolveGate; });
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: createPiInvocationResolver({ piInvocation: { command: "unused-pi", args: [] } }),
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+	const launching = manager.launch({
+		owner: owner(), agent: "cancel", cwd: root, stableSystemContext: "stable", attemptUserPrompt: "exact prompt", ...EXECUTION,
+		beforeSpawn() { entered(); return gate; },
+	});
+	await atFence;
+	const snapshot = manager.inspect(owner())[0]!;
+	const promptPath = attemptUserPromptPath(join(root, "sessions", `${snapshot.handle.agentId}.jsonl`), snapshot.attemptId!);
+	await access(promptPath);
+	await manager.stop(owner(), snapshot.handle);
+	assert.equal((await (await launching).result).reason, "explicit_stop");
+	await assert.rejects(access(promptPath), /ENOENT/);
+	release();
+});
+
+test("prompt sidecars are removed when the wrapped Pi command cannot spawn", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-prompt-spawn-failure-"));
+	const manager = new SubagentProcessManager({
+		owner: owner(),
+		sessionDirectory: join(root, "sessions"),
+		invocationResolver: createPiInvocationResolver({ piInvocation: { command: join(root, "missing-pi"), args: [] } }),
+	});
+	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
+	const started = await manager.launch({
+		owner: owner(), agent: "missing", cwd: root, stableSystemContext: "stable", attemptUserPrompt: "exact prompt", ...EXECUTION,
+	});
+	const terminal = await started.result;
+	assert.equal(terminal.status, "failed");
+	const transcriptPath = join(root, "sessions", `${started.handle.agentId}.jsonl`);
+	await assert.rejects(access(attemptUserPromptPath(transcriptPath, terminal.attemptId)), /ENOENT/);
+});
+
+test("the real child boundary classifies an oversized argv failure as E2BIG and cleans its unpublished report allocation", { skip: process.platform === "win32" }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-subagent-e2big-"));
+	const allocationDirectory = join(root, "attempt");
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const manager = new SubagentProcessManager({
 		owner: owner(), sessionDirectory: join(root, "sessions"),
 		invocationResolver: () => ({ command: process.execPath, args: ["-e", "process.exit(0)", "x".repeat(3 * 1024 * 1024)] }),
+		async reportPathAllocator() {
+			await mkdir(allocationDirectory, { recursive: true, mode: 0o700 });
+			return join(allocationDirectory, "report.md");
+		},
 	});
 	t.after(() => manager.teardown());
 	await assert.rejects(
 		manager.launch({ owner: owner(), agent: "oversized", cwd: root, stableSystemContext: "stable", attemptUserPrompt: "prompt", ...EXECUTION }),
 		(error: NodeJS.ErrnoException) => error.code === "E2BIG",
 	);
+	await assert.rejects(access(allocationDirectory), /ENOENT/);
 });
 
-test("production Pi resolver implements wildcard tools by excluding recursive subagent controls", async () => {
+test("production Pi resolver implements wildcard tools by excluding recursive subagent controls", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-wildcard-invocation-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
 	const resolver = createPiInvocationResolver({ piInvocation: { command: "pi-test", args: [] } });
 	const invocation = await resolver({
 		agentId: "agent", attemptId: "attempt", agent: "general-purpose", cwd: "/work",
-		stableSystemContext: "", attemptUserPrompt: "task", transcriptPath: "/private/session.jsonl", continuation: false,
+		stableSystemContext: "", attemptUserPrompt: "task", transcriptPath: join(root, "session.jsonl"), continuation: false,
 		provider: "provider", model: "model", effort: "medium", tools: ["*"],
 		extensionPaths: [], skillPaths: [], fast: false,
 	});
@@ -636,6 +975,19 @@ function waitForClose(child: ReturnType<typeof spawn>, timeoutMs: number): Promi
 	});
 }
 
+async function waitForMissing(path: string, timeoutMs = 2_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		try { await access(path); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+			throw error;
+		}
+		if (Date.now() >= deadline) throw new Error(`Timed out waiting for cleanup: ${path}`);
+		await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+	}
+}
+
 async function waitUntilGone(pid: number, timeoutMs: number): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	for (;;) {
@@ -657,11 +1009,13 @@ test("display metadata survives service continuation but never enters child invo
 		fallbackUsed: true,
 		attempts: [{ model: "missing", status: "model_missing" }],
 	};
-	const started = await manager.launch({ owner: owner(), agent: "continuation", title: "\u001b[31mFix\n RTL corners\u001b[0m", routing, cwd: process.cwd(), stableSystemContext: "stable", attemptUserPrompt: "first", ...EXECUTION });
+	const fullTitle = `\u001b[31mFix\n RTL corners\u001b[0m ${"with complete logical label ".repeat(8)}`.trim();
+	const started = await manager.launch({ owner: owner(), agent: "continuation", title: fullTitle, routing, cwd: process.cwd(), stableSystemContext: "stable", attemptUserPrompt: "first", ...EXECUTION });
 	const first = await started.result;
 	routing.requested.model = "mutated outside service";
 	const snapshot = manager.inspect(owner())[0]!;
-	assert.equal(snapshot.title, "Fix RTL corners");
+	assert.equal(snapshot.title, normalizeSubagentTitle(fullTitle));
+	assert.ok(Array.from(snapshot.title!).length > 80, "the stored logical label is not limited by its rendered heading");
 	assert.equal(snapshot.routing?.requested.model, "missing");
 	assert.equal(snapshot.attemptId, first.attemptId);
 	const continued = await manager.continue({ owner: owner(), handle: first.handle, attemptUserPrompt: "second" });

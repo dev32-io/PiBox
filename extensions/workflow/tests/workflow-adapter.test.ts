@@ -1,17 +1,19 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { parse } from "yaml";
 import type { RuntimeOwner } from "../../subagent/api.js";
 import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
-import { StoryRuntimeStore } from "../story-runtime-store.js";
-import { createE2eScratchDirectory, createHarnessWorkflowAdapter, reconcileHarnessActivation, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
+import { emptyWorkflowMetrics, StoryRuntimeStore } from "../story-runtime-store.js";
+import { checkFailureSummary, createE2eScratchDirectory, createHarnessWorkflowAdapter, reconcileHarnessActivation, reconcileWorkflowClockForActiveActions, runShell, selectWorkflowClockForActiveActions, workflowMetricCategoryForAction, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
+import { writeLedgerSubmission } from "../ledger-submission.js";
 
 const exec = promisify(execFile);
 
@@ -20,6 +22,7 @@ interface FixtureOptions {
 	tasks?: AuthoredTaskDocument[];
 	execute?: StoryWorkflowActionExecutor;
 	owner?: RuntimeOwner;
+	now?: () => Date;
 }
 
 const story: StoryDocument = {
@@ -79,7 +82,7 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 		config: { ...structuredClone(DEFAULT_HARNESS_CONFIG), limits: { ...DEFAULT_HARNESS_CONFIG.limits, repairRounds: 2, maxConcurrency: 4, maxActiveSubagentsPerSession: 16 } },
 	};
 	const ctx = { sessionManager: { getSessionId: () => owner.sessionId } } as any;
-	const create = () => createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, ...(options.execute ? { executeAction: options.execute } : {}), now: (() => { let tick = 0; return () => new Date(1_700_000_000_000 + tick++); })() });
+	const create = () => createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, ...(options.execute ? { executeAction: options.execute } : {}), now: options.now ?? (() => { let tick = 0; return () => new Date(1_700_000_000_000 + tick++); })() });
 	return {
 		root, runtime, ctx, create,
 		fireCapacity() { for (const listener of capacityListeners) listener(); },
@@ -87,11 +90,11 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	};
 }
 
-function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<{ text: string; exitCode?: number; stderr?: string; terminalReason?: string }>): void {
+function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<{ text: string; exitCode?: number; stderr?: string; terminalReason?: string; reportPath?: string }>): void {
 	f.runtime.config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	f.runtime.launcher.launch = async (input: any) => {
 		const terminal = await launch(input);
-		return { exitCode: terminal.exitCode ?? 0, text: terminal.text, stderr: terminal.stderr ?? "", terminalReason: terminal.terminalReason ?? "completed", provider: input.provider, model: input.model, effort: input.effort, serviceAttemptId: input.attemptToken };
+		return { exitCode: terminal.exitCode ?? 0, text: terminal.text, stderr: terminal.stderr ?? "", terminalReason: terminal.terminalReason ?? "completed", ...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}), provider: input.provider, model: input.model, effort: input.effort, serviceAttemptId: input.attemptToken };
 	};
 	f.runtime.launcher.stopStory = async () => 0;
 	f.ctx.scopedModels = ["gpt-5.6-sol", "gpt-5.6-luna"].map((id) => ({ model: { provider: "openai-codex", id, reasoning: true, api: "openai-codex-responses" } }));
@@ -114,12 +117,266 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
+async function lifecycleEvents(adapter: ReturnType<typeof createHarnessWorkflowAdapter>, ctx: any) {
+	let pending = 0;
+	const waiters: Array<() => void> = [];
+	const subscription = await adapter.subscribeLifecycle!("work-item:example", ctx, () => {
+		const waiter = waiters.shift();
+		if (waiter) waiter(); else pending++;
+	});
+	const unsubscribe = typeof subscription === "function" ? subscription : () => {};
+	return {
+		async waitFor(predicate: (state: NonNullable<Awaited<ReturnType<StoryRuntimeStore["readState"]>>>) => boolean) {
+			for (;;) {
+				const state = await adapter.snapshot("work-item:example", ctx).then((snapshot) => snapshot.runtime!);
+				if (predicate(state)) return state;
+				if (pending > 0) pending--; else await new Promise<void>((resolve) => waiters.push(resolve));
+			}
+		},
+		unsubscribe,
+	};
+}
+
 const passed = (summary = "passed"): StoryWorkflowActionResult => ({ result: "passed", summary: { code: "passed", summary } });
+
+test("all repair actions use Repair while normal actions retain existing categories", () => {
+	for (const kind of ["task-repair", "integration-repair", "verification-repair", "review-fix", "final-review-fix", "e2e-fix"] as const) {
+		const action = kind === "task-repair" ? { kind, stageId: "delivery", taskId: "task-a" } : { kind, stageId: "delivery" };
+		assert.equal(workflowMetricCategoryForAction(action), "repair", kind);
+	}
+	assert.deepEqual([
+		workflowMetricCategoryForAction({ kind: "task-launch", stageId: "delivery", taskId: "task-a" }),
+		workflowMetricCategoryForAction({ kind: "task-check", stageId: "delivery", taskId: "task-a" }),
+		workflowMetricCategoryForAction({ kind: "integration", stageId: "delivery" }),
+		workflowMetricCategoryForAction({ kind: "verification", stageId: "delivery" }),
+		workflowMetricCategoryForAction({ kind: "review", stageId: "delivery" }),
+		workflowMetricCategoryForAction({ kind: "e2e" }),
+	], ["implementation", "implementation", "integration", "verification", "review", "e2e"]);
+});
+
+test("active clock selection keeps Repair across parallel starts and settlements", () => {
+	const implementation = { kind: "task-launch" as const, stageId: "delivery", taskId: "normal" };
+	const firstRepair = { kind: "task-repair" as const, stageId: "delivery", taskId: "repair-a" };
+	const secondRepair = { kind: "task-repair" as const, stageId: "delivery", taskId: "repair-b" };
+	assert.deepEqual(selectWorkflowClockForActiveActions([firstRepair, implementation]), { category: "repair", stageId: "delivery" }, "normal start after repair cannot steal clock");
+	assert.deepEqual(selectWorkflowClockForActiveActions([implementation, firstRepair, secondRepair]), { category: "repair", stageId: "delivery" }, "repair wins regardless of activation order");
+	assert.deepEqual(selectWorkflowClockForActiveActions([implementation, secondRepair]), { category: "repair", stageId: "delivery" }, "one repair settlement leaves Repair open");
+	assert.deepEqual(selectWorkflowClockForActiveActions([implementation]), { category: "implementation", stageId: "delivery" }, "last repair settlement falls back immediately");
+	assert.equal(selectWorkflowClockForActiveActions([]), undefined, "last active settlement closes clock");
+});
+
+test("exact wall clock handles both parallel implementation/repair finish orders", () => {
+	const implementation = { kind: "task-launch" as const, stageId: "delivery", taskId: "normal" };
+	const repairA = { kind: "task-repair" as const, stageId: "delivery", taskId: "repair-a" };
+	const repairB = { kind: "task-repair" as const, stageId: "delivery", taskId: "repair-b" };
+	const at = (seconds: number) => `2026-01-01T00:00:${String(seconds).padStart(2, "0")}.000Z`;
+	const run = (normalFinishesFirst: boolean) => {
+		let metrics = reconcileWorkflowClockForActiveActions(emptyWorkflowMetrics(), [implementation], at(0));
+		metrics = reconcileWorkflowClockForActiveActions(metrics, [repairA], at(10));
+		metrics = reconcileWorkflowClockForActiveActions(metrics, [repairA, repairB, implementation], at(12));
+		metrics = reconcileWorkflowClockForActiveActions(metrics, normalFinishesFirst ? [repairA, repairB] : [repairB, implementation], at(20));
+		metrics = reconcileWorkflowClockForActiveActions(metrics, normalFinishesFirst ? [repairB] : [implementation], at(25));
+		return reconcileWorkflowClockForActiveActions(metrics, [], at(30));
+	};
+	const normalFirst = run(true);
+	assert.equal(normalFirst.workflowMs, 30_000);
+	assert.equal(normalFirst.categories.implementation, 10_000);
+	assert.equal(normalFirst.categories.repair, 20_000);
+	const repairsFirst = run(false);
+	assert.equal(repairsFirst.workflowMs, 30_000);
+	assert.equal(repairsFirst.categories.implementation, 15_000);
+	assert.equal(repairsFirst.categories.repair, 15_000);
+});
 
 async function start(adapter: ReturnType<typeof createHarnessWorkflowAdapter>, ctx: any) {
 	await adapter.controlExecution!("work-item:example", "start", "start", ctx);
 	await adapter.advanceWorkflow!("work-item:example", ctx);
 }
+
+test("serialized lifecycle transitions enforce Repair priority and settlement fallback", async (t) => {
+	for (const normalFinishesFirst of [false, true]) await t.test(normalFinishesFirst ? "normal settles first" : "repair settles first", async (t) => {
+		const base = Date.parse("2026-01-01T00:00:00.000Z");
+		let currentMs = base;
+		const setSecond = (second: number) => { currentMs = base + second * 1_000; };
+		const launchA = deferred<StoryWorkflowActionResult>();
+		const repairA = deferred<StoryWorkflowActionResult>();
+		const launchB = deferred<StoryWorkflowActionResult>();
+		const startedA = deferred<void>();
+		const startedRepair = deferred<void>();
+		const startedB = deferred<void>();
+		const f = await fixture(t, {
+			now: () => new Date(currentMs),
+			tasks: [task("a"), task("b")],
+			plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["a", "b"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+			execute: async ({ action }) => {
+				if (action.kind === "task-launch" && action.taskId === "a") { startedA.resolve(); return launchA.promise; }
+				if (action.kind === "task-repair" && action.taskId === "a") { startedRepair.resolve(); return repairA.promise; }
+				if (action.kind === "task-launch" && action.taskId === "b") { startedB.resolve(); return launchB.promise; }
+				return passed();
+			},
+		});
+		f.runtime.config.limits.maxConcurrency = 1;
+		f.runtime.config.limits.maxActiveSubagentsPerSession = 1;
+		const adapter = f.create();
+		const events = await lifecycleEvents(adapter, f.ctx);
+		t.after(events.unsubscribe);
+		await start(adapter, f.ctx);
+		await startedA.promise;
+		setSecond(10);
+		launchA.resolve({ result: "repairable", failure: { code: "task_failed", summary: "repair A" } });
+		await startedRepair.promise;
+		await events.waitFor((state) => state.stages[0]?.tasks[0]?.status === "repairing" && state.metrics.open?.category === "repair");
+
+		f.runtime.config.limits.maxConcurrency = 2;
+		f.runtime.config.limits.maxActiveSubagentsPerSession = 2;
+		setSecond(12);
+		await adapter.advanceWorkflow!("work-item:example", f.ctx);
+		await startedB.promise;
+		let state = await events.waitFor((candidate) => candidate.stages[0]?.tasks[1]?.status === "implementing");
+		assert.deepEqual(state.metrics.open, { category: "repair", since: "2026-01-01T00:00:10.000Z", stageId: "delivery" }, "later normal activation cannot steal or checkpoint Repair");
+		assert.equal(state.metrics.categories.implementation, 10_000);
+
+		if (normalFinishesFirst) {
+			await adapter.controlExecution!("work-item:example", "pause", "pause-mixed", f.ctx);
+			setSecond(20);
+			launchB.resolve({ ...passed(), contributionCommit: "b" });
+			state = await events.waitFor((candidate) => candidate.stages[0]?.tasks[1]?.status !== "implementing");
+			assert.equal(state.metrics.open?.category, "repair", "normal settlement cannot close active Repair");
+			setSecond(30);
+			repairA.resolve({ ...passed(), contributionCommit: "fixed-a" });
+			state = await events.waitFor((candidate) => candidate.metrics.open === undefined);
+			assert.equal(state.metrics.categories.implementation, 10_000);
+			assert.equal(state.metrics.categories.repair, 20_000);
+		} else {
+			setSecond(20);
+			repairA.resolve({ ...passed(), contributionCommit: "fixed-a" });
+			state = await events.waitFor((candidate) => candidate.metrics.open?.category === "implementation" && candidate.stages[0]?.tasks[1]?.status === "implementing");
+			assert.equal(state.metrics.categories.repair, 10_000, "last Repair settlement immediately falls back to live implementation");
+			await adapter.controlExecution!("work-item:example", "pause", "pause-normal", f.ctx);
+			setSecond(30);
+			launchB.resolve({ ...passed(), contributionCommit: "b" });
+			state = await events.waitFor((candidate) => candidate.metrics.open === undefined);
+			assert.equal(state.metrics.categories.implementation, 20_000);
+			assert.equal(state.metrics.categories.repair, 10_000);
+		}
+		assert.equal(state.status, "paused");
+		assert.equal(state.metrics.workflowMs, 30_000);
+		assert.equal(Object.values(state.metrics.categories).reduce((sum, value) => sum + value, 0), 30_000);
+		assert.equal(state.metrics.stageBreakdown?.delivery?.workflowMs, 30_000);
+	});
+});
+
+test("ledger attention reconciles against remaining active Repair and implementation", async (t) => {
+	const base = Date.parse("2026-01-01T00:00:00.000Z");
+	let currentMs = base;
+	const setSecond = (second: number) => { currentMs = base + second * 1_000; };
+	const launchA = deferred<StoryWorkflowActionResult>();
+	const repairA = deferred<StoryWorkflowActionResult>();
+	const launchB = deferred<StoryWorkflowActionResult>();
+	const launchC = deferred<StoryWorkflowActionResult>();
+	const startedRepair = deferred<void>();
+	const startedB = deferred<void>();
+	const startedC = deferred<void>();
+	const f = await fixture(t, {
+		now: () => new Date(currentMs),
+		tasks: [task("a"), task("b"), task("c")],
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["a", "b", "c"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+		execute: async ({ action }) => {
+			if (action.kind === "task-launch" && action.taskId === "a") return launchA.promise;
+			if (action.kind === "task-repair") { startedRepair.resolve(); return repairA.promise; }
+			if (action.kind === "task-launch" && action.taskId === "b") { startedB.resolve(); return launchB.promise; }
+			if (action.kind === "task-launch" && action.taskId === "c") { startedC.resolve(); return launchC.promise; }
+			return passed();
+		},
+	});
+	f.runtime.config.limits.maxConcurrency = 1;
+	f.runtime.config.limits.maxActiveSubagentsPerSession = 1;
+	const adapter = f.create();
+	const events = await lifecycleEvents(adapter, f.ctx);
+	t.after(events.unsubscribe);
+	await start(adapter, f.ctx);
+	setSecond(10);
+	launchA.resolve({ result: "repairable", failure: { code: "task_failed", summary: "repair A" } });
+	await startedRepair.promise;
+	await events.waitFor((state) => state.metrics.open?.category === "repair");
+	f.runtime.config.limits.maxConcurrency = 3;
+	f.runtime.config.limits.maxActiveSubagentsPerSession = 3;
+	setSecond(12);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await Promise.all([startedB.promise, startedC.promise]);
+
+	setSecond(20);
+	launchB.resolve({ ...passed(), contributionCommit: "b", ledgerSubmissionError: "malformed optional submission", ledgerReportPath: "/tmp/b/report.md" });
+	let state = await events.waitFor((candidate) => candidate.status === "attention" && Boolean(candidate.ledgerRecoveries && Object.keys(candidate.ledgerRecoveries).length));
+	assert.equal(state.metrics.open?.category, "repair", "ledger attention keeps active Repair authoritative");
+	setSecond(25);
+	repairA.resolve({ ...passed(), contributionCommit: "fixed-a" });
+	state = await events.waitFor((candidate) => candidate.metrics.open?.category === "implementation" && candidate.stages[0]?.tasks[2]?.status === "implementing");
+	assert.equal(state.status, "attention");
+	assert.equal(state.metrics.categories.repair, 15_000, "accepted Repair settlement falls back under attention");
+	setSecond(30);
+	launchC.resolve({ ...passed(), contributionCommit: "c" });
+	state = await events.waitFor((candidate) => candidate.metrics.open === undefined);
+	assert.equal(state.metrics.workflowMs, 30_000);
+	assert.equal(state.metrics.categories.implementation, 15_000);
+	assert.equal(state.metrics.categories.repair, 15_000);
+	assert.equal(Object.values(state.metrics.categories).reduce((sum, value) => sum + value, 0), 30_000);
+});
+
+test("stop fences late Repair settlement from reopening or crediting clock", async (t) => {
+	const base = Date.parse("2026-01-01T00:00:00.000Z");
+	let currentMs = base;
+	const setSecond = (second: number) => { currentMs = base + second * 1_000; };
+	const launchA = deferred<StoryWorkflowActionResult>();
+	const repairA = deferred<StoryWorkflowActionResult>();
+	const launchB = deferred<StoryWorkflowActionResult>();
+	const startedRepair = deferred<void>();
+	const startedB = deferred<void>();
+	const returnedRepair = deferred<void>();
+	const returnedB = deferred<void>();
+	const f = await fixture(t, {
+		now: () => new Date(currentMs),
+		tasks: [task("a"), task("b")],
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["a", "b"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+		execute: async ({ action }) => {
+			if (action.kind === "task-launch" && action.taskId === "a") return launchA.promise;
+			if (action.kind === "task-repair") { startedRepair.resolve(); const result = await repairA.promise; returnedRepair.resolve(); return result; }
+			if (action.kind === "task-launch" && action.taskId === "b") { startedB.resolve(); const result = await launchB.promise; returnedB.resolve(); return result; }
+			return passed();
+		},
+	});
+	f.runtime.config.limits.maxConcurrency = 1;
+	f.runtime.config.limits.maxActiveSubagentsPerSession = 1;
+	const adapter = f.create();
+	const events = await lifecycleEvents(adapter, f.ctx);
+	t.after(events.unsubscribe);
+	await start(adapter, f.ctx);
+	setSecond(10);
+	launchA.resolve({ result: "repairable", failure: { code: "task_failed", summary: "repair A" } });
+	await startedRepair.promise;
+	f.runtime.config.limits.maxConcurrency = 2;
+	f.runtime.config.limits.maxActiveSubagentsPerSession = 2;
+	setSecond(12);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await startedB.promise;
+	await events.waitFor((state) => state.metrics.open?.category === "repair" && state.stages[0]?.tasks[1]?.status === "implementing");
+	setSecond(20);
+	await adapter.controlExecution!("work-item:example", "stop", "stop-mixed", f.ctx);
+	const stopped = await events.waitFor((state) => state.status === "stopped");
+	assert.equal(stopped.metrics.workflowMs, 20_000);
+	assert.equal(stopped.metrics.categories.implementation, 10_000);
+	assert.equal(stopped.metrics.categories.repair, 10_000);
+	assert.equal(stopped.metrics.open, undefined);
+
+	setSecond(30);
+	repairA.resolve({ ...passed(), contributionCommit: "late-repair" });
+	launchB.resolve({ ...passed(), contributionCommit: "late-b" });
+	await Promise.all([returnedRepair.promise, returnedB.promise]);
+	await adapter.controlExecution!("work-item:example", "stop", "serialize-late-results", f.ctx);
+	const afterLate = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
+	assert.equal(afterLate.status, "stopped");
+	assert.deepEqual(afterLate.metrics, stopped.metrics);
+});
 
 test("preflight is side-effect-free and never executes verification bootstrap before cancellation", async (t) => {
 	const markerName = "bootstrap-ran";
@@ -404,6 +661,160 @@ test("production Git executor shares a sequential stage workspace and pins concu
 	});
 });
 
+test("integration repair accepts full pinned ranges after partial concurrent cherry-picks", async (t) => {
+	const tasks = [task("gateway"), task("ios")];
+	const f = await fixture(t, {
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["gateway", "ios"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+		tasks,
+	});
+	await writeFile(join(f.root, "shared.txt"), "base\n");
+	await exec("git", ["add", "shared.txt"], { cwd: f.root });
+	await exec("git", ["commit", "-qm", "shared base"], { cwd: f.root });
+	let gatewayHead = ""; let iosHead = ""; let repairBase = ""; let repairPrompt = "";
+	useProductionExecutor(f, async (input) => {
+		if (input.taskId === "gateway") {
+			for (let index = 0; index < 5; index++) {
+				if (index === 0) await writeFile(join(input.cwd, "shared.txt"), "gateway\n");
+				else await writeFile(join(input.cwd, `gateway-${index}.txt`), `gateway ${index}\n`);
+				await exec("git", ["add", "."], { cwd: input.cwd });
+				const date = `2001-01-01T00:00:0${index}Z`;
+				await exec("git", ["commit", "-qm", `gateway ${index + 1}`], { cwd: input.cwd, env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+			}
+			gatewayHead = (await exec("git", ["rev-parse", "HEAD"], { cwd: input.cwd })).stdout.trim();
+			return { text: "gateway complete" };
+		}
+		if (input.taskId === "ios") {
+			await writeFile(join(input.cwd, "shared.txt"), "ios\n");
+			await writeFile(join(input.cwd, "ios.txt"), "ios\n");
+			await exec("git", ["add", "."], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "ios"], { cwd: input.cwd, env: { ...process.env, GIT_AUTHOR_DATE: "2001-01-02T00:00:00Z", GIT_COMMITTER_DATE: "2001-01-02T00:00:00Z" } });
+			iosHead = (await exec("git", ["rev-parse", "HEAD"], { cwd: input.cwd })).stdout.trim();
+			return { text: "ios complete" };
+		}
+		if (input.action === "integration-repair") {
+			repairBase = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+			repairPrompt = input.attemptUserPrompt;
+			assert.equal((await exec("git", ["merge-base", "--is-ancestor", gatewayHead, repairBase], { cwd: f.root }).then(() => true, () => false)), false, "canonical has patch-equivalent gateway commits, not the exact contribution history");
+			assert.equal(await readFile(join(input.cwd, "gateway-4.txt"), "utf8"), "gateway 4\n", "successful cherry-picks remain on canonical before repair");
+			await assert.rejects(access(join(input.cwd, "ios.txt")), /ENOENT/, "the conflicting iOS contribution has not reached canonical");
+			await exec("git", ["merge", "--no-ff", "--no-commit", "-s", "ours", gatewayHead, iosHead], { cwd: input.cwd });
+			await writeFile(join(input.cwd, "shared.txt"), "gateway + ios\n");
+			await writeFile(join(input.cwd, "ios.txt"), "ios\n");
+			await exec("git", ["add", "shared.txt", "ios.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "final integration repair"], { cwd: input.cwd });
+			return { text: "integrated exact contribution ancestry" };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 12_000);
+	const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+	assert.equal(await readFile(join(f.root, "shared.txt"), "utf8"), "gateway + ios\n");
+	assert.equal(await readFile(join(f.root, "gateway-4.txt"), "utf8"), "gateway 4\n");
+	assert.equal(await readFile(join(f.root, "ios.txt"), "utf8"), "ios\n");
+	for (const pinned of [gatewayHead, iosHead]) await exec("git", ["merge-base", "--is-ancestor", pinned, head], { cwd: f.root });
+	assert.match(repairPrompt, new RegExp(`Current canonical merge parent: ${repairBase}`));
+	assert.match(repairPrompt, new RegExp(`gateway: ${gatewayHead}`));
+	assert.match(repairPrompt, new RegExp(`ios: ${iosHead}`));
+	assert.match(repairPrompt, /do not squash, cherry-pick, or recreate contribution commits/i);
+	assert.match(repairPrompt, /exactly one final repair commit/i);
+});
+
+test("integration repair accepts a pinned head already in canonical ancestry", async (t) => {
+	const tasks = [task("included"), task("pending")];
+	const f = await fixture(t, {
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["included", "pending"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+		tasks,
+	});
+	await writeFile(join(f.root, "shared.txt"), "base\n");
+	await exec("git", ["add", "shared.txt"], { cwd: f.root }); await exec("git", ["commit", "-qm", "shared base"], { cwd: f.root });
+	let includedHead = ""; let pendingHead = ""; let seeded = false; let capturedBase = "";
+	const originalMutex = f.runtime.mutex;
+	f.runtime.mutex = { async run(owner: string, operation: () => Promise<unknown>) {
+		if (owner.startsWith("story-repair:") && !seeded) {
+			seeded = true;
+			await exec("git", ["merge", "--no-ff", "-s", "ours", "-m", "retain included contribution ancestry", includedHead], { cwd: f.root });
+			capturedBase = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+		}
+		return originalMutex.run(owner, operation);
+	} };
+	useProductionExecutor(f, async (input) => {
+		if (input.taskId) {
+			const included = input.taskId === "included";
+			await writeFile(join(input.cwd, "shared.txt"), included ? "included\n" : "pending\n");
+			await writeFile(join(input.cwd, `${input.taskId}.txt`), `${input.taskId}\n`);
+			await exec("git", ["add", "."], { cwd: input.cwd });
+			const date = included ? "2002-01-01T00:00:00Z" : "2002-01-02T00:00:00Z";
+			await exec("git", ["commit", "-qm", input.taskId], { cwd: input.cwd, env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+			const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: input.cwd })).stdout.trim();
+			if (included) includedHead = head; else pendingHead = head;
+			return { text: `${input.taskId} complete` };
+		}
+		if (input.action === "integration-repair") {
+			assert.match(input.attemptUserPrompt, new RegExp(`Current canonical merge parent: ${capturedBase}`));
+			await exec("git", ["merge", "--no-ff", "--no-commit", "-s", "ours", pendingHead], { cwd: input.cwd });
+			await writeFile(join(input.cwd, "shared.txt"), "included + pending\n");
+			await writeFile(join(input.cwd, "pending.txt"), "pending\n");
+			await exec("git", ["add", "shared.txt", "pending.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "final pending integration"], { cwd: input.cwd });
+			return { text: "pending contribution integrated" };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 12_000);
+	const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+	for (const pinned of [includedHead, pendingHead]) await exec("git", ["merge-base", "--is-ancestor", pinned, head], { cwd: f.root });
+	assert.equal(await readFile(join(f.root, "shared.txt"), "utf8"), "included + pending\n");
+});
+
+test("integration repair rejects a missing pin, an unrelated commit, and an empty merge without moving canonical", async (t) => {
+	const tasks = [task("left"), task("right")];
+	const f = await fixture(t, {
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["left", "right"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+		tasks,
+	});
+	await writeFile(join(f.root, "shared.txt"), "base\n");
+	await exec("git", ["add", "shared.txt"], { cwd: f.root }); await exec("git", ["commit", "-qm", "shared base"], { cwd: f.root });
+	const heads = new Map<string, string>(); let repairs = 0; let canonicalBeforeRepair = "";
+	useProductionExecutor(f, async (input) => {
+		if (input.taskId) {
+			await writeFile(join(input.cwd, "shared.txt"), `${input.taskId}\n`);
+			await exec("git", ["add", "shared.txt"], { cwd: input.cwd });
+			const date = input.taskId === "left" ? "2003-01-01T00:00:00Z" : "2003-01-02T00:00:00Z";
+			await exec("git", ["commit", "-qm", input.taskId], { cwd: input.cwd, env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date } });
+			heads.set(input.taskId, (await exec("git", ["rev-parse", "HEAD"], { cwd: input.cwd })).stdout.trim());
+			return { text: `${input.taskId} complete` };
+		}
+		if (input.action === "integration-repair") {
+			const canonical = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
+			canonicalBeforeRepair ||= canonical;
+			assert.equal(canonical, canonicalBeforeRepair, "a rejected repair must not move canonical before retry");
+			repairs++;
+			if (repairs === 1) {
+				await writeFile(join(input.cwd, "missing-pin.txt"), "missing\n");
+				await exec("git", ["add", "missing-pin.txt"], { cwd: input.cwd }); await exec("git", ["commit", "-qm", "omit pinned heads"], { cwd: input.cwd });
+			} else if (repairs === 2) {
+				await writeFile(join(input.cwd, "unrelated.txt"), "unrelated\n");
+				await exec("git", ["add", "unrelated.txt"], { cwd: input.cwd }); await exec("git", ["commit", "-qm", "unrelated extra commit"], { cwd: input.cwd });
+				await exec("git", ["merge", "--no-ff", "-s", "ours", "-m", "final merge after unrelated commit", heads.get("left")!, heads.get("right")!], { cwd: input.cwd });
+			} else {
+				await exec("git", ["merge", "--no-ff", "-s", "ours", "-m", "empty ancestry-only merge", heads.get("left")!, heads.get("right")!], { cwd: input.cwd });
+			}
+			return { text: "invalid integration repair" };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	f.runtime.config.limits.repairRounds = 3;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 12_000);
+	assert.equal(repairs, 3);
+	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim(), canonicalBeforeRepair);
+	await assert.rejects(access(join(f.root, "missing-pin.txt")), /ENOENT/);
+	await assert.rejects(access(join(f.root, "unrelated.txt")), /ENOENT/);
+});
+
 test("an incompatible retained workspace requires user attention once without consuming repairs", async (t) => {
 	const f = await fixture(t, {});
 	const staleCommit = (await exec("git", ["commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-m", "stale harness branch"], { cwd: f.root })).stdout.trim();
@@ -424,6 +835,33 @@ test("an incompatible retained workspace requires user attention once without co
 	assert.match(taskState.failure?.summary ?? "", /not descended from pinned stage base/);
 	const events = await new StoryRuntimeStore(f.root, "example").readDebugTail(50);
 	assert.equal(events.filter((event) => event.type === "action.settled").length, 1);
+});
+
+test("stable repair path refuses foreign repository ownership without deleting it", async (t) => {
+	const f = await fixture(t, { plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: "required" } }] } });
+	const foreign = await mkdtemp(join(tmpdir(), "pibox-foreign-repair-"));
+	t.after(() => rm(foreign, { recursive: true, force: true }));
+	await exec("git", ["init", "-q", "-b", "foreign"], { cwd: foreign });
+	await exec("git", ["config", "user.email", "tests@example.com"], { cwd: foreign }); await exec("git", ["config", "user.name", "Tests"], { cwd: foreign });
+	await writeFile(join(foreign, "foreign.txt"), "preserve\n"); await exec("git", ["add", "foreign.txt"], { cwd: foreign }); await exec("git", ["commit", "-qm", "foreign"], { cwd: foreign });
+	const repairPath = join(f.root, ".worktree", "pibox", "example", "review-fix-delivery");
+	await mkdir(join(repairPath, ".."), { recursive: true });
+	await exec("git", ["clone", "-q", foreign, repairPath]);
+	let repairLaunches = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "implementation.txt"), "implemented\n"); await exec("git", ["add", "implementation.txt"], { cwd: input.cwd }); await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+			return { text: "implemented" };
+		}
+		if (input.action === "review") return { text: JSON.stringify({ result: "repairable", summary: "repair", findings: [{ id: "bug", severity: "major", code: "bug", summary: "repair" }] }) };
+		if (input.action === "review-fix") repairLaunches++;
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.attention?.code, "workspace_invariant"), 8_000);
+	assert.equal(repairLaunches, 0);
+	assert.equal(await readFile(join(repairPath, "foreign.txt"), "utf8"), "preserve\n");
+	assert.match((await adapter.snapshot("work-item:example", f.ctx)).runtime.attention?.summary ?? "", /belongs to another Git repository/);
 });
 
 test("invalid worker commits remain isolated and never reach canonical integration", async (t) => {
@@ -598,7 +1036,11 @@ test("production state drives task-check repair, integration, verification, revi
 			if (action.kind === "verification-repair") assert.equal(action.reason?.summary, "stage failed");
 			if (action.kind === "review" && stageReviews++ === 0) return { result: "repairable", failure: { code: "review", summary: "stage finding" }, findings: [{ id: "s1", severity: "major", code: "bug", summary: "fix stage" }] };
 			if (action.kind === "final-review" && finalReviews++ === 0) return { result: "repairable", failure: { code: "final", summary: "final finding" }, findings: [{ id: "f1", severity: "major", code: "bug", summary: "fix final" }] };
-			if (action.kind === "e2e" && e2eRuns++ === 0) return { result: "repairable", failure: { code: "journey", summary: "journey failed" }, evidenceRefs: ["evidence/failed.txt"] };
+			if (action.kind === "e2e" && e2eRuns++ === 0) {
+				await mkdir(join(runtime.identity.root, "agent-artifacts", "example", "evidence"), { recursive: true });
+				await writeFile(join(runtime.identity.root, "agent-artifacts", "example", "evidence", "failed.txt"), "failed\n");
+				return { result: "repairable", failure: { code: "journey", summary: "journey failed" }, evidenceRefs: ["evidence/failed.txt"] };
+			}
 			if (action.kind === "e2e") {
 				await mkdir(join(runtime.identity.root, "agent-artifacts", "example", "evidence"), { recursive: true });
 				await writeFile(join(runtime.identity.root, "agent-artifacts", "example", "evidence", "passed.txt"), "passed\n");
@@ -617,7 +1059,7 @@ test("production state drives task-check repair, integration, verification, revi
 		"e2e", "e2e-fix", "e2e",
 	]);
 	const snapshot = await adapter.snapshot("work-item:example", f.ctx);
-	assert.deepEqual(snapshot.runtime?.e2e.evidenceRefs, ["evidence/passed.txt"]);
+	assert.deepEqual(snapshot.runtime?.e2e.evidenceRefs, ["evidence/failed.txt", "evidence/passed.txt"]);
 	assert.equal(snapshot.runtime?.stages[0]?.verification.checks[0]?.status, "passed");
 	assert.match(await readFile(join(f.root, "agent-artifacts", "example", "outcome.md"), "utf8"), /Final review: passed/);
 });
@@ -645,9 +1087,11 @@ test("production completion validates evidence and commits only evidence plus th
 	const base = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
 	await new StoryRuntimeStore(f.root, "example").upsertLedger({ id: "risk", updatedAt: new Date().toISOString(), sourceRole: "implementer", summary: "Curated integration risk", evidence: ["src/risk.ts"] });
 	const evaluatorPrompts: string[] = [];
+	const workerContexts: Array<{ action: string; stable: string; supplement?: string }> = [];
 	let e2eStablePrompt = "";
 	let e2eScratchDirectory = "";
 	useProductionExecutor(f, async (input) => {
+		workerContexts.push({ action: input.action, stable: input.stableSystemContext, supplement: input.initialSystemSupplement });
 		if (input.taskId) {
 			await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
 			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
@@ -662,10 +1106,11 @@ test("production completion validates evidence and commits only evidence plus th
 			assert.equal(input.env.PLAYWRIGHT_MCP_OUTPUT_DIR, e2eScratchDirectory, "configured tool output is contained outside the repository");
 			assert.equal((await stat(e2eScratchDirectory)).isDirectory(), true);
 			await writeFile(join(e2eScratchDirectory, "automatic-tool-output.log"), "transient\n");
-			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "journey.txt");
-			await mkdir(join(evidence, ".."), { recursive: true });
-			await writeFile(evidence, "journey passed\n");
-			return { text: JSON.stringify({ result: "passed", summary: "journey passed", findings: [], evidenceRefs: ["evidence/journey.txt"] }) };
+			const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
+			await mkdir(evidenceRoot, { recursive: true });
+			const evidenceRefs = Array.from({ length: 65 }, (_, index) => `evidence/journey-${index}.txt`);
+			await Promise.all(evidenceRefs.map((reference) => writeFile(join(f.root, "agent-artifacts", "example", reference), "journey passed\n")));
+			return { text: JSON.stringify({ result: "passed", summary: "journey passed", findings: [], evidenceRefs }) };
 		}
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
@@ -673,7 +1118,8 @@ test("production completion validates evidence and commits only evidence plus th
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"), 8_000);
 	const committed = (await exec("git", ["show", "--pretty=format:", "--name-only", "HEAD"], { cwd: f.root })).stdout.trim().split("\n").filter(Boolean).sort();
-	assert.deepEqual(committed, ["agent-artifacts/example/evidence/journey.txt", "agent-artifacts/example/outcome.md"]);
+	assert.equal(committed.filter((path) => path.startsWith("agent-artifacts/example/evidence/")).length, 65);
+	assert.ok(committed.includes("agent-artifacts/example/outcome.md"));
 	assert.match(e2eStablePrompt, /working directory is the repository root/);
 	assert.match(e2eStablePrompt, /\$PIBOX_E2E_SCRATCH_DIR/);
 	assert.match(e2eStablePrompt, /tool-generated or intermediate output that is not retained evidence/);
@@ -682,19 +1128,279 @@ test("production completion validates evidence and commits only evidence plus th
 	assert.match(e2eStablePrompt, /do not create a top-level evidence\/ directory/);
 	assert.match(e2eStablePrompt, /story-relative evidenceRefs such as evidence\/result\.json/);
 	assert.match(e2eStablePrompt, /without the agent-artifacts\/example\/ prefix/);
-	assert.doesNotMatch(e2eStablePrompt, /playwright|browser|mobile|desktop|hardware/i, "the E2E contract stays platform-neutral");
 	await assert.rejects(access(e2eScratchDirectory), /ENOENT/, "disposable tool output is removed after the E2E attempt");
 	assert.ok(evaluatorPrompts.length >= 3, "stage review, final review, and E2E receive dynamic attempts");
 	for (const prompt of evaluatorPrompts) {
 		assert.match(prompt, new RegExp(`Base commit: ${base}`));
 		assert.match(prompt, /Head commit: [0-9a-f]{40}/);
 		assert.match(prompt, new RegExp(`Review diff: ${base}\\.\\.[0-9a-f]{40}`));
-		assert.match(prompt, /Curated integration risk/);
+		assert.doesNotMatch(prompt, /Curated integration risk/);
+	}
+	for (const context of workerContexts) {
+		assert.doesNotMatch(context.stable, /Authoritative workflow ledger|Curated integration risk/);
+		if (context.action === "task-launch") {
+			assert.match(context.stable, /# Implementer/);
+			assert.match(context.stable, /# Managed Task Protocol/);
+			assert.match(context.stable, /use `workflow_ledger` with `action: "append"`/i);
+			assert.match(context.supplement ?? "", /Authoritative workflow ledger \(treat as read-only\): \/.*\/agent-artifacts\/example\/ledger\.yaml/);
+			assert.match(context.supplement ?? "", /Use the ordinary read tool/);
+			assert.match(context.supplement ?? "", /Curated integration risk/);
+		} else {
+			assert.equal(context.supplement, undefined, `${context.action} evaluator receives no ledger seed`);
+			assert.match(context.stable, /# Managed Review and E2E Protocol/);
+			assert.match(context.stable, /receive no implementation ledger context or ledger tools/i);
+			assert.match(context.stable, /Judge the contract, code, and direct verification evidence independently/i);
+			assert.match(context.stable, /For re-review,[\s\S]+do not restart a broad initial audit/i);
+			assert.match(context.stable, context.action === "e2e" ? /# End-to-End Evaluation/ : /# Code Review/);
+		}
 	}
 	const outcome = await readFile(join(f.root, "agent-artifacts", "example", "outcome.md"), "utf8");
 	for (const heading of ["Delivered stages", "Deterministic checks", "Review and E2E summaries", "Deviations", "Residual risks", "Metrics", "Evidence"]) assert.match(outcome, new RegExp(heading));
 	assert.match(outcome, /None recorded\./);
 	assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
+});
+
+test("production E2E repair retains immutable rich reports through fix, retest, and completion", async (t) => {
+	const f = await fixture(t, {});
+	const resultReport = JSON.stringify({
+		caseResults: [{ id: "E2E-001", status: "failed", observations: ["Expected result missing"] }],
+		result: "blocked",
+		findings: ["Journey failed before repair"],
+		evidenceRefs: ["evidence/result.json"],
+	}, null, 2) + "\n";
+	const rerunReport = JSON.stringify({
+		caseResults: [{ id: "E2E-001", status: "passed", observations: ["Expected result visible"] }],
+		result: "passed",
+		findings: [],
+		evidenceRefs: ["evidence/rerun-result.json"],
+	}, null, 2) + "\n";
+	let e2eRuns = 0;
+	let retestPrompt = "";
+	let e2eStablePrompt = "";
+	let adapter!: ReturnType<typeof createHarnessWorkflowAdapter>;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "delivered.txt"), "before repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+			return { text: "delivered" };
+		}
+		if (input.action === "e2e-fix") {
+			assert.deepEqual(await adapter.preflightWorkflow!("work-item:example", f.ctx), { ok: true });
+			const unrelated = join(f.root, "unrelated.tmp");
+			await writeFile(unrelated, "unrelated\n");
+			await assert.rejects(adapter.preflightWorkflow!("work-item:example", f.ctx), /outside its validated evidence set.*unrelated\.tmp/);
+			await rm(unrelated);
+			await writeFile(join(input.cwd, "delivered.txt"), "after repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "repair journey"], { cwd: input.cwd });
+			return { text: "repaired" };
+		}
+		if (input.role === "e2e-tester") {
+			e2eStablePrompt = input.stableSystemContext;
+			const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
+			await mkdir(evidenceRoot, { recursive: true });
+			if (e2eRuns++ === 0) {
+				await writeFile(join(evidenceRoot, "result.json"), resultReport);
+				return { text: JSON.stringify({ result: "repairable", summary: "journey failed", findings: [{ id: "journey", severity: "major", code: "missing_result", summary: "Expected result missing" }], evidenceRefs: ["evidence/result.json"] }) };
+			}
+			retestPrompt = input.attemptUserPrompt;
+			assert.equal(await readFile(join(evidenceRoot, "result.json"), "utf8"), resultReport);
+			await writeFile(join(evidenceRoot, "rerun-result.json"), rerunReport);
+			return { text: JSON.stringify({ result: "passed", summary: "journey passed", findings: [], evidenceRefs: ["evidence/rerun-result.json"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.deepEqual(runtime.e2e.evidenceRefs, ["evidence/result.json", "evidence/rerun-result.json"]);
+	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "result.json"), "utf8"), resultReport);
+	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "rerun-result.json"), "utf8"), rerunReport);
+	assert.match(retestPrompt, /Prior retained reports[\s\S]*evidence\/result\.json/);
+	assert.match(retestPrompt, /distinct new filenames/);
+	assert.match(e2eStablePrompt, /passed\|repairable\|critical\|needs_user\|unsafe/);
+	assert.match(e2eStablePrompt, /unique nonempty id, severity \(critical\|major\|minor\), nonempty code and summary/);
+	assert.match(e2eStablePrompt, /optionally a path string and positive integer line/);
+	assert.match(e2eStablePrompt, /top-level story-relative evidenceRefs/);
+	assert.match(e2eStablePrompt, /retained rich report JSON/);
+	assert.match(e2eStablePrompt, /do not blindly return a report file body/);
+	const committed = (await exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "agent-artifacts/example/evidence"], { cwd: f.root })).stdout.trim().split("\n");
+	assert.deepEqual(committed, ["agent-artifacts/example/evidence/rerun-result.json", "agent-artifacts/example/evidence/result.json"]);
+	assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
+	assert.doesNotMatch(await readFile(join(f.root, ".gitignore"), "utf8"), /evidence/);
+});
+
+test("completed E2E crash window permits only cited evidence during resume preflight", async (t) => {
+	const f = await fixture(t, {});
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+			return { text: "delivered" };
+		}
+		if (input.role === "e2e-tester") {
+			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "accepted.json");
+			await mkdir(join(evidence, ".."), { recursive: true });
+			await writeFile(evidence, "{\"result\":\"passed\"}\n");
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/accepted.json"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	const store = new StoryRuntimeStore(f.root, "example");
+	const completed = (await store.readState())!;
+	await exec("git", ["reset", "--mixed", "HEAD^"], { cwd: f.root });
+	await rm(join(f.root, "agent-artifacts", "example", "outcome.md"));
+	await store.writeState({ ...completed, outcomeStatus: "pending" });
+
+	assert.deepEqual(await adapter.preflightWorkflow!("work-item:example", f.ctx), { ok: true });
+	await writeFile(join(f.root, "uncited.tmp"), "uncited\n");
+	await assert.rejects(adapter.preflightWorkflow!("work-item:example", f.ctx), /outside its validated evidence set.*uncited\.tmp/);
+	await rm(join(f.root, "uncited.tmp"));
+	assert.deepEqual((await store.readState())!.e2e.evidenceRefs, ["evidence/accepted.json"]);
+});
+
+test("E2E fix pre-merge rejects unrelated canonical dirt and preserves it", async (t) => {
+	const f = await fixture(t, {});
+	let e2eRuns = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "delivered.txt"), "before repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+			return { text: "delivered" };
+		}
+		if (input.action === "e2e-fix") {
+			await writeFile(join(input.cwd, "delivered.txt"), "after repair\n");
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "repair journey"], { cwd: input.cwd });
+			await writeFile(join(f.root, "unrelated.tmp"), "preserve me\n");
+			return { text: "repaired" };
+		}
+		if (input.role === "e2e-tester") {
+			e2eRuns++;
+			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "result.json");
+			await mkdir(join(evidence, ".."), { recursive: true });
+			await writeFile(evidence, "{\"result\":\"blocked\"}\n");
+			return { text: JSON.stringify({ result: "repairable", summary: "failed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	f.runtime.config.limits.repairRounds = 1;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(runtime.attention?.causeCode, "invalid_repair");
+	assert.match(runtime.attention?.summary ?? "", /outside its validated evidence set.*unrelated\.tmp/);
+	assert.equal(await readFile(join(f.root, "unrelated.tmp"), "utf8"), "preserve me\n");
+	assert.equal(e2eRuns, 1, "failed pre-merge cleanliness must not launch retest");
+});
+
+test("E2E retest rejects mutation of prior proof and preserves both files", async (t) => {
+	const f = await fixture(t, {});
+	let e2eRuns = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch" || input.action === "e2e-fix") {
+			await writeFile(join(input.cwd, "delivered.txt"), `${input.action}\n`);
+			await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", input.action], { cwd: input.cwd });
+			return { text: input.action };
+		}
+		if (input.role === "e2e-tester") {
+			const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
+			await mkdir(evidenceRoot, { recursive: true });
+			if (e2eRuns++ === 0) {
+				await writeFile(join(evidenceRoot, "result.json"), "{\"result\":\"blocked\"}\n");
+				return { text: JSON.stringify({ result: "repairable", summary: "failed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
+			}
+			await writeFile(join(evidenceRoot, "result.json"), "{\"result\":\"tampered\"}\n");
+			await writeFile(join(evidenceRoot, "rerun-result.json"), "{\"result\":\"passed\"}\n");
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/rerun-result.json"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(runtime.attention?.code, "evidence_invalid");
+	assert.match(runtime.attention?.summary ?? "", /evidence changed after it was cited: evidence\/result\.json/);
+	assert.deepEqual(runtime.e2e.evidenceRefs, ["evidence/result.json"]);
+	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "result.json"), "utf8"), "{\"result\":\"tampered\"}\n");
+	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "rerun-result.json"), "utf8"), "{\"result\":\"passed\"}\n");
+});
+
+test("E2E evidence validation blocks missing, ignored, unsafe, and nonzero uncited output", async (t) => {
+	for (const scenario of ["missing", "ignored", "unsafe", "nonzero"] as const) {
+		await t.test(scenario, async (t) => {
+			const f = await fixture(t, {});
+			if (scenario === "ignored") {
+				await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n/agent-artifacts/example/evidence/ignored.json\n");
+				await exec("git", ["add", ".gitignore"], { cwd: f.root });
+				await exec("git", ["commit", "-qm", "ignore test evidence"], { cwd: f.root });
+			}
+			useProductionExecutor(f, async (input) => {
+				if (input.action === "task-launch") {
+					await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
+					await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+					await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+					return { text: "delivered" };
+				}
+				if (input.role !== "e2e-tester") return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+				const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
+				await mkdir(evidenceRoot, { recursive: true });
+				if (scenario === "missing") return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["evidence/missing.json"] }) };
+				if (scenario === "ignored") {
+					await writeFile(join(evidenceRoot, "ignored.json"), "{}\n");
+					return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["evidence/ignored.json"] }) };
+				}
+				if (scenario === "unsafe") {
+					await writeFile(join(evidenceRoot, "..", "outside.json"), "{}\n");
+					return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["../outside.json"] }) };
+				}
+				await writeFile(join(evidenceRoot, "uncited.json"), "{}\n");
+				return { text: "worker failed", exitCode: 1 };
+			});
+			const adapter = f.create(); await start(adapter, f.ctx);
+			await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+			const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+			assert.equal(runtime.attention?.code, "evidence_invalid", JSON.stringify(runtime));
+			assert.deepEqual(runtime.e2e.evidenceRefs, []);
+			if (scenario === "ignored") assert.match(runtime.attention?.summary ?? "", /ignored and cannot be retained/);
+			if (scenario === "nonzero") assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "uncited.json"), "utf8"), "{}\n");
+		});
+	}
+});
+
+test("production launch honors trusted custom agent prompt body before managed protocol", async (t) => {
+	const f = await fixture(t, {});
+	const promptRoot = await mkdtemp(join(tmpdir(), "pibox-trusted-agent-"));
+	t.after(() => rm(promptRoot, { recursive: true, force: true }));
+	const promptPath = join(promptRoot, "trusted-implementer.md");
+	await writeFile(promptPath, "---\nname: trusted-implementer\ndescription: Trusted implementation agent\ntools: [read, bash]\ntier: medium\n---\n\n# Trusted Custom Body\n\nHonor project-local implementation constraints.\n");
+	let taskSystem = "";
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			taskSystem = input.stableSystemContext;
+			await writeFile(join(input.cwd, "implemented.txt"), "done\n");
+			await exec("git", ["add", "implemented.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+			return { text: "implemented" };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	f.runtime.config.agents.implementer.prompt = promptPath;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	assert.match(taskSystem, /^# Trusted Custom Body/);
+	assert.match(taskSystem, /# Managed Task Protocol/);
+	assert.match(taskSystem, /# Task task-a:/);
+	assert.equal(taskSystem.indexOf("# Trusted Custom Body") < taskSystem.indexOf("# Managed Task Protocol"), true);
+	assert.equal(taskSystem.indexOf("# Managed Task Protocol") < taskSystem.indexOf("# Task task-a:"), true);
 });
 
 test("invalid or sensitive E2E evidence becomes outcome_failed attention", async (t) => {
@@ -721,6 +1427,46 @@ test("invalid or sensitive E2E evidence becomes outcome_failed attention", async
 	assert.equal(runtime.attention?.code, "evidence_invalid", JSON.stringify(runtime));
 	assert.equal(runtime.outcomeStatus, "failed");
 	await assert.rejects(access(join(f.root, "agent-artifacts", "example", "outcome.md")));
+});
+
+test("E2E evidence descriptor rejects FIFO, symlink, and pathname swap without blocking", async (t) => {
+	for (const scenario of ["fifo", "symlink", "swap"] as const) await t.test(scenario, async (t) => {
+		const f = await fixture(t, {});
+		useProductionExecutor(f, async (input) => {
+			if (input.action === "task-launch") {
+				await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
+				await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
+				await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
+				return { text: "delivered" };
+			}
+			if (input.role === "e2e-tester") {
+				const root = join(f.root, "agent-artifacts", "example", "evidence");
+				const evidence = join(root, "result.json");
+				await mkdir(root, { recursive: true });
+				if (scenario === "fifo") await exec("mkfifo", [evidence], { cwd: f.root });
+				else if (scenario === "symlink") {
+					await writeFile(join(root, "target.json"), "{}\n");
+					await symlink("target.json", evidence);
+				} else {
+					await writeFile(evidence, "{\"version\":1}\n");
+					f.runtime.evidenceDescriptorOpened = async (openedPath: string) => {
+						if (openedPath !== evidence) return;
+						f.runtime.evidenceDescriptorOpened = undefined;
+						await rename(evidence, join(root, "opened.json"));
+						await writeFile(evidence, "{\"version\":2}\n");
+					};
+				}
+				return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
+			}
+			return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
+		});
+		const adapter = f.create();
+		await start(adapter, f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		assert.equal(runtime.attention?.code, "evidence_invalid", JSON.stringify(runtime));
+		assert.match(runtime.attention?.summary ?? "", /existing regular file/);
+	});
 });
 
 test("same-activation reload reuses one active settlement obligation", async (t) => {
@@ -819,7 +1565,7 @@ test("isolated canonical repair accepts no harness mutation, rewrite, or unrelat
 	await writeFile(join(f.root, "agent-artifacts", "example", "story.yaml"), "reviewed: true\n");
 	await exec("git", ["add", "agent-artifacts/example/story.yaml"], { cwd: f.root });
 	await exec("git", ["commit", "-qm", "reviewed authored contract"], { cwd: f.root });
-	let lockDepth = 0; let repairAttempts = 0; let canonicalBeforeRepair = "";
+	let lockDepth = 0; let repairAttempts = 0; let canonicalBeforeRepair = ""; let repairSystemContext = "";
 	f.runtime.mutex = { async run(_owner: string, operation: () => Promise<unknown>) { assert.equal(lockDepth, 0); lockDepth++; try { return await operation(); } finally { lockDepth--; } } };
 	useProductionExecutor(f, async (input) => {
 		if (input.taskId) {
@@ -829,6 +1575,7 @@ test("isolated canonical repair accepts no harness mutation, rewrite, or unrelat
 			return { text: "delivered" };
 		}
 		if (input.role === "repair-implementer") {
+			repairSystemContext = input.stableSystemContext;
 			assert.equal(lockDepth, 1, "canonical mutation mutex must remain held for the managed repair worker");
 			canonicalBeforeRepair ||= (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
 			repairAttempts++;
@@ -851,6 +1598,10 @@ test("isolated canonical repair accepts no harness mutation, rewrite, or unrelat
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
 	assert.equal(repairAttempts, 2);
+	assert.match(repairSystemContext, /# Finding Repair/);
+	assert.match(repairSystemContext, /# Managed Repair Protocol/);
+	assert.match(repairSystemContext, /use `workflow_ledger` with `action: "append"`/i);
+	assert.match(repairSystemContext, /successful repair still requires independent re-review or E2E/i);
 	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim(), canonicalBeforeRepair);
 	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "story.yaml"), "utf8"), "reviewed: true\n");
 	await assert.rejects(access(join(f.root, "first.txt")), /ENOENT/);
@@ -918,6 +1669,683 @@ test("first-demand reconciliation interrupts a paused active owner without launc
 	await eventually(() => assert.equal(launches, 2));
 	gate.resolve({ ...passed(), contributionCommit: "fresh" });
 	await eventually(async () => assert.equal((await replacement.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+});
+
+test("an exhausted iOS check accepts a same-story correction and executes the effective check without reimplementation", async (t) => {
+	const oldCommand = "printf 'xcodebuild destination=iPhone-15'";
+	const correctedCommand = "printf 'xcodebuild destination=iPhone-16'";
+	const authored = task("task-a", [{ id: "ios", command: oldCommand }]);
+	const observedCommands: string[] = [];
+	const checkTokens: string[] = [];
+	const f = await fixture(t, {
+		tasks: [authored],
+		execute: async (context) => {
+			const { action } = context;
+			if (action.kind === "task-launch") return { ...passed(), contributionCommit: "original-contribution" };
+			if (action.kind === "task-check") {
+				const command = (context.tasks.get("task-a")!.checks[0] as { command: string }).command;
+				observedCommands.push(command); checkTokens.push(context.token);
+				if (command === correctedCommand) return { ...passed(), checks: [{ id: "ios", status: "passed" }] };
+				const failure = { code: "check_failed", causeCode: "check_configuration", summary: "Unable to find a destination matching iPhone 15", diagnostic: { checkId: "ios", command, exitCode: 70, stdout: "Available destinations follow", stderr: "error: Unable to find a destination matching\nSimulator inventory", outputTruncated: false } };
+				return { result: "repairable", failure, checks: [{ id: "ios", status: "failed", failure }] };
+			}
+			if (action.kind === "integration") return { ...passed(), integratedCommit: "integrated-original" };
+			return passed();
+		},
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const request = { action: "request_changes" as const, correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "task" as const, stageId: "delivery", taskId: "task-a" }, task: { checks: [{ id: "ios", command: correctedCommand }] } } };
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { ...request, correction: { ...request.correction, attentionEpoch: attention.attentionEpoch! + 1 } }, f.ctx, { dryRun: true }), /stale attention epoch/i);
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "missing" }, task: { description: "Different" } } }, f.ctx, { dryRun: true }), /does not match/i);
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { checks: [{ id: "ios", command: oldCommand }] } } }, f.ctx, { dryRun: true }), /no-op/i);
+	await adapter.resolveAttention!("work-item:example", request, f.ctx, { dryRun: true });
+	await adapter.resolveAttention!("work-item:example", request, f.ctx);
+	const corrected = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(corrected.stages[0]!.tasks[0]!.status, "check_pending");
+	assert.equal(corrected.stages[0]!.tasks[0]!.contributionCommit, "original-contribution");
+	assert.equal(corrected.stages[0]!.tasks[0]!.repairCount, 0);
+	assert.equal(corrected.executionCorrections?.[0]?.priorFailure.diagnostic?.command, oldCommand);
+	assert.equal(corrected.executionCorrections?.[0]?.priorRepairCount, 0);
+	assert.equal(corrected.executionCorrections?.[0]?.priorChecks?.[0]?.id, "ios");
+	assert.equal(corrected.executionCorrections?.[0]?.priorChecks?.[0]?.status, "failed");
+	await adapter.controlExecution!("work-item:example", "resume", "corrected-resume", f.ctx);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+	const complete = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.deepEqual(observedCommands, [oldCommand, correctedCommand]);
+	assert.notEqual(checkTokens[0], checkTokens[1]);
+	assert.equal(complete.stages[0]!.tasks[0]!.contributionCommit, "original-contribution");
+	assert.equal(complete.stages[0]!.tasks[0]!.checks[0]!.status, "passed");
+	assert.equal(complete.executionCorrections?.length, 1);
+	assert.match(await readFile(join(f.root, "agent-artifacts", "example", "outcome.md"), "utf8"), /Runtime correction 1 at delivery\/task-a: effective checks/);
+});
+
+test("long request_changes guidance and corrected prose survive dry-run and persistence intact", async (t) => {
+	const f = await fixture(t, { execute: async (context) => {
+		if (context.action.kind === "task-launch") return { result: "needs_user", failure: { code: "blocked", summary: "needs guidance" } };
+		return passed();
+	} });
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const prompt = `prompt-start-${"p".repeat(3_129)}-prompt-end`;
+	assert.equal(prompt.length, 3_153);
+	const description = `description-start-${"d".repeat(12_100)}-description-end`;
+	const decision = { action: "request_changes" as const, prompt, correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task" as const, stageId: "delivery", taskId: "task-a" }, task: { description },
+	} };
+	const projected = await adapter.resolveAttention!("work-item:example", decision, f.ctx, { dryRun: true });
+	assert.equal(projected.stages[0]!.tasks[0]!.failure?.summary, prompt);
+	assert.equal(projected.executionCorrections?.[0]?.prompt, prompt);
+	await adapter.resolveAttention!("work-item:example", decision, f.ctx);
+	const persisted = (await new StoryRuntimeStore(f.root, "example").readState())!;
+	assert.equal(persisted.executionCorrections?.[0]?.prompt, prompt);
+	assert.equal(persisted.executionCorrections?.[0]?.task?.description, description);
+});
+
+test("a correction accepts and executes more than 200 checks", async (t) => {
+	const oldChecks = Array.from({ length: 201 }, (_, index) => ({ id: `check-${index + 1}`, command: index === 0 ? "old-command" : `true # ${index}` }));
+	const correctedChecks = oldChecks.map((check, index) => index === 0 ? { ...check, command: "corrected-command" } : check);
+	const f = await fixture(t, {
+		tasks: [task("task-a", oldChecks)],
+		execute: async (context) => {
+			if (context.action.kind === "task-launch") return { ...passed(), contributionCommit: "contribution" };
+			if (context.action.kind === "task-check") {
+				const command = (context.tasks.get("task-a")!.checks[0] as { command: string }).command;
+				if (command === "corrected-command") return passed();
+				const failure = { code: "check_failed", summary: "first check failed", diagnostic: { checkId: "check-1", command, exitCode: 1, stdout: "", stderr: "failed", outputTruncated: false } };
+				return { result: "repairable", failure, checks: [{ id: "check-1", status: "failed", failure }] };
+			}
+			if (context.action.kind === "integration") return { ...passed(), integratedCommit: "integrated" };
+			return passed();
+		},
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { checks: correctedChecks },
+	} }, f.ctx);
+	const corrected = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(corrected.stages[0]!.tasks[0]!.checks.length, 201);
+	await adapter.controlExecution!("work-item:example", "resume", "many-checks", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+});
+
+test("semantic no-op check corrections reject string/object and default-profile representation changes", async (t) => {
+	const f = await fixture(t, {
+		tasks: [task("task-a", ["npm test"])],
+		execute: async (context) => {
+			if (context.action.kind === "task-launch") return { ...passed(), contributionCommit: "contribution" };
+			if (context.action.kind === "task-check") {
+				const failure = { code: "check_failed", summary: "failed", diagnostic: { checkId: "check-1", command: "npm test", exitCode: 1, stdout: "", stderr: "failed", outputTruncated: false } };
+				return { result: "repairable", failure, checks: [{ id: "check-1", status: "failed", failure }] };
+			}
+			return passed();
+		},
+	});
+	f.runtime.config.verification = { defaultProfile: "project", profiles: { project: { shell: "/bin/sh", requiredEnvironment: [] } } };
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" },
+		task: { checks: [{ id: "check-1", command: "npm test", profile: "project" }] },
+	} }, f.ctx, { dryRun: true }), /no-op/i);
+});
+
+test("a corrected stage verification command executes against the preserved integration", async (t) => {
+	const oldCommand = "printf stage-old"; const correctedCommand = "printf stage-corrected";
+	const observed: string[] = [];
+	const f = await fixture(t, {
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [{ id: "stage-ios", command: oldCommand }], review: { mode: "skip" } }] },
+		execute: async (context) => {
+			if (context.action.kind === "task-launch") return { ...passed(), contributionCommit: "task-contribution" };
+			if (context.action.kind === "integration") return { ...passed(), integratedCommit: "preserved-integration" };
+			if (context.action.kind === "verification") {
+				const command = (context.plan.stages[0]!.checks[0] as { command: string }).command; observed.push(command);
+				if (command === correctedCommand) return { ...passed(), checks: [{ id: "stage-ios", status: "passed" }] };
+				return { result: "repairable", failure: { code: "check_failed", summary: "stage destination is stale" }, checks: [{ id: "stage-ios", status: "failed" }] };
+			}
+			return passed();
+		},
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	f.runtime.config.verification = { defaultProfile: "project", profiles: { project: { shell: "/bin/sh", requiredEnvironment: [] } } };
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "stage-verification", stageId: "delivery" },
+		stageVerification: { checks: [{ id: "stage-ios", command: oldCommand, profile: "project" }] },
+	} }, f.ctx, { dryRun: true }), /no-op/i);
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "stage-verification", stageId: "delivery" },
+		stageVerification: { checks: [{ id: "stage-ios", command: correctedCommand }] },
+	} }, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "stage-check-resume", f.ctx);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+	const complete = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.deepEqual(observed, [oldCommand, correctedCommand]);
+	assert.equal(complete.stages[0]!.integration.integratedCommit, "preserved-integration");
+	assert.equal(complete.stages[0]!.verification.repairCount, 0);
+});
+
+test("correction audit preserves failed checks and repair count when the latest failure is a repair", async (t) => {
+	const checkFailure = { code: "check_failed", summary: "original check failed", diagnostic: { checkId: "unit", command: "npm test", exitCode: 1, stdout: "", stderr: "assertion", outputTruncated: false } };
+	const f = await fixture(t, { tasks: [task("task-a", [{ id: "unit", command: "npm test" }])], execute: async (context) => {
+		if (context.action.kind === "task-launch") return { ...passed(), contributionCommit: "contribution" };
+		if (context.action.kind === "task-check") return { result: "repairable", failure: checkFailure, checks: [{ id: "unit", status: "failed", failure: checkFailure }] };
+		if (context.action.kind === "task-repair") return { result: "repairable", failure: { code: "repair_failed", summary: "repair transport failed" } };
+		return passed();
+	} });
+	f.runtime.config.limits.repairRounds = 1;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(attention.stages[0]!.tasks[0]!.repairCount, 1);
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { description: "Use the repaired transport boundary." },
+	} }, f.ctx);
+	const correction = (await adapter.snapshot("work-item:example", f.ctx)).runtime.executionCorrections?.at(-1)!;
+	assert.equal(correction.priorFailure.summary, "repair transport failed");
+	assert.equal(correction.priorRepairCount, 1);
+	assert.equal(correction.priorChecks?.[0]?.failure?.diagnostic?.command, "npm test");
+});
+
+test("exhausted integration attention accepts new epoch-bound guidance and preserves contribution history", async (t) => {
+	let integrations = 0; let repairs = 0;
+	const f = await fixture(t, { execute: async (context) => {
+		if (context.action.kind === "task-launch") return { ...passed(), contributionCommit: "same-contribution" };
+		if (context.action.kind === "integration") { integrations++; return { result: "repairable", failure: { code: "report_too_large", summary: "integration report exceeded transport" } }; }
+		if (context.action.kind === "integration-repair") { repairs++; return { ...passed(), integratedCommit: "same-integration" }; }
+		return passed();
+	} });
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const decision = { action: "request_changes" as const, prompt: "The transport is repaired; retry using the new bounded report evidence.", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "integration" as const, stageId: "delivery" },
+	} };
+	await adapter.resolveAttention!("work-item:example", decision, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "integration-guidance", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+	const complete = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(integrations, 1); assert.equal(repairs, 1);
+	assert.deepEqual(complete.stages[0]!.integration.contributionCommits, ["same-contribution"]);
+	assert.equal(complete.stages[0]!.integration.integratedCommit, "same-integration");
+	assert.equal(complete.executionCorrections?.at(-1)?.target.kind, "integration");
+});
+
+test("concurrent task failures reject a stale target and expose each authoritative correction boundary", async (t) => {
+	const gates = { a: deferred<StoryWorkflowActionResult>(), b: deferred<StoryWorkflowActionResult>() };
+	const started = new Set<string>();
+	const repairReasons: string[] = [];
+	const tasks = [task("a"), task("b")];
+	const f = await fixture(t, {
+		tasks,
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["a", "b"], mode: "concurrent", checks: [], review: { mode: "skip" } }] },
+		execute: async ({ action }) => {
+			if (action.kind === "task-launch") { started.add(action.taskId!); return gates[action.taskId as "a" | "b"].promise; }
+			if (action.kind === "task-repair") { repairReasons.push(action.reason?.summary ?? ""); return { ...passed(), contributionCommit: `fixed-${action.taskId}` }; }
+			if (action.kind === "integration") return { ...passed(), integratedCommit: "integrated" };
+			return passed();
+		},
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(() => assert.deepEqual([...started].sort(), ["a", "b"]));
+	gates.a.resolve({ result: "repairable", failure: { code: "failed-a", summary: "actual A" } });
+	await eventually(async () => assert.deepEqual((await adapter.snapshot("work-item:example", f.ctx)).runtime.attentionTarget, { kind: "task", stageId: "delivery", taskId: "a" }));
+	gates.b.resolve({ result: "repairable", failure: { code: "failed-b", summary: "actual B" } });
+	await eventually(async () => {
+		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		assert.equal(runtime.attentionEpoch, 2);
+		assert.deepEqual(runtime.attentionTarget, { kind: "task", stageId: "delivery", taskId: "b" });
+	});
+	const epochTwo = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "stale A", correction: {
+		attentionEpoch: epochTwo.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "a" }, task: { description: "Stale A." },
+	} }, f.ctx, { dryRun: true }), /authoritative attention boundary/i);
+	const unchanged = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(unchanged.correctionSequence, undefined);
+	assert.deepEqual(unchanged.stages[0]!.tasks.map((entry) => [entry.status, entry.failure?.summary]), [["attention", "actual A"], ["attention", "actual B"]]);
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "current B", correction: {
+		attentionEpoch: epochTwo.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "b" }, task: { description: "Correct B." },
+	} }, f.ctx);
+	const remaining = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(remaining.status, "attention");
+	assert.equal(remaining.attentionEpoch, 3);
+	assert.deepEqual(remaining.attentionTarget, { kind: "task", stageId: "delivery", taskId: "a" });
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "current A", correction: {
+		attentionEpoch: remaining.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "a" }, task: { description: "Correct A." },
+	} }, f.ctx);
+	const resolved = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(resolved.status, "paused");
+	assert.deepEqual(resolved.executionCorrections?.map((entry) => entry.priorFailure.summary), ["actual B", "actual A"]);
+	await adapter.controlExecution!("work-item:example", "resume", "all-resolved", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+	assert.deepEqual(repairReasons.sort(), ["current A", "current B"]);
+});
+
+test("exhausted stage-review, final-review, and E2E guidance recover through fix and rerun", async (t) => {
+	for (const targetKind of ["stage-review", "final-review", "e2e"] as const) {
+		let evaluations = 0; let fixes = 0;
+		const actionKind = targetKind === "stage-review" ? "review" : targetKind;
+		const fixKind = targetKind === "stage-review" ? "review-fix" : targetKind === "final-review" ? "final-review-fix" : "e2e-fix";
+		const f = await fixture(t, {
+			plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: targetKind === "stage-review" ? "required" : "skip" } }] },
+			execute: async ({ action }) => {
+				if (action.kind === "task-launch") return { ...passed(), contributionCommit: "contribution" };
+				if (action.kind === "integration") return { ...passed(), integratedCommit: "integration" };
+				if (action.kind === actionKind) { evaluations++; return evaluations === 1 ? { result: "repairable", failure: { code: `${targetKind}_failed`, summary: `${targetKind} failed` } } : passed(); }
+				if (action.kind === fixKind) { fixes++; return passed(); }
+				return passed();
+			},
+		});
+		f.runtime.config.limits.repairRounds = 0;
+		const adapter = f.create(); await start(adapter, f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+		const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		const target = targetKind === "stage-review" ? { kind: targetKind, stageId: "delivery" } as const : { kind: targetKind } as const;
+		assert.deepEqual(attention.attentionTarget, target);
+		await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: `new ${targetKind} evidence`, correction: { attentionEpoch: attention.attentionEpoch!, target } }, f.ctx);
+		await adapter.controlExecution!("work-item:example", "resume", `${targetKind}-resume`, f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+		const complete = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+		const slot = targetKind === "stage-review" ? complete.stages[0]!.review : targetKind === "final-review" ? complete.finalReview : complete.e2e;
+		assert.equal(evaluations, 2); assert.equal(fixes, 1); assert.equal(slot.repairCount, 1);
+	}
+});
+
+test("runtime-slot guidance rejects normal Critical review attention and an exhausted wrapper retaining it", async (t) => {
+	const f = await fixture(t, {
+		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: "required" } }] },
+		execute: async ({ action }) => {
+			if (action.kind === "task-launch") return { ...passed(), contributionCommit: "contribution" };
+			if (action.kind === "integration") return { ...passed(), integratedCommit: "integration" };
+			if (action.kind === "review") return { result: "critical", failure: { code: "security", summary: "critical risk" }, findings: [{ id: "critical", severity: "critical", code: "security", summary: "critical risk" }] };
+			return passed();
+		},
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	let attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const decision = { action: "request_changes" as const, prompt: "do not waive", correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "stage-review" as const, stageId: "delivery" } } };
+	await assert.rejects(adapter.resolveAttention!("work-item:example", decision, f.ctx, { dryRun: true }), /repair-exhausted/i);
+	await new StoryRuntimeStore(f.root, "example").updateState((current) => {
+		const next = structuredClone(current!);
+		const wrapped = { code: "repair_exhausted", causeCode: "security", summary: "exhausted wrapper" };
+		next.attention = wrapped; next.stages[0]!.review.failure = wrapped;
+		return next;
+	});
+	attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { ...decision, correction: { ...decision.correction, attentionEpoch: attention.attentionEpoch! } }, f.ctx, { dryRun: true }), /cannot waive a retained Critical/i);
+});
+
+test("task correction guidance is attempt-local and a later prompt-less correction receives the new failure", async (t) => {
+	const repairReasons: string[] = [];
+	let repairs = 0;
+	const f = await fixture(t, { execute: async ({ action }) => {
+		if (action.kind === "task-launch") return { result: "repairable", failure: { code: "initial", summary: "initial failure" } };
+		if (action.kind === "task-repair") {
+			repairReasons.push(action.reason?.summary ?? ""); repairs++;
+			return repairs === 1 ? { result: "repairable", failure: { code: "later", summary: "failure Q" } } : { ...passed(), contributionCommit: "fixed" };
+		}
+		if (action.kind === "integration") return { ...passed(), integratedCommit: "integrated" };
+		return passed();
+	} });
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	let attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "guidance P", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { description: "First corrected description." },
+	} }, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "first-correction", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(attention.stages[0]!.tasks[0]!.failure?.summary, "failure Q");
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { description: "Second corrected description." },
+	} }, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "second-correction", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+	assert.deepEqual(repairReasons, ["guidance P", "failure Q"]);
+});
+
+test("corrected task prose reaches the fresh repair and later whole-branch review", async (t) => {
+	const seen: Array<[string, string, string, string]> = [];
+	const f = await fixture(t, {
+		execute: async (context) => {
+			const current = context.tasks.get("task-a")!;
+			if (context.action.kind === "task-launch") return { result: "repairable", failure: { code: "worker_failed", summary: "factual capsule defect" } };
+			if (context.action.kind === "task-repair" || context.action.kind === "final-review") seen.push([context.action.kind, current.description, current.scope, current.delivery]);
+			if (context.action.kind === "task-repair") return { ...passed(), contributionCommit: "corrected-contribution" };
+			if (context.action.kind === "integration") return { ...passed(), integratedCommit: "corrected-integration" };
+			return passed();
+		},
+	});
+	f.runtime.config.limits.repairRounds = 0;
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "Use the corrected capsule.", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" },
+		task: { description: "Corrected description.", scope: "Corrected scope.", delivery: "Corrected delivery." },
+	} }, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "prose-resume", f.ctx);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"));
+	assert.deepEqual(seen, [
+		["task-repair", "Corrected description.", "Corrected scope.", "Corrected delivery."],
+		["final-review", "Corrected description.", "Corrected scope.", "Corrected delivery."],
+	]);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(runtime.stages[0]!.tasks[0]!.repairCount, 1);
+	assert.equal(runtime.executionCorrections?.[0]?.priorFailure.summary, "factual capsule defect");
+});
+
+test("known xcodebuild destination configuration failures reach attention before a repair worker is launched", async (t) => {
+	const check = "printf 'xcodebuild: error: Unable to find a destination matching the provided destination specifier\\n' >&2; printf 'Available destinations: simulator inventory\\n'; exit 70";
+	const f = await fixture(t, { tasks: [task("task-a", [{ id: "ios", command: check }])] });
+	let repairs = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "implementation.txt"), "implemented\n");
+			await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+			return { text: "implemented" };
+		}
+		if (input.action === "task-repair") repairs++;
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(repairs, 0);
+	assert.equal(runtime.stages[0]!.tasks[0]!.repairCount, 0);
+	assert.equal(runtime.attention?.causeCode, "check_configuration");
+	assert.match(runtime.attention?.summary ?? "", /Unable to find a destination matching/);
+	assert.match(runtime.attention?.diagnostic?.stdout ?? "", /Available destinations/);
+	assert.match(runtime.attention?.diagnostic?.stderr ?? "", /error:/);
+});
+
+test("production xcodebuild correction recovers an exhausted repaired task without reimplementation", async (t) => {
+	const authored = task("task-a");
+	const f = await fixture(t, { tasks: [authored] });
+	const bin = await mkdtemp(join(tmpdir(), "pibox-fake-xcode-")); t.after(() => rm(bin, { recursive: true, force: true }));
+	const executable = join(bin, "xcodebuild"); const count = join(bin, "xcode-count");
+	await writeFile(executable, `#!/bin/sh\ncase "$*" in *18.3.1*) exit 0;; esac\nif [ ! -f '${count}' ]; then : > '${count}'; echo 'Assertion failed before destination lookup' >&2; exit 1; fi\necho 'xcodebuild: error: Unable to find a destination matching the provided destination specifier:' >&2\necho '{ platform:iOS Simulator, OS:18.3, name:iPhone 16 }' >&2\nexit 70\n`);
+	await chmod(executable, 0o755);
+	const oldCommand = `${executable} test -destination 'platform=iOS Simulator,OS=18.3,name=iPhone 16'`;
+	const correctedCommand = `${executable} test -destination 'platform=iOS Simulator,OS=18.3.1,name=iPhone 16'`;
+	authored.checks = [{ id: "ios", command: oldCommand }];
+	let implementations = 0; let repairs = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch" || input.action === "task-repair") {
+			if (input.action === "task-launch") implementations++; else repairs++;
+			await writeFile(join(input.cwd, "implementation.txt"), `${input.action}\n`, { flag: "a" });
+			await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", input.action], { cwd: input.cwd });
+			return { text: "committed" };
+		}
+		if (input.role === "e2e-tester") {
+			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "journey.txt");
+			await mkdir(join(evidence, ".."), { recursive: true }); await writeFile(evidence, "passed\n");
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/journey.txt"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [] }) };
+	});
+	f.runtime.config.limits.repairRounds = 1;
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const beforeContribution = attention.stages[0]!.tasks[0]!.contributionCommit;
+	assert.equal(attention.stages[0]!.tasks[0]!.repairCount, 1);
+	assert.equal(attention.attention?.causeCode, "check_configuration");
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes", correction: {
+		attentionEpoch: attention.attentionEpoch!, target: { kind: "task", stageId: "delivery", taskId: "task-a" }, task: { checks: [{ id: "ios", command: correctedCommand }] },
+	} }, f.ctx);
+	await adapter.controlExecution!("work-item:example", "resume", "xcode-corrected", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	const complete = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(implementations, 1); assert.equal(repairs, 1);
+	assert.equal(complete.stages[0]!.tasks[0]!.repairCount, 1);
+	assert.equal(complete.stages[0]!.tasks[0]!.contributionCommit, beforeContribution);
+	assert.equal(complete.stages[0]!.integration.contributionCommits[0], beforeContribution);
+	assert.ok(complete.stages[0]!.integration.integratedCommit);
+	assert.equal(complete.executionCorrections?.at(-1)?.priorRepairCount, 1);
+});
+
+test("a bare destination-specifier assertion is not classified as an Xcode environment failure", () => {
+	const failure = checkFailureSummary("unit", "npm test", { code: 1, stdout: "", stderr: "AssertionError: expected destination specifier", outputTruncated: false });
+	assert.equal(failure.causeCode, "check_failed");
+});
+
+test("an identical deterministic failure stops after one real code repair", async (t) => {
+	const f = await fixture(t, { tasks: [task("task-a", [{ id: "unit", command: "printf 'Assertion failed: expected true\\n' >&2; exit 1" }])] });
+	let repairs = 0;
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") await writeFile(join(input.cwd, "implementation.txt"), "first\n");
+		else if (input.action === "task-repair") { repairs++; await writeFile(join(input.cwd, "implementation.txt"), "first\nrepair\n"); }
+		else return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+		await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+		await exec("git", ["commit", "-qm", input.action], { cwd: input.cwd });
+		return { text: "committed" };
+	});
+	const adapter = f.create();
+	await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(repairs, 1);
+	assert.equal(runtime.stages[0]!.tasks[0]!.repairCount, 1);
+	assert.equal(runtime.attention?.code, "repeated_check_failure");
+	assert.equal(runtime.attention?.causeCode, "check_failed");
+});
+
+test("production writers receive newest eight ledger entries and full path while evaluators receive none", async (t) => {
+	const f = await fixture(t, {});
+	const store = new StoryRuntimeStore(f.root, "example");
+	for (let index = 0; index < 40; index++) await store.upsertLedger({ id: `entry-${index}`, updatedAt: "2026-01-01T00:00:00Z", sourceRole: "reviewer", summary: index === 39 ? `late guidance intact ${"x".repeat(15_000)} final ledger detail` : `guidance-${index}`, evidence: Array.from({ length: 12 }, (_, item) => `evidence/${index}-${item}`) });
+	const expectedEntries = (await store.readLedger()).entries.slice(-8);
+	const contexts: Array<{ action: string; stable: string; supplement?: string }> = [];
+	useProductionExecutor(f, async (input) => {
+		contexts.push({ action: input.action, stable: input.stableSystemContext, supplement: input.initialSystemSupplement });
+		if (input.action === "task-launch") {
+			const ledgerPath = input.initialSystemSupplement?.match(/Authoritative workflow ledger \(treat as read-only\): (.+)/)?.[1];
+			assert.ok(ledgerPath?.startsWith("/"));
+			assert.equal((parse(await readFile(ledgerPath, "utf8")) as { entries: unknown[] }).entries.length, 40, `ledger is readable from ${input.cwd}`);
+		} else {
+			assert.equal(input.initialSystemSupplement, undefined);
+			assert.doesNotMatch(input.stableSystemContext, /Authoritative workflow ledger|late guidance intact/);
+		}
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "implementation.txt"), "implemented\n");
+			await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+			return { text: "implemented" };
+		}
+		if (input.role === "e2e-tester") {
+			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "journey.txt");
+			await mkdir(join(evidence, ".."), { recursive: true }); await writeFile(evidence, "passed\n");
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/journey.txt"] }) };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [] }) };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	assert.ok(contexts.length >= 3);
+	const writerContexts = contexts.filter((context) => context.action === "task-launch");
+	assert.equal(writerContexts.length, 1);
+	for (const context of writerContexts) {
+		const seed = context.supplement ?? "";
+		assert.doesNotMatch(seed, /guidance-31(?:\D|$)/);
+		for (let index = 32; index < 40; index++) assert.match(seed, new RegExp(index === 39 ? "late guidance intact" : `guidance-${index}(?:\\D|$)`));
+		const injected = seed.match(/Newest curated ledger entries \(8 of 40; 32 older entries available\):\n```json\n([\s\S]*?)\n```/);
+		assert.ok(injected, "startup identifies all retained entries and the older read window");
+		assert.deepEqual(JSON.parse(injected[1]!), expectedEntries, "all eight records retain provenance, timestamps, long summaries, and every evidence reference");
+		assert.equal((seed.match(/Authoritative workflow ledger/g) ?? []).length, 1);
+	}
+});
+
+test("validated implementer submission persists with harness-owned provenance while evaluators publish nothing", async (t) => {
+	const f = await fixture(t, {});
+	const attemptDirectories: string[] = [];
+	t.after(async () => { await Promise.all(attemptDirectories.map((path) => rm(path, { recursive: true, force: true }))); });
+	useProductionExecutor(f, async (input) => {
+		if (input.action === "task-launch") {
+			await writeFile(join(input.cwd, "implementation.txt"), "implemented\n");
+			await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+			await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+			const directory = await mkdtemp(join(tmpdir(), "pibox-ledger-attempt-"));
+			attemptDirectories.push(directory);
+			await chmod(directory, 0o700);
+			const reportPath = join(directory, "report.md");
+			await writeLedgerSubmission(reportPath, { summary: "Non-obvious implementation constraint", evidence: ["src/constraint.ts"] });
+			return { text: "implemented", reportPath };
+		}
+		return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	const entries = (await new StoryRuntimeStore(f.root, "example").readLedger()).entries;
+	assert.equal(entries.length, 1);
+	assert.match(entries[0]!.id, /^contribution:.+:task-launch$/);
+	assert.equal(entries[0]!.sourceRole, "implementer");
+	assert.equal(entries[0]!.summary, "Non-obvious implementation constraint");
+	assert.deepEqual(entries[0]!.evidence, ["src/constraint.ts"]);
+});
+
+test("malformed submission surfaces attention after accepting validated contribution without relaunch", async (t) => {
+	const f = await fixture(t, {});
+	let launches = 0;
+	const directories: string[] = [];
+	t.after(async () => { await Promise.all(directories.map((path) => rm(path, { recursive: true, force: true }))); });
+	useProductionExecutor(f, async (input) => {
+		if (input.action !== "task-launch") return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+		launches++;
+		await writeFile(join(input.cwd, "implementation.txt"), "implemented\n");
+		await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+		await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+		const directory = await mkdtemp(join(tmpdir(), "pibox-ledger-malformed-"));
+		directories.push(directory); await chmod(directory, 0o700);
+		await writeFile(join(directory, "workflow-ledger.json"), "{not-json", { mode: 0o600 });
+		return { text: "implemented", reportPath: join(directory, "report.md") };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	assert.equal(launches, 1);
+	assert.equal(runtime.stages[0]!.tasks[0]!.status, "completed");
+	assert.equal(runtime.attention?.code, "ledger_persistence_failed");
+	assert.match(runtime.attention?.summary ?? "", /malformed JSON/);
+	assert.equal(Object.values(runtime.ledgerRecoveries ?? {})[0]?.submission, undefined);
+	const recovered = await adapter.resolveAttention!("work-item:example", { action: "approve" }, f.ctx);
+	assert.equal(recovered.status, "paused");
+	assert.equal(recovered.ledgerRecoveries, undefined);
+	await adapter.controlExecution!("work-item:example", "resume", "after-ledger-ack", f.ctx);
+	await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	assert.equal(launches, 1);
+});
+
+test("concurrent valid submissions survive failed writes and recover independently without task relaunch", async (t) => {
+	const tasks = [task("task-a"), task("task-b")];
+	const f = await fixture(t, { tasks, plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: tasks.map((entry) => entry.id), mode: "concurrent", checks: [], review: { mode: "skip" } }] } });
+	const launches = new Map<string, number>();
+	const directories: string[] = [];
+	const release = deferred<void>();
+	t.after(async () => { await Promise.all(directories.map((path) => rm(path, { recursive: true, force: true }))); });
+	useProductionExecutor(f, async (input) => {
+		if (input.action !== "task-launch") return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+		launches.set(input.taskId, (launches.get(input.taskId) ?? 0) + 1);
+		await writeFile(join(input.cwd, `${input.taskId}.txt`), "implemented\n");
+		await exec("git", ["add", `${input.taskId}.txt`], { cwd: input.cwd }); await exec("git", ["commit", "-qm", `implement ${input.taskId}`], { cwd: input.cwd });
+		const directory = await mkdtemp(join(tmpdir(), "pibox-ledger-retry-")); directories.push(directory); await chmod(directory, 0o700);
+		const reportPath = join(directory, "report.md"); await writeLedgerSubmission(reportPath, { summary: `Retain ${input.taskId} note` });
+		await release.promise;
+		return { text: "implemented", reportPath };
+	});
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(() => assert.equal(launches.size, 2));
+	const ledgerPath = join(f.root, "agent-artifacts", "example", "ledger.yaml");
+	await writeFile(ledgerPath, "malformed-ledger", { mode: 0o600 }); release.resolve();
+	await eventually(async () => { const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime; assert.equal(Object.keys(runtime.ledgerRecoveries ?? {}).length, 2, JSON.stringify(runtime)); }, 8_000);
+	await rm(ledgerPath, { force: true });
+	const initial = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+	const expected = structuredClone(Object.values(initial.ledgerRecoveries ?? {})[0]!);
+	const expectedOther = structuredClone(Object.values(initial.ledgerRecoveries ?? {})[1]!);
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes" }, f.ctx, { dryRun: true, expectedLedgerRecovery: expected });
+	await adapter.resolveAttention!("work-item:example", { action: "request_changes" }, f.ctx, { dryRun: true, expectedLedgerRecovery: expected });
+	const first = await adapter.resolveAttention!("work-item:example", { action: "request_changes" }, f.ctx, { expectedLedgerRecovery: expected });
+	assert.equal(first.status, "attention"); assert.equal(Object.keys(first.ledgerRecoveries ?? {}).length, 1);
+	await assert.rejects(adapter.resolveAttention!("work-item:example", { action: "request_changes" }, f.ctx, { expectedLedgerRecovery: expected }), /changed before settlement/);
+	assert.deepEqual(Object.values((await adapter.snapshot("work-item:example", f.ctx)).runtime.ledgerRecoveries ?? {}), [expectedOther]);
+	const recovered = await adapter.resolveAttention!("work-item:example", { action: "request_changes" }, f.ctx);
+	assert.equal(recovered.status, "paused"); assert.equal(recovered.ledgerRecoveries, undefined);
+	assert.deepEqual((await new StoryRuntimeStore(f.root, "example").readLedger()).entries.map((entry) => entry.summary).sort(), ["Retain task-a note", "Retain task-b note"]);
+	await adapter.controlExecution!("work-item:example", "resume", "after-ledger-retries", f.ctx); await adapter.advanceWorkflow!("work-item:example", f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+	assert.deepEqual([...launches].sort(), [["task-a", 1], ["task-b", 1]]);
+});
+
+test("production review preserves every complete finding and rejects malformed findings explicitly", async (t) => {
+	for (const malformed of [false, true]) {
+		const longSummary = `finding-start-${"x".repeat(4_500)}-finding-end`;
+		const findings = Array.from({ length: 201 }, (_, index) => ({ id: `finding-${index}`, severity: index === 200 ? "critical" : "minor", code: `code-${index}`, summary: index === 200 ? longSummary : `summary-${index}`, path: `src/${"p".repeat(510)}-${index}.ts` }));
+		const f = await fixture(t, { plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: "required" } }] } });
+		useProductionExecutor(f, async (input) => {
+			if (input.action === "task-launch") {
+				await writeFile(join(input.cwd, "implementation.txt"), "implemented\n");
+				await exec("git", ["add", "implementation.txt"], { cwd: input.cwd });
+				await exec("git", ["commit", "-qm", "implementation"], { cwd: input.cwd });
+				return { text: "implemented" };
+			}
+			if (input.action === "review") return { text: JSON.stringify({ result: "critical", summary: "reviewed", findings: malformed ? [...findings, { severity: "minor", summary: "missing identity" }] : findings }) };
+			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: [] }) };
+		});
+		f.runtime.config.limits.repairRounds = 0;
+		const adapter = f.create(); await start(adapter, f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+		const review = (await adapter.snapshot("work-item:example", f.ctx)).runtime.stages[0]!.review;
+		if (malformed) {
+			assert.equal(review.currentFindings.length, 0);
+			assert.equal(review.failure?.code, "repair_exhausted");
+			assert.match(review.failure?.summary ?? "", /invalid_structured_result|invalid.*id/i);
+		} else {
+			assert.equal(review.currentFindings.length, 201);
+			assert.equal(review.currentFindings[200]!.summary, longSummary);
+			assert.ok(review.currentFindings[200]!.path!.length > 500);
+		}
+	}
+});
+
+test("bounded diagnostics retain early roots plus both stream heads and tails", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-check-output-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const command = "printf 'error: Unable to find a destination matching early\\n'; printf 'stderr begins\\n' >&2; i=0; while [ $i -lt 3000 ]; do printf 'simulator stdout %04d xxxxxxxxxx\\n' $i; printf 'simulator stderr %04d yyyyyyyyyy\\n' $i >&2; i=$((i+1)); done; exit 70";
+	const executed = await runShell(command, root, new AbortController().signal);
+	const failed = checkFailureSummary("ios", command, executed);
+	assert.equal(executed.outputTruncated, true);
+	assert.match(failed.summary, /Unable to find a destination matching early/);
+	assert.match(failed.diagnostic.stdout, /^error: Unable/);
+	assert.match(failed.diagnostic.stdout, /tail follows/);
+	assert.match(failed.diagnostic.stdout, /simulator stdout 2999/);
+	assert.match(failed.diagnostic.stderr, /^stderr begins/);
+	assert.match(failed.diagnostic.stderr, /simulator stderr 2999/);
+	assert.ok(failed.diagnostic.stdout.length < 20_000 && failed.diagnostic.stderr.length < 20_000);
 });
 
 test("different activation interrupts old ownership and explicit resume creates a fresh fenced attempt", async (t) => {

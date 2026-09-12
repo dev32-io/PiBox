@@ -190,7 +190,8 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.match(prompt, /Background results arrive automatically\. End the turn if no useful independent work remains, or use `wait` with `event: subagent_settled` at a genuine dependency barrier/);
 	assert.match(prompt, /A wake-up does not mean every prerequisite finished/);
 	assert.match(prompt, /Never sleep or poll for completion; `subagent_status` is diagnostic only/);
-	assert.match(prompt, /Use `subagent_read` for truncated reports; reserve `subagent_continue` for new follow-up work/);
+	assert.match(prompt, /Read saved subagent report paths with ordinary `read` or `grep`/);
+	assert.match(prompt, /reserve `subagent_continue` for new follow-up work/);
 	assert.match(prompt, /Treat failed, blocked, or partial results as incomplete/);
 	assert.match(prompt, /Before reassigning work, confirm the prior attempt has settled and inspect its evidence and any edits; assign only the remaining gap or surface the blocker/);
 	assert.match(prompt, /Review decisive evidence before relying on results; resolve disagreements against repository facts and checks, not votes/);

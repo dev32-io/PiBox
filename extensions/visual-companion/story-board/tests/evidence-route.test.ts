@@ -21,8 +21,8 @@ test("current evidence serves only authoritative flat and nested E2E references"
 	for (const denied of ["evidence/uncited.txt", "evidence/archive.zip", "../state.yaml", "state.yaml"]) assert.equal((await fetch(`${route}${encodeURIComponent(denied)}`)).status, 404);
 	const statePath = join(fixture.repositoryRoot, "agent-artifacts", CURRENT_STORY_ID, "state.yaml"); const state = parse(await readFile(statePath, "utf8")); state.e2e.evidenceRefs = state.e2e.evidenceRefs.filter((item: string) => item !== "evidence/summary.txt"); await writeFile(statePath, stringify(state));
 	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/summary.txt")}`)).status, 404, "state authority is revalidated even when report metadata is cached");
-	await writeFile(statePath, "x".repeat(2 * 1024 * 1024 + 1));
-	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/nested/shot.png")}`)).status, 404, "oversized state cannot authorize cached evidence metadata");
+	await writeFile(statePath, `${stringify(state)}# ${"valid-state-padding".repeat(140_000)}\n`);
+	assert.equal((await fetch(`${route}${encodeURIComponent("evidence/nested/shot.png")}`)).status, 200, "valid state larger than 2 MiB still authorizes cited evidence");
 	const workspace = await fetch(`${base}/workspace?story=${CURRENT_STORY_ID}`).then((response) => response.text());
 	assert.doesNotMatch(workspace, /private-session|private-process|private-activation|private\/integration|private\/worktrees|sha256:|activationOwner|contracts|integrationWorktree/);
 });
@@ -44,11 +44,13 @@ test("evidence route requires canonical evaluation membership and contained mani
 	await put(root, `${base}/evaluations/${evaluation}/report.md`, "# Fine\n");
 	await put(root, `${evidence}/files/note.md`, "<script>bad()</script>Visible");
 	const plaintext = Buffer.from('error: foo_bar.ts:10 (ENOENT)\r\n<script>alert("literal")</script> &amp; [x] *bold* # ! \\ end\n\n');
+	const largePlaintext = Buffer.alloc(10 * 1024 * 1024 + 1, "L");
+	await put(root, `${evidence}/files/large.txt`, largePlaintext);
 	for (const extension of ["txt", "log"]) await put(root, `${evidence}/files/literal.${extension}`, plaintext);
 	await put(root, `${evidence}/files/archive.zip`, "zip");
 	await put(root, "outside.txt", "private");
 	await symlink(join(root, "outside.txt"), join(root, evidence, "files/link.txt"));
-	await put(root, `${evidence}/manifest.yaml`, stringify({ schemaVersion: 1, evaluation, entries: [...["txt", "log"].map((extension) => ({ id: extension, path: `files/literal.${extension}` })), { id: "note", path: "files/note.md" }, { id: "archive", path: "files/archive.zip" }, { id: "link", path: "files/link.txt" }] }));
+	await put(root, `${evidence}/manifest.yaml`, stringify({ schemaVersion: 1, evaluation, entries: [...["txt", "log"].map((extension) => ({ id: extension, path: `files/literal.${extension}` })), { id: "large", path: "files/large.txt" }, { id: "note", path: "files/note.md" }, { id: "archive", path: "files/archive.zip" }, { id: "link", path: "files/link.txt" }] }));
 	const before = createHash("sha256").update(await readFile(join(root, evidence, "files/note.md"))).digest("hex");
 	const backend = await createVisualCompanionBackend({ viewers: [createStoryBoardViewer({ repositoryRoot: root })] }); t.after(() => backend.close());
 	const route = `${backend.url}/v/story-board/api/evidence?story=${story}&evaluation=${evaluation}&path=`;
@@ -62,6 +64,8 @@ test("evidence route requires canonical evaluation membership and contained mani
 		assert.equal(plain.headers.get("content-length"), String(plaintext.byteLength));
 		assert.deepEqual(Buffer.from(await plain.arrayBuffer()), plaintext);
 	}
+	const large = await fetch(`${route}${encodeURIComponent("files/large.txt")}`);
+	assert.equal(large.status, 200); assert.equal(large.headers.get("content-length"), String(largePlaintext.byteLength)); assert.deepEqual(Buffer.from(await large.arrayBuffer()), largePlaintext);
 	const body = await response.text(); assert.doesNotMatch(body, /<script>/); assert.match(body, /Visible/);
 	assert.equal((await fetch(`${route}${encodeURIComponent("files/archive.zip")}`)).status, 404);
 	assert.equal((await fetch(`${route}${encodeURIComponent("files/link.txt")}`)).status, 404);

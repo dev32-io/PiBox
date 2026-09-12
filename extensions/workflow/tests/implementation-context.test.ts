@@ -47,13 +47,16 @@ async function fixture(t: test.TestContext, storyOverrides: Partial<StoryDocumen
 }
 
 test("implementation context preserves complete binding fields, excludes checks, and is stable", async (t) => {
-	const { store, task } = await fixture(t);
+	const { store, story, task } = await fixture(t);
 	const first = await buildTaskPersistentContext(store, "context-story", task);
 	const retry = await buildTaskPersistentContext(store, "context-story", task);
 	assert.equal(first, retry);
 	for (const field of [task.description, task.scope, task.delivery]) assert.equal(first.includes(field), true, field);
 	assert.doesNotMatch(first, /npm run check|node --test focused|Context Source Manifest|artifact|criterion|report/i);
-	await assert.rejects(buildTaskPersistentContext(store, "context-story", task, { maxBytes: 64 }), /binding content was not truncated/);
+	const longDescription = `long-start-${"x".repeat(140_000)}-long-end`;
+	const longContext = buildRolePersistentContext({ role: "stage-fixer", story, tasks: [{ ...task, description: longDescription }] });
+	assert.match(longContext, /long-start-/);
+	assert.match(longContext, /-long-end/);
 });
 
 test("role contexts separate stable contracts from exact dynamic coordinates and current findings", async (t) => {
@@ -77,7 +80,14 @@ test("role contexts separate stable contracts from exact dynamic coordinates and
 
 test("task clarification provides bounded story ranges and literal search", async (t) => {
 	const definitions = new Map<string, any>();
-	registerWorkerCapabilities({ registerTool(definition: any) { definitions.set(definition.name, definition); } } as ExtensionAPI);
+	const identity = { PIBOX_WORKFLOW_STORY_ID: "example", PIBOX_WORKFLOW_TASK_ID: "task-a", PIBOX_WORKFLOW_ATTEMPT_TOKEN: "schema-test" };
+	const previous = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+	try {
+		Object.assign(process.env, identity);
+		registerWorkerCapabilities({ registerTool(definition: any) { definitions.set(definition.name, definition); } } as ExtensionAPI);
+	} finally {
+		for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+	}
 	const schema = definitions.get("task_clarify").parameters;
 	assert.equal(Check(schema, { section: "spec" }), true);
 	assert.equal(Check(schema, { section: "design", startLine: 2, lineCount: 2 }), true);

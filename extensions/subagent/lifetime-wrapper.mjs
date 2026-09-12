@@ -12,10 +12,11 @@ if (!command) {
 const graceValue = Number(process.env.PIBOX_LIFETIME_TERM_GRACE_MS ?? 1_000);
 const termGraceMs = Number.isFinite(graceValue) && graceValue >= 0 ? graceValue : 1_000;
 const grouped = process.platform !== "win32";
+const hasEventChannel = process.env.PIBOX_SUBAGENT_EVENT_FD === "3";
 const child = spawn(command, childArgv, {
 	detached: grouped,
 	env: process.env,
-	stdio: ["ignore", "inherit", "inherit"],
+	stdio: hasEventChannel ? ["ignore", "inherit", "inherit", "inherit"] : ["ignore", "inherit", "inherit"],
 });
 
 let terminating = false;

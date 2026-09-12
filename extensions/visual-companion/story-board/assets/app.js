@@ -84,6 +84,30 @@ export function renderDeliveryHistory(history) {
   return rows.length ? `<section><h3>Delivery history</h3><dl class="metadata">${rows.map(([label, value]) => `<div><dt>${label}</dt><dd><code>${escapeHtml(value)}</code></dd></div>`).join("")}</dl></section>` : "";
 }
 
+function compactFailureText(value = "") {
+  const firstLine = String(value).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "Failure details recorded";
+  return firstLine.length > 180 ? `${firstLine.slice(0, 179).trimEnd()}…` : firstLine;
+}
+export function renderFailureSummary(failure) {
+  if (!failure) return "";
+  const cause = failure.causeCode || failure.code;
+  const check = failure.diagnostic?.checkId || failure.failedCheckId;
+  const exitCode = failure.diagnostic?.exitCode;
+  const facts = [cause ? `Cause: ${cause}` : "", check ? `Check: ${check}` : "", Number.isFinite(exitCode) ? `Exit: ${exitCode}` : ""].filter(Boolean).join(" · ");
+  const summary = compactFailureText(failure.summary);
+  return `<span class="task-failure"><strong>Failure:</strong> ${escapeHtml(facts)}${facts && summary ? " — " : ""}${escapeHtml(summary)}</span>`;
+}
+export function renderFailureDetails(failure, detailIdentity = "failure") {
+  if (!failure) return "";
+  const diagnostic = failure.diagnostic;
+  const identity = [detailIdentity, diagnostic?.checkId || failure.failedCheckId || "failure"].join(":");
+  const legacyKey = `${identity}:recorded`; const diagnosticKey = `${identity}:diagnostic`;
+  const legacyDetails = failure.details ? `<details class="failure-disclosure" data-disclosure-key="${escapeHtml(legacyKey)}"><summary data-disclosure-summary="${escapeHtml(legacyKey)}">Recorded failure details</summary><pre data-detail-scroll="${escapeHtml(`${legacyKey}:details`)}">${escapeHtml(failure.details)}</pre></details>` : "";
+  const diagnosticDetails = diagnostic ? `<details class="failure-disclosure" data-disclosure-key="${escapeHtml(diagnosticKey)}"><summary data-disclosure-summary="${escapeHtml(diagnosticKey)}">Diagnostic output for check ${escapeHtml(diagnostic.checkId)}</summary><dl class="failure-facts"><div><dt>Check</dt><dd><code>${escapeHtml(diagnostic.checkId)}</code></dd></div><div><dt>Command</dt><dd><code>${escapeHtml(diagnostic.command)}</code></dd></div><div><dt>Exit code</dt><dd><code>${escapeHtml(diagnostic.exitCode)}</code></dd></div></dl>${diagnostic.outputTruncated ? `<p class="truncation-notice" role="note">Output was truncated by the workflow runtime.</p>` : ""}<section aria-label="Standard output for ${escapeHtml(diagnostic.checkId)}"><h4>Standard output</h4><pre data-detail-scroll="${escapeHtml(`${diagnosticKey}:stdout`)}">${escapeHtml(diagnostic.stdout || "No standard output recorded.")}</pre></section><section aria-label="Standard error for ${escapeHtml(diagnostic.checkId)}"><h4>Standard error</h4><pre data-detail-scroll="${escapeHtml(`${diagnosticKey}:stderr`)}">${escapeHtml(diagnostic.stderr || "No standard error recorded.")}</pre></section></details>` : "";
+  if (!legacyDetails && !diagnosticDetails) return "";
+  return `<section class="failure-details" aria-label="Failure details">${renderFailureSummary(failure)}${diagnosticDetails}${legacyDetails}</section>`;
+}
+
 function diagnostics(items = []) {
   if (!items.length) return "";
   return `<ul class="diagnostics" aria-label="Diagnostics">${items.map((item) => `<li><code>${escapeHtml(item.path)}</code> ${escapeHtml(item.message)}</li>`).join("")}</ul>`;
@@ -346,7 +370,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     const dependencyLabel = dependencies.length ? dependencies.join(", ") : `${wait} incomplete`;
     const dependencyTag = dependencies.length || wait ? `<span class="task-tag task-dependency-tag ${wait ? "is-waiting" : ""}" title="${escapeHtml(`Dependencies: ${dependencyLabel}`)}">${dashboardIcon(wait ? "waiting" : "dependencies")}<span class="sr-only">${wait ? `Waiting on ${wait} incomplete dependencies` : `Dependencies: ${dependencyLabel}`}. </span><span aria-hidden="true">${wait ? `${wait} waiting` : `${dependencies.length} dependencies`}</span></span>` : "";
     const repairTag = repairs ? `<span class="task-tag task-repair-tag">${dashboardIcon("repairs")}<span>${repairs} ${repairs === 1 ? "repair" : "repairs"}</span></span>` : "";
-    return `<li class="workflow-task is-${mode}-task tone-border-${statusTone(task?.status)}"><button type="button" data-task="${escapeHtml(task?.id)}"><span class="sr-only">Open task detail. </span><span class="task-primary-row"><span class="task-marker" aria-hidden="true">${dashboardIcon(mode)}</span><strong class="task-title">${escapeHtml(task?.title || task?.id)}</strong><span class="task-status-text tone-${statusTone(task?.status)}">${escapeHtml(titleCase(task?.status || "unknown"))}</span></span><span class="task-metadata-row"><code class="task-id">${escapeHtml(task?.id)}</code>${taskChecks(task)}${dependencyTag}${repairTag}</span>${summaryLine("Failure", task?.failure, "task-failure")}</button></li>`;
+    return `<li class="workflow-task is-${mode}-task tone-border-${statusTone(task?.status)}"><button type="button" data-task="${escapeHtml(task?.id)}"><span class="sr-only">Open task detail. </span><span class="task-primary-row"><span class="task-marker" aria-hidden="true">${dashboardIcon(mode)}</span><strong class="task-title">${escapeHtml(task?.title || task?.id)}</strong><span class="task-status-text tone-${statusTone(task?.status)}">${escapeHtml(titleCase(task?.status || "unknown"))}</span></span><span class="task-metadata-row"><code class="task-id">${escapeHtml(task?.id)}</code>${taskChecks(task)}${dependencyTag}${repairTag}</span>${renderFailureSummary(task?.failure)}</button></li>`;
   }
   function gateDetails(gate) {
     if (!gate) return "";
@@ -356,7 +380,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     const checkText = [passed ? `${passed} passed` : "", failed ? `${failed} failed` : "", running ? `${running} running` : "", pending ? `${pending} pending` : ""].filter(Boolean).join(" · ");
     const findings = gate.findings || gate.findingSeverityTotals || gate.findingSeverities;
     const findingText = findings && typeof findings === "object" ? Object.entries(findings).filter(([severity, count]) => severity !== "total" && number(count) > 0).map(([severity, count]) => `${number(count)} ${severity}`).join(" · ") : "";
-    return `${gate.caption ? `<span>${escapeHtml(gate.caption)}</span>` : ""}${checkTotal ? `<span>${escapeHtml(checkText || `${checkTotal} checks`)}</span>` : ""}${number(gate.repairCount) ? `<span>${number(gate.repairCount)} repairs</span>` : ""}${findingText ? `<span>${escapeHtml(findingText)} findings</span>` : ""}${summaryLine("Failure", gate.failure, "task-failure")}`;
+    return `${gate.caption ? `<span>${escapeHtml(gate.caption)}</span>` : ""}${checkTotal ? `<span>${escapeHtml(checkText || `${checkTotal} checks`)}</span>` : ""}${number(gate.repairCount) ? `<span>${number(gate.repairCount)} repairs</span>` : ""}${findingText ? `<span>${escapeHtml(findingText)} findings</span>` : ""}${renderFailureSummary(gate.failure)}`;
   }
   function gate(label, value, kind = "gate") {
     const iconKind = label === "Implementation" ? "implementation" : label === "Integration" ? "integration" : label === "Verification" ? "verification" : label === "Final E2E" ? "e2e" : label === "Outcome" ? "outcome" : "review";
@@ -384,7 +408,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   function stageTiming(stage) {
     const timing = stage.timing;
     if (!timing) return `<p class="stage-timing-unavailable">Stage timing was not recorded for this run.</p>`;
-    const categories = [["Implementation", "implementation"], ["Integration", "integration"], ["Verification", "verification"], ["Review", "review"]];
+    const categories = [["Implementation", "implementation"], ["Integration", "integration"], ["Verification", "verification"], ["Repair", "repair"], ["Review", "review"]];
     return `<section class="stage-timing" aria-label="${escapeHtml(stage.id)} timing"><div><strong>Stage time</strong>${timingValue(timing)}</div>${categories.map(([label, category]) => `<div><span>${label}</span>${timingValue(timing, category)}</div>`).join("")}${timing.incompleteIntervals ? `<p>${number(timing.incompleteIntervals)} interrupted timing ${number(timing.incompleteIntervals) === 1 ? "interval was" : "intervals were"} excluded.</p>` : ""}</section>`;
   }
   function stageExceptionCount(stage) {
@@ -501,12 +525,12 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   function workflowTiming(workspace) {
     const timing = workspace.workflow?.metrics;
     if (!timing) return "";
-    const categories = [["Implementation", "implementation"], ["Integration", "integration"], ["Verification", "verification"], ["Review", "review"], ["E2E", "e2e"]];
+    const categories = [["Implementation", "implementation"], ["Integration", "integration"], ["Verification", "verification"], ["Repair", "repair"], ["Review", "review"], ["E2E", "e2e"]];
     const values = categories.map(([label, category]) => ({ label, category, milliseconds: timingMilliseconds(timing, category) }));
     const total = Math.max(1, values.reduce((sum, item) => sum + item.milliseconds, 0));
     const segments = values.filter((item) => item.milliseconds > 0 || timing.activeCategory === item.category).map((item) => { const active = timing.activeCategory === item.category && timing.activeSince; return `<span class="timing-segment timing-${item.category}" style="width:${item.milliseconds / total * 100}%" data-timing-segment data-timing-label="${escapeHtml(item.label)}" data-timing-base="${number(timing.categories?.[item.category])}"${active ? ` data-timing-since="${escapeHtml(timing.activeSince)}"` : ""} data-tooltip="${escapeHtml(`${item.label} · ${duration(item.milliseconds)}`)}" aria-label="${escapeHtml(`${item.label}: ${duration(item.milliseconds)}`)}"></span>`; }).join("");
     const largest = [...values].sort((left, right) => right.milliseconds - left.milliseconds)[0];
-    return `<section class="workflow-timing" aria-labelledby="workflow-timing-title"><div class="timing-heading"><div class="timing-title"><span class="metric-icon">${dashboardIcon("clock")}</span><div><p>Workflow time</p><h2 id="workflow-timing-title">Activity mix</h2></div></div><strong>${timingValue(timing)}</strong></div><figure class="timing-chart"><div class="timing-bar" role="group" aria-label="Workflow time distributed across implementation, integration, verification, review, and E2E">${segments}</div><figcaption data-timing-caption>${largest?.milliseconds ? `${escapeHtml(largest.label)} is the largest activity` : "Timing begins when workflow execution starts"}</figcaption></figure><dl class="timing-legend">${values.map(({ label, category }) => `<div class="timing-${category}" tabindex="0" data-chart-category="${category}"><dt><span aria-hidden="true"></span>${label}</dt><dd>${timingValue(timing, category)}</dd></div>`).join("")}</dl>${timing.incompleteIntervals ? `<p>${number(timing.incompleteIntervals)} interrupted timing ${number(timing.incompleteIntervals) === 1 ? "interval was" : "intervals were"} excluded.</p>` : ""}</section>`;
+    return `<section class="workflow-timing" aria-labelledby="workflow-timing-title"><div class="timing-heading"><div class="timing-title"><span class="metric-icon">${dashboardIcon("clock")}</span><div><p>Workflow time</p><h2 id="workflow-timing-title">Activity mix</h2></div></div><strong>${timingValue(timing)}</strong></div><figure class="timing-chart"><div class="timing-bar" role="group" aria-label="Workflow time distributed across implementation, integration, verification, repair, review, and E2E">${segments}</div><figcaption data-timing-caption>${largest?.milliseconds ? `${escapeHtml(largest.label)} is the largest activity` : "Timing begins when workflow execution starts"}</figcaption></figure><dl class="timing-legend">${values.map(({ label, category }) => `<div class="timing-${category}" tabindex="0" data-chart-category="${category}"><dt><span aria-hidden="true"></span>${label}</dt><dd>${timingValue(timing, category)}</dd></div>`).join("")}</dl>${timing.incompleteIntervals ? `<p>${number(timing.incompleteIntervals)} interrupted timing ${number(timing.incompleteIntervals) === 1 ? "interval was" : "intervals were"} excluded.</p>` : ""}</section>`;
   }
   function workflowHero(workspace) {
     const workflow = workspace.workflow || {};
@@ -524,7 +548,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   function workflowView(workspace) {
     const attention = attentionEntries(workspace.workflow?.attention);
     const topAttention = workspace.workflow?.topAttention;
-    return `<div class="workflow-view">${workflowHero(workspace)}${workflowMetrics(workspace)}${attention.length ? `<aside class="attention-rail" aria-label="Workflow attention"><strong>${attentionTotal(workspace.workflow?.attention)} need attention</strong><ul>${attention.map(([label, count]) => `<li><span>${escapeHtml(label)}</span><strong>${count}</strong></li>`).join("")}</ul>${topAttention ? `<p>${escapeHtml([topAttention.code, topAttention.summary].filter(Boolean).join(" · "))}</p>` : ""}</aside>` : ""}<section class="workflow-pipeline-section" aria-labelledby="pipeline-title"><div class="section-heading"><div><p class="eyebrow">Delivery path</p><h2 id="pipeline-title">Stages</h2></div><span>${number(workspace.stages?.length)} ordered stages</span></div><ol class="workflow-pipeline">${(workspace.stages || []).map((stage, index) => workflowStage(workspace, stage, index)).join("") || `<li class="boundary"><p>No delivery stages are available.</p></li>`}</ol></section>${endCap(workspace)}${workflowTiming(workspace)}</div>`;
+    return `<div class="workflow-view">${workflowHero(workspace)}${workflowMetrics(workspace)}${attention.length ? `<aside class="attention-rail" aria-label="Workflow attention"><strong>${attentionTotal(workspace.workflow?.attention)} need attention</strong><ul>${attention.map(([label, count]) => `<li><span>${escapeHtml(label)}</span><strong>${count}</strong></li>`).join("")}</ul>${topAttention ? `<p>${escapeHtml([topAttention.causeCode || topAttention.code, compactFailureText(topAttention.summary)].filter(Boolean).join(" · "))}</p>` : ""}</aside>` : ""}<section class="workflow-pipeline-section" aria-labelledby="pipeline-title"><div class="section-heading"><div><p class="eyebrow">Delivery path</p><h2 id="pipeline-title">Stages</h2></div><span>${number(workspace.stages?.length)} ordered stages</span></div><ol class="workflow-pipeline">${(workspace.stages || []).map((stage, index) => workflowStage(workspace, stage, index)).join("") || `<li class="boundary"><p>No delivery stages are available.</p></li>`}</ol></section>${endCap(workspace)}${workflowTiming(workspace)}</div>`;
   }
   function board(workspace) {
     return `<section><div class="section-heading"><h2>Task board</h2><span>${workspace.tasks?.length || 0} tasks</span></div><div class="board" aria-label="Task board">${COLUMNS.map((column) => { const tasks = workspace.columns?.[column] || []; return `<section class="column" aria-labelledby="column-${column.replaceAll(" ", "-")}"><h2 id="column-${column.replaceAll(" ", "-")}">${column} <span>${tasks.length}</span></h2><div class="cards">${tasks.map((task) => `<article class="task-card"><button type="button" data-task="${escapeHtml(task.id)}" aria-label="Open task ${escapeHtml(task.title)}"><strong>${escapeHtml(task.title)}</strong>${badge(task.status, "status")}${task.stage ? `<span>Stage: ${escapeHtml(task.stage)}</span>` : ""}${task.dependsOn?.length ? `<span>Depends on: ${task.dependsOn.map(escapeHtml).join(", ")}</span>` : ""}${task.degraded ? badge("Degraded", "warning") : ""}</button>${diagnostics(task.diagnostics)}</article>`).join("") || `<p class="empty-column">No tasks</p>`}</div></section>`; }).join("")}</div></section>`;
@@ -534,18 +558,41 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   }
   function reports(workspace) {
     const items = workspace.reports || [];
-    return `<section><h2>Reports</h2>${items.length ? `<ul class="report-list">${items.map((report) => `<li><button type="button" data-report="${escapeHtml(report.id)}" ${report.available ? "" : "disabled"}><strong>${escapeHtml(report.id)}</strong>${badge(report.verdict || report.status)}<span>${escapeHtml(report.scope?.kind)}${report.scope?.id ? ` · ${escapeHtml(report.scope.id)}` : ""}</span><span>${report.attempt ? `Attempt ${report.attempt} · ` : ""}${number(report.findingCount)} findings${report.hasRiskAcceptance ? " · accepted risk" : ""}</span></button>${diagnostics(report.diagnostics)}</li>`).join("")}</ul>` : `<div class="boundary"><p>No reports available.</p></div>`}</section>`;
+    return `<section><h2>Reports</h2>${items.length ? `<ul class="report-list">${items.map((report) => { const finalE2E = report.id === "final-e2e" && workspace.story?.format === "current"; return `<li><button type="button" data-report="${escapeHtml(report.id)}" ${report.available ? "" : "disabled"}><strong>${escapeHtml(finalE2E ? "Final E2E" : report.id)}</strong>${badge(finalE2E ? report.status : report.verdict || report.status)}<span>${escapeHtml(report.scope?.kind)}${report.scope?.id ? ` · ${escapeHtml(report.scope.id)}` : ""}</span><span>${finalE2E ? `${number(report.repairCount)} ${number(report.repairCount) === 1 ? "repair" : "repairs"}` : `${report.attempt ? `Attempt ${report.attempt} · ` : ""}${number(report.findingCount)} findings${report.hasRiskAcceptance ? " · accepted risk" : ""}`}</span></button>${diagnostics(report.diagnostics)}</li>`; }).join("")}</ul>` : `<div class="boundary"><p>No reports available.</p></div>`}</section>`;
   }
   function markdownSection(title, body) { return body ? `<section><h3>${title}</h3><div class="markdown">${renderMarkdown(body)}</div></section>` : ""; }
   function taskDetail(task) {
-    return `<p>${badge(task.status, "status")}${task.stage ? ` ${badge(`Stage: ${task.stage}`)}` : ""}</p>${task.dependsOn?.length ? `<p><strong>Dependencies:</strong> ${task.dependsOn.map(escapeHtml).join(", ")}</p>` : ""}${markdownSection("Description", task.brief)}${markdownSection("Scope", task.scope)}${task.assignment ? `<section><h3>Assignment</h3><p>${escapeHtml(task.assignment.agent)}${task.assignment.tier ? ` · ${escapeHtml(task.assignment.tier)}` : ""}</p>${task.assignment.rationale ? `<p>${escapeHtml(task.assignment.rationale)}</p>` : ""}</section>` : ""}${markdownSection("Delivery", task.delivery)}${markdownSection("Acceptance", task.acceptance)}<section><h3>Verification</h3><ul>${[...(task.verification?.methods || []), ...(task.verification?.taskChecks || [])].map((check) => `<li><code>${escapeHtml(check)}</code></li>`).join("") || "<li>Not specified</li>"}</ul></section>${renderDeliveryHistory(task.deliveryHistory)}${task.relatedReportIds?.length ? `<section><h3>Related reports</h3><ul>${task.relatedReportIds.map((id) => `<li><button class="link-button" data-related-report="${escapeHtml(id)}">${escapeHtml(id)}</button></li>`).join("")}</ul></section>` : ""}${diagnostics(task.diagnostics)}`;
+    return `<p>${badge(task.status, "status")}${task.stage ? ` ${badge(`Stage: ${task.stage}`)}` : ""}</p>${task.executionCorrected ? `<p class="boundary" role="note">Showing runtime-corrected instructions and checks. The authored task remains the reviewed baseline.</p>` : ""}${renderFailureDetails(task.failure, `task:${task.id}`)}${task.dependsOn?.length ? `<p><strong>Dependencies:</strong> ${task.dependsOn.map(escapeHtml).join(", ")}</p>` : ""}${markdownSection("Description", task.brief)}${markdownSection("Scope", task.scope)}${task.assignment ? `<section><h3>Assignment</h3><p>${escapeHtml(task.assignment.agent)}${task.assignment.tier ? ` · ${escapeHtml(task.assignment.tier)}` : ""}</p>${task.assignment.rationale ? `<p>${escapeHtml(task.assignment.rationale)}</p>` : ""}</section>` : ""}${markdownSection("Delivery", task.delivery)}${markdownSection("Acceptance", task.acceptance)}<section><h3>Verification</h3><ul>${[...(task.verification?.methods || []), ...(task.verification?.taskChecks || [])].map((check) => `<li><code>${escapeHtml(check)}</code></li>`).join("") || "<li>Not specified</li>"}</ul></section>${renderDeliveryHistory(task.deliveryHistory)}${task.relatedReportIds?.length ? `<section><h3>Related reports</h3><ul>${task.relatedReportIds.map((id) => `<li><button class="link-button" data-related-report="${escapeHtml(id)}">${escapeHtml(id)}</button></li>`).join("")}</ul></section>` : ""}${diagnostics(task.diagnostics)}`;
   }
   function evidence(report) {
     if (!report.evidence?.length) return "";
     return `<section><h3>Evidence</h3><ul class="evidence">${report.evidence.map((item) => { const mode = evidencePresentation(item); const label = item.description || item.path || item.id; const member = item.memberPath || item.path?.split(`/evidence/${report.id}/`)[1]; if (mode === "image" && member) { const src = `api/evidence?story=${encodeURIComponent(state.route.storyId)}&evaluation=${encodeURIComponent(report.id)}&path=${encodeURIComponent(member)}`; return `<li><figure><img src="${src}" alt="${escapeHtml(label)}" loading="lazy"><figcaption>${escapeHtml(label)}</figcaption></figure></li>`; } if (mode === "text" && member) return `<li><a href="api/evidence?story=${encodeURIComponent(state.route.storyId)}&evaluation=${encodeURIComponent(report.id)}&path=${encodeURIComponent(member)}" target="_blank">${escapeHtml(label)} (text evidence)</a></li>`; return `<li><strong>${escapeHtml(label)}</strong>: ${mode === "missing" ? "Evidence missing" : "Unsupported evidence type"}${diagnostics(item.diagnostics)}</li>`; }).join("")}</ul></section>`;
   }
+  function evidenceHref(reportId, memberPath) {
+    return `api/evidence?story=${encodeURIComponent(state.route.storyId)}&evaluation=${encodeURIComponent(reportId)}&path=${encodeURIComponent(memberPath)}`;
+  }
+  function textList(values, empty) {
+    return values?.length ? `<ul>${values.map((value) => `<li>${escapeHtml(value)}</li>`).join("")}</ul>` : `<p>${escapeHtml(empty)}</p>`;
+  }
+  function e2eCaseDetailContent(report, item) {
+    const refs = item.evidenceRefs?.length ? `<ul>${item.evidenceRefs.map((ref) => `<li>${ref.memberPath ? `<a href="${evidenceHref(report.id, ref.memberPath)}" target="_blank">${escapeHtml(ref.label)}</a>` : escapeHtml(ref.label)}</li>`).join("")}</ul>` : "<p>None recorded.</p>";
+    return `<div class="e2e-case-detail-content"><h4>Executed actions</h4>${textList(item.executedActions, "None recorded.")}<h4>Observations</h4>${textList(item.observations, "None recorded.")}<h4>Evidence references</h4>${refs}</div>`;
+  }
+  function renderFinalE2E(report, storyId = state.route.storyId) {
+    const current = report.currentE2E || { phase: report.status || "pending", repairCount: report.repairCount || 0 };
+    const action = current.lastAction;
+    const actionDetail = action ? `<section class="e2e-action"><h3>Last runtime action</h3><p><strong>Action, not E2E verdict:</strong> ${escapeHtml(action.code)} — ${escapeHtml(action.summary)}</p>${action.details ? `<details data-disclosure-key="e2e:last-action"><summary data-disclosure-summary="e2e:last-action">Full recorded action detail</summary><pre data-detail-scroll="e2e:last-action:detail">${escapeHtml(action.details)}</pre></details>` : ""}</section>` : "";
+    const prior = report.failure ? `${current.priorContext ? `<p class="e2e-prior-context" role="note">Prior E2E failure context retained while the recheck is active.</p>` : ""}${renderFailureDetails(report.failure, "report:final-e2e")}` : "";
+    const recorded = report.recordedE2E;
+    const source = recorded?.sourceMemberPath ? `<a href="api/evidence?story=${encodeURIComponent(storyId)}&evaluation=final-e2e&path=${encodeURIComponent(recorded.sourceMemberPath)}" target="_blank">${escapeHtml(recorded.sourcePath)}</a>` : "Unavailable";
+    const cases = recorded?.cases || [];
+    const table = cases.length ? `<div class="e2e-table-wrap"><table class="e2e-case-table"><caption>Authored and report-only E2E case results</caption><thead><tr><th scope="col">Case</th><th scope="col">Title</th><th scope="col">Status</th><th scope="col">Detail</th></tr></thead><tbody>${cases.map((item, index) => { const key = `e2e:${item.caseId}:${index}`; const detailId = `e2e-case-detail-${index}`; return `<tr class="e2e-case-summary-row" data-e2e-case-summary="${escapeHtml(key)}"><th scope="row" data-label="Case"><code>${escapeHtml(item.caseId)}</code></th><td data-label="Title">${escapeHtml(item.title || "Report-only case")}</td><td data-label="Status">${badge(item.status, "status")}<span class="sr-only"> ${escapeHtml(item.status)}</span></td><td data-label="Detail"><button type="button" class="e2e-case-disclosure" data-e2e-case-disclosure="${escapeHtml(key)}" aria-expanded="false" aria-controls="${detailId}">Show full detail</button></td></tr><tr id="${detailId}" class="e2e-case-detail-row" data-e2e-case-detail-row="${escapeHtml(key)}" hidden><td colspan="4">${e2eCaseDetailContent(report, item)}</td></tr>`; }).join("")}</tbody></table></div>` : `<p>No usable case results are available.</p>`;
+    const recordedSection = recorded ? `<section class="recorded-e2e"><h3>Recorded E2E report</h3><dl class="metadata"><div><dt>Source</dt><dd>${source}</dd></div><div><dt>Evidence verdict</dt><dd>${badge(recorded.result)}</dd></div></dl><h4>Full summary</h4><p class="preserve-text">${escapeHtml(recorded.summary)}</p><h4>Findings</h4>${textList(recorded.findings, "No findings recorded in this evidence report.")}${diagnostics(recorded.diagnostics)}${table}</section>` : `<section class="recorded-e2e"><h3>Recorded E2E report</h3><p>No case-results report is referenced by current E2E state.</p></section>`;
+    return `<section class="current-e2e" aria-labelledby="current-e2e-heading"><h3 id="current-e2e-heading">Current final E2E</h3><p>${badge(current.phase, "status")} ${badge(`${number(current.repairCount)} ${number(current.repairCount) === 1 ? "repair" : "repairs"}`)}</p></section>${prior}${actionDetail}${recordedSection}${evidence(report)}${diagnostics(report.diagnostics)}`;
+  }
   function reportDetail(report) {
-    return `<p>${badge(report.verdict || report.status)} ${badge(`${report.scope?.kind || "report"}${report.scope?.id ? `: ${report.scope.id}` : ""}`)}${report.attempt ? ` ${badge(`Attempt ${report.attempt}`)}` : ""}</p>${report.taskId ? `<button type="button" data-go-task="${escapeHtml(report.taskId)}">Go to task</button>` : ""}${markdownSection("Result", report.body)}${report.history?.length ? `<section><h3>Attempts</h3><ol>${report.history.map((attempt) => `<li><strong>Attempt ${attempt.attempt}</strong>${attempt.available ? `<div class="markdown">${renderMarkdown(attempt.body || "No detail recorded.")}</div>` : " — missing"}</li>`).join("")}</ol></section>` : ""}<section><h3>Findings</h3>${report.findings?.length ? `<ul>${report.findings.map((finding) => `<li>${badge(finding.severity)} ${badge(finding.status)} <div class="markdown">${renderMarkdown(finding.summary)}</div>${finding.location ? `<code>${escapeHtml(finding.location)}</code>` : ""}</li>`).join("")}</ul>` : "<p>No findings.</p>"}</section>${markdownSection("Accepted risk", report.riskAcceptance)}${evidence(report)}${diagnostics(report.diagnostics)}`;
+    if (report.id === "final-e2e" && report.currentE2E) return renderFinalE2E(report);
+    return `<p>${badge(report.verdict || report.status)} ${badge(`${report.scope?.kind || "report"}${report.scope?.id ? `: ${report.scope.id}` : ""}`)}${report.attempt ? ` ${badge(`Attempt ${report.attempt}`)}` : ""}</p>${renderFailureDetails(report.failure, `report:${report.id}`)}${report.taskId ? `<button type="button" data-go-task="${escapeHtml(report.taskId)}">Go to task</button>` : ""}${markdownSection("Result", report.body)}${report.history?.length ? `<section><h3>Attempts</h3><ol>${report.history.map((attempt) => `<li><strong>Attempt ${attempt.attempt}</strong>${attempt.available ? `<div class="markdown">${renderMarkdown(attempt.body || "No detail recorded.")}</div>` : " — missing"}</li>`).join("")}</ol></section>` : ""}<section><h3>Findings</h3>${report.findings?.length ? `<ul>${report.findings.map((finding) => `<li>${badge(finding.severity)} ${badge(finding.status)} <div class="markdown">${renderMarkdown(finding.summary)}</div>${finding.location ? `<code>${escapeHtml(finding.location)}</code>` : ""}</li>`).join("")}</ul>` : "<p>No findings.</p>"}</section>${markdownSection("Accepted risk", report.riskAcceptance)}${evidence(report)}${diagnostics(report.diagnostics)}`;
   }
   function drawer() {
     const id = state.route.taskId || state.route.documentId || state.route.reportId;
@@ -566,17 +613,25 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
   }
   function focusSelector(element) {
     if (!element || !root.contains(element)) return undefined;
-    for (const attribute of ["data-task", "data-report", "data-related-report", "data-go-task", "data-document", "data-stage-disclosure", "data-chart-category", "data-action", "data-view", "href"]) {
+    for (const attribute of ["data-task", "data-report", "data-related-report", "data-go-task", "data-document", "data-stage-disclosure", "data-e2e-case-disclosure", "data-disclosure-summary", "data-chart-category", "data-action", "data-view", "href"]) {
       if (element.hasAttribute?.(attribute)) return `[${attribute}="${String(element.getAttribute(attribute)).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"]`;
     }
     return element.id ? `#${CSS.escape(element.id)}` : undefined;
   }
   function captureInteractionState() {
-    return { focus: focusSelector(document.activeElement), drawerScrollTop: root.querySelector(".drawer-content")?.scrollTop };
+    return {
+      focus: focusSelector(document.activeElement), drawerScrollTop: root.querySelector(".drawer-content")?.scrollTop,
+      disclosures: Object.fromEntries([...root.querySelectorAll("details[data-disclosure-key]")].map((details) => [details.dataset.disclosureKey, details.open])),
+      e2eCases: Object.fromEntries([...root.querySelectorAll("[data-e2e-case-disclosure]")].map((button) => [button.dataset.e2eCaseDisclosure, button.getAttribute("aria-expanded") === "true"])),
+      detailScroll: Object.fromEntries([...root.querySelectorAll("[data-detail-scroll]")].map((element) => [element.dataset.detailScroll, element.scrollTop])),
+    };
   }
   function restoreInteractionState(interaction) {
     if (!interaction) return;
+    for (const details of root.querySelectorAll("details[data-disclosure-key]")) if (Object.hasOwn(interaction.disclosures || {}, details.dataset.disclosureKey)) details.open = interaction.disclosures[details.dataset.disclosureKey];
+    for (const button of root.querySelectorAll("[data-e2e-case-disclosure]")) if (Object.hasOwn(interaction.e2eCases || {}, button.dataset.e2eCaseDisclosure)) setE2eCaseExpanded(button, interaction.e2eCases[button.dataset.e2eCaseDisclosure]);
     if (Number.isFinite(interaction.drawerScrollTop)) { const drawer = root.querySelector(".drawer-content"); if (drawer) drawer.scrollTop = interaction.drawerScrollTop; }
+    for (const element of root.querySelectorAll("[data-detail-scroll]")) { const scrollTop = interaction.detailScroll?.[element.dataset.detailScroll]; if (Number.isFinite(scrollTop)) element.scrollTop = scrollTop; }
     if (interaction.focus) (root.querySelector(interaction.focus) ?? root.querySelector('.drawer [data-action="close-detail"]') ?? root.querySelector(`[data-view="${state.route.view}"]`))?.focus({ preventScroll: true });
   }
   function render() {
@@ -624,10 +679,18 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
       details.style.overflow = "";
     }).catch(() => {});
   }
+  function setE2eCaseExpanded(button, expanded) {
+    const key = button.dataset.e2eCaseDisclosure; if (!key) return;
+    const row = [...root.querySelectorAll("[data-e2e-case-detail-row]")].find((candidate) => candidate.dataset.e2eCaseDetailRow === key);
+    const summary = [...root.querySelectorAll("[data-e2e-case-summary]")].find((candidate) => candidate.dataset.e2eCaseSummary === key);
+    button.setAttribute("aria-expanded", String(expanded)); button.textContent = expanded ? "Hide full detail" : "Show full detail";
+    if (row) row.hidden = !expanded; summary?.classList.toggle("is-expanded", expanded);
+  }
   root.addEventListener("click", (event) => {
     const target = event.target.closest("a,button,[data-action]"); if (!target) return;
     if (target.matches("[data-route]")) { event.preventDefault(); setRoute(parseRoute(new URL(target.href).pathname)); return; }
     if (target.dataset.stageDisclosure) toggleStage(target);
+    else if (target.dataset.e2eCaseDisclosure) setE2eCaseExpanded(target, target.getAttribute("aria-expanded") !== "true");
     else if (target.dataset.task) { returnFocus = `[data-task="${target.dataset.task}"]`; setRoute({ view: state.route.view === "workflow" ? "workflow" : "board", storyId: state.route.storyId, taskId: target.dataset.task }); }
     else if (target.dataset.document) { returnFocus = `[data-document="${target.dataset.document}"]`; setRoute({ view: "documents", storyId: state.route.storyId, documentId: target.dataset.document }); }
     else if (target.dataset.report) { returnFocus = `[data-report="${target.dataset.report}"]`; setRoute({ view: state.route.view === "workflow" ? "workflow" : "reports", storyId: state.route.storyId, reportId: target.dataset.report }); }
@@ -645,7 +708,7 @@ export function createStoryBoardApp({ root, fetchImpl = fetch, navigationWindow 
     if (event.key === "Escape" && open) { closeDetail(); return; }
     if (event.key !== "Tab" || !open) return;
     const drawer = root.querySelector(".drawer");
-    const controls = [...drawer.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')];
+    const controls = [...drawer.querySelectorAll('a[href], button:not([disabled]), summary, input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter((control) => !control.closest("[hidden]") && (control.matches("summary") || !control.closest("details:not([open])")));
     if (!controls.length) return;
     const first = controls[0]; const last = controls.at(-1);
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
