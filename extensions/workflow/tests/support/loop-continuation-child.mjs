@@ -25,9 +25,11 @@ if (action === "task-launch") {
 		if (!prompt.includes(`FULL_E2E_DIAGNOSTIC_END_${run}`) || !prompt.includes(`CURRENT_E2E_FINDING_${run}`)) throw new Error("Current full E2E report and structured findings did not reach fixer entrance");
 		const witnesses = [...new Set(prompt.match(/REPORT_WITNESS_\d+_[a-f0-9-]+/g) ?? [])];
 		if (witnesses.length !== 1) throw new Error("Fixer must receive exactly the current evaluator witness, not stale report history");
-		const member = prompt.match(/agent-artifacts\/example\/(evidence\/e2e-[a-zA-Z0-9-]+\/report\.json)/)?.[1];
-		if (!member) throw new Error("Canonical report path missing from fixer prompt");
-		if (existsSync(join(process.cwd(), "agent-artifacts", "example", member))) throw new Error("Uncommitted canonical report unexpectedly exists in isolated repair worktree");
+		const currentReport = process.env.LOOP_E2E_REPORT_PATH;
+		if (!currentReport || !prompt.includes(currentReport)) throw new Error("Workspace report path missing from fixer prompt");
+		if (currentReport.startsWith(`${process.cwd()}/`)) throw new Error("Report is inside isolated repair worktree");
+		const fullReport = readFileSync(currentReport, "utf8");
+		if (!prompt.includes(fullReport)) throw new Error("Fixer did not receive exact full workspace report bytes");
 		receipt += `${witnesses[0]}\n`;
 	}
 	writeFileSync(file, receipt);

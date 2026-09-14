@@ -74,6 +74,14 @@ Its result includes `attemptId`, zero-based Unicode-character `offset`, `count`,
 
 Reports have `0600` permissions in private `0700` directories. Release and teardown do not delete them; `/tmp` retention is OS-managed and best effort, with no PiBox cleanup job or durability promise. Ordinary file reads remain possible while the file exists, independently of a live agent handle. `subagent_read` is still activation/handle-scoped. Missing files and report capture failures are reported explicitly. Failure or cancellation status is separate from any captured response: an existing file does not mean the attempt succeeded.
 
+## E2E workspace
+
+`e2e-tester` additionally uses the generic `e2e_workspace` capability for standalone and managed evaluations. It restores a private `/tmp` workspace through its own session binding, keeps successive report/evidence snapshots separate, and hands off a tool-written `report.json` with references to selected retained evidence. Compatible `subagent_continue` reopens the same workspace; a new/forked session does not adopt it. Random workspace paths are attempt/tool data, not changes to stable SYSTEM context or repository cwd.
+
+Only keep useful sanitized witnesses: individual relevant screenshots or focused text/JSON/log excerpts, with a reason for retention. Do not bulk-copy directories, builds, dependencies, databases, caches or full logs. Routine pass details can stay inline. Retained snapshots are not removed when the worker or worktree is torn down, but `/tmp` retention remains best effort. Missing workspace data is explicitly unavailable, not silently replaced or discovered elsewhere.
+
+The native `report.md` described above remains the process transport's final assistant text. The E2E-specific structured handoff identifies the exact tool-written JSON report separately; neither workflow nor callers need to guess that path from prose. Workspace capability owns its files; workflow is only a reader and never copies new E2E artifacts into Git. See [Workflow E2E](workflow-e2e.md) for the case and evidence contract.
+
 ## Transport and completion
 
 Agent descriptions and assignment text are not rejected because of arbitrary character counts. Full prompt content uses file-backed input rather than a potentially oversized process argument; display previews remain independent of the content delivered to the child.

@@ -7,6 +7,7 @@ import { HarnessError } from "./errors.js";
 import { assertCleanRepository, atomicWriteFile, discoverCommonDirSync, runGit } from "./repository.js";
 import { CanonicalMutationCoordinator } from "./canonical-mutation.js";
 import { normalizeVerificationChecks } from "./verification-checks.js";
+import { containsObviousSensitiveContent, looksSensitiveEvidenceName } from "../core/evidence-safety.js";
 import type {
 	AuthoredTaskDocument,
 	LegacyWorkItemSummary,
@@ -21,8 +22,6 @@ const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const WORKING_BRANCH_PATTERN = /^(feature|fix)\/[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PROTECTED_BRANCHES = new Set(["develop", "main", "master"]);
 const LOCAL_PERMISSION_RATIONALE = /(?=.*\buser\b)(?=.*\b(?:request(?:ed)?|permission|approv(?:ed|al)?|authoriz(?:ed|ation)?)\b)/i;
-const SENSITIVE_EVIDENCE_NAME = /(^|[._-])(env|credentials?|secrets?|private|token|password|passwd|api[-_]?key|transcript|session)([._-]|$)|\.(pem|key|p12|pfx)$/i;
-const SENSITIVE_EVIDENCE_CONTENT = /(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password)\s*[:=]\s*[^\s]+)/i;
 
 function validateId(id: string, label: string): void {
 	if (!ID_PATTERN.test(id)) throw new HarnessError("INVALID_ARTIFACT", `${label} must be a kebab-case identifier`);
@@ -130,10 +129,10 @@ export async function validateEvidenceSource(repositoryRoot: string, source: str
 	if (!absolute) throw new HarnessError("INVALID_ARTIFACT", `Evidence file does not exist: ${source}`);
 	const allowedRoots = await Promise.all([repositoryRoot, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => resolve(root))));
 	if (!allowedRoots.some((root) => absolute !== root && absolute.startsWith(`${root}${sep}`))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source resolves outside the repository or operating-system temporary directory: ${source}`);
-	if (SENSITIVE_EVIDENCE_NAME.test(basename(absolute)) || SENSITIVE_EVIDENCE_NAME.test(basename(lexical))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source looks sensitive: ${source}. Provide a sanitized minimal artifact instead.`);
+	if (looksSensitiveEvidenceName(basename(absolute)) || looksSensitiveEvidenceName(basename(lexical))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source looks sensitive: ${source}. Provide a sanitized minimal artifact instead.`);
 	if (!(await stat(absolute)).isFile()) throw new HarnessError("INVALID_ARTIFACT", `Evidence path is not a regular file: ${source}`);
 	const content = suppliedContent ?? await readFile(absolute);
-	if (SENSITIVE_EVIDENCE_CONTENT.test(Buffer.from(content.buffer, content.byteOffset, Math.min(content.byteLength, 128 * 1024)).toString("utf8"))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source contains an obvious credential or private material: ${source}`);
+	if (containsObviousSensitiveContent(Buffer.from(content.buffer, content.byteOffset, Math.min(content.byteLength, 128 * 1024)).toString("utf8"))) throw new HarnessError("INVALID_ARTIFACT", `Evidence source contains an obvious credential or private material: ${source}`);
 	return absolute;
 }
 

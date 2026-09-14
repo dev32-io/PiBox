@@ -70,6 +70,8 @@ test("rejects representative corrupt nested authoritative state", async (t) => {
 		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: ["evidence/historical.json"], currentEvidenceRefs: ["evidence/uncited-current.json"] } },
 		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: ["evidence/current.json"], currentEvidenceRefs: [], currentReportRef: "evidence/current.json" } },
 		{ ...valid, e2e: { ...valid.e2e, evidenceRefs: [], currentReportRef: "evidence/missing.json" } },
+		{ ...valid, e2e: { ...valid.e2e, workspaceReport: { workspaceId: "bad", sessionId: "session", runId: "run", reportPath: "/tmp/report.json", reportSha256: "x" } } },
+		{ ...valid, e2e: { ...valid.e2e, workspaceReport: { workspaceId: "a".repeat(32), sessionId: "session", runId: "00000000-0000-4000-8000-000000000000", reportPath: "/tmp/report.json", reportSha256: "b".repeat(64), extra: true } } },
 		{ ...valid, metrics: { ...valid.metrics, categories: { ...valid.metrics.categories, review: 1 } } },
 		{ ...valid, metrics: { ...valid.metrics, open: { category: "orchestration", since: "2026-01-01T00:00:00.000Z" } } },
 		{ ...valid, metrics: { ...valid.metrics, open: { category: "review", since: "not-a-time" } } },
@@ -159,6 +161,7 @@ test("current E2E context round-trips while legacy absence remains unknown", asy
 	current.e2e.evidenceRefs = ["evidence/historical.json", "evidence/e2e-token/report.json", "evidence/e2e-token/witness.txt"];
 	current.e2e.currentEvidenceRefs = ["evidence/e2e-token/report.json", "evidence/e2e-token/witness.txt"];
 	current.e2e.currentReportRef = "evidence/e2e-token/report.json";
+	current.e2e.workspaceReport = { workspaceId: "a".repeat(32), sessionId: "session", runId: "00000000-0000-4000-8000-000000000000", reportPath: `/tmp/pibox-e2e-workspace-${"a".repeat(32)}/evaluations/00000000-0000-4000-8000-000000000000/report.json`, reportSha256: "b".repeat(64) };
 	await store.writeState(current);
 	assert.deepEqual((await store.readState())!.e2e, current.e2e);
 });

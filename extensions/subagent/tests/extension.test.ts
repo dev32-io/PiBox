@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -29,6 +29,7 @@ import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../tool-pol
 import { SubagentUiProjectionRegistry } from "../ui-projection.js";
 import { formatSubagentFooterProjection } from "../display.js";
 import { WorkflowSubagentLauncher } from "../../workflow-runtime/subagent-launcher.js";
+import { createE2eEvaluation, createE2eWorkspace, submitE2eWorkspaceReport } from "../../e2e-workspace/workspace.js";
 
 interface Deferred<T> { promise: Promise<T>; resolve(value: T): void }
 function deferred<T>(): Deferred<T> {
@@ -354,7 +355,7 @@ test("loads trusted catalog policy, resolves the active tier profile, prompt, ro
 	assert.deepEqual(service.launches[0]?.tools, ["*"]);
 	assert.equal(service.launches[0]?.model, "gpt-5.6-sol");
 	assert.deepEqual(service.launches[0]?.extensionPaths, [...STANDALONE_CHILD_EXTENSION_PATHS]);
-	assert.deepEqual(service.launches[0]?.extensionPaths.map((path) => path.match(/extensions\/([^/]+)\/index\.ts$/)?.[1]), ["memory-adapter", "distill", "fast-mode"]);
+	assert.deepEqual(service.launches[0]?.extensionPaths.map((path) => path.match(/extensions\/([^/]+)\/index\.ts$/)?.[1]), ["memory-adapter", "distill", "fast-mode", "e2e-workspace"]);
 	assert.equal(service.launches[0]?.extensionPaths.some((path) => /workflow\/index\.ts$/.test(path)), false);
 });
 
@@ -404,6 +405,34 @@ test("foreground and background results advertise the harness report and subagen
 	assert.ok(Buffer.byteLength(f.sent[0].message.content) < 48 * 1024);
 	assert.equal(f.sent[0].message.details.settlements[0].reportPath, backgroundPath);
 	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("standalone e2e-tester result exposes validated workspace report metadata", async (t) => {
+	const attempt = await mkdtemp("/tmp/pibox-e2e-standalone-"); await chmod(attempt, 0o700);
+	const workspace = await createE2eWorkspace({ sessionId: "child-session" });
+	t.after(() => Promise.all([rm(attempt, { recursive: true, force: true }), rm(workspace.root, { recursive: true, force: true })]));
+	const evaluation = await createE2eEvaluation({ workspace });
+	const nativeReportPath = join(attempt, "report.md");
+	const submitted = await submitE2eWorkspaceReport({ evaluation, nativeReportPath, submission: { cases: [{ case: "E2E-001", verdict: "passed" }] } });
+	const loaded = catalog();
+	loaded.config.agents["e2e-tester"] = { ...loaded.config.agents["general-purpose"]!, prompt: `${BUILT_IN_AGENT_ROOT}/e2e-tester.md` };
+	const f = harness({ loadCatalog: () => loaded }); await f.fire("session_start", { reason: "startup" });
+	const pending = f.tools.get("subagent_spawn").execute("e2e", { agent: "e2e-tester", task: "Evaluate" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	f.services[0]!.finish("agent-1", "completed", "done", nativeReportPath);
+	const result = await pending;
+	assert.equal(result.details.terminal.e2eWorkspaceReportPath, submitted.reportPath);
+	assert.deepEqual(result.details.terminal.e2eWorkspaceReport, submitted.reference);
+
+	const backgroundEvaluation = await createE2eEvaluation({ workspace });
+	const backgroundAttempt = join(attempt, "background"); await mkdir(backgroundAttempt, { mode: 0o700 });
+	const backgroundNativeReportPath = join(backgroundAttempt, "report.md");
+	const backgroundSubmitted = await submitE2eWorkspaceReport({ evaluation: backgroundEvaluation, nativeReportPath: backgroundNativeReportPath, submission: { cases: [{ case: "E2E-001", verdict: "passed" }] } });
+	const background = await f.tools.get("subagent_spawn").execute("e2e-background", { agent: "e2e-tester", task: "Evaluate", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(background.details.agentId, "completed", "done", backgroundNativeReportPath);
+	await waitUntil(() => f.sent.length === 1, "background E2E report was delivered");
+	assert.equal(f.sent[0].message.details.settlements[0].e2eWorkspaceReportPath, backgroundSubmitted.reportPath);
+	assert.deepEqual(f.sent[0].message.details.settlements[0].e2eWorkspaceReport, backgroundSubmitted.reference);
 });
 
 test("tool transcript details retain terminal metadata without complete reports or diagnostics", async (t) => {

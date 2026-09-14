@@ -4,11 +4,13 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse } from "yaml";
 import { effectiveExecutionOverrides, parseStoryRuntimeState } from "../../workflow/story-runtime-store.js";
 import type { E2ERuntimeState, FailureSummary, IntegrationRuntimeState, ReviewRuntimeState, StoryRuntimeState, TaskRuntimeState, VerificationRuntimeState } from "../../workflow/story-runtime-store.js";
+import { readE2eWorkspaceReport } from "../../e2e-workspace/workspace.js";
+import type { E2eWorkspaceReportReference } from "../../e2e-workspace/workspace.js";
 import { parseE2e } from "../../workflow/authored-markdown.js";
 import { parseAuthoredTaskDocument, parseStoryDocument, parseStoryPlanDocument } from "../../workflow/work-items.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../../workflow/types.js";
 import { readCurrentE2EReport, readCurrentEvidenceMetadata, readCurrentRuntimeState, sanitizeCurrentEvidenceText } from "./evidence.js";
-import type { CheckAggregate, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, FindingCounts, ReportDetail, ReportSummary, RuntimeSummaryProjection, StageOperationProjection, StageProjection, StageTimingProjection, StorySummary, StoryWorkspace, TaskCard, TaskDetail, WorkflowMetricsProjection, WorkflowOverview } from "./models.js";
+import type { CheckAggregate, Diagnostic, DocumentDetail, DocumentGroup, DocumentSummary, Finding, FindingCounts, RecordedE2EReportProjection, ReportDetail, ReportSummary, RuntimeSummaryProjection, StageOperationProjection, StageProjection, StageTimingProjection, StorySummary, StoryWorkspace, TaskCard, TaskDetail, WorkflowMetricsProjection, WorkflowOverview } from "./models.js";
 import { orderDocuments, orderReports, orderTaskCards, projectStorySummary, projectTaskCard } from "./projector.js";
 
 const ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -45,7 +47,7 @@ interface SafeState {
 	attention?: RuntimeSummaryProjection;
 	stages: SafeStageState[];
 	finalReview: SafeReview;
-	e2e: SafeOperation & { evidenceRefs: string[]; currentReportRef?: string };
+	e2e: SafeOperation & { evidenceRefs: string[]; currentReportRef?: string; workspaceReport?: E2eWorkspaceReportReference };
 	metrics: WorkflowMetricsProjection;
 }
 interface CurrentBundle { story?: StoryDocument; plan?: StoryPlanDocument; tasks: AuthoredTaskDocument[]; state?: SafeState; diagnostics: Diagnostic[] }
@@ -166,6 +168,7 @@ function stateDocument(value: unknown, storyId: string): SafeState {
 		finalReview: publicReview(state.finalReview), e2e: {
 			...publicOperation(state.e2e), evidenceRefs: [...state.e2e.evidenceRefs],
 			...(state.e2e.currentReportRef !== undefined ? { currentReportRef: state.e2e.currentReportRef } : {}),
+			...(state.e2e.workspaceReport !== undefined ? { workspaceReport: state.e2e.workspaceReport } : {}),
 		}, metrics,
 	};
 }
@@ -401,10 +404,33 @@ export class CurrentStoryReader {
 		else if (reportId === "final-e2e") { value = state.e2e; title = "Final E2E"; }
 		else if (summaryReport.scope.kind === "task" && summaryReport.taskId) { const task = state.stages.flatMap((stage) => stage.tasks).find((item) => item.id === summaryReport.taskId); if (!task) return undefined; value = task; title = `Task ${task.id}`; }
 		else { const stage = state.stages.find((item) => item.id === summaryReport.scope.id); if (!stage) return undefined; if (reportId.endsWith("-integration")) { value = stage.integration; title = `Stage ${stage.id} integration`; } else if (reportId.endsWith("-verification")) { value = stage.verification; title = `Stage ${stage.id} verification`; } else { value = stage.review; title = `Stage ${stage.id} review`; findings = stage.review.currentFindings; acceptedRisks = stage.review.acceptedRisks; } }
-		const evidence = reportId === "final-e2e" ? await readCurrentEvidenceMetadata(this.repositoryRoot, storyId, state.e2e.evidenceRefs) : [];
+		let evidence = reportId === "final-e2e" ? await readCurrentEvidenceMetadata(this.repositoryRoot, storyId, state.e2e.evidenceRefs) : [];
 		const riskAcceptance = acceptedRisks.length ? ["# Accepted risks", "", ...acceptedRisks.map((risk) => `- ${risk.findingId}: ${risk.rationale}`)].join("\n") : undefined;
 		if (reportId === "final-e2e") {
-			const recordedE2E = await readCurrentE2EReport(this.repositoryRoot, storyId, state.e2e.evidenceRefs, evidence, state.e2e.currentReportRef);
+			let recordedE2E: RecordedE2EReportProjection | undefined;
+			if (state.e2e.workspaceReport) {
+				evidence = [];
+				try {
+					const snapshot = await readE2eWorkspaceReport(state.e2e.workspaceReport);
+					evidence = snapshot.evidence.map((item, index) => ({
+						id: `E2E-EV-${String(index + 1).padStart(3, "0")}`, path: `Temporary workspace evidence: ${item.reference}`, memberPath: item.reference, workspace: true,
+						checksum: item.sha256, mediaType: item.mimeType, manifestMember: true, available: true,
+						supported: item.mimeType !== "image/svg+xml" && item.mimeType !== "text/html", diagnostics: [],
+					}));
+					const authorized = new Set(evidence.filter((item) => item.supported).map((item) => item.memberPath));
+					recordedE2E = {
+						sourcePath: "Temporary E2E workspace snapshot", sourceMemberPath: "", result: snapshot.report.result,
+						summary: snapshot.report.summary ?? "", findings: (snapshot.report.findings ?? []).map((item) => ({ summary: item.summary, ...(item.severity ? { severity: item.severity } : {}) })), diagnostics: [],
+						cases: snapshot.report.caseResults.map((item) => ({
+							caseId: item.caseId, status: item.status, executedActions: item.executedActions, observations: item.observations,
+							evidenceRefs: item.evidenceRefs.map((label) => ({ label, ...(authorized.has(label) ? { memberPath: label } : {}) })),
+							...(item.expected !== undefined ? { expected: item.expected } : {}), ...(item.notes !== undefined ? { notes: item.notes } : {}), recorded: true,
+						})),
+					};
+				} catch {
+					recordedE2E = { sourcePath: "", sourceMemberPath: "", result: "Unavailable", summary: "Current temporary E2E workspace report is unavailable.", findings: [], cases: [], diagnostics: [diagnostic(`agent-artifacts/${storyId}/state.yaml`, "Authoritative temporary E2E workspace report is missing, invalid, or foreign")] };
+				}
+			} else recordedE2E = await readCurrentE2EReport(this.repositoryRoot, storyId, state.e2e.evidenceRefs, evidence, state.e2e.currentReportRef);
 			const storyDiagnostics: Diagnostic[] = []; const story = await this.readStory(storyId, root, storyDiagnostics); diagnostics.push(...storyDiagnostics); let authoredCases: Array<{ id: string; title: string }> = [];
 			try { authoredCases = story ? parseE2e(story.e2e).cases.map(({ id, title: caseTitle }) => ({ id, title: caseTitle })) : []; }
 			catch { diagnostics.push(diagnostic(`agent-artifacts/${storyId}/story.yaml`, "Authored E2E matrix is malformed")); }

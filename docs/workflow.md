@@ -47,7 +47,7 @@ agent-artifacts/<story>/
   ledger.yaml      # runtime-owned, Git-ignored
   events.jsonl     # runtime-owned, Git-ignored
   outcome.md
-  evidence/        # only intentionally retained sanitized evidence
+  evidence/        # retained legacy evidence, when present
 ```
 
 `story.yaml` stores identity and three Markdown-rich rendered fields with a compact required structure:
@@ -154,7 +154,7 @@ Attention cannot be cleared by a plain resume. Each slot-level epoch persists on
 
 A requested review fix that finishes successfully proceeds to an independent re-review. Each stage-review, whole-branch-review, and E2E loop retains its own verifier and distinct fixer conversation during the current activation. Compatible subsequent attempts continue those agents rather than restarting discovery. Re-review checks prior findings and repair regressions; E2E retesting still exercises the complete required contract. Actual contract, role, model, tool, or activation incompatibility can require a fresh agent. Previous Critical findings remain recorded until independent review resolves them; fixer completion does not accept risk or waive findings.
 
-Managed E2E submits case results through `workflow_e2e_report`. The harness serializes the report, retains supplied attachments in the canonical repository, and records its exact current report reference. The fixer and Story Board consume that same complete report; E2E does not write a second terminal control JSON or duplicate evidence manifest. Invalid report arguments are corrected inside the evaluator attempt, not counted as product repairs. Normal stage/final reviewers retain their existing reporting interface.
+Standalone and managed E2E use the same `e2e_workspace` capability. It owns a private temporary workspace restored from the logical agent's session binding and retains separate report/evidence snapshots for successive evaluations. The tester keeps only useful sanitized evidence and finishes through the tool's structured report operation. Workflow records an exact workspace-report reference and consumes it; it does not copy, rename, or Git-publish these files. The fixer and Story Board read that same complete report and selected evidence outside disposable worktrees. There is no second terminal verdict JSON or model-maintained evidence manifest. Invalid arguments are corrected inside the evaluator attempt, not counted as product repairs. Workspace files survive agent/worktree teardown but `/tmp` retention is best effort; missing or invalid current proof is explicitly unavailable, never replaced by an older passing report. Existing canonical evidence remains readable for older runs. Normal stage/final reviewers retain their existing reporting interface.
 
 Instructions, summaries, findings, corrections, and evidence references are preserved without arbitrary character or collection ceilings. Validation checks structure and authority, not display length. Previews and paged reads may be short without altering the stored content or failing execution.
 

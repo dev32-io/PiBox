@@ -4,8 +4,9 @@ import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository } from "./repository.js";
 import { WorkItemStore } from "./work-items.js";
 import { isLedgerWriterAction, writeLedgerSubmission } from "./ledger-submission.js";
-import { submitE2eReport } from "./e2e-report-submission.js";
 import { isSubagentRuntime } from "../subagent/tool-policy.js";
+import { parseE2e } from "./authored-markdown.js";
+import { setE2eRequiredCasesProvider } from "../e2e-workspace/workspace.js";
 
 const MAX_CLARIFICATION_BYTES = 16 * 1024;
 const DEFAULT_LINE_COUNT = 200;
@@ -27,25 +28,6 @@ const searchRequestSchema = Type.Object({
 	contextLines: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_CONTEXT_LINES })),
 	maxMatches: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_MATCHES })),
 }, { additionalProperties: false });
-const e2eCaseSchema = Type.Object({
-	case: Type.String({ minLength: 1 }),
-	verdict: Type.Union([Type.Literal("passed"), Type.Literal("failed"), Type.Literal("blocked")]),
-	steps: Type.Optional(Type.Array(Type.String())),
-	expected: Type.Optional(Type.String()),
-	observed: Type.Optional(Type.String()),
-	evidence: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-	notes: Type.Optional(Type.String()),
-}, { additionalProperties: false });
-const e2eFindingSchema = Type.Object({
-	summary: Type.String({ minLength: 1 }),
-	severity: Type.Optional(Type.Union([Type.Literal("minor"), Type.Literal("major"), Type.Literal("critical")])),
-}, { additionalProperties: false });
-const e2eReportSchema = Type.Object({
-	cases: Type.Array(e2eCaseSchema),
-	summary: Type.Optional(Type.String()),
-	findings: Type.Optional(Type.Array(e2eFindingSchema)),
-}, { additionalProperties: false });
-
 export type TaskClarificationRequest =
 	| { section: "spec" | "design"; startLine?: number; lineCount?: number }
 	| { section: "spec" | "design"; findText: string; contextLines?: number; maxMatches?: number };
@@ -145,19 +127,9 @@ export function isLedgerWriterProcess(): boolean {
 	catch { return false; }
 }
 
-function e2eAttemptIdentity(): { storyId: string; attemptToken: string; reportPath: string } {
-	if (!isSubagentRuntime(process.env)) throw new HarnessError("CAPABILITY_DENIED", "workflow_e2e_report requires managed subagent runtime identity");
-	const storyId = process.env.PIBOX_WORKFLOW_STORY_ID;
-	const attemptToken = process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN;
-	const reportPath = process.env.PIBOX_SUBAGENT_REPORT_PATH;
-	if (!storyId || !attemptToken || process.env.PIBOX_WORKFLOW_ACTION !== "e2e") throw new HarnessError("CAPABILITY_DENIED", "workflow_e2e_report requires an active managed E2E evaluator attempt");
-	if (!reportPath) throw new HarnessError("CAPABILITY_DENIED", "workflow_e2e_report requires harness-managed attempt report path");
-	return { storyId, attemptToken, reportPath };
-}
-
-export function isE2eReporterProcess(): boolean {
-	try { e2eAttemptIdentity(); return true; }
-	catch { return false; }
+function isManagedE2eProcess(): boolean {
+	return isSubagentRuntime(process.env) && process.env.PIBOX_WORKFLOW_ACTION === "e2e"
+		&& Boolean(process.env.PIBOX_WORKFLOW_STORY_ID && process.env.PIBOX_WORKFLOW_ATTEMPT_TOKEN);
 }
 
 async function targetTaskStore(ctx: ExtensionContext): Promise<{ store: WorkItemStore; storyId: string }> {
@@ -171,20 +143,10 @@ async function targetTaskStore(ctx: ExtensionContext): Promise<{ store: WorkItem
 }
 
 export function registerWorkerCapabilities(pi: ExtensionAPI): void {
-	if (isE2eReporterProcess()) pi.registerTool({
-		name: "workflow_e2e_report",
-		label: "Queue E2E Report",
-		description: "Submit complete case-level E2E results for harness validation and acceptance. Every authored E2E case must be included; blocked is valid. Evidence files are copied to private staging before acknowledgment. A later valid call in this active attempt replaces the pending submission.",
-		parameters: e2eReportSchema,
-		async execute(_id, params, _signal, _update, ctx) {
-			try {
-				const identity = e2eAttemptIdentity();
-				const repository = await discoverRepository(ctx.cwd);
-				const story = await new WorkItemStore(repository.root).readStory(identity.storyId);
-				await submitE2eReport({ reportPath: identity.reportPath, repositoryRoot: repository.root, attemptToken: identity.attemptToken, storyE2e: story.e2e, submission: params });
-				return result("Queued for harness acceptance when this E2E attempt settles; not yet accepted or published.");
-			} catch (error) { throw new Error(describeHarnessError(error)); }
-		},
+	if (isManagedE2eProcess()) setE2eRequiredCasesProvider(async () => {
+		const storyId = process.env.PIBOX_WORKFLOW_STORY_ID!;
+		const repository = await discoverRepository(process.cwd());
+		return parseE2e((await new WorkItemStore(repository.root).readStory(storyId)).e2e).cases.map(({ id }) => id);
 	});
 
 	if (isTargetTaskProcess()) pi.registerTool({

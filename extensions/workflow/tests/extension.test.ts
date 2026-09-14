@@ -22,8 +22,9 @@ test("structured target errors preserve concrete refusal details", () => {
 });
 
 test("managed child extension paths preserve generic context hooks", () => {
-	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 4);
+	assert.equal(WORKFLOW_CHILD_EXTENSION_PATHS.length, 5);
 	assert.match(WORKFLOW_CHILD_EXTENSION_PATHS[0] ?? "", /workflow\/index\.ts$/);
+	assert.ok(WORKFLOW_CHILD_EXTENSION_PATHS.some((path) => /e2e-workspace\/index\.ts$/.test(path)));
 });
 
 test("main session registers only target planning tools", () => {
@@ -132,7 +133,7 @@ test("child extension registers managed worker capabilities by action", () => {
 			process.env.PIBOX_WORKFLOW_ACTION = action; f = host(); workflow(f.pi); assert.deepEqual(f.tools, [], action);
 		}
 		process.env.PIBOX_WORKFLOW_ACTION = "e2e"; process.env.PIBOX_SUBAGENT_REPORT_PATH = "/tmp/managed-attempt/report.md";
-		f = host(); workflow(f.pi); assert.deepEqual(f.tools, ["workflow_e2e_report"]);
+		f = host(); workflow(f.pi); assert.deepEqual(f.tools, []);
 	} finally {
 		for (const key of keys) { const value = previous[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 	}

@@ -44,6 +44,8 @@ export const LIFETIME_WRAPPER_PATH = fileURLToPath(new URL("./lifetime-wrapper.m
 export const REPORT_BRIDGE_EXTENSION_PATH = fileURLToPath(new URL("./report-bridge.ts", import.meta.url));
 /** Consumed by the standalone fast-mode extension when explicitly loaded. */
 export const SUBAGENT_FAST_ENV = "PIBOX_FAST_CHILD_ENABLED";
+/** Trusted configured child identity; request environment cannot override it. */
+export const PIBOX_SUBAGENT_AGENT_ENV = "PIBOX_SUBAGENT_AGENT";
 
 /** Private sidecar consumed by Pi's documented file-valued prompt option. */
 export function stableSystemPromptPath(transcriptPath: string): string {
@@ -107,6 +109,7 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 			...request.workflowCredentials,
 			...(allTools ? { [ALL_TOOLS_SUBAGENT_ENV]: "1" } : {}),
 			[PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE,
+			[PIBOX_SUBAGENT_AGENT_ENV]: request.agent,
 			[SUBAGENT_FAST_ENV]: request.fast ? "1" : "0",
 			[SUBAGENT_EVENT_FD_ENV]: String(SUBAGENT_EVENT_FD),
 			[SUBAGENT_PROMPT_PATH_ENV]: userPromptPath,

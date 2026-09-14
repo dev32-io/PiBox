@@ -190,29 +190,29 @@ test("final-review and E2E repair loops rerun their evaluator", () => {
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "final-review"));
 	assert.equal(state.finalReview.iteration, 2);
 	const finding = { id: "e2e-f", severity: "major" as const, code: "missing", summary: "Result missing" };
+	const workspaceReport = { workspaceId: "a".repeat(32), sessionId: "session", runId: "00000000-0000-4000-8000-000000000000", reportPath: `/tmp/pibox-e2e-workspace-${"a".repeat(32)}/evaluations/00000000-0000-4000-8000-000000000000/report.json`, reportSha256: "b".repeat(64) };
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "repairable", {
-		failure: { code: "e2e_failed", summary: "whole E2E contract failed" }, findings: [finding],
-		evidenceRefs: ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"],
-		currentEvidenceRefs: ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"], currentReportRef: "evidence/e2e-first/report.json",
+		failure: { code: "e2e_failed", summary: "whole E2E contract failed" }, findings: [finding], workspaceReport,
 	});
 	assert.equal(action(state, value).kind, "e2e-fix");
 	assert.deepEqual(state.e2e.currentFindings, [finding]);
-	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"]);
-	assert.equal(state.e2e.currentReportRef, "evidence/e2e-first/report.json");
+	assert.deepEqual(state.e2e.workspaceReport, workspaceReport);
+	assert.equal(state.e2e.currentEvidenceRefs, undefined);
+	assert.equal(state.e2e.currentReportRef, undefined);
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e-fix"));
 	assert.equal(action(state, value).kind, "e2e");
 	assert.deepEqual(state.e2e.currentFindings, [finding], "fix settlement preserves evaluator context");
-	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"]);
-	assert.equal(state.e2e.currentReportRef, "evidence/e2e-first/report.json");
-	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt"]);
+	assert.deepEqual(state.e2e.workspaceReport, workspaceReport);
+	assert.deepEqual(state.e2e.evidenceRefs, []);
 	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "passed", {
-		findings: [], evidenceRefs: ["evidence/e2e-second/report.json"], currentEvidenceRefs: ["evidence/e2e-second/report.json"], currentReportRef: "evidence/e2e-second/report.json",
+		findings: [], workspaceReport: { ...workspaceReport, runId: "00000000-0000-4000-8000-000000000001", reportPath: `/tmp/pibox-e2e-workspace-${"a".repeat(32)}/evaluations/00000000-0000-4000-8000-000000000001/report.json`, reportSha256: "c".repeat(64) },
 	});
 	assert.equal(state.e2e.status, "completed");
 	assert.deepEqual(state.e2e.currentFindings, []);
-	assert.deepEqual(state.e2e.currentEvidenceRefs, ["evidence/e2e-second/report.json"]);
-	assert.equal(state.e2e.currentReportRef, "evidence/e2e-second/report.json");
-	assert.deepEqual(state.e2e.evidenceRefs, ["evidence/e2e-first/report.json", "evidence/e2e-first/failed-run.txt", "evidence/e2e-second/report.json"]);
+	assert.equal(state.e2e.workspaceReport?.runId, "00000000-0000-4000-8000-000000000001");
+	assert.equal(state.e2e.currentEvidenceRefs, undefined);
+	assert.equal(state.e2e.currentReportRef, undefined);
+	assert.deepEqual(state.e2e.evidenceRefs, []);
 });
 
 test("report protocol interruption pauses for evaluator-only resume at every repair budget", () => {
@@ -233,6 +233,20 @@ test("report protocol interruption pauses for evaluator-only resume at every rep
 		assert.equal(state.e2e.repairCount, 0);
 		assert.equal(action(state, value).kind, "e2e");
 	}
+});
+
+test("missing workspace during E2E fix pauses without repair charge", () => {
+	const value = plan({ stages: [] });
+	let state = initial(value);
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "final-review"));
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e"), "repairable");
+	state = settle(advanceStageStateMachine(value, state).state, value, action(state, value, "e2e-fix"), "interrupted", { failure: { code: "e2e_workspace_unavailable", summary: "workspace expired" } });
+	assert.equal(state.status, "paused");
+	assert.equal(state.e2e.status, "interrupted");
+	assert.equal(state.e2e.interruptedFrom, "fixing");
+	assert.equal(state.e2e.repairCount, 0);
+	state = resumeInterruptedWorkflow(state, ownerA);
+	assert.equal(state.e2e.status, "fix_pending");
 });
 
 test("E2E submission protocol failure preserves last accepted report context", () => {

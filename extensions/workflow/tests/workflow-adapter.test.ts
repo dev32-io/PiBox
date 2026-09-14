@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
@@ -10,11 +11,11 @@ import type { RuntimeOwner } from "../../subagent/api.js";
 import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { emptyWorkflowMetrics, StoryRuntimeStore } from "../story-runtime-store.js";
-import { checkFailureSummary, createE2eScratchDirectory, createHarnessWorkflowAdapter, reconcileHarnessActivation, reconcileWorkflowClockForActiveActions, runShell, selectWorkflowClockForActiveActions, workflowMetricCategoryForAction, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
+import { checkFailureSummary, createHarnessWorkflowAdapter, reconcileHarnessActivation, reconcileWorkflowClockForActiveActions, runShell, selectWorkflowClockForActiveActions, workflowMetricCategoryForAction, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 import { writeLedgerSubmission } from "../ledger-submission.js";
-import { readE2eReportSubmission, submitE2eReport, type E2eReportSubmission, type WorkflowE2eReportInput } from "../e2e-report-submission.js";
+import { createE2eEvaluation, createE2eWorkspace, readE2eWorkspaceReport, retainE2eEvidence, submitE2eWorkspaceReport, type E2eEvaluation, type E2eReportInput, type E2eWorkspaceReportResult } from "../../e2e-workspace/workspace.js";
 
 const exec = promisify(execFile);
 
@@ -91,27 +92,53 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	};
 }
 
-async function submitE2eFixture(f: Awaited<ReturnType<typeof fixture>>, input: any, submission: WorkflowE2eReportInput): Promise<string> {
-	await mkdir(f.runtime.identity.privateRoot, { recursive: true, mode: 0o700 });
-	const directory = await mkdtemp(join(f.runtime.identity.privateRoot, "e2e-fixture-report-"));
+type E2eFixtureProducer = (evaluation: E2eEvaluation) => Promise<E2eReportInput>;
+type FixtureTerminal = { text: string; exitCode?: number; stderr?: string; terminalReason?: string; reportPath?: string; workspaceSubmission?: E2eReportInput | E2eFixtureProducer; afterWorkspaceSubmission?: (result: E2eWorkspaceReportResult) => Promise<void> };
+
+async function submitE2eFixture(input: any, submission: E2eReportInput | E2eFixtureProducer): Promise<{ reportPath: string; result: E2eWorkspaceReportResult }> {
+	const directory = await mkdtemp("/tmp/e2e-fixture-report-");
 	await chmod(directory, 0o700);
 	const reportPath = join(directory, "report.md");
-	await submitE2eReport({ reportPath, repositoryRoot: f.root, attemptToken: input.attemptToken, storyE2e: story.e2e, submission });
-	return reportPath;
+	const workspace = await createE2eWorkspace({ sessionId: input.attemptToken });
+	const evaluation = await createE2eEvaluation({ workspace });
+	if (typeof submission === "function") return { reportPath, result: await submitE2eWorkspaceReport({ evaluation, submission: await submission(evaluation), requiredCaseIds: ["E2E-001"], nativeReportPath: reportPath }) };
+	let index = 0;
+	const cases = [] as E2eReportInput["cases"];
+	for (const item of submission.cases) {
+		const evidence = [] as string[];
+		for (const source of item.evidence ?? []) {
+			const name = `fixture-${++index}${source.slice(source.lastIndexOf("."))}`;
+			const handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+			try {
+				if (!(await handle.stat()).isFile()) throw new Error(`Fixture evidence is not a regular file: ${source}`);
+				await writeFile(join(evaluation.outputDirectory, name), await handle.readFile());
+			} finally { await handle.close(); }
+			evidence.push((await retainE2eEvidence({ evaluation, sourcePath: name, reason: "focused workflow fixture" })).reference);
+		}
+		cases.push({ ...item, ...(evidence.length ? { evidence } : { evidence: undefined }) });
+	}
+	const result = await submitE2eWorkspaceReport({ evaluation, submission: { ...submission, cases }, requiredCaseIds: ["E2E-001"], nativeReportPath: reportPath });
+	return { reportPath, result };
 }
 
-function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<{ text: string; exitCode?: number; stderr?: string; terminalReason?: string; reportPath?: string }>): void {
+function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<FixtureTerminal>): void {
 	f.runtime.config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	f.runtime.launcher.launch = async (input: any) => {
 		let terminal = await launch(input);
 		if (input.action === "e2e" && !terminal.reportPath && (terminal.exitCode ?? 0) === 0) {
 			try {
-				const legacy = JSON.parse(terminal.text) as { result: string; summary?: string; findings?: Array<{ summary: string; severity?: "minor" | "major" | "critical" }>; evidenceRefs?: string[] };
-				const evidence = legacy.evidenceRefs?.map((reference) => join(f.root, "agent-artifacts", story.id, reference));
-				const findings = legacy.findings?.map((finding) => ({ summary: finding.summary, ...(finding.severity ? { severity: finding.severity } : {}) }));
-				const reportPath = await submitE2eFixture(f, input, { cases: [{ case: "E2E-001", verdict: legacy.result === "passed" ? "passed" : legacy.result === "needs_user" ? "blocked" : "failed", ...(evidence?.length ? { evidence } : {}) }], ...(legacy.summary === undefined ? {} : { summary: legacy.summary }), ...(findings?.length ? { findings } : legacy.result === "critical" || legacy.result === "unsafe" ? { findings: [{ summary: legacy.summary ?? legacy.result, severity: "critical" }] } : {}) });
-				for (const source of evidence ?? []) await rm(source, { force: true });
-				terminal = { ...terminal, reportPath };
+				let submission = terminal.workspaceSubmission;
+				let legacyEvidence: string[] = [];
+				if (!submission) {
+					const legacy = JSON.parse(terminal.text) as { result: string; summary?: string; findings?: Array<{ summary: string; severity?: "minor" | "major" | "critical" }>; evidenceRefs?: string[] };
+					legacyEvidence = legacy.evidenceRefs?.map((reference) => join(f.root, "agent-artifacts", story.id, reference)) ?? [];
+					const findings = legacy.findings?.map((finding) => ({ summary: finding.summary, ...(finding.severity ? { severity: finding.severity } : {}) }));
+					submission = { cases: [{ case: "E2E-001", verdict: legacy.result === "passed" ? "passed" : legacy.result === "needs_user" ? "blocked" : "failed", ...(legacyEvidence.length ? { evidence: legacyEvidence } : {}) }], ...(legacy.summary === undefined ? {} : { summary: legacy.summary }), ...(findings?.length ? { findings } : legacy.result === "critical" || legacy.result === "unsafe" ? { findings: [{ summary: legacy.summary ?? legacy.result, severity: "critical" }] } : {}) };
+				}
+				const submitted = await submitE2eFixture(input, submission);
+				for (const source of legacyEvidence) await rm(source, { force: true });
+				await terminal.afterWorkspaceSubmission?.(submitted.result);
+				terminal = { ...terminal, reportPath: submitted.reportPath };
 			} catch (error) {
 				terminal = { ...terminal, exitCode: 1, stderr: error instanceof Error ? error.message : String(error) };
 			}
@@ -1086,21 +1113,6 @@ test("production state drives task-check repair, integration, verification, revi
 	assert.match(await readFile(join(f.root, "agent-artifacts", "example", "outcome.md"), "utf8"), /Final review: passed/);
 });
 
-test("E2E scratch falls back outside the repository when the preferred temporary root is local", async () => {
-	const root = await mkdtemp(join(tmpdir(), "pibox-e2e-scratch-root-"));
-	const localTemporaryRoot = join(root, "tmp");
-	let scratch = "";
-	try {
-		await mkdir(localTemporaryRoot);
-		scratch = await createE2eScratchDirectory(root, localTemporaryRoot);
-		assert.equal(scratch === root || scratch.startsWith(`${root}${sep}`), false);
-		assert.equal((await stat(scratch)).isDirectory(), true);
-	} finally {
-		if (scratch) await rm(scratch, { recursive: true, force: true });
-		await rm(root, { recursive: true, force: true });
-	}
-});
-
 test("production completion validates evidence and commits only evidence plus the complete outcome", async (t) => {
 	const f = await fixture(t, {
 		plan: { schemaVersion: 1, stages: [{ id: "delivery", tasks: ["task-a"], mode: "sequential", checks: [], review: { mode: "required", focus: "Inspect delivery." } }] },
@@ -1111,7 +1123,6 @@ test("production completion validates evidence and commits only evidence plus th
 	const evaluatorPrompts: string[] = [];
 	const workerContexts: Array<{ action: string; stable: string; supplement?: string }> = [];
 	let e2eStablePrompt = "";
-	let e2eScratchDirectory = "";
 	useProductionExecutor(f, async (input) => {
 		workerContexts.push({ action: input.action, stable: input.stableSystemContext, supplement: input.initialSystemSupplement });
 		if (input.taskId) {
@@ -1123,11 +1134,6 @@ test("production completion validates evidence and commits only evidence plus th
 		evaluatorPrompts.push(input.attemptUserPrompt);
 		if (input.role === "e2e-tester") {
 			e2eStablePrompt = input.stableSystemContext;
-			e2eScratchDirectory = input.env.PIBOX_E2E_SCRATCH_DIR;
-			assert.equal(e2eScratchDirectory === f.root || e2eScratchDirectory.startsWith(`${f.root}${sep}`), false);
-			assert.equal(input.env.PLAYWRIGHT_MCP_OUTPUT_DIR, e2eScratchDirectory, "configured tool output is contained outside the repository");
-			assert.equal((await stat(e2eScratchDirectory)).isDirectory(), true);
-			await writeFile(join(e2eScratchDirectory, "automatic-tool-output.log"), "transient\n");
 			const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
 			await mkdir(evidenceRoot, { recursive: true });
 			const evidenceRefs = Array.from({ length: 65 }, (_, index) => `evidence/journey-${index}.txt`);
@@ -1140,12 +1146,9 @@ test("production completion validates evidence and commits only evidence plus th
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"), 8_000);
 	const committed = (await exec("git", ["show", "--pretty=format:", "--name-only", "HEAD"], { cwd: f.root })).stdout.trim().split("\n").filter(Boolean).sort();
-	assert.equal(committed.filter((path) => path.startsWith("agent-artifacts/example/evidence/")).length, 66, "canonical report plus 65 attachments are retained");
+	assert.equal(committed.filter((path) => path.startsWith("agent-artifacts/example/evidence/")).length, 0, "workspace evidence is not published canonically");
 	assert.ok(committed.includes("agent-artifacts/example/outcome.md"));
-	assert.match(e2eStablePrompt, /\$PIBOX_E2E_SCRATCH_DIR/);
-	assert.match(e2eStablePrompt, /workflow_e2e_report/);
-	assert.match(e2eStablePrompt, /Final prose is not verdict authority/);
-	await assert.rejects(access(e2eScratchDirectory), /ENOENT/, "disposable tool output is removed after the E2E attempt");
+	assert.doesNotMatch(e2eStablePrompt, /workflow_e2e_report|PIBOX_E2E_SCRATCH_DIR/);
 	assert.ok(evaluatorPrompts.length >= 3, "stage review, final review, and E2E receive dynamic attempts");
 	for (const prompt of evaluatorPrompts) {
 		assert.match(prompt, new RegExp(`Base commit: ${base}`));
@@ -1188,7 +1191,6 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 	}, null, 2) + "\n";
 	const secondReport = JSON.stringify({ caseResults: [{ id: "E2E-002", status: "blocked", observations: ["Prerequisite unavailable"] }], extra: "SECOND-REPORT" }, null, 2) + "\n";
 	const supportJson = JSON.stringify({ witness: "SUPPORT-BODY-MUST-NOT-BE-INLINED" }) + "\n";
-	const malformedJson = "{ malformed current report\n";
 	const rerunReport = JSON.stringify({
 		caseResults: [{ id: "E2E-001", status: "passed", observations: ["Expected result visible"] }],
 		result: "passed",
@@ -1230,8 +1232,7 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 				await writeFile(join(evidenceRoot, "result.json"), resultReport);
 				await writeFile(join(evidenceRoot, "second.json"), secondReport);
 				await writeFile(join(evidenceRoot, "support.json"), supportJson);
-				await writeFile(join(evidenceRoot, "malformed.json"), malformedJson);
-				return { text: JSON.stringify({ result: "repairable", summary: "journey failed", findings: [{ id: "journey", severity: "major", code: "missing_result", summary: "Expected result missing" }], evidenceRefs: ["evidence/result.json", "evidence/second.json", "evidence/support.json", "evidence/malformed.json"] }) };
+				return { text: JSON.stringify({ result: "repairable", summary: "journey failed", findings: [{ id: "journey", severity: "major", code: "missing_result", summary: "Expected result missing" }], evidenceRefs: ["evidence/result.json", "evidence/second.json", "evidence/support.json"] }) };
 			}
 			retestPrompt = input.attemptUserPrompt;
 			await writeFile(join(evidenceRoot, "rerun-result.json"), rerunReport);
@@ -1243,23 +1244,22 @@ test("production E2E repair retains immutable rich reports through fix, retest, 
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
 	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-	assert.equal(runtime.e2e.evidenceRefs.length, 7, "two reports and five attachments remain cumulative");
+	assert.equal(runtime.e2e.evidenceRefs.length, 0);
 	assert.deepEqual(runtime.e2e.currentFindings, []);
-	assert.equal(runtime.e2e.currentEvidenceRefs?.length, 2);
-	assert.equal(runtime.e2e.currentReportRef, runtime.e2e.currentEvidenceRefs?.[0]);
-	assert.match(runtime.e2e.currentReportRef ?? "", /^evidence\/e2e-[^/]+\/report\.json$/);
-	assert.match(retestPrompt, /Prior retained evidence[\s\S]*evidence\/e2e-/);
-	assert.match(repairPrompt, /FULL literal canonical report JSON/);
+	assert.equal(runtime.e2e.currentEvidenceRefs, undefined);
+	assert.equal(runtime.e2e.currentReportRef, undefined);
+	assert.ok(runtime.e2e.workspaceReport);
+	assert.doesNotMatch(retestPrompt, /Prior retained evidence/);
+	assert.match(repairPrompt, /FULL literal workspace report JSON/);
 	assert.match(repairPrompt, /"schemaVersion":1/);
 	assert.match(repairPrompt, /"result":"repairable"/);
-	assert.match(repairPrompt, /Supporting canonical root paths:/);
+	assert.match(repairPrompt, /Supporting workspace evidence paths:/);
 	assert.match(repairPrompt, /Reproduce concrete failure or witness before patching/);
 	assert.match(repairPrompt, /unexecuted coverage or unmet prerequisites/);
 	assert.doesNotMatch(repairStablePrompt, /FULL literal canonical report JSON/, "current context stays out of stable SYSTEM prompt");
-	assert.match(e2eStablePrompt, /workflow_e2e_report/);
-	assert.match(e2eStablePrompt, /Final prose is not verdict authority/);
-	const committed = (await exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "agent-artifacts/example/evidence"], { cwd: f.root })).stdout.trim().split("\n");
-	assert.equal(committed.length, 7);
+	assert.doesNotMatch(e2eStablePrompt, /workflow_e2e_report|PIBOX_E2E_SCRATCH_DIR/);
+	const committed = (await exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "agent-artifacts/example/evidence"], { cwd: f.root })).stdout.trim();
+	assert.equal(committed, "");
 	assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
 	assert.doesNotMatch(await readFile(join(f.root, ".gitignore"), "utf8"), /evidence/);
 });
@@ -1300,8 +1300,9 @@ test("request_changes E2E fix uses same current-context entrance and augments it
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
 	const attention = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-	assert.equal(attention.e2e.currentEvidenceRefs?.length, 2);
-	assert.equal(attention.e2e.currentReportRef, attention.e2e.currentEvidenceRefs?.[0]);
+	assert.equal(attention.e2e.currentEvidenceRefs, undefined);
+	assert.equal(attention.e2e.currentReportRef, undefined);
+	assert.ok(attention.e2e.workspaceReport);
 	const historicalReport = JSON.stringify({ caseResults: [{ id: "E2E-HISTORICAL", status: "failed" }], marker: "COMMITTED-HISTORICAL-BODY" }) + "\n";
 	const historicalPath = join(f.root, "agent-artifacts", "example", "evidence", "historical.json");
 	await writeFile(historicalPath, historicalReport);
@@ -1320,18 +1321,16 @@ test("request_changes E2E fix uses same current-context entrance and augments it
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
 	assert.match(fixPrompt, /REQUEST-GUIDANCE/);
 	assert.match(fixPrompt, /REQUEST-FINDING/);
-	assert.match(fixPrompt, /FULL literal canonical report JSON/);
+	assert.match(fixPrompt, /FULL literal workspace report JSON/);
 	assert.match(fixPrompt, /"summary":"request failure"/);
 	assert.doesNotMatch(fixPrompt, /COMMITTED-HISTORICAL-BODY|evidence\/historical\.json/, "committed cumulative report absent from current citations stays out of prompt");
 	assert.equal(await readFile(historicalPath, "utf8"), historicalReport);
-	assert.match(fixPrompt, /## Current authoritative E2E report/);
-	assert.match(fixPrompt, /Supporting canonical root paths/);
+	assert.match(fixPrompt, /## Current authoritative E2E workspace report/);
+	assert.match(fixPrompt, /Supporting workspace evidence paths/);
 });
 
-test("E2E repair rejects current report mutation between prompt capture and cumulative baseline without launch", async (t) => {
+test("E2E repair rejects mutated current workspace report before launch", async (t) => {
 	const f = await fixture(t, {});
-	const oldReport = JSON.stringify({ caseResults: [{ id: "E2E-001", status: "failed" }], marker: "OLD-PROMPT-BODY" }) + "\n";
-	const newReport = JSON.stringify({ caseResults: [{ id: "E2E-001", status: "passed" }], marker: "NEW-FILE-BODY" }) + "\n";
 	let repairLaunches = 0;
 	useProductionExecutor(f, async (input) => {
 		if (input.action === "task-launch") {
@@ -1340,16 +1339,11 @@ test("E2E repair rejects current report mutation between prompt capture and cumu
 			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
 			return { text: "delivered" };
 		}
-		if (input.action === "e2e-fix") {
-			repairLaunches++;
-			return { text: "must not launch" };
-		}
-		if (input.role === "e2e-tester") {
-			const currentPath = join(f.root, "agent-artifacts", "example", "evidence", "current.json");
-			await mkdir(join(currentPath, ".."), { recursive: true });
-			await writeFile(currentPath, oldReport);
-			return { text: JSON.stringify({ result: "repairable", summary: "failed", findings: [], evidenceRefs: ["evidence/current.json"] }) };
-		}
+		if (input.action === "e2e-fix") { repairLaunches++; return { text: "must not launch" }; }
+		if (input.role === "e2e-tester") return {
+			text: "ignored",
+			workspaceSubmission: { cases: [{ case: "E2E-001", verdict: "failed", observed: "OLD-PROMPT-BODY" }], summary: "failed" },
+		};
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
 	f.runtime.config.limits.repairRounds = 0;
@@ -1358,46 +1352,24 @@ test("E2E repair rejects current report mutation between prompt capture and cumu
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
 	const store = new StoryRuntimeStore(f.root, "example");
 	const attention = (await store.readState())!;
-	const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
-	const currentPath = join(f.root, "agent-artifacts", "example", attention.e2e.currentReportRef!);
-	const historicalPath = join(evidenceRoot, "historical.txt");
-	await writeFile(historicalPath, "committed historical proof\n");
-	await exec("git", ["add", "agent-artifacts/example/evidence/historical.txt"], { cwd: f.root });
-	await exec("git", ["commit", "-qm", "retain historical proof"], { cwd: f.root });
-	attention.e2e.evidenceRefs = ["evidence/historical.txt", ...attention.e2e.evidenceRefs];
-	await store.writeState(attention);
+	const workspace = await readE2eWorkspaceReport(attention.e2e.workspaceReport!);
+	const original = workspace.serializedJsonText;
+	await writeFile(workspace.reportPath, `${original.slice(0, -2)},"tampered":true}\n`);
 	const headBefore = (await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim();
-	let capturedCurrent = false;
-	let mutatedBetweenCaptureAndBaseline = false;
-	f.runtime.evidenceDescriptorOpened = async (openedPath: string) => {
-		const runtime = await store.readState();
-		if (runtime?.e2e.status !== "fixing") return;
-		if (openedPath === currentPath && !capturedCurrent) {
-			capturedCurrent = true;
-			return;
-		}
-		if (openedPath === historicalPath && capturedCurrent && !mutatedBetweenCaptureAndBaseline) {
-			mutatedBetweenCaptureAndBaseline = true;
-			await writeFile(currentPath, newReport);
-		}
-	};
 	await adapter.resolveAttention!("work-item:example", { action: "request_changes", prompt: "repair current failure", correction: { attentionEpoch: attention.attentionEpoch!, target: { kind: "e2e" } } }, f.ctx);
 	await adapter.controlExecution!("work-item:example", "resume", "mutation-race", f.ctx);
 	await adapter.advanceWorkflow!("work-item:example", f.ctx);
 	await eventually(async () => {
 		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-		assert.equal(runtime.status, "attention");
-		assert.match(runtime.attention?.summary ?? "", /evidence changed after it was cited: evidence\/e2e-[^/]+\/report\.json/);
+		assert.equal(runtime.status, "paused");
+		assert.equal(runtime.e2e.failure?.code, "e2e_workspace_unavailable");
+		assert.match(runtime.e2e.failure?.summary ?? "", /workspace report is unavailable|content changed/i);
 	}, 8_000);
-	assert.equal(capturedCurrent, true);
-	assert.equal(mutatedBetweenCaptureAndBaseline, true);
 	assert.equal(repairLaunches, 0);
-	assert.equal(await readFile(currentPath, "utf8"), newReport);
-	assert.equal(await readFile(historicalPath, "utf8"), "committed historical proof\n");
 	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim(), headBefore);
 });
 
-test("completed E2E crash window permits only cited evidence during resume preflight", async (t) => {
+test("completed E2E crash window permits workspace proof during resume preflight", async (t) => {
 	const f = await fixture(t, {});
 	useProductionExecutor(f, async (input) => {
 		if (input.action === "task-launch") {
@@ -1406,12 +1378,14 @@ test("completed E2E crash window permits only cited evidence during resume prefl
 			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
 			return { text: "delivered" };
 		}
-		if (input.role === "e2e-tester") {
-			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "accepted.json");
-			await mkdir(join(evidence, ".."), { recursive: true });
-			await writeFile(evidence, "{\"result\":\"passed\"}\n");
-			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/accepted.json"] }) };
-		}
+		if (input.role === "e2e-tester") return {
+			text: "ignored",
+			workspaceSubmission: async (evaluation) => {
+				await writeFile(join(evaluation.outputDirectory, "accepted.json"), "{\"result\":\"passed\"}\n");
+				const retained = await retainE2eEvidence({ evaluation, sourcePath: "accepted.json", reason: "crash-window proof" });
+				return { cases: [{ case: "E2E-001", verdict: "passed", evidence: [retained.reference] }], summary: "passed" };
+			},
+		};
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
 	const adapter = f.create();
@@ -1428,8 +1402,9 @@ test("completed E2E crash window permits only cited evidence during resume prefl
 	await assert.rejects(adapter.preflightWorkflow!("work-item:example", f.ctx), /outside its validated evidence set.*uncited\.tmp/);
 	await rm(join(f.root, "uncited.tmp"));
 	const retained = (await store.readState())!.e2e;
-	assert.equal(retained.evidenceRefs.length, 2);
-	assert.ok(retained.evidenceRefs.includes(retained.currentReportRef!));
+	assert.deepEqual(retained.evidenceRefs, []);
+	assert.equal(retained.currentReportRef, undefined);
+	assert.equal((await readE2eWorkspaceReport(retained.workspaceReport!)).evidence.length, 1);
 });
 
 test("E2E fix pre-merge rejects unrelated canonical dirt and preserves it", async (t) => {
@@ -1468,10 +1443,11 @@ test("E2E fix pre-merge rejects unrelated canonical dirt and preserves it", asyn
 	assert.equal(e2eRuns, 1, "failed pre-merge cleanliness must not launch retest");
 });
 
-test("E2E retest rejects mutation of prior proof and preserves both files", async (t) => {
+test("E2E retest rejects mutation of submitted workspace proof and preserves prior proof", async (t) => {
 	const f = await fixture(t, {});
 	let e2eRuns = 0;
-	let adapter!: ReturnType<typeof createHarnessWorkflowAdapter>;
+	let prior!: E2eWorkspaceReportResult;
+	let submitted!: E2eWorkspaceReportResult;
 	useProductionExecutor(f, async (input) => {
 		if (input.action === "task-launch" || input.action === "e2e-fix") {
 			await writeFile(join(input.cwd, "delivered.txt"), `${input.action}\n`);
@@ -1480,36 +1456,41 @@ test("E2E retest rejects mutation of prior proof and preserves both files", asyn
 			return { text: input.action };
 		}
 		if (input.role === "e2e-tester") {
-			const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
-			await mkdir(evidenceRoot, { recursive: true });
-			if (e2eRuns++ === 0) {
-				await writeFile(join(evidenceRoot, "result.json"), "{\"result\":\"blocked\"}\n");
-				return { text: JSON.stringify({ result: "repairable", summary: "failed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
-			}
-			const current = (await adapter.snapshot("work-item:example", f.ctx)).runtime.e2e.currentReportRef!;
-			await writeFile(join(f.root, "agent-artifacts", "example", current), "{\"result\":\"tampered\"}\n");
-			await writeFile(join(evidenceRoot, "rerun-result.json"), "{\"result\":\"passed\"}\n");
-			return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/rerun-result.json"] }) };
+			const first = e2eRuns++ === 0;
+			return {
+				text: "ignored",
+				workspaceSubmission: async (evaluation) => {
+					const name = first ? "result.json" : "rerun-result.json";
+					await writeFile(join(evaluation.outputDirectory, name), first ? "{\"result\":\"blocked\"}\n" : "{\"result\":\"passed\"}\n");
+					const retained = await retainE2eEvidence({ evaluation, sourcePath: name, reason: "retest proof" });
+					return { cases: [{ case: "E2E-001", verdict: first ? "failed" : "passed", evidence: [retained.reference] }], summary: first ? "failed" : "passed" };
+				},
+				afterWorkspaceSubmission: async (result) => {
+					if (first) prior = result;
+					else { submitted = result; await writeFile(result.reportPath, "{\"result\":\"tampered\"}\n"); }
+				},
+			};
 		}
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
-	adapter = f.create(); await start(adapter, f.ctx);
-	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"), 8_000);
+	const adapter = f.create(); await start(adapter, f.ctx);
+	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"), 8_000);
 	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-	assert.equal(runtime.attention?.code, "evidence_invalid");
-	assert.match(runtime.attention?.summary ?? "", /evidence changed after it was cited: evidence\/e2e-[^/]+\/report\.json/);
-	assert.equal(runtime.e2e.evidenceRefs.length, 2);
-	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", runtime.e2e.currentReportRef!), "utf8"), "{\"result\":\"tampered\"}\n");
+	assert.equal(runtime.e2e.failure?.code, "e2e_workspace_unavailable");
+	assert.match(runtime.e2e.failure?.summary ?? "", /content changed/);
+	assert.equal(runtime.e2e.repairCount, 1);
+	assert.equal((await readE2eWorkspaceReport(prior.reference)).report.result, "repairable");
+	assert.equal(await readFile(submitted.reportPath, "utf8"), "{\"result\":\"tampered\"}\n");
 });
 
-test("E2E submission boundary pauses missing, ignored, and nonzero uncited report output", async (t) => {
+test("E2E workspace intake pauses missing and nonzero output while ignored private output succeeds", async (t) => {
 	for (const scenario of ["missing", "ignored", "nonzero"] as const) {
 		await t.test(scenario, async (t) => {
 			const f = await fixture(t, {});
 			if (scenario === "ignored") {
 				await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n/agent-artifacts/example/evidence/e2e-*/\n");
 				await exec("git", ["add", ".gitignore"], { cwd: f.root });
-				await exec("git", ["commit", "-qm", "ignore test evidence"], { cwd: f.root });
+				await exec("git", ["commit", "-qm", "ignore legacy evidence"], { cwd: f.root });
 			}
 			useProductionExecutor(f, async (input) => {
 				if (input.action === "task-launch") {
@@ -1519,23 +1500,36 @@ test("E2E submission boundary pauses missing, ignored, and nonzero uncited repor
 					return { text: "delivered" };
 				}
 				if (input.role !== "e2e-tester") return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
-				const evidenceRoot = join(f.root, "agent-artifacts", "example", "evidence");
-				await mkdir(evidenceRoot, { recursive: true });
-				if (scenario === "missing") return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["evidence/missing.json"] }) };
-				if (scenario === "ignored") {
-					await writeFile(join(evidenceRoot, "ignored.json"), "{}\n");
-					return { text: JSON.stringify({ result: "passed", summary: "passed", evidenceRefs: ["evidence/ignored.json"] }) };
+				if (scenario === "nonzero") {
+					const uncited = join(f.root, "agent-artifacts", "example", "evidence", "uncited.json");
+					await mkdir(join(uncited, ".."), { recursive: true });
+					await writeFile(uncited, "{}\n");
+					return { text: "worker failed", exitCode: 1 };
 				}
-				await writeFile(join(evidenceRoot, "uncited.json"), "{}\n");
-				return { text: "worker failed", exitCode: 1 };
+				return {
+					text: "ignored",
+					workspaceSubmission: async (evaluation) => {
+						const name = scenario === "missing" ? "missing.json" : "ignored.json";
+						if (scenario === "ignored") await writeFile(join(evaluation.outputDirectory, name), "{}\n");
+						const retained = await retainE2eEvidence({ evaluation, sourcePath: name, reason: "intake boundary proof" });
+						return { cases: [{ case: "E2E-001", verdict: "passed", evidence: [retained.reference] }], summary: "passed" };
+					},
+				};
 			});
 			const adapter = f.create(); await start(adapter, f.ctx);
+			if (scenario === "ignored") {
+				await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
+				const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
+				assert.ok(runtime.e2e.workspaceReport);
+				assert.deepEqual(runtime.e2e.evidenceRefs, []);
+				return;
+			}
 			await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"), 8_000);
 			const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-			assert.equal(runtime.e2e.failure?.code, "e2e_report_protocol", JSON.stringify(runtime));
+			assert.equal(runtime.e2e.failure?.code, "e2e_workspace_unavailable", JSON.stringify(runtime));
 			assert.equal(runtime.e2e.repairCount, 0);
 			assert.deepEqual(runtime.e2e.evidenceRefs, []);
-			if (scenario === "ignored") assert.match(runtime.e2e.failure?.summary ?? "", /ignored/);
+			if (scenario === "missing") assert.match(runtime.e2e.failure?.summary ?? "", /missing|existing/i);
 			if (scenario === "nonzero") assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "uncited.json"), "utf8"), "{}\n");
 		});
 	}
@@ -1568,7 +1562,7 @@ test("production launch honors trusted custom agent prompt body before managed p
 	assert.equal(taskSystem.indexOf("# Managed Task Protocol") < taskSystem.indexOf("# Task task-a:"), true);
 });
 
-test("sensitive E2E evidence pauses as a submission protocol failure", async (t) => {
+test("sensitive E2E workspace evidence pauses without repair charge", async (t) => {
 	const f = await fixture(t, {});
 	useProductionExecutor(f, async (input) => {
 		if (input.taskId) {
@@ -1577,25 +1571,28 @@ test("sensitive E2E evidence pauses as a submission protocol failure", async (t)
 			await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
 			return { text: "delivered" };
 		}
-		if (input.role === "e2e-tester") {
-			const evidence = join(f.root, "agent-artifacts", "example", "evidence", "access-token.txt");
-			await mkdir(join(evidence, ".."), { recursive: true });
-			await writeFile(evidence, "access_token=secret-value\n");
-			return { text: JSON.stringify({ result: "passed", summary: "journey passed", findings: [], evidenceRefs: ["evidence/access-token.txt"] }) };
-		}
+		if (input.role === "e2e-tester") return {
+			text: "ignored",
+			workspaceSubmission: async (evaluation) => {
+				await writeFile(join(evaluation.outputDirectory, "access-token.txt"), "access_token=secret-value\n");
+				const retained = await retainE2eEvidence({ evaluation, sourcePath: "access-token.txt", reason: "sensitive boundary proof" });
+				return { cases: [{ case: "E2E-001", verdict: "passed", evidence: [retained.reference] }] };
+			},
+		};
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
 	const adapter = f.create();
 	await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.status, "paused"), 8_000);
 	const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime!;
-	assert.equal(runtime.e2e.failure?.code, "e2e_report_protocol", JSON.stringify(runtime));
+	assert.equal(runtime.e2e.failure?.code, "e2e_workspace_unavailable", JSON.stringify(runtime));
+	assert.match(runtime.e2e.failure?.summary ?? "", /sensitive|credential|private material/);
 	assert.equal(runtime.e2e.repairCount, 0);
 	assert.equal(runtime.outcomeStatus, "pending");
 	await assert.rejects(access(join(f.root, "agent-artifacts", "example", "outcome.md")));
 });
 
-test("E2E submission rejects FIFO and symlink evidence without blocking", async (t) => {
+test("E2E workspace intake rejects FIFO and symlink evidence without blocking", async (t) => {
 	for (const scenario of ["fifo", "symlink"] as const) await t.test(scenario, async (t) => {
 		const f = await fixture(t, {});
 		useProductionExecutor(f, async (input) => {
@@ -1605,26 +1602,28 @@ test("E2E submission rejects FIFO and symlink evidence without blocking", async 
 				await exec("git", ["commit", "-qm", "deliver task"], { cwd: input.cwd });
 				return { text: "delivered" };
 			}
-			if (input.role === "e2e-tester") {
-				const root = join(f.root, "agent-artifacts", "example", "evidence");
-				const evidence = join(root, "result.json");
-				await mkdir(root, { recursive: true });
-				if (scenario === "fifo") await exec("mkfifo", [evidence], { cwd: f.root });
-				else if (scenario === "symlink") {
-					await writeFile(join(root, "target.json"), "{}\n");
-					await symlink("target.json", evidence);
-				}
-				return { text: JSON.stringify({ result: "passed", summary: "passed", findings: [], evidenceRefs: ["evidence/result.json"] }) };
-			}
+			if (input.role === "e2e-tester") return {
+				text: "ignored",
+				workspaceSubmission: async (evaluation) => {
+					const evidence = join(evaluation.outputDirectory, "result.json");
+					if (scenario === "fifo") await exec("mkfifo", [evidence], { cwd: f.root });
+					else {
+						await writeFile(join(evaluation.outputDirectory, "target.json"), "{}\n");
+						await symlink("target.json", evidence);
+					}
+					const retained = await retainE2eEvidence({ evaluation, sourcePath: "result.json", reason: "unsafe-file boundary proof" });
+					return { cases: [{ case: "E2E-001", verdict: "passed", evidence: [retained.reference] }] };
+				},
+			};
 			return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 		});
 		const adapter = f.create();
 		await start(adapter, f.ctx);
 		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"), 8_000);
 		const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-		assert.equal(runtime.e2e.failure?.code, "e2e_report_protocol", JSON.stringify(runtime));
+		assert.equal(runtime.e2e.failure?.code, "e2e_workspace_unavailable", JSON.stringify(runtime));
 		assert.equal(runtime.e2e.repairCount, 0);
-		assert.match(runtime.e2e.failure?.summary ?? "", /regular file|symbolic link/);
+		assert.match(runtime.e2e.failure?.summary ?? "", /regular file|non-symlink/);
 	});
 });
 
@@ -2594,11 +2593,9 @@ test("different activation interrupts old ownership and explicit resume creates 
 	});
 });
 
-test("tool-backed E2E report owns verdict, canonical publication, and current pointer", async (t) => {
+test("workspace E2E report owns verdict and current pointer without canonical publication", async (t) => {
 	const f = await fixture(t, {});
-	let token = "";
 	let e2eTools: string[] = [];
-	let reviewTools: string[] = [];
 	useProductionExecutor(f, async (input) => {
 		if (input.action === "task-launch") {
 			await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
@@ -2607,95 +2604,26 @@ test("tool-backed E2E report owns verdict, canonical publication, and current po
 			return { text: "done" };
 		}
 		if (input.action === "e2e") {
-			token = input.attemptToken;
 			e2eTools = input.tools;
-			const witness = join(input.env.PIBOX_E2E_SCRATCH_DIR, "witness.txt");
+			const witness = join(tmpdir(), `pibox-workspace-witness-${input.attemptToken}.txt`);
 			await writeFile(witness, "full Unicode witness 🧪\n");
-			const reportPath = await submitE2eFixture(f, input, {
-				cases: [{ case: "E2E-001", verdict: "passed", steps: ["exercise"], expected: "visible", observed: "visible 🧪", evidence: [witness] }],
-				summary: "authoritative pass",
-			});
-			return { text: "free-form prose says failure but is irrelevant", reportPath };
+			const { reportPath } = await submitE2eFixture(input, { cases: [{ case: "E2E-001", verdict: "passed", observed: "visible 🧪", evidence: [witness] }], summary: "authoritative pass" });
+			await rm(witness);
+			return { text: "free-form prose says failure", reportPath };
 		}
-		reviewTools = input.tools;
 		return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 	});
-	const adapter = f.create();
-	await start(adapter, f.ctx);
+	const adapter = f.create(); await start(adapter, f.ctx);
 	await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);
 	const state = (await adapter.snapshot("work-item:example", f.ctx)).runtime;
-	const reportRef = `evidence/e2e-${token}/report.json`;
-	assert.equal(state.e2e.currentReportRef, reportRef);
-	assert.equal(state.e2e.currentEvidenceRefs?.[0], reportRef);
-	assert.ok(state.e2e.evidenceRefs.includes(reportRef));
-	assert.ok(e2eTools.includes("workflow_e2e_report"));
-	assert.equal(reviewTools.includes("workflow_e2e_report"), false);
-	const report = await readFile(join(f.root, "agent-artifacts", "example", reportRef), "utf8");
-	assert.match(report, /visible 🧪/);
-	assert.match(await readFile(join(f.root, "agent-artifacts", "example", state.e2e.currentEvidenceRefs![1]!), "utf8"), /full Unicode witness 🧪/);
-});
-
-test("publication preflight and rollback leave no invocation-owned canonical files", async (t) => {
-	for (const scenario of ["selective-ignore", "late-write", "rollback-conflict", "owner-loss", "abort"] as const) await t.test(scenario, async (t) => {
-		const f = await fixture(t, {});
-		if (scenario === "selective-ignore") {
-			await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n*.skip\n");
-			await exec("git", ["add", ".gitignore"], { cwd: f.root });
-			await exec("git", ["commit", "-qm", "ignore selected evidence"], { cwd: f.root });
-		}
-		let adapter: ReturnType<typeof createHarnessWorkflowAdapter>;
-		let staged: E2eReportSubmission | undefined;
-		let publicationDescriptors = 0;
-		let foreignDestination = "";
-		f.runtime.evidenceDescriptorOpened = async (openedPath: string) => {
-			if (!openedPath.includes(".tmp-")) return;
-			publicationDescriptors++;
-			if (publicationDescriptors !== 2) return;
-			if (scenario === "late-write" || scenario === "rollback-conflict") {
-				foreignDestination = openedPath.slice(0, openedPath.lastIndexOf(".tmp-"));
-				if (scenario === "rollback-conflict") {
-					assert.ok(staged);
-					await writeFile(join(f.root, "agent-artifacts", "example", staged.publishSources[0]!.storyRelativePath), "foreign replacement");
-				}
-				await mkdir(foreignDestination);
-			} else if (scenario === "owner-loss") {
-				f.setOwner({ sessionId: "replacement", processInstanceId: "replacement", activationId: "replacement" });
-			} else if (scenario === "abort") {
-				await adapter.controlExecution!("work-item:example", "stop", "abort-publication", f.ctx);
-			}
-		};
-		useProductionExecutor(f, async (input) => {
-			if (input.action === "task-launch") {
-				await writeFile(join(input.cwd, "delivered.txt"), "delivered\n");
-				await exec("git", ["add", "delivered.txt"], { cwd: input.cwd });
-				await exec("git", ["commit", "-qm", "deliver"], { cwd: input.cwd });
-				return { text: "done" };
-			}
-			if (input.action === "e2e") {
-				const first = join(input.env.PIBOX_E2E_SCRATCH_DIR, "first.txt");
-				const second = join(input.env.PIBOX_E2E_SCRATCH_DIR, scenario === "selective-ignore" ? "second.skip" : "second.txt");
-				await writeFile(first, "first"); await writeFile(second, "second");
-				const reportPath = await submitE2eFixture(f, input, { cases: [{ case: "E2E-001", verdict: "passed", evidence: [first, second] }] });
-				staged = await readE2eReportSubmission(reportPath, input.attemptToken);
-				return { text: "submitted", reportPath };
-			}
-			return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
-		});
-		adapter = f.create();
-		await start(adapter, f.ctx);
-		if (scenario === "owner-loss") await eventually(async () => { assert.ok(staged); assert.equal(publicationDescriptors, 2); assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.e2e.status, "interrupted"); }, 8_000);
-		else if (scenario === "abort") await eventually(async () => { assert.ok(staged); assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "stopped"); }, 8_000);
-		else await eventually(async () => { assert.ok(staged); assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "paused"); }, 8_000);
-		assert.ok(staged);
-		const canonical = staged.publishSources.map((source) => join(f.root, "agent-artifacts", "example", source.storyRelativePath));
-		await eventually(async () => { for (const path of canonical) if (path !== foreignDestination && !(scenario === "rollback-conflict" && path === canonical[0])) await assert.rejects(access(path)); });
-		for (const source of staged.publishSources) await access(source.sourcePath);
-		if (scenario === "late-write" || scenario === "rollback-conflict") await stat(foreignDestination);
-		if (scenario === "rollback-conflict") {
-			assert.equal(await readFile(canonical[0]!, "utf8"), "foreign replacement");
-			assert.match((await adapter.snapshot("work-item:example", f.ctx)).runtime.e2e.failure?.summary ?? "", /rollback preserved changed or foreign paths/);
-		}
-	});
+	assert.ok(state.e2e.workspaceReport);
+	assert.equal(state.e2e.currentReportRef, undefined);
+	assert.deepEqual(state.e2e.evidenceRefs, []);
+	assert.equal(e2eTools.includes("workflow_e2e_report"), false);
+	const workspace = await readE2eWorkspaceReport(state.e2e.workspaceReport!);
+	assert.match(workspace.serializedJsonText, /visible 🧪/);
+	assert.match(await readFile(workspace.evidence[0]!.absolutePath, "utf8"), /full Unicode witness 🧪/);
+	assert.equal((await exec("git", ["ls-tree", "-r", "--name-only", "HEAD", "agent-artifacts/example/evidence"], { cwd: f.root })).stdout.trim(), "");
 });
 
 test("missing E2E tool submission pauses and plain resume reruns only E2E without repair charge", async (t) => {
@@ -2714,7 +2642,7 @@ test("missing E2E tool submission pauses and plain resume reruns only E2E withou
 			if (input.action === "e2e") {
 				e2eLaunches++;
 				if (e2eLaunches === 1) return { text: "forgot tool", reportPath: join(f.runtime.identity.privateRoot, "missing", "report.md") };
-				return { text: "submitted", reportPath: await submitE2eFixture(f, input, { cases: [{ case: "E2E-001", verdict: "passed" }] }) };
+				return { text: "submitted", reportPath: (await submitE2eFixture(input, { cases: [{ case: "E2E-001", verdict: "passed" }] })).reportPath };
 			}
 			return { text: JSON.stringify({ result: "passed", summary: "review passed", findings: [] }) };
 		});
@@ -2726,7 +2654,7 @@ test("missing E2E tool submission pauses and plain resume reruns only E2E withou
 		assert.equal(paused.attention, undefined);
 		assert.equal(paused.e2e.status, "interrupted");
 		assert.equal(paused.e2e.repairCount, 0);
-		assert.match(paused.e2e.failure?.summary ?? "", /invalid or unreadable|without calling/);
+		assert.match(paused.e2e.failure?.summary ?? "", /invalid or unavailable|without acknowledged/);
 		await adapter.controlExecution!("work-item:example", "resume", "resume-report", f.ctx);
 		await adapter.advanceWorkflow!("work-item:example", f.ctx);
 		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.outcomeStatus, "written"), 8_000);

@@ -793,7 +793,7 @@ test("production Pi resolver uses JSON print mode, a private prompt file, and th
 	assert.equal((await stat(attemptUserPromptPath(transcriptPath, "attempt"))).mode & 0o777, 0o600);
 	assert.deepEqual(invocation.env, {
 		BASE_ENV: "base", WORKFLOW_TOKEN: "token", WORKFLOW_REF: "item", ATTEMPT_REF: "attempt",
-		PIBOX_RUNTIME_ROLE: "subagent", PIBOX_FAST_CHILD_ENABLED: "1", PIBOX_SUBAGENT_EVENT_FD: "3",
+		PIBOX_RUNTIME_ROLE: "subagent", PIBOX_SUBAGENT_AGENT: "reviewer", PIBOX_FAST_CHILD_ENABLED: "1", PIBOX_SUBAGENT_EVENT_FD: "3",
 		PIBOX_SUBAGENT_PROMPT_PATH: attemptUserPromptPath(transcriptPath, "attempt"), PIBOX_LIFETIME_TERM_GRACE_MS: "75",
 	});
 });

@@ -13,8 +13,10 @@ import { SubagentProcessManager, createPiInvocationResolver, type RuntimeOwner, 
 import { WorkflowSubagentLauncher } from "../../workflow-runtime/subagent-launcher.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { StoryRuntimeStore } from "../story-runtime-store.js";
+import { readE2eWorkspaceReport } from "../../e2e-workspace/workspace.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 import { createHarnessWorkflowAdapter } from "../workflow-adapter.js";
+import { WORKFLOW_CHILD_EXTENSION_PATHS } from "../index.js";
 import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
 
 const exec = promisify(execFile);
@@ -66,7 +68,7 @@ async function fixture(t: TestContext, options: { e2eFailures?: number; repairRo
 	await exec("git", ["init", "-q", "-b", "feature/example"], { cwd: root });
 	await exec("git", ["config", "user.email", "tests@example.com"], { cwd: root });
 	await exec("git", ["config", "user.name", "Tests"], { cwd: root });
-	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n*.log\n");
 	await mkdir(join(root, "agent-artifacts/example/tasks"), { recursive: true });
 	await writeFile(join(root, "agent-artifacts/example/story.yaml"), stringify(story));
 	await writeFile(join(root, "agent-artifacts/example/plan.yaml"), stringify(plan));
@@ -96,34 +98,31 @@ async function fixture(t: TestContext, options: { e2eFailures?: number; repairRo
 				const path = `agent-artifacts/${story.id}/${reference}`;
 				return { path, sha256: hash(readFileSync(join(root, path), "utf8")) };
 			});
-			const reportRef = action === "e2e" ? `evidence/e2e-${request.attemptMetadata!.PIBOX_WORKFLOW_ATTEMPT_TOKEN}/report.json` : persisted.e2e.currentReportRef;
+			const reportRef = persisted.e2e.workspaceReport?.reportPath;
 			records.push({ ...(reportRef ? { reportRef } : {}), request, action, run, stableHash: hash(request.stableSystemContext), attemptHash: hash(request.attemptUserPrompt), cwdHead, canonicalHead, clockCategory: persisted.metrics.open?.category, canonicalDirt, retainedEvidence });
 			const inputPath = join(root, ".git", `loop-input-${action}-${run}.txt`);
 			writeFileSync(inputPath, request.attemptUserPrompt, { mode: 0o600 });
 			if (action === "e2e") {
 				const blocked = Boolean(options.pausePort && run === 3);
 				const failed = run <= (options.e2eFailures ?? 2);
-				const scratch = request.env!.PIBOX_E2E_SCRATCH_DIR!;
-				const attachment = join(scratch, `witness-${run}.txt`);
-				writeFileSync(attachment, `Retained attachment ${run} π🙂\n`);
 				const payloadPath = join(root, ".git", `tool-input-${run}.json`);
 				writeFileSync(payloadPath, JSON.stringify({ summary: `Current E2E report ${run}`,
 					cases: [{ case: "E2E-001", verdict: blocked ? "blocked" : failed ? "failed" : "passed",
 						steps: ["Exercise delivered feature."], expected: "Feature works.",
 						observed: `${"complete observation π🙂 ".repeat(1_400)}FULL_E2E_DIAGNOSTIC_END_${run} REPORT_WITNESS_${run}_${randomUUID()}`,
-						evidence: [attachment], notes: "Preserve complete report and attachment." }],
+						notes: "Preserve complete report and attachment." }],
 					findings: failed ? [{ summary: `CURRENT_E2E_FINDING_${run}`, severity: blocked ? "minor" : "major" }] : [],
 				}));
 				return realPi({ ...request, provider: "pibox-e2e-report-test", model: "fixture-model", effort: "off",
 					extensionPaths: [...request.extensionPaths, PROVIDER],
-					env: { ...request.env, PIBOX_REPORT_FIXTURE_INPUT: payloadPath, PIBOX_REPORT_FIXTURE_MARKER: marker, PIBOX_REPORT_FIXTURE_OMIT_REPORT: options.omitFirstE2eReport && run === 1 ? "1" : "",
+					env: { ...request.env, PIBOX_REPORT_FIXTURE_INPUT: payloadPath, PIBOX_REPORT_FIXTURE_MARKER: marker, PIBOX_REPORT_FIXTURE_EVIDENCE_TEXT: `Retained attachment ${run} π🙂\n`, PIBOX_REPORT_FIXTURE_OMIT_REPORT: options.omitFirstE2eReport && run === 1 ? "1" : "",
 						...(blocked ? { PIBOX_REPORT_FIXTURE_PAUSE_PORT: String(options.pausePort) } : {}) } });
 			}
-			return { command: process.execPath, args: [CHILD], env: { LOOP_ACTION: action, LOOP_RUN: String(run), LOOP_REVIEW_FAILURES: String(options.reviewFailures ?? 2), LOOP_INPUT_PATH: inputPath, LOOP_E2E_FAILURES: String(options.e2eFailures ?? 2), ...(options.pausePort ? { LOOP_PAUSE_PORT: String(options.pausePort), LOOP_E2E_NEEDS_USER_RUN: "3" } : {}) } };
+			return { command: process.execPath, args: [CHILD], env: { LOOP_ACTION: action, ...(reportRef ? { LOOP_E2E_REPORT_PATH: reportRef } : {}), LOOP_RUN: String(run), LOOP_REVIEW_FAILURES: String(options.reviewFailures ?? 2), LOOP_INPUT_PATH: inputPath, LOOP_E2E_FAILURES: String(options.e2eFailures ?? 2), ...(options.pausePort ? { LOOP_PAUSE_PORT: String(options.pausePort), LOOP_E2E_NEEDS_USER_RUN: "3" } : {}) } };
 		},
 	});
-	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }); });
-	const launcher = new WorkflowSubagentLauncher(manager);
+	t.after(async () => { await manager.teardown(); const receipts = await readFile(marker, "utf8").catch(() => ""); for (const workspaceRoot of new Set(receipts.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).workspaceRoot as string))) if (workspaceRoot.startsWith("/tmp/pibox-e2e-workspace-")) await rm(workspaceRoot, { recursive: true, force: true }); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }); });
+	const launcher = new WorkflowSubagentLauncher(manager, WORKFLOW_CHILD_EXTENSION_PATHS);
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
 	config.limits.repairRounds = options.repairRounds ?? 8;
 	for (const role of ["code-reviewer", "e2e-tester"] as const) config.agents[role]!.tools = [...(config.agents[role]!.tools ?? []), "workflow_ledger"];
@@ -242,14 +241,15 @@ test("production launcher and process manager continue every fail-fix-verify loo
 	}
 
 	const e2e = groups.e2e.evaluator;
-	assert.ok(e2e.every((entry) => entry.request.tools.includes("workflow_e2e_report")), "managed E2E advertises the report tool on every attempt");
+	assert.ok(e2e.every((entry) => entry.request.tools.includes("e2e_workspace")), "managed E2E advertises the generic workspace tool on every attempt");
 	assert.doesNotMatch(e2e[0]!.request.stableSystemContext, /terminal control reply differs from retained rich report JSON/);
 	const submissions = (await readFile(f.marker, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
 	assert.equal(submissions.length, 3, "real Pi executed the report tool once successfully per evaluator attempt");
 	assert.ok(submissions.every((entry) => entry.rejectedInvalid && entry.submitted), "invalid arguments were corrected inside each evaluator attempt");
-	const scratchDirectories = e2e.map((entry) => entry.request.env?.PIBOX_E2E_SCRATCH_DIR);
-	assert.equal(scratchDirectories.every((path) => typeof path === "string" && path.length > 0), true, "every E2E attempt receives scratch environment");
-	assert.equal(new Set(scratchDirectories).size, 3, "continued E2E gets fresh scratch environment each attempt");
+	assert.equal(new Set(submissions.map((entry) => entry.workspaceRoot)).size, 1, "continued E2E restores the same workspace");
+	assert.equal(new Set(submissions.map((entry) => entry.reportPath)).size, 3, "each evaluation gets a distinct immutable snapshot");
+	assert.ok(submissions.every((entry) => entry.deduplicated), "duplicate evidence is not copied twice");
+	assert.ok(e2e.every((entry) => !entry.request.env?.PIBOX_E2E_SCRATCH_DIR), "workflow does not allocate disposable E2E scratch");
 	for (const entry of e2e) {
 		assert.match(entry.request.stableSystemContext, /# Complete final E2E contract/);
 		assert.match(entry.request.stableSystemContext, /E2E-001/);
@@ -258,25 +258,28 @@ test("production launcher and process manager continue every fail-fix-verify loo
 		assert.match(entry.request.stableSystemContext, /Proof/);
 	}
 	for (const run of [1, 2, 3]) {
-		const path = `agent-artifacts/example/${e2e[run - 1]!.reportRef!}`;
-		const reportText = await readFile(join(f.root, path), "utf8");
+		const snapshot = await readE2eWorkspaceReport(submissions[run - 1]!.reference);
+		const path = snapshot.reportPath;
+		const reportText = snapshot.serializedJsonText;
 		const report = JSON.parse(reportText);
 		assert.equal(report.result, run <= 2 ? "repairable" : "passed");
 		assert.equal(report.caseResults[0].caseId, "E2E-001");
 		assert.equal(report.caseResults[0].expected, "Feature works.");
 		assert.equal(report.caseResults[0].notes, "Preserve complete report and attachment.");
-		assert.equal(await readFile(join(f.root, "agent-artifacts/example", report.caseResults[0].evidenceRefs[0]), "utf8"), `Retained attachment ${run} π🙂\n`);
-		assert.equal((await exec("git", ["show", `HEAD:${path}`], { cwd: f.root })).stdout, reportText);
+		assert.equal(snapshot.evidence.length, 1);
+		assert.equal(await readFile(snapshot.evidence[0]!.absolutePath, "utf8"), `Retained attachment ${run} π🙂\n`);
+		assert.ok(!path.startsWith(f.root), "new report is not stored in canonical Git or a worktree");
 		if (run <= 2) {
 			const fixer = groups.e2e.fixer[run - 1]!;
-			assert.ok(fixer.request.attemptUserPrompt.includes(reportText), "fresh/continued fixer receives exact full canonical report text");
+			assert.ok(fixer.request.attemptUserPrompt.includes(reportText), "fresh/continued fixer receives exact full workspace report text");
 			assert.ok(fixer.request.attemptUserPrompt.includes(`CURRENT_E2E_FINDING_${run}`));
-			assert.ok(fixer.request.attemptUserPrompt.includes(join(f.root, path)), "fixer receives canonical report path");
+			assert.ok(fixer.request.attemptUserPrompt.includes(path), "fixer receives exact workspace report path");
 			const witness = report.caseResults[0].observations[0].match(/REPORT_WITNESS_\d+_[a-f0-9-]+/)[0];
 			assert.ok((await readFile(join(f.root, `repair-e2e-fix-${run}.txt`), "utf8")).includes(witness));
 			if (run === 2) assert.ok(!fixer.request.attemptUserPrompt.includes("FULL_E2E_DIAGNOSTIC_END_1"));
 		}
 	}
+	assert.deepEqual((await store.readState())!.e2e.evidenceRefs, [], "workspace evidence is never registered as canonical Git dirt");
 	assert.equal((await store.readState())!.e2e.repairCount, 2, "tool argument correction does not consume product repair rounds");
 	assert.equal(f.records.length, 16, "one process service resolver observes implementer plus all fifteen loop attempts");
 	assert.equal(f.manager.inspect(f.manager.owner).length, 0, "completed workflow releases all seven logical agents from same process service");
@@ -322,7 +325,9 @@ for (const pausedPrerequisite of [false, true]) test(pausedPrerequisite
 		const prior = (await store.readState())!;
 		assert.equal(prior.e2e.failure?.code, pausedPrerequisite ? "needs_user" : "repair_exhausted");
 		assert.equal(prior.e2e.repairCount, 2);
-		assert.equal(prior.e2e.currentReportRef, f.records.filter((entry) => entry.action === "e2e")[2]!.reportRef);
+		assert.ok(prior.e2e.workspaceReport);
+		const thirdSubmission = (await readFile(f.marker, "utf8")).trim().split("\n").map((line) => JSON.parse(line))[2];
+		assert.deepEqual(prior.e2e.workspaceReport, thirdSubmission.reference);
 		const guidance = pausedPrerequisite
 			? "MAIN_SESSION_DIAGNOSTIC_GUIDANCE: user approves isolated disposable fixtures and fixture-only teardown; reproduce the current witness before a surgical repair."
 			: "MAIN_SESSION_DIAGNOSTIC_GUIDANCE: reproduce the current witness before a surgical repair.";
@@ -331,7 +336,7 @@ for (const pausedPrerequisite of [false, true]) test(pausedPrerequisite
 		await f.adapter.resolveAttention!("work-item:example", decision, f.ctx);
 		const updated = (await store.readState())!;
 		assert.deepEqual(updated.e2e.currentFindings, prior.e2e.currentFindings);
-		assert.equal(updated.e2e.currentReportRef, prior.e2e.currentReportRef);
+		assert.deepEqual(updated.e2e.workspaceReport, prior.e2e.workspaceReport);
 		corrected = true;
 		await f.adapter.controlExecution!("work-item:example", "resume", "guided-e2e-repair", f.ctx);
 		await f.adapter.advanceWorkflow!("work-item:example", f.ctx);
@@ -347,7 +352,7 @@ for (const pausedPrerequisite of [false, true]) test(pausedPrerequisite
 			assert.ok(fix.request.attemptUserPrompt.includes(`CURRENT_E2E_FINDING_${run}`));
 			assert.equal(fix.request.attemptUserPrompt.includes(guidance), run === 3, "guidance augments only the corrected entrance");
 			if (run > 1) assert.ok(!fix.request.attemptUserPrompt.includes(`FULL_E2E_DIAGNOSTIC_END_${run - 1}`));
-			const reportText = await readFile(join(f.root, "agent-artifacts/example", fix.reportRef!), "utf8");
+			const reportText = await readFile(fix.reportRef!, "utf8");
 			const report = JSON.parse(reportText);
 			assert.ok(fix.request.attemptUserPrompt.includes(reportText), "automatic and requested entrances receive the entire original report");
 			const witness = report.caseResults[0].observations[0].match(/REPORT_WITNESS_\d+_[a-f0-9-]+/)[0];
@@ -371,7 +376,10 @@ test("missing native report pauses and plain resume reruns only E2E with zero re
 		observations = observations.then(async () => {
 			const state = await store.readState();
 			if (state?.outcomeStatus === "written") resolveCompletion();
-			else if (state?.status === "paused" && state.e2e.status === "interrupted") resolvePaused();
+			else if (state?.status === "paused" && state.e2e.status === "interrupted") {
+				if (f.records.filter((entry) => entry.action === "e2e").length > 1) throw new Error(JSON.stringify({ failure: state.e2e.failure, actions: f.records.map((entry) => entry.action) }));
+				resolvePaused();
+			}
 			else if (state?.status === "attention") throw new Error(JSON.stringify(state.attention));
 		}).catch((error) => { rejectPaused(error); rejectCompletion(error); });
 	});
@@ -381,7 +389,7 @@ test("missing native report pauses and plain resume reruns only E2E with zero re
 		await paused;
 		const before = (await store.readState())!;
 		assert.equal(before.e2e.repairCount, 0);
-		assert.equal(before.e2e.currentReportRef, undefined);
+		assert.equal(before.e2e.workspaceReport, undefined);
 		assert.equal(before.outcomeStatus, "pending");
 		assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
 		await f.adapter.controlExecution!("work-item:example", "resume", "retry-report", f.ctx);
@@ -393,7 +401,7 @@ test("missing native report pauses and plain resume reruns only E2E with zero re
 		assert.equal(evaluators[0]!.request.agentId, evaluators[1]!.request.agentId);
 		assert.equal(f.records.some((entry) => entry.action.endsWith("-fix")), false, "report omission never launches a product fixer");
 		assert.equal((await store.readState())!.e2e.repairCount, 0);
-		assert.equal((await store.readState())!.e2e.currentReportRef, evaluators[1]!.reportRef);
+		assert.ok((await store.readState())!.e2e.workspaceReport);
 		assert.equal((await exec("git", ["status", "--porcelain"], { cwd: f.root })).stdout, "");
 	} finally { if (typeof unsubscribe === "function") unsubscribe(); }
 });

@@ -5,10 +5,12 @@ import { FAST_MODE_EXTENSION_PATH } from "../fast-mode/index.js";
 const EXTENSIONS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const MEMORY_EXTENSION_PATH = resolve(EXTENSIONS_ROOT, "memory-adapter/index.ts");
 export const DISTILL_EXTENSION_PATH = resolve(EXTENSIONS_ROOT, "distill/index.ts");
+export const E2E_WORKSPACE_EXTENSION_PATH = resolve(EXTENSIONS_ROOT, "e2e-workspace/index.ts");
 
 /** Generic child capabilities; workflow orchestration is intentionally absent. */
 export const STANDALONE_CHILD_EXTENSION_PATHS = [
 	MEMORY_EXTENSION_PATH,
 	DISTILL_EXTENSION_PATH,
 	FAST_MODE_EXTENSION_PATH,
+	E2E_WORKSPACE_EXTENSION_PATH,
 ] as const;

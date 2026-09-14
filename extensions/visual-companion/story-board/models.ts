@@ -79,8 +79,9 @@ export interface Finding {
 export interface EvidenceMetadata {
 	id: string;
 	path?: string;
-	/** Canonical story-relative member used by the current evidence route. */
+	/** Canonical story-relative member or opaque temporary-workspace reference used by the evidence route. */
 	memberPath?: string;
+	workspace?: boolean;
 	result?: string;
 	description?: string;
 	command?: string;

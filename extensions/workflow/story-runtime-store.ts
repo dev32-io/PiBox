@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parse, stringify } from "yaml";
 import { atomicWriteFile, readTextIfExists } from "./repository.js";
 import type { RuntimeOwner } from "../subagent/api.js";
+import type { E2eWorkspaceReportReference } from "../e2e-workspace/workspace.js";
 
 export const WORKFLOW_METRIC_CATEGORIES = ["implementation", "integration", "verification", "review", "e2e", "repair"] as const;
 export type WorkflowMetricCategory = (typeof WORKFLOW_METRIC_CATEGORIES)[number];
@@ -171,8 +172,10 @@ export interface E2ERuntimeState {
 	currentFindings?: StructuredFinding[];
 	/** Validated evidence cited by current accepted evaluator attempt; absence means unknown. */
 	currentEvidenceRefs?: string[];
-	/** Exact canonical report produced by current accepted tool-backed evaluator attempt. */
+	/** Exact canonical report produced by current accepted legacy tool-backed evaluator attempt. */
 	currentReportRef?: string;
+	/** Exact temporary workspace report produced by current accepted evaluator attempt. */
+	workspaceReport?: E2eWorkspaceReportReference;
 	result?: FailureSummary;
 	failure?: FailureSummary;
 }
@@ -535,8 +538,13 @@ function validVerification(value: unknown): boolean {
 		&& (value.interruptedFrom === undefined || oneOf(value.interruptedFrom, ["checking", "repairing"]))
 		&& validChecks(value.checks) && validOptionalSummary(value.result) && validOptionalSummary(value.failure);
 }
+function validWorkspaceReportReference(value: unknown): boolean {
+	return record(value) && onlyKeys(value, ["workspaceId", "sessionId", "runId", "reportPath", "reportSha256"])
+		&& nonEmptyString(value.workspaceId) && nonEmptyString(value.sessionId) && nonEmptyString(value.runId)
+		&& nonEmptyString(value.reportPath) && typeof value.reportSha256 === "string" && /^[a-f0-9]{64}$/.test(value.reportSha256);
+}
 function validE2E(value: unknown): boolean {
-	if (!record(value) || !onlyKeys(value, ["status", "repairCount", "attempt", "interruptedFrom", "evidenceRefs", "currentFindings", "currentEvidenceRefs", "currentReportRef", "result", "failure"])
+	if (!record(value) || !onlyKeys(value, ["status", "repairCount", "attempt", "interruptedFrom", "evidenceRefs", "currentFindings", "currentEvidenceRefs", "currentReportRef", "workspaceReport", "result", "failure"])
 		|| !oneOf(value.status, ["pending", "testing", "fix_pending", "fixing", "interrupted", "completed", "attention"])
 		|| !nonNegativeInteger(value.repairCount) || !validAttempt(value.attempt)
 		|| (value.interruptedFrom !== undefined && !oneOf(value.interruptedFrom, ["testing", "fixing"]))
@@ -544,6 +552,7 @@ function validE2E(value: unknown): boolean {
 		|| (value.currentFindings !== undefined && (!Array.isArray(value.currentFindings) || !value.currentFindings.every(validFinding)))
 		|| (value.currentEvidenceRefs !== undefined && (!Array.isArray(value.currentEvidenceRefs) || !value.currentEvidenceRefs.every(validCurrentEvidenceReference)))
 		|| (value.currentReportRef !== undefined && !validCurrentReportReference(value.currentReportRef))
+		|| (value.workspaceReport !== undefined && !validWorkspaceReportReference(value.workspaceReport))
 		|| !validOptionalSummary(value.result) || !validOptionalSummary(value.failure)) return false;
 	if (value.currentFindings !== undefined && new Set(value.currentFindings.map((finding) => (finding as StructuredFinding).id)).size !== value.currentFindings.length) return false;
 	const evidenceRefs = value.evidenceRefs as string[];

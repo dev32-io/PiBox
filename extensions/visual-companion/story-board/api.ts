@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { open } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { dirname, extname, resolve } from "node:path";
@@ -8,7 +8,8 @@ import { pipeline } from "node:stream/promises";
 import type { VisualCompanionRouteHandler, VisualCompanionViewer } from "../backend.mjs";
 import { StoryBoardCache } from "./cache.js";
 import type { CurrentStateObservation } from "./current-reader.js";
-import { resolveCurrentEvidenceMember, resolveEvidenceMember, sanitizeCurrentEvidenceText } from "./evidence.js";
+import { resolveCurrentEvidenceMember, resolveEvidenceMember, sanitizeCurrentEvidenceText, readCurrentRuntimeState } from "./evidence.js";
+import { readE2eWorkspaceReport } from "../../e2e-workspace/workspace.js";
 import { sanitizeMarkdown } from "./markdown-policy.js";
 import type { DocumentDetail, ReportDetail, StoryWorkspace, TaskDetail } from "./models.js";
 import { projectDeliveryHistory, StoryBoardReader } from "./reader.js";
@@ -136,7 +137,8 @@ export function createStoryBoardViewer(options: StoryBoardViewerOptions): Visual
 		}),
 		[STORY_BOARD_ROUTES.report]: wrap(async (request, response, url) => {
 			if (!allowed(request, response, "GET")) return; const story = idParameter(url, "story"); const report = idParameter(url, "report"); if (!story || !report) return error(response, 400, "Valid story and report ids are required");
-			const value = await cache.read(`report:${story}:${report}`, () => reader.readReportDetail(story, report)); value ? json(response, 200, { report: safeReport(value, story) }) : error(response, 404, "Report not found");
+			// Temporary proof can expire without a workflow state change. Validate current E2E on every request.
+			const value = report === "final-e2e" ? await reader.readReportDetail(story, report) : await cache.read(`report:${story}:${report}`, () => reader.readReportDetail(story, report)); value ? json(response, 200, { report: safeReport(value, story) }) : error(response, 404, "Report not found");
 		}),
 		[STORY_BOARD_ROUTES.refresh]: wrap(async (request, response) => {
 			if (!allowed(request, response, "POST")) return; refreshes += 1; cache.invalidate(); observedVersions.clear(); const replacement = catalog(); void replacement.catch(() => {}); json(response, 202, { accepted: true });
@@ -148,21 +150,36 @@ export function createStoryBoardViewer(options: StoryBoardViewerOptions): Visual
 			if (!allowed(request, response, "GET")) return; const story = idParameter(url, "story"); const evaluation = idParameter(url, "evaluation"); const memberPath = url.searchParams.get("path");
 			if (!story || !evaluation || !memberPath) return error(response, 400, "Valid story, evaluation, and evidence path are required");
 			// Reading the selected report validates legacy catalog membership or current state authority.
-			const report = await cache.read(`report:${story}:${evaluation}`, () => reader.readReportDetail(story, evaluation));
+			const report = evaluation === "final-e2e" ? await reader.readReportDetail(story, evaluation) : await cache.read(`report:${story}:${evaluation}`, () => reader.readReportDetail(story, evaluation));
 			const metadata = report?.evidence.find((item) => item.memberPath === memberPath || item.path === `agent-artifacts/${story}/evidence/${evaluation}/${memberPath}`);
 			if (!metadata?.manifestMember || !metadata.available || !metadata.supported || !metadata.mediaType) return error(response, 404, "Evidence not available");
-			const path = metadata.memberPath ? await resolveCurrentEvidenceMember(options.repositoryRoot, story, memberPath) : await resolveEvidenceMember(options.repositoryRoot, story, evaluation, memberPath); if (!path) return error(response, 404, "Evidence not available");
+			let path: string | undefined; let expectedHash: string | undefined; let expectedBytes: number | undefined;
+			if (metadata.workspace) {
+				try {
+					const reference = (await readCurrentRuntimeState(options.repositoryRoot, story)).state.e2e.workspaceReport;
+					if (!reference) return error(response, 404, "Evidence not available");
+					const snapshot = await readE2eWorkspaceReport(reference); const selected = snapshot.evidence.find((item) => item.reference === memberPath);
+					if (!selected || selected.mimeType !== metadata.mediaType) return error(response, 404, "Evidence not available");
+					path = selected.absolutePath; expectedHash = selected.sha256; expectedBytes = selected.bytes;
+				} catch { return error(response, 404, "Evidence not available"); }
+			} else path = metadata.memberPath ? await resolveCurrentEvidenceMember(options.repositoryRoot, story, memberPath) : await resolveEvidenceMember(options.repositoryRoot, story, evaluation, memberPath);
+			if (!path) return error(response, 404, "Evidence not available");
 			const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 			try {
-				const info = await handle.stat(); if (!info.isFile()) return error(response, 404, "Evidence not available");
-				const extension = extname(path).toLowerCase(); const type = EVIDENCE_TYPES[extension]; if (!type) return error(response, 415, "Evidence type is unsupported");
+				const info = await handle.stat(); if (!info.isFile() || (expectedBytes !== undefined && info.size !== expectedBytes)) return error(response, 404, "Evidence not available");
+				const extension = extname(path).toLowerCase(); const type = metadata.workspace ? Object.values(EVIDENCE_TYPES).find((candidate) => candidate.split(";")[0] === metadata.mediaType) : EVIDENCE_TYPES[extension];
+				if (!type || metadata.mediaType === "image/svg+xml" || metadata.mediaType === "text/html") return error(response, 415, "Evidence type is unsupported");
+				if (expectedHash) {
+					const hash = createHash("sha256"); await pipeline(handle.createReadStream({ autoClose: false, start: 0 }), hash);
+					if (hash.digest("hex") !== expectedHash || (await handle.stat()).size !== expectedBytes) return error(response, 404, "Evidence not available");
+				}
 				const headers = { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" };
 				if (extension === ".md") {
 					const bytes = Buffer.from(sanitizeMarkdown((await handle.readFile()).toString("utf8")));
 					response.writeHead(200, { ...headers, "content-length": bytes.byteLength }); response.end(bytes);
 				} else {
 					response.writeHead(200, { ...headers, "content-length": info.size });
-					await pipeline(handle.createReadStream({ autoClose: false }), response);
+					await pipeline(handle.createReadStream({ autoClose: false, start: 0 }), response);
 				}
 			} finally { await handle.close(); }
 		}),

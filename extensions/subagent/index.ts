@@ -15,6 +15,7 @@ import {
 	type FastModePolicy,
 } from "../fast-mode/policy.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
+import { readE2eWorkspaceHandoff, type E2eWorkspaceReportReference } from "../e2e-workspace/workspace.js";
 import { assertTreeNavigationAllowed, sameRuntimeOwner, type ActivationLifecycle } from "./activation.js";
 import type { LogicalAgentHandle, LogicalAgentSnapshot, RuntimeOwner, SubagentRoutingMetadata, SubagentService, TerminalResult } from "./api.js";
 import { loadSubagentCatalog, type LoadSubagentCatalogOptions } from "./catalog.js";
@@ -128,6 +129,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	let selectedModelTierProfile: string | undefined;
 	let fastModePolicy: FastModePolicy = { ...DEFAULT_FAST_MODE_POLICY };
 	let binding: SessionBinding | undefined;
+	const backgroundWorkspaceReports = new Map<string, E2eWorkspaceReportReference>();
 
 	pi.events.on(MODEL_TIER_PROFILE_EVENT, (value: unknown) => {
 		const policy = normalizeModelTierProfilePolicy(value);
@@ -174,7 +176,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	const agentSnapshot = (current: SessionBinding, agentId: string): LogicalAgentSnapshot | undefined =>
 		current.service.replay(current.owner).snapshot.agents.find((agent) => agent.handle.agentId === agentId);
 
-	const toolDetails = (current: SessionBinding, agentId: string, terminal?: TerminalResult) => {
+	const toolDetails = (current: SessionBinding, agentId: string, terminal?: TerminalResult, workspaceReport?: E2eWorkspaceReportReference) => {
 		const snapshot = agentSnapshot(current, agentId);
 		const terminalMetadata = terminal ? {
 			status: terminal.status,
@@ -199,7 +201,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 				...(snapshot.progress ? { progress: snapshot.progress } : {}),
 				processStatus: ACTIVE_STATES.has(snapshot.state) ? (snapshot.progress?.processStartedAt ? "active" : "starting") : undefined,
 			} : {}),
-			...(terminalMetadata ? { terminal: terminalMetadata } : {}),
+			...(terminalMetadata ? { terminal: { ...terminalMetadata, ...(workspaceReport ? { e2eWorkspaceReportPath: workspaceReport.reportPath, e2eWorkspaceReport: workspaceReport } : {}) } } : {}),
 		};
 	};
 
@@ -226,8 +228,11 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		return () => signal.removeEventListener("abort", stop);
 	};
 
-	const terminalResult = (current: SessionBinding, agentId: string, terminal: TerminalResult) => {
+	const terminalResult = async (current: SessionBinding, agentId: string, terminal: TerminalResult) => {
 		const snapshot = agentSnapshot(current, agentId);
+		const workspaceReport = snapshot?.agent === "e2e-tester" && terminal.reportPath
+			? (await readE2eWorkspaceHandoff(terminal.reportPath))?.reference
+			: undefined;
 		const identity = `${snapshot?.agent ?? "Subagent"}${snapshot?.title ? ` · ${snapshot.title}` : ""} (${agentId})`;
 		const report = terminalReportPreview(terminal, MAX_TOOL_OUTPUT_BYTES - 2_000);
 		const reference = terminal.reportPath
@@ -235,12 +240,13 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			: `Read this existing report with subagent_read (agentId: ${agentId}, attemptId: ${terminal.attemptId}); use subagent_continue only for new work.`;
 		const text = `${identity} · ${terminal.status}\n${routingNotice(snapshot?.routing)}${report}\n\n${reference}`;
 		if (terminal.status === "failed") throw new Error(text);
-		return result(text, toolDetails(current, agentId, terminal));
+		return result(text, toolDetails(current, agentId, terminal, workspaceReport));
 	};
 
 	const formatSettlements = (settlements: readonly PendingBackgroundSettlement[]) => {
 		const items = settlements.map(({ delivery, outcome }) => {
 			const terminal = "terminal" in outcome ? outcome.terminal : undefined;
+			const workspaceReport = terminal?.reportPath ? backgroundWorkspaceReports.get(terminal.reportPath) : undefined;
 			const status = terminal?.status ?? "failed";
 			const snapshot = binding?.active && sameRuntimeOwner(binding.owner, delivery.owner)
 				? agentSnapshot(binding, delivery.agentId) : undefined;
@@ -254,6 +260,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 					attemptId: terminal.attemptId,
 					reason: terminal.reason,
 					...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}),
+					...(workspaceReport ? { e2eWorkspaceReportPath: workspaceReport.reportPath, e2eWorkspaceReport: workspaceReport } : {}),
 					...(terminal.reportBytes === undefined ? {} : { reportBytes: terminal.reportBytes }),
 					...(terminal.reportCharacters === undefined ? {} : { reportCharacters: terminal.reportCharacters }),
 					...(terminal.progress ? { progress: terminal.progress } : {}),
@@ -348,7 +355,14 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			current.tiers.set(agentId, resolved.tier);
 			publishProjection(current);
 			if (mode === "background") {
-				pendingDeliveries.track({ owner: current.owner, agent: params.agent, agentId }, launched.result);
+				const backgroundResult = params.agent === "e2e-tester" ? launched.result.then(async (terminal) => {
+					if (terminal.reportPath) {
+						const workspaceReport = (await readE2eWorkspaceHandoff(terminal.reportPath))?.reference;
+						if (workspaceReport) backgroundWorkspaceReports.set(terminal.reportPath, workspaceReport);
+					}
+					return terminal;
+				}) : launched.result;
+				pendingDeliveries.track({ owner: current.owner, agent: params.agent, agentId }, backgroundResult);
 				return result(`${routingNotice(resolved.spec.routing)}Spawned ${params.agent}${resolved.spec.title ? ` · ${resolved.spec.title}` : ""} in background as ${agentId}. Its terminal report will be steered into this activation and will wake it when idle. Do not sleep or poll for progress; continue non-overlapping work, end the turn, or call wait once with event subagent_settled only when blocked.`, toolDetails(current, agentId));
 			}
 			const unsubscribe = subscribeToolUpdates(current, agentId, onUpdate);

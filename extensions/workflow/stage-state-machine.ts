@@ -20,6 +20,7 @@ import {
 	type TaskRuntimeState,
 	type VerificationRuntimeState,
 } from "./story-runtime-store.js";
+import type { E2eWorkspaceReportReference } from "../e2e-workspace/workspace.js";
 
 export interface MachineCheck { id: string }
 export interface MachineTask { id: string; checks?: readonly MachineCheck[] }
@@ -71,8 +72,10 @@ export interface ActionSettlement {
 	evidenceRefs?: readonly string[];
 	/** Validated evidence produced by this evaluator attempt only. */
 	currentEvidenceRefs?: readonly string[];
-	/** Exact canonical report produced by this evaluator attempt. */
+	/** Exact canonical report produced by this legacy evaluator attempt. */
 	currentReportRef?: string;
+	/** Exact temporary workspace report produced by this evaluator attempt. */
+	workspaceReport?: E2eWorkspaceReportReference;
 }
 
 export interface MachineAdvance {
@@ -402,9 +405,9 @@ function settleReview(state: StoryRuntimeState, review: ReviewRuntimeState, fixi
 }
 
 function settleE2E(state: StoryRuntimeState, fixing: boolean, settlement: ActionSettlement, budget: number, target: RuntimeCorrectionTarget): void {
-	if (!fixing && settlement.result === "interrupted") {
+	if (settlement.result === "interrupted") {
 		state.e2e.status = "interrupted";
-		state.e2e.interruptedFrom = "testing";
+		state.e2e.interruptedFrom = fixing ? "fixing" : "testing";
 		state.e2e.failure = failure(settlement);
 		state.status = "paused";
 		delete state.activationOwner;
@@ -412,7 +415,7 @@ function settleE2E(state: StoryRuntimeState, fixing: boolean, settlement: Action
 	}
 	if (!fixing) {
 		if (settlement.evidenceRefs) state.e2e.evidenceRefs = [...new Set([...state.e2e.evidenceRefs, ...settlement.evidenceRefs])];
-		const acceptedReportMetadata = settlement.currentReportRef !== undefined || settlement.currentEvidenceRefs !== undefined || settlement.findings !== undefined;
+		const acceptedReportMetadata = settlement.workspaceReport !== undefined || settlement.currentReportRef !== undefined || settlement.currentEvidenceRefs !== undefined || settlement.findings !== undefined;
 		if (acceptedReportMetadata) {
 			if (settlement.findings === undefined) delete state.e2e.currentFindings;
 			else state.e2e.currentFindings = structuredClone([...settlement.findings]);
@@ -420,6 +423,8 @@ function settleE2E(state: StoryRuntimeState, fixing: boolean, settlement: Action
 			else state.e2e.currentEvidenceRefs = [...settlement.currentEvidenceRefs];
 			if (settlement.currentReportRef === undefined) delete state.e2e.currentReportRef;
 			else state.e2e.currentReportRef = settlement.currentReportRef;
+			if (settlement.workspaceReport === undefined) delete state.e2e.workspaceReport;
+			else state.e2e.workspaceReport = structuredClone(settlement.workspaceReport);
 		}
 	}
 	if (settlement.result !== "passed") {
