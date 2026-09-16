@@ -6,6 +6,7 @@ import test from "node:test";
 import { readE2eWorkspaceHandoff, readE2eWorkspaceReport, type E2eWorkspaceReportResult } from "../../e2e-workspace/workspace.js";
 import { resolveToolSelectors } from "../../workflow/tool-groups.js";
 import { DEFAULT_SUBAGENT_CATALOG_CONFIG } from "../catalog.js";
+import { formatStandaloneE2eReceipt, readStandaloneE2eReceipt } from "../e2e-receipt.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "../child-extensions.js";
 import { createPiInvocationResolver, type SubagentInvocationRequest } from "../invocation.js";
 import { SubagentProcessManager } from "../process-manager.js";
@@ -42,10 +43,17 @@ test("real standalone E2E restores its session workspace, isolates fresh actors,
 	const record = async (started: Awaited<ReturnType<typeof launch>>) => {
 		const terminal = await started.result;
 		assert.equal(terminal.status, "completed", terminal.stderr);
+		assert.equal(terminal.text, "", "terminating report tool completes without native prose");
 		assert.ok(terminal.reportPath, "native transport report remains available separately");
 		nativePaths.push(terminal.reportPath);
 		const snapshot = await readE2eWorkspaceHandoff(terminal.reportPath);
 		assert.ok(snapshot, "current attempt has a validated machine-readable workspace handoff");
+		const receipt = await readStandaloneE2eReceipt(terminal.reportPath);
+		assert.equal(receipt.state, "validated");
+		const receiptText = formatStandaloneE2eReceipt(receipt);
+		assert.match(receiptText, /E2E outcome: passed/);
+		assert.match(receiptText, new RegExp(snapshot.reportPath));
+		assert.doesNotMatch(receiptText, /Evaluation \d|Exercise standalone fixture/);
 		snapshots.push(snapshot);
 		assert.equal(terminal.progress?.toolCalls, 5, "real agent called init, evidence, duplicate evidence, invalid report, valid report");
 		assert.equal(snapshot.evidence.length, 1);

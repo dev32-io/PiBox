@@ -249,8 +249,8 @@ test("renders paged subagent reads as historical prose with identity", () => {
 	}, false, theme, false));
 	assert.deepEqual(rendered, [
 		"└─ Done · investigator · Trace routing · 10–12 of 40 characters",
-		"  terminal report",
-		"    indented proof",
+		"   terminal report",
+		"     indented proof",
 	]);
 });
 
@@ -296,7 +296,7 @@ test("renders event waits with the event, elapsed time, pending count, and settl
 		},
 	}, false, theme, false)), [
 		"└─ Event received · subagent_settled · 1 settlement · 1m 14s elapsed",
-		"└─ general-purpose · completed · agent-1",
+		"   └─ general-purpose · completed · agent-1",
 	]);
 });
 
@@ -331,8 +331,8 @@ test("renders recalled memories as compact typed tree rows", () => {
 	}, false, theme, false));
 	assert.deepEqual(rendered, [
 		"└─ Done · 2 memories",
-		"├─ memory-1 · audio-contract · Assistant audio remains FIFO by turn.",
-		"└─ memory-2 · audio-pitfall · Interrupt clears local playback first.",
+		"   ├─ memory-1 · audio-contract · Assistant audio remains FIFO by turn.",
+		"   └─ memory-2 · audio-pitfall · Interrupt clears local playback first.",
 	]);
 	assert.doesNotMatch(rendered.join("\n"), /raw memory output/);
 });
@@ -349,7 +349,7 @@ test("renders memory audit findings with bounded review reasons", () => {
 	}, false, theme, false));
 	assert.deepEqual(rendered, [
 		"└─ Done · 41 checked · 1 finding · bounded",
-		"└─ memory-1 · evidence changed since verification; verification older than 90 days",
+		"   └─ memory-1 · evidence changed since verification; verification older than 90 days",
 	]);
 });
 
@@ -371,8 +371,8 @@ test("renders resource lists as concise tree rows instead of raw JSON", () => {
 	const rendered = lines(renderHarnessToolResult("resource_list", result, false, theme, false));
 	assert.deepEqual(rendered, [
 		"└─ Done · 2 items",
-		"├─ work-item:checkout · Checkout · active",
-		"└─ work-item:search · Search · complete",
+		"   ├─ work-item:checkout · Checkout · active",
+		"   └─ work-item:search · Search · complete",
 	]);
 	assert.doesNotMatch(rendered.join("\n"), /[{}\[\]"]/);
 });
@@ -419,7 +419,7 @@ test("renders canonical mutation changes and commit without receipt JSON", () =>
 	}, false, theme, false));
 	assert.deepEqual(rendered, [
 		"└─ Done · 1 item · commit 1234567890ab",
-		"└─ work-item:checkout/task:implement · create",
+		"   └─ work-item:checkout/task:implement · create",
 	]);
 });
 

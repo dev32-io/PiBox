@@ -1,5 +1,6 @@
 import { sameRuntimeOwner } from "./activation.js";
 import type { RuntimeOwner, TerminalResult } from "./api.js";
+import type { StandaloneE2eReceipt } from "./e2e-receipt.js";
 
 export interface PendingBackgroundDelivery {
 	readonly owner: RuntimeOwner;
@@ -7,8 +8,10 @@ export interface PendingBackgroundDelivery {
 	readonly agentId: string;
 }
 
+export type PendingBackgroundTerminal = TerminalResult & { readonly e2eReceipt?: StandaloneE2eReceipt };
+
 export type PendingBackgroundOutcome =
-	| { readonly terminal: TerminalResult }
+	| { readonly terminal: PendingBackgroundTerminal }
 	| { readonly error: string };
 
 export interface PendingBackgroundSettlement {

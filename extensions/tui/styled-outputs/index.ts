@@ -26,7 +26,7 @@ import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from ".
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v16");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v17");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -203,6 +203,15 @@ function installToolPatch(): void {
 			this.contentBox.paddingY = 0;
 			this.contentBox.setBgFn(undefined);
 		}
+		if (this.contentText) {
+			// Unknown tools bypass contentBox, but still belong to the shared column.
+			this.contentText.paddingX = 3;
+			this.contentText.paddingY = 0;
+			if (!this.hasRendererDefinition?.() && typeof this.contentText.text === "string") {
+				const [headline = "", ...body] = this.contentText.text.split("\n");
+				this.contentText.setText([headline, ...body.map((line: string) => line ? `   ${line}` : line)].join("\n"));
+			}
+		}
 
 		// PiBox harness tools share one semantic renderer so structured results remain
 		// readable instead of appearing as raw JSON blobs. Foreground subagents use
@@ -251,7 +260,7 @@ function installToolPatch(): void {
 						? theme.fg("error", "✗")
 						: theme.fg("success", "✓");
 				const prefix = `${shellIndent}${symbol} `;
-				const continuation = `${shellIndent}  `;
+				const continuation = `${shellIndent}   `;
 				renderContainer.children[0] = retainRegion(callRegion, new LinePrefixedComponent(
 					call, prefix, continuation, visibleWidth(prefix), visibleWidth(continuation),
 				));

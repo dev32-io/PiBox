@@ -22,6 +22,7 @@ import { loadSubagentCatalog, type LoadSubagentCatalogOptions } from "./catalog.
 import { subagentSpawnToolDescription } from "./catalog-description.js";
 import { normalizeSubagentTitle } from "./presentation.js";
 import { formatSubagentFallback } from "./display.js";
+import { formatStandaloneE2eReceipt, readStandaloneE2eReceipt } from "./e2e-receipt.js";
 import { DEFAULT_REPORT_CHARACTERS, MAX_REPORT_CHARACTERS, readReportPage, readTerminalReport, terminalReportText } from "./report.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "./child-extensions.js";
 import { assemblePromptContext } from "./prompt-context.js";
@@ -129,7 +130,6 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	let selectedModelTierProfile: string | undefined;
 	let fastModePolicy: FastModePolicy = { ...DEFAULT_FAST_MODE_POLICY };
 	let binding: SessionBinding | undefined;
-	const backgroundWorkspaceReports = new Map<string, E2eWorkspaceReportReference>();
 
 	pi.events.on(MODEL_TIER_PROFILE_EVENT, (value: unknown) => {
 		const policy = normalizeModelTierProfilePolicy(value);
@@ -230,15 +230,19 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 
 	const terminalResult = async (current: SessionBinding, agentId: string, terminal: TerminalResult) => {
 		const snapshot = agentSnapshot(current, agentId);
-		const workspaceReport = snapshot?.agent === "e2e-tester" && terminal.reportPath
-			? (await readE2eWorkspaceHandoff(terminal.reportPath))?.reference
-			: undefined;
+		const e2eReceipt = snapshot?.agent === "e2e-tester" ? await readStandaloneE2eReceipt(terminal.reportPath) : undefined;
+		const workspaceReport = e2eReceipt?.state === "validated" ? e2eReceipt.reference : undefined;
 		const identity = `${snapshot?.agent ?? "Subagent"}${snapshot?.title ? ` · ${snapshot.title}` : ""} (${agentId})`;
-		const report = terminalReportPreview(terminal, MAX_TOOL_OUTPUT_BYTES - 2_000);
-		const reference = terminal.reportPath
-			? `Report: ${terminal.reportPath}\nUse normal read/grep for the complete report; subagent_read remains a compatibility reader.`
-			: `Read this existing report with subagent_read (agentId: ${agentId}, attemptId: ${terminal.attemptId}); use subagent_continue only for new work.`;
-		const text = `${identity} · ${terminal.status}\n${routingNotice(snapshot?.routing)}${report}\n\n${reference}`;
+		let body: string;
+		if (e2eReceipt) body = formatStandaloneE2eReceipt(e2eReceipt);
+		else {
+			const report = terminalReportPreview(terminal, MAX_TOOL_OUTPUT_BYTES - 2_000);
+			const reference = terminal.reportPath
+				? `Report: ${terminal.reportPath}\nUse normal read/grep for the complete report; subagent_read remains a compatibility reader.`
+				: `Read this existing report with subagent_read (agentId: ${agentId}, attemptId: ${terminal.attemptId}); use subagent_continue only for new work.`;
+			body = `${report}\n\n${reference}`;
+		}
+		const text = `${identity} · ${terminal.status}${e2eReceipt ? ` · attempt ${terminal.attemptId}` : ""}\n${routingNotice(snapshot?.routing)}${body}`;
 		if (terminal.status === "failed") throw new Error(text);
 		return result(text, toolDetails(current, agentId, terminal, workspaceReport));
 	};
@@ -246,11 +250,16 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	const formatSettlements = (settlements: readonly PendingBackgroundSettlement[]) => {
 		const items = settlements.map(({ delivery, outcome }) => {
 			const terminal = "terminal" in outcome ? outcome.terminal : undefined;
-			const workspaceReport = terminal?.reportPath ? backgroundWorkspaceReports.get(terminal.reportPath) : undefined;
+			const e2eReceipt = terminal?.e2eReceipt;
+			const workspaceReport = e2eReceipt?.state === "validated" ? e2eReceipt.reference : undefined;
 			const status = terminal?.status ?? "failed";
 			const snapshot = binding?.active && sameRuntimeOwner(binding.owner, delivery.owner)
 				? agentSnapshot(binding, delivery.agentId) : undefined;
-			const summary = boundedUtf8("terminal" in outcome ? terminalReportText(outcome.terminal) : outcome.error, 1_200);
+			const summary = delivery.agent === "e2e-tester"
+				? formatStandaloneE2eReceipt(e2eReceipt ?? { state: "unavailable" })
+				: boundedUtf8("terminal" in outcome ? terminalReportText(outcome.terminal) : outcome.error, 1_200);
+			const historical = delivery.agent === "e2e-tester" && terminal && snapshot?.attemptId && snapshot.attemptId !== terminal.attemptId
+				? ` · historical completion; current attempt ${snapshot.attemptId}` : "";
 			return {
 				agent: boundedUtf8(delivery.agent, 256),
 				agentId: boundedUtf8(delivery.agentId, 256),
@@ -261,18 +270,21 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 					reason: terminal.reason,
 					...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}),
 					...(workspaceReport ? { e2eWorkspaceReportPath: workspaceReport.reportPath, e2eWorkspaceReport: workspaceReport } : {}),
+					...(e2eReceipt ? { e2eReceipt } : {}),
 					...(terminal.reportBytes === undefined ? {} : { reportBytes: terminal.reportBytes }),
 					...(terminal.reportCharacters === undefined ? {} : { reportCharacters: terminal.reportCharacters }),
 					...(terminal.progress ? { progress: terminal.progress } : {}),
 				} : {}),
 				status,
 				summary,
+				e2e: delivery.agent === "e2e-tester",
+				historical,
 			};
 		});
 		const text = boundedUtf8(items.map((item) =>
-			`[Subagent ${item.status}]\n${item.agent}${item.title ? ` · ${item.title}` : ""} (${item.agentId})\n${routingNotice(item.routing)}${item.summary}${item.reportPath ? `\nReport: ${item.reportPath}\nUse normal read/grep for the complete report; subagent_read remains compatible.` : item.attemptId ? `\nRead the existing report with subagent_read (agentId: ${item.agentId}, attemptId: ${item.attemptId}); no new model turn needed.` : ""}`,
+			`[Subagent ${item.status}${item.e2e && item.attemptId ? ` · attempt ${item.attemptId}` : ""}${item.historical}]\n${item.agent}${item.title ? ` · ${item.title}` : ""} (${item.agentId})\n${routingNotice(item.routing)}${item.summary}${item.e2e ? "" : item.reportPath ? `\nReport: ${item.reportPath}\nUse normal read/grep for the complete report; subagent_read remains compatible.` : item.attemptId ? `\nRead the existing report with subagent_read (agentId: ${item.agentId}, attemptId: ${item.attemptId}); no new model turn needed.` : ""}`,
 		).join("\n\n"), MAX_TOOL_OUTPUT_BYTES);
-		const details = items.map(({ summary: _summary, ...metadata }) => metadata);
+		const details = items.map(({ summary: _summary, e2e: _e2e, historical: _historical, ...metadata }) => metadata);
 		return { text, details };
 	};
 
@@ -336,7 +348,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		],
 		parameters: Type.Object({
 			agent: Type.String({ description: "Exact configured agent name" }),
-			title: Type.Optional(Type.String({ description: "Optional display label (prefer 3–7 words). Not an agent name or assignment; retained across continuation." })),
+			title: Type.String({ description: "Required descriptive display label (prefer 3–7 words). Not an agent name or assignment; retained across continuation." }),
 			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions. Use readable prose with normal word spacing." }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
 			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Override the agent default up or down; guidance, not a cap. Does not replace an agent's configured model. Local never uses paid providers." })),
@@ -355,13 +367,12 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			current.tiers.set(agentId, resolved.tier);
 			publishProjection(current);
 			if (mode === "background") {
-				const backgroundResult = params.agent === "e2e-tester" ? launched.result.then(async (terminal) => {
-					if (terminal.reportPath) {
-						const workspaceReport = (await readE2eWorkspaceHandoff(terminal.reportPath))?.reference;
-						if (workspaceReport) backgroundWorkspaceReports.set(terminal.reportPath, workspaceReport);
-					}
-					return terminal;
-				}) : launched.result;
+				const backgroundResult = params.agent === "e2e-tester"
+					? launched.result.then(async (terminal) => {
+						const { text: _text, stderr: _stderr, ...metadata } = terminal;
+						return { ...metadata, text: "", e2eReceipt: await readStandaloneE2eReceipt(terminal.reportPath) };
+					})
+					: launched.result;
 				pendingDeliveries.track({ owner: current.owner, agent: params.agent, agentId }, backgroundResult);
 				return result(`${routingNotice(resolved.spec.routing)}Spawned ${params.agent}${resolved.spec.title ? ` · ${resolved.spec.title}` : ""} in background as ${agentId}. Its terminal report will be steered into this activation and will wake it when idle. Do not sleep or poll for progress; continue non-overlapping work, end the turn, or call wait once with event subagent_settled only when blocked.`, toolDetails(current, agentId));
 			}
@@ -515,7 +526,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "subagent_read",
 		label: "Read Subagent Report",
-		description: "Compatibility reader for a bounded page of the same settled standalone report advertised by its /tmp report path. Prefer normal read/grep. No model turn, wait, or continuation. Offsets count Unicode characters; pages contain at most 12,000 characters / 48KB. Supply the returned attemptId on later pages to reject a replaced report.",
+		description: "Compatibility reader for a bounded page of the settled standalone report. For e2e-tester, reads validated report.json instead of native report.md. Prefer normal read/grep. No model turn, wait, or continuation. Offsets count Unicode characters; pages contain at most 12,000 characters / 48KB. Supply returned attemptId on later pages to reject a replaced report.",
 		parameters: Type.Object({
 			agentId: Type.String(),
 			attemptId: Type.Optional(Type.String({ description: "Expected report attempt ID; prevents mixing pages after a continuation" })),
@@ -534,14 +545,27 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			if (binding !== current || !current.active) throw new Error("Report belongs to an ended session activation");
 			if (signal?.aborted) throw abortError(signal);
 			if (params.attemptId && params.attemptId !== terminal.attemptId) throw new Error("Report attempt changed; read again from offset 0 without the old attemptId");
-			const report = await readTerminalReport(terminal);
+			let report: string;
+			let reportPath = terminal.reportPath;
+			let workspaceReport: E2eWorkspaceReportReference | undefined;
+			if (target.agent === "e2e-tester") {
+				if (!terminal.reportPath) throw new Error("E2E workspace report is unavailable: native report path is missing");
+				let workspace;
+				try { workspace = await readE2eWorkspaceHandoff(terminal.reportPath); }
+				catch { throw new Error("E2E workspace report validation failed"); }
+				if (!workspace) throw new Error("E2E workspace report is unavailable: no submitted handoff");
+				report = workspace.serializedJsonText;
+				reportPath = workspace.reportPath;
+				workspaceReport = workspace.reference;
+			} else report = await readTerminalReport(terminal);
 			if (binding !== current || !current.active) throw new Error("Report belongs to an ended session activation");
+			if (agentSnapshot(current, params.agentId)?.attemptId !== terminal.attemptId) throw new Error("Report attempt changed; read again from offset 0 without the old attemptId");
 			const { text, ...page } = readReportPage(report, params.offset, params.limit);
 			const identity = `${target.agent}${target.title ? ` · ${target.title}` : ""} (${params.agentId})`;
 			const next = page.nextOffset === undefined ? "End of report." : `Next: subagent_read agentId=${params.agentId} attemptId=${terminal.attemptId} offset=${page.nextOffset}`;
-			return result(`${identity} · ${terminal.status} · attempt ${terminal.attemptId}${terminal.reportPath ? `\nReport: ${terminal.reportPath}` : ""}\nCharacters ${page.offset}–${page.offset + page.count} of ${page.totalCharacters}. ${next}\n\n${text}`, {
+			return result(`${identity} · ${terminal.status} · attempt ${terminal.attemptId}${reportPath ? `\nReport: ${reportPath}` : ""}\nCharacters ${page.offset}–${page.offset + page.count} of ${page.totalCharacters}. ${next}\n\n${text}`, {
 				agentId: params.agentId, agent: target.agent, title: target.title,
-				state: terminal.status, routing: target.routing, attemptId: terminal.attemptId, ...(terminal.reportPath ? { reportPath: terminal.reportPath } : {}), ...page,
+				state: terminal.status, routing: target.routing, attemptId: terminal.attemptId, ...(reportPath ? { reportPath } : {}), ...(workspaceReport ? { e2eWorkspaceReport: workspaceReport } : {}), ...page,
 			});
 		},
 	});
@@ -642,6 +666,8 @@ async function resolveLaunch(
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
 ): Promise<{ tier: ModelTier; spec: Parameters<SubagentService["launch"]>[0] }> {
+	const title = normalizeSubagentTitle(params.title);
+	if (!title) throw new Error("Subagent title is required and must contain visible text");
 	const agent = binding.catalog.config.agents[params.agent];
 	if (!agent) throw new Error(`Unknown subagent definition: ${params.agent}. Available: ${Object.keys(binding.catalog.config.agents).sort().join(", ")}`);
 	if (params.allowFallback !== undefined && !params.model) throw new Error("allowFallback requires an explicit model");
@@ -650,7 +676,6 @@ async function resolveLaunch(
 	const explicitLocal = override?.model.startsWith("local-llm/") === true;
 	if (explicitLocal && params.tier && params.tier !== "local") throw new Error("local-llm models require tier local");
 	const tier: ModelTier = explicitLocal ? "local" : params.tier ?? agent.tier ?? "medium";
-	const title = normalizeSubagentTitle(params.title);
 	const routingConfig = {
 		modelTierListProfiles: binding.catalog.config.modelTierListProfiles,
 		modelTierProfile: binding.catalog.config.modelTierListProfiles.profiles[binding.catalog.config.modelTierProfile]
@@ -711,7 +736,7 @@ async function resolveLaunch(
 		spec: {
 			owner: binding.owner,
 			agent: params.agent,
-			...(title ? { title } : {}),
+			title,
 			routing,
 			cwd: binding.repositoryRoot,
 			...promptContext,

@@ -29,7 +29,7 @@ import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../tool-pol
 import { SubagentUiProjectionRegistry } from "../ui-projection.js";
 import { formatSubagentFooterProjection } from "../display.js";
 import { WorkflowSubagentLauncher } from "../../workflow-runtime/subagent-launcher.js";
-import { createE2eEvaluation, createE2eWorkspace, submitE2eWorkspaceReport } from "../../e2e-workspace/workspace.js";
+import { createE2eEvaluation, createE2eWorkspace, readE2eWorkspaceHandoff, retainE2eEvidence, submitE2eWorkspaceReport } from "../../e2e-workspace/workspace.js";
 
 interface Deferred<T> { promise: Promise<T>; resolve(value: T): void }
 function deferred<T>(): Deferred<T> {
@@ -308,8 +308,10 @@ test("runtime role alone selects the standalone main or child surface", () => {
 	assert.equal(child.handlers.size, 0);
 });
 
-test("spawn routing schema makes tier freedom and configured-model precedence explicit", () => {
+test("spawn schema requires a descriptive title without hard length limits", () => {
 	const spawn = harness().tools.get("subagent_spawn");
+	assert.equal(spawn.parameters.required.includes("title"), true);
+	assert.match(spawn.parameters.properties.title.description, /Required descriptive display label \(prefer 3–7 words\)/);
 	assert.equal(spawn.parameters.properties.title.maxLength, undefined, "display heading length does not reject a logical label");
 	assert.match(spawn.parameters.properties.tier.description, /override the agent default up or down/i);
 	assert.match(spawn.parameters.properties.tier.description, /does not replace an agent's configured model/i);
@@ -317,6 +319,19 @@ test("spawn routing schema makes tier freedom and configured-model precedence ex
 	assert.match(spawn.parameters.properties.model.description, /Overrides an agent's configured model/);
 	assert.match(spawn.parameters.properties.model.description, /Strict by default/);
 	assert.equal(spawn.parameters.required.includes("tier"), false);
+});
+
+test("spawn execution rejects missing or normalized-blank titles", async () => {
+	const f = harness();
+	await f.fire("session_start", { reason: "startup" });
+	for (const title of [undefined, " \n\t", "\u001b[31m\u001b[0m"]) {
+		await assert.rejects(
+			f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", ...(title === undefined ? {} : { title }), task: "Do not launch" }, undefined, undefined, f.ctx),
+			/Subagent title is required and must contain visible text/,
+		);
+	}
+	assert.equal(f.services[0]!.launches.length, 0);
+	await f.fire("session_shutdown", { reason: "quit" });
 });
 
 test("assignment legibility guidance stays scoped to spawn and continue task arguments", async () => {
@@ -340,7 +355,7 @@ test("loads trusted catalog policy, resolves the active tier profile, prompt, ro
 	f.pi.events.emit(MODEL_TIER_PROFILE_EVENT, { profile: "token-conservative" });
 	await f.fire("session_start", { reason: "startup" });
 	const updates: any[] = [];
-	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "general-purpose", task: "Inspect the bounded surface" }, undefined, (update: any) => updates.push(update), f.ctx);
+	const pending = f.tools.get("subagent_spawn").execute("call", { agent: "general-purpose", title: "Test bounded assignment", task: "Inspect the bounded surface" }, undefined, (update: any) => updates.push(update), f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
 	const service = f.services[0]!;
 	const agentId = [...service.snapshots.keys()][0]!;
@@ -362,7 +377,7 @@ test("loads trusted catalog policy, resolves the active tier profile, prompt, ro
 test("background returns immediately and steers one terminal batch to the same binding", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "general-purpose", task: "Background work", mode: "background" }, undefined, undefined, f.ctx);
+	const spawned = await f.tools.get("subagent_spawn").execute("call", { agent: "general-purpose", title: "Test bounded assignment", task: "Background work", mode: "background" }, undefined, undefined, f.ctx);
 	assert.match(spawned.content[0].text, /background as agent-1/);
 	assert.match(spawned.content[0].text, /Do not sleep or poll/);
 	assert.deepEqual(spawned.details.uiRef, { owner: f.services[0]!.owner, agentId: "agent-1" }, "the immutable launch receipt carries an owner-fenced UI correlation, not mutable lifecycle state");
@@ -382,7 +397,7 @@ test("foreground and background results advertise the harness report and subagen
 	const foregroundText = "small foreground report";
 	const foregroundPath = join(root, "foreground.md");
 	await writeFile(foregroundPath, foregroundText, { mode: 0o600 });
-	const foregroundPending = f.tools.get("subagent_spawn").execute("foreground", { agent: "general-purpose", task: "Foreground" }, undefined, undefined, f.ctx);
+	const foregroundPending = f.tools.get("subagent_spawn").execute("foreground", { agent: "general-purpose", title: "Test bounded assignment", task: "Foreground" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
 	f.services[0]!.finish("agent-1", "completed", foregroundText, foregroundPath);
 	const foreground = await foregroundPending;
@@ -398,7 +413,7 @@ test("foreground and background results advertise the harness report and subagen
 	const backgroundText = "🙂".repeat(20_000);
 	const backgroundPath = join(root, "background.md");
 	await writeFile(backgroundPath, backgroundText, { mode: 0o600 });
-	const background = await f.tools.get("subagent_spawn").execute("background", { agent: "general-purpose", task: "Background", mode: "background" }, undefined, undefined, f.ctx);
+	const background = await f.tools.get("subagent_spawn").execute("background", { agent: "general-purpose", title: "Test bounded assignment", task: "Background", mode: "background" }, undefined, undefined, f.ctx);
 	f.services[0]!.finish(background.details.agentId, "completed", backgroundText, backgroundPath);
 	await waitUntil(() => f.sent.length === 1, "background report was not delivered");
 	assert.match(f.sent[0].message.content, new RegExp(`Report: ${backgroundPath}`));
@@ -407,32 +422,215 @@ test("foreground and background results advertise the harness report and subagen
 	await f.fire("session_shutdown", { reason: "quit" });
 });
 
-test("standalone e2e-tester result exposes validated workspace report metadata", async (t) => {
+test("standalone E2E delivery uses deterministic validated receipts and reads report.json on demand", async (t) => {
 	const attempt = await mkdtemp("/tmp/pibox-e2e-standalone-"); await chmod(attempt, 0o700);
 	const workspace = await createE2eWorkspace({ sessionId: "child-session" });
 	t.after(() => Promise.all([rm(attempt, { recursive: true, force: true }), rm(workspace.root, { recursive: true, force: true })]));
-	const evaluation = await createE2eEvaluation({ workspace });
-	const nativeReportPath = join(attempt, "report.md");
-	const submitted = await submitE2eWorkspaceReport({ evaluation, nativeReportPath, submission: { cases: [{ case: "E2E-001", verdict: "passed" }] } });
 	const loaded = catalog();
 	loaded.config.agents["e2e-tester"] = { ...loaded.config.agents["general-purpose"]!, prompt: `${BUILT_IN_AGENT_ROOT}/e2e-tester.md` };
 	const f = harness({ loadCatalog: () => loaded }); await f.fire("session_start", { reason: "startup" });
-	const pending = f.tools.get("subagent_spawn").execute("e2e", { agent: "e2e-tester", task: "Evaluate" }, undefined, undefined, f.ctx);
+
+	const evaluation = await createE2eEvaluation({ workspace });
+	await writeFile(join(evaluation.outputDirectory, "proof.txt"), "bounded proof", { mode: 0o600 });
+	const evidence = await retainE2eEvidence({ evaluation, sourcePath: "proof.txt", reason: "receipt count" });
+	const nativeReportPath = join(attempt, "report.md");
+	const findingProse = "PRIVATE-FINDING-PROSE";
+	const submitted = await submitE2eWorkspaceReport({ evaluation, nativeReportPath, submission: {
+		cases: [
+			{ case: "E2E-001", verdict: "passed", evidence: [evidence.reference] },
+			{ case: "E2E-002", verdict: "failed" },
+			{ case: "E2E-003", verdict: "blocked" },
+		],
+		findings: [
+			{ summary: findingProse, severity: "critical" },
+			{ summary: "default-major" },
+			{ summary: "major", severity: "major" },
+			{ summary: "minor", severity: "minor" },
+		],
+	} });
+	const nativeProse = `NATIVE-CONTRADICTORY-PASS-${"x".repeat(30_000)}`;
+	const pending = f.tools.get("subagent_spawn").execute("e2e", { agent: "e2e-tester", title: "Test bounded assignment", task: "Evaluate" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
-	f.services[0]!.finish("agent-1", "completed", "done", nativeReportPath);
-	const result = await pending;
-	assert.equal(result.details.terminal.e2eWorkspaceReportPath, submitted.reportPath);
-	assert.deepEqual(result.details.terminal.e2eWorkspaceReport, submitted.reference);
+	f.services[0]!.finish("agent-1", "completed", nativeProse, nativeReportPath);
+	const foreground = await pending;
+	const foregroundText = foreground.content[0].text;
+	assert.match(foregroundText, /completed · attempt attempt-1/);
+	assert.match(foregroundText, /E2E outcome: failed \(critical\)/);
+	assert.match(foregroundText, /Cases: 1 passed · 1 failed · 1 blocked/);
+	assert.match(foregroundText, /Findings: 1 critical · 2 major · 1 minor/);
+	assert.match(foregroundText, new RegExp(`Report: ${submitted.reportPath}`));
+	assert.match(foregroundText, new RegExp(`Evidence: 1 retained · ${join(evaluation.root, "evidence")}`));
+	assert.match(foregroundText, new RegExp(`Use read/grep on ${submitted.reportPath}`));
+	assert.doesNotMatch(foregroundText, /NATIVE-CONTRADICTORY|PRIVATE-FINDING-PROSE|default-major/);
+	assert.ok(Buffer.byteLength(foregroundText) < 2_000);
+	assert.equal(JSON.stringify(foreground.details).includes(findingProse), false);
+	assert.equal(foreground.details.terminal.e2eWorkspaceReportPath, submitted.reportPath);
+	assert.deepEqual(foreground.details.terminal.e2eWorkspaceReport, submitted.reference);
+
+	const read = await f.tools.get("subagent_read").execute("read", { agentId: "agent-1" }, undefined, undefined, f.ctx);
+	assert.equal(read.details.reportPath, submitted.reportPath);
+	assert.ok(read.content[0].text.endsWith(submitted.serializedJsonText));
+
+	const nextEvaluation = await createE2eEvaluation({ workspace });
+	const nextAttempt = join(attempt, "continued"); await mkdir(nextAttempt, { mode: 0o700 });
+	const nextNativePath = join(nextAttempt, "report.md");
+	const nextSubmitted = await submitE2eWorkspaceReport({ evaluation: nextEvaluation, nativeReportPath: nextNativePath, submission: { cases: [{ case: "E2E-004", verdict: "passed" }] } });
+	const continuation = f.tools.get("subagent_continue").execute("continue", { agentId: "agent-1", task: "Evaluate latest" }, undefined, undefined, f.ctx);
+	await f.services[0]!.continuationSpawned.promise;
+	f.services[0]!.finish("agent-1", "completed", "", nextNativePath);
+	const continued = await continuation;
+	assert.match(continued.content[0].text, /completed · attempt attempt-3/);
+	assert.match(continued.content[0].text, /E2E outcome: passed/);
+	assert.match(continued.content[0].text, new RegExp(nextSubmitted.reportPath));
+	assert.doesNotMatch(continued.content[0].text, new RegExp(submitted.reportPath));
+	await assert.rejects(f.tools.get("subagent_read").execute("stale", { agentId: "agent-1", attemptId: read.details.attemptId }, undefined, undefined, f.ctx), /Report attempt changed/);
 
 	const backgroundEvaluation = await createE2eEvaluation({ workspace });
 	const backgroundAttempt = join(attempt, "background"); await mkdir(backgroundAttempt, { mode: 0o700 });
 	const backgroundNativeReportPath = join(backgroundAttempt, "report.md");
-	const backgroundSubmitted = await submitE2eWorkspaceReport({ evaluation: backgroundEvaluation, nativeReportPath: backgroundNativeReportPath, submission: { cases: [{ case: "E2E-001", verdict: "passed" }] } });
-	const background = await f.tools.get("subagent_spawn").execute("e2e-background", { agent: "e2e-tester", task: "Evaluate", mode: "background" }, undefined, undefined, f.ctx);
-	f.services[0]!.finish(background.details.agentId, "completed", "done", backgroundNativeReportPath);
-	await waitUntil(() => f.sent.length === 1, "background E2E report was delivered");
-	assert.equal(f.sent[0].message.details.settlements[0].e2eWorkspaceReportPath, backgroundSubmitted.reportPath);
-	assert.deepEqual(f.sent[0].message.details.settlements[0].e2eWorkspaceReport, backgroundSubmitted.reference);
+	const backgroundSubmitted = await submitE2eWorkspaceReport({ evaluation: backgroundEvaluation, nativeReportPath: backgroundNativeReportPath, submission: { cases: [{ case: "E2E-005", verdict: "failed" }], findings: [{ summary: "major background" }] } });
+	const background = await f.tools.get("subagent_spawn").execute("e2e-background", { agent: "e2e-tester", title: "Test bounded assignment", task: "Evaluate", mode: "background" }, undefined, undefined, f.ctx);
+	const batchedEvaluation = await createE2eEvaluation({ workspace });
+	const batchedAttempt = join(attempt, "batched"); await mkdir(batchedAttempt, { mode: 0o700 });
+	const batchedNativeReportPath = join(batchedAttempt, "report.md");
+	const largeReportProse = `LARGE-REPORT-PRIVATE-${"z".repeat(30_000)}`;
+	const batchedSubmitted = await submitE2eWorkspaceReport({ evaluation: batchedEvaluation, nativeReportPath: batchedNativeReportPath, submission: { cases: [{ case: "E2E-006", verdict: "passed" }], summary: largeReportProse } });
+	const batched = await f.tools.get("subagent_spawn").execute("e2e-batched", { agent: "e2e-tester", title: "Test batched receipt", task: "Evaluate", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(background.details.agentId, "completed", "", backgroundNativeReportPath);
+	f.services[0]!.finish(batched.details.agentId, "completed", "", batchedNativeReportPath);
+	// Async workspace reads may settle outside the same delivery batching window.
+	await waitUntil(() => f.sent.flatMap((sent) => sent.message.details.settlements).length === 2, "background E2E reports were delivered");
+	const deliveredText = f.sent.map((sent) => sent.message.content).join("\n");
+	const settlements = f.sent.flatMap((sent) => sent.message.details.settlements);
+	assert.match(deliveredText, /E2E outcome: failed/);
+	assert.match(deliveredText, /Cases: 0 passed · 1 failed · 0 blocked/);
+	assert.match(deliveredText, new RegExp(batchedSubmitted.reportPath));
+	assert.doesNotMatch(deliveredText, /major background|LARGE-REPORT-PRIVATE/);
+	assert.doesNotMatch(deliveredText, new RegExp(backgroundNativeReportPath));
+	assert.ok(Buffer.byteLength(deliveredText) < 4_000);
+	const backgroundSettlement = settlements.find((settlement) => settlement.e2eWorkspaceReportPath === backgroundSubmitted.reportPath);
+	assert.ok(backgroundSettlement);
+	assert.deepEqual(backgroundSettlement.e2eWorkspaceReport, backgroundSubmitted.reference);
+	assert.equal(JSON.stringify(settlements).includes(largeReportProse), false);
+});
+
+test("standalone E2E delivery reports unavailable and invalid handoffs without inventing verdicts", async (t) => {
+	const attempt = await mkdtemp("/tmp/pibox-e2e-invalid-"); await chmod(attempt, 0o700);
+	const workspace = await createE2eWorkspace({ sessionId: "invalid-child" });
+	t.after(() => Promise.all([rm(attempt, { recursive: true, force: true }), rm(workspace.root, { recursive: true, force: true })]));
+	const loaded = catalog();
+	loaded.config.agents["e2e-tester"] = { ...loaded.config.agents["general-purpose"]!, prompt: `${BUILT_IN_AGENT_ROOT}/e2e-tester.md` };
+	const f = harness({ loadCatalog: () => loaded }); await f.fire("session_start", { reason: "startup" });
+
+	const unavailable = f.tools.get("subagent_spawn").execute("missing", { agent: "e2e-tester", title: "Missing E2E report", task: "Evaluate" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const missingPath = join(attempt, "report.md");
+	f.services[0]!.finish("agent-1", "completed", "PASSED according to native prose", missingPath);
+	const missing = await unavailable;
+	assert.match(missing.content[0].text, /E2E report: unavailable\./);
+	assert.doesNotMatch(missing.content[0].text, /outcome|PASSED according/);
+	await assert.rejects(f.tools.get("subagent_read").execute("missing-read", { agentId: "agent-1" }, undefined, undefined, f.ctx), /no submitted handoff/);
+
+	const evaluation = await createE2eEvaluation({ workspace });
+	const corruptAttempt = join(attempt, "corrupt"); await mkdir(corruptAttempt, { mode: 0o700 });
+	const corruptNativePath = join(corruptAttempt, "report.md");
+	const submitted = await submitE2eWorkspaceReport({ evaluation, nativeReportPath: corruptNativePath, submission: { cases: [{ case: "E2E-001", verdict: "passed" }] } });
+	await writeFile(submitted.reportPath, "{}\n", { mode: 0o600 });
+	const invalid = f.tools.get("subagent_spawn").execute("invalid", { agent: "e2e-tester", title: "Invalid E2E report", task: "Evaluate" }, undefined, undefined, f.ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	const corruptAgentId = [...f.services[0]!.snapshots.keys()].at(-1)!;
+	f.services[0]!.finish(corruptAgentId, "completed", "native says passed", corruptNativePath);
+	const corrupt = await invalid;
+	assert.match(corrupt.content[0].text, /E2E report: error\./);
+	assert.doesNotMatch(corrupt.content[0].text, /outcome|native says passed/);
+	await assert.rejects(f.tools.get("subagent_read").execute("invalid-read", { agentId: corruptAgentId }, undefined, undefined, f.ctx), /validation failed/);
+});
+
+test("wait returns same bounded standalone E2E receipt", async (t) => {
+	const attempt = await mkdtemp("/tmp/pibox-e2e-wait-"); await chmod(attempt, 0o700);
+	const workspace = await createE2eWorkspace({ sessionId: "wait-child" });
+	t.after(() => Promise.all([rm(attempt, { recursive: true, force: true }), rm(workspace.root, { recursive: true, force: true })]));
+	const evaluation = await createE2eEvaluation({ workspace });
+	const nativeReportPath = join(attempt, "report.md");
+	const submitted = await submitE2eWorkspaceReport({ evaluation, nativeReportPath, submission: { cases: [{ case: "E2E-001", verdict: "blocked" }] } });
+	const loaded = catalog(); loaded.config.agents["e2e-tester"] = { ...loaded.config.agents["general-purpose"]!, prompt: `${BUILT_IN_AGENT_ROOT}/e2e-tester.md` };
+	const f = harness({ loadCatalog: () => loaded }); await f.fire("session_start", { reason: "startup" });
+	const spawned = await f.tools.get("subagent_spawn").execute("spawn", { agent: "e2e-tester", title: "Wait E2E result", task: "Evaluate", mode: "background" }, undefined, undefined, f.ctx);
+	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(spawned.details.agentId, "completed", "", nativeReportPath);
+	const settled = await waiting;
+	assert.match(settled.content[0].text, /Subagent completed · attempt attempt-1/);
+	assert.match(settled.content[0].text, /E2E outcome: blocked/);
+	assert.match(settled.content[0].text, new RegExp(submitted.reportPath));
+	assert.doesNotMatch(settled.content[0].text, new RegExp(nativeReportPath));
+	assert.equal(f.sent.length, 0);
+});
+
+test("pre-change process-global track protocol retains bounded E2E receipt across reload", async (t) => {
+	const attempt = await mkdtemp("/tmp/pibox-e2e-reload-"); await chmod(attempt, 0o700);
+	const workspace = await createE2eWorkspace({ sessionId: "reload-child" });
+	t.after(() => Promise.all([rm(attempt, { recursive: true, force: true }), rm(workspace.root, { recursive: true, force: true })]));
+	const evaluation = await createE2eEvaluation({ workspace });
+	const nativeReportPath = join(attempt, "report.md");
+	const submitted = await submitE2eWorkspaceReport({ evaluation, nativeReportPath, submission: { cases: [{ case: "E2E-001", verdict: "passed" }] } });
+	const loaded = catalog(); loaded.config.agents["e2e-tester"] = { ...loaded.config.agents["general-purpose"]!, prompt: `${BUILT_IN_AGENT_ROOT}/e2e-tester.md` };
+	const registry = new SubagentCapabilityRegistry();
+	const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
+	const legacyTrack = pendingDeliveries.track.bind(pendingDeliveries);
+	pendingDeliveries.track = ((delivery, terminalResult) => legacyTrack(delivery, terminalResult.then((terminal) => {
+		assert.equal("terminal" in terminal, false, "pre-change registry receives flat TerminalResult");
+		assert.equal((terminal as TerminalResult & { e2eReceipt?: { state: string } }).e2eReceipt?.state, "validated");
+		return terminal;
+	}))) as typeof pendingDeliveries.track;
+	const dependencies = { registry, pendingDeliveries, processInstanceId: "e2e-reload", loadCatalog: () => loaded };
+	const first = harness(dependencies); await first.fire("session_start", { reason: "startup" });
+	const spawned = await first.tools.get("subagent_spawn").execute("spawn", { agent: "e2e-tester", title: "Reload E2E result", task: "Evaluate", mode: "background" }, undefined, undefined, first.ctx);
+	const service = first.services[0]!;
+	await first.fire("session_shutdown", { reason: "reload" });
+	service.finish(spawned.details.agentId, "failed", "native failure prose", nativeReportPath);
+	await new Promise((resolve) => setImmediate(resolve));
+
+	const second = harness(dependencies); await second.fire("session_start", { reason: "reload" });
+	await waitUntil(() => second.sent.length === 1, "reload did not deliver E2E receipt");
+	assert.match(second.sent[0].message.content, /\[Subagent failed · attempt attempt-1\]/);
+	assert.match(second.sent[0].message.content, /E2E outcome: passed/);
+	assert.match(second.sent[0].message.content, new RegExp(submitted.reportPath));
+	assert.doesNotMatch(second.sent[0].message.content, /native failure prose/);
+	assert.equal(second.sent[0].message.details.settlements[0].status, "failed");
+	assert.equal(second.sent[0].message.details.settlements[0].e2eReceipt.state, "validated");
+});
+
+test("late background E2E receipt is delivered once as historical after continuation", async (t) => {
+	const attempt = await mkdtemp("/tmp/pibox-e2e-race-"); await chmod(attempt, 0o700);
+	const workspace = await createE2eWorkspace({ sessionId: "race-child" });
+	t.after(() => Promise.all([rm(attempt, { recursive: true, force: true }), rm(workspace.root, { recursive: true, force: true })]));
+	const firstEvaluation = await createE2eEvaluation({ workspace });
+	const firstNativePath = join(attempt, "report.md");
+	const firstReport = await submitE2eWorkspaceReport({ evaluation: firstEvaluation, nativeReportPath: firstNativePath, submission: { cases: [{ case: "E2E-OLD", verdict: "failed" }] } });
+	const nextEvaluation = await createE2eEvaluation({ workspace });
+	const nextAttempt = join(attempt, "next"); await mkdir(nextAttempt, { mode: 0o700 });
+	const nextNativePath = join(nextAttempt, "report.md");
+	const nextReport = await submitE2eWorkspaceReport({ evaluation: nextEvaluation, nativeReportPath: nextNativePath, submission: { cases: [{ case: "E2E-NEW", verdict: "passed" }] } });
+	const loaded = catalog(); loaded.config.agents["e2e-tester"] = { ...loaded.config.agents["general-purpose"]!, prompt: `${BUILT_IN_AGENT_ROOT}/e2e-tester.md` };
+	const f = harness({ loadCatalog: () => loaded, pendingDeliveries: new PendingSubagentDeliveryRegistry(30) });
+	await f.fire("session_start", { reason: "startup" });
+	const spawned = await f.tools.get("subagent_spawn").execute("spawn", { agent: "e2e-tester", title: "Race E2E result", task: "Evaluate old", mode: "background" }, undefined, undefined, f.ctx);
+	f.services[0]!.finish(spawned.details.agentId, "completed", "", firstNativePath);
+	const continuation = f.tools.get("subagent_continue").execute("continue", { agentId: spawned.details.agentId, task: "Evaluate new" }, undefined, undefined, f.ctx);
+	await f.services[0]!.continuationSpawned.promise;
+	f.services[0]!.finish(spawned.details.agentId, "completed", "", nextNativePath);
+	const continued = await continuation;
+	assert.match(continued.content[0].text, /attempt attempt-3/);
+	assert.match(continued.content[0].text, new RegExp(nextReport.reportPath));
+	await waitUntil(() => f.sent.length === 1, "historical background receipt was not delivered");
+	const historical = f.sent[0].message.content;
+	assert.match(historical, /attempt attempt-1 · historical completion; current attempt attempt-3/);
+	assert.match(historical, new RegExp(firstReport.reportPath));
+	assert.doesNotMatch(historical, new RegExp(nextReport.reportPath));
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.equal(f.sent.length, 1, "historical obligation delivers exactly once");
+	assert.equal((await readE2eWorkspaceHandoff(firstNativePath))?.reportPath, firstReport.reportPath);
+	assert.equal((await readE2eWorkspaceHandoff(nextNativePath))?.reportPath, nextReport.reportPath);
 });
 
 test("tool transcript details retain terminal metadata without complete reports or diagnostics", async (t) => {
@@ -445,7 +643,7 @@ test("tool transcript details retain terminal metadata without complete reports 
 
 	const foregroundPath = join(root, "foreground.md");
 	await writeFile(foregroundPath, oversized, { mode: 0o600 });
-	const foregroundPending = f.tools.get("subagent_spawn").execute("foreground", { agent: "general-purpose", task: "Foreground" }, undefined, undefined, f.ctx);
+	const foregroundPending = f.tools.get("subagent_spawn").execute("foreground", { agent: "general-purpose", title: "Test bounded assignment", task: "Foreground" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
 	f.services[0]!.finish("agent-1", "completed", oversized, foregroundPath, `diagnostic-${sentinel}`);
 	const foreground = await foregroundPending;
@@ -464,7 +662,7 @@ test("tool transcript details retain terminal metadata without complete reports 
 
 	const backgroundPath = join(root, "background.md");
 	await writeFile(backgroundPath, oversized, { mode: 0o600 });
-	const background = await f.tools.get("subagent_spawn").execute("background", { agent: "general-purpose", task: "Background", mode: "background" }, undefined, undefined, f.ctx);
+	const background = await f.tools.get("subagent_spawn").execute("background", { agent: "general-purpose", title: "Test bounded assignment", task: "Background", mode: "background" }, undefined, undefined, f.ctx);
 	f.services[0]!.finish(background.details.agentId, "completed", oversized, backgroundPath, `diagnostic-${sentinel}`);
 	await waitUntil(() => f.sent.length === 1, "background report was not delivered");
 	assert.equal(JSON.stringify(f.sent[0].message.details).includes(sentinel), false);
@@ -477,7 +675,7 @@ test("production workflow launch projects whitelisted provenance and configured 
 	const uiRegistry = new SubagentUiProjectionRegistry();
 	const f = harness({ uiRegistry });
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("standalone", { agent: "general-purpose", task: "Standalone work", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("standalone", { agent: "general-purpose", title: "Test bounded assignment", task: "Standalone work", mode: "background" }, undefined, undefined, f.ctx);
 	const service = f.services[0]!;
 	const launcher = new WorkflowSubagentLauncher(service);
 	const launched = launcher.launch({
@@ -518,8 +716,8 @@ test("production workflow launch projects whitelisted provenance and configured 
 test("near-simultaneous background settlements are steered in one message", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("one", { agent: "general-purpose", task: "One", mode: "background" }, undefined, undefined, f.ctx);
-	await f.tools.get("subagent_spawn").execute("two", { agent: "general-purpose", task: "Two", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("one", { agent: "general-purpose", title: "Test bounded assignment", task: "One", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("two", { agent: "general-purpose", title: "Test bounded assignment", task: "Two", mode: "background" }, undefined, undefined, f.ctx);
 	f.services[0]!.finish("agent-1", "completed", "first report");
 	f.services[0]!.finish("agent-2", "completed", "second report");
 	await waitUntil(() => f.sent.length === 1, "background completion batch was not delivered");
@@ -533,7 +731,7 @@ test("large completion sets are chunked without consuming model-invisible settle
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
 	for (let index = 1; index <= 10; index++) {
-		await f.tools.get("subagent_spawn").execute(`spawn-${index}`, { agent: "general-purpose", task: `Task ${index}`, mode: "background" }, undefined, undefined, f.ctx);
+		await f.tools.get("subagent_spawn").execute(`spawn-${index}`, { agent: "general-purpose", title: "Test bounded assignment", task: `Task ${index}`, mode: "background" }, undefined, undefined, f.ctx);
 	}
 	for (let index = 1; index <= 10; index++) {
 		f.services[0]!.finish(`agent-${index}`, "completed", `report-${index}-${"x".repeat(2_000)}`);
@@ -570,7 +768,7 @@ test("wait supports elapsed time, live timer metadata, and abort without shell s
 test("wait subscribes once to background settlement and consumes automatic delivery", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
 	const updates: any[] = [];
 	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, (update: any) => updates.push(update), f.ctx);
 	f.services[0]!.finish("agent-1", "completed", "dependency report");
@@ -586,7 +784,7 @@ test("wait subscribes once to background settlement and consumes automatic deliv
 	assert.equal(typeof settled.details.elapsedMs, "number");
 	assert.equal(settled.details.pendingCount, 1);
 	assert.deepEqual(settled.details.settlements, [
-		{ agent: "general-purpose", agentId: "agent-1", attemptId: "attempt-1", reason: "completed", routing: f.services[0]!.launches[0]!.routing, status: "completed" },
+		{ agent: "general-purpose", agentId: "agent-1", title: "Test bounded assignment", attemptId: "attempt-1", reason: "completed", routing: f.services[0]!.launches[0]!.routing, status: "completed" },
 	]);
 	assert.equal(f.sent.length, 0, "the wait result is the sole model-visible delivery");
 });
@@ -594,7 +792,7 @@ test("wait subscribes once to background settlement and consumes automatic deliv
 test("an aborted event wait consumes nothing and automatic steering remains armed", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
 	const controller = new AbortController();
 	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, controller.signal, undefined, f.ctx);
 	controller.abort(new Error("stop waiting"));
@@ -610,7 +808,7 @@ test("a pre-batch process-global registry falls back to exact-once steering", as
 	Object.defineProperty(pendingDeliveries, "bindBatched", { value: undefined });
 	const f = harness({ pendingDeliveries });
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Legacy", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Legacy", mode: "background" }, undefined, undefined, f.ctx);
 	f.services[0]!.finish("agent-1", "completed", "legacy report");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(f.sent.length, 1);
@@ -637,7 +835,7 @@ test("subagent tools give explicit no-sleep and no-poll guidance", () => {
 test("continues only a settled same-activation transcript and rotates its internal handle", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	const initial = await settleForeground(f, f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "First" }, undefined, undefined, f.ctx));
+	const initial = await settleForeground(f, f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "First" }, undefined, undefined, f.ctx));
 	const firstHandle = f.services[0]!.snapshots.get(initial.agentId)!.handle;
 	const continuation = f.tools.get("subagent_continue").execute("continue", { agentId: initial.agentId, task: "Second" }, undefined, undefined, f.ctx);
 	await new Promise((resolve) => setImmediate(resolve));
@@ -651,7 +849,7 @@ test("continues only a settled same-activation transcript and rotates its intern
 test("subagent_control exposes stop only and confirms terminal cancellation", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
 	assert.doesNotMatch(JSON.stringify(f.tools.get("subagent_control").parameters), /pause/);
 	const stopped = await f.tools.get("subagent_control").execute("stop", { agentId: "agent-1", action: "stop" }, undefined, undefined, f.ctx);
 	assert.match(stopped.content[0].text, /Stop confirmed/);
@@ -665,7 +863,7 @@ test("reload rebinds the same manager and adopts one pending terminal delivery",
 	const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
 	const first = harness({ registry, uiRegistry, pendingDeliveries, processInstanceId: "process" });
 	await first.fire("session_start", { reason: "startup" });
-	await first.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Wait", mode: "background" }, undefined, undefined, first.ctx);
+	await first.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Wait", mode: "background" }, undefined, undefined, first.ctx);
 	const service = first.services[0]!;
 	const owner = service.owner;
 	await first.fire("session_shutdown", { reason: "reload" });
@@ -738,6 +936,7 @@ test("omitted tier uses the configured agent default", async () => {
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("default", {
 		agent: "high-default",
+		title: "Test bounded assignment",
 		task: "Use the agent default",
 		mode: "background",
 	}, undefined, undefined, f.ctx);
@@ -752,6 +951,7 @@ test("explicit tiers downshift medium and high defaults and upshift a low defaul
 	for (const agent of ["medium-default", "high-default"]) {
 		await f.tools.get("subagent_spawn").execute(`downshift-${agent}`, {
 			agent,
+			title: "Test bounded assignment",
 			task: "Use Low",
 			tier: "low",
 			mode: "background",
@@ -759,6 +959,7 @@ test("explicit tiers downshift medium and high defaults and upshift a low defaul
 	}
 	await f.tools.get("subagent_spawn").execute("upshift", {
 		agent: "low-default",
+		title: "Test bounded assignment",
 		task: "Use High",
 		tier: "high",
 		mode: "background",
@@ -773,12 +974,14 @@ test("a pinned agent model survives a differing tier and an explicit spawn model
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("pinned", {
 		agent: "pinned",
+		title: "Test bounded assignment",
 		task: "Keep the pinned model",
 		tier: "high",
 		mode: "background",
 	}, undefined, undefined, f.ctx);
 	await f.tools.get("subagent_spawn").execute("replacement", {
 		agent: "pinned",
+		title: "Test bounded assignment",
 		task: "Replace the pinned model",
 		tier: "high",
 		model: "provider/replacement#off",
@@ -796,6 +999,7 @@ test("standalone user model override launches an unconfigured registered model",
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("spawn", {
 		agent: "general-purpose",
+		title: "Test bounded assignment",
 		task: "Override",
 		mode: "background",
 		model: "ollama-cloud/glm-5.3-flash#off",
@@ -813,6 +1017,7 @@ test("standalone user model override ignores a stale scoped-model snapshot", asy
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("spawn", {
 		agent: "general-purpose",
+		title: "Test bounded assignment",
 		task: "Override",
 		mode: "background",
 		model: "ollama-cloud/glm-5.3-flash#high",
@@ -830,6 +1035,7 @@ test("standalone user model override refreshes stale provider metadata before fa
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("spawn", {
 		agent: "general-purpose",
+		title: "Test bounded assignment",
 		task: "Refresh",
 		mode: "background",
 		model: "ollama-cloud/glm-5.3-flash#high",
@@ -845,6 +1051,7 @@ test("standalone user model override falls back to the configured same-tier list
 	await f.fire("session_start", { reason: "startup" });
 	await f.tools.get("subagent_spawn").execute("spawn", {
 		agent: "general-purpose",
+		title: "Test bounded assignment",
 		task: "Fallback",
 		allowFallback: true,
 		mode: "background",
@@ -862,7 +1069,7 @@ test("standalone model resolution treats nonempty scoped models as the complete 
 	});
 	await f.fire("session_start", { reason: "startup" });
 	await assert.rejects(
-		f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Scoped" }, undefined, undefined, f.ctx),
+		f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Scoped" }, undefined, undefined, f.ctx),
 		/No available subagent model could satisfy the request/,
 	);
 	assert.equal(f.services[0]!.launches.length, 0);
@@ -872,7 +1079,7 @@ test("standalone model resolution treats nonempty scoped models as the complete 
 test("an already-aborted continuation is rejected before service spawn", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	const initial = await settleForeground(f, f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "First" }, undefined, undefined, f.ctx));
+	const initial = await settleForeground(f, f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "First" }, undefined, undefined, f.ctx));
 	const controller = new AbortController();
 	controller.abort(new Error("cancel before start"));
 	await assert.rejects(
@@ -885,7 +1092,7 @@ test("an already-aborted continuation is rejected before service spawn", async (
 test("an abort crossing continuation startup stops the atomically returned handle", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	const initial = await settleForeground(f, f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "First" }, undefined, undefined, f.ctx));
+	const initial = await settleForeground(f, f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "First" }, undefined, undefined, f.ctx));
 	const service = f.services[0]!;
 	const gate = deferred<void>();
 	service.continuationStartGate = gate.promise;
@@ -904,7 +1111,7 @@ test("reload catalog failure tears down the rebound manager and pending children
 	const pendingDeliveries = new PendingSubagentDeliveryRegistry();
 	const first = harness({ registry, pendingDeliveries, processInstanceId: "process" });
 	await first.fire("session_start", { reason: "startup" });
-	await first.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Wait", mode: "background" }, undefined, undefined, first.ctx);
+	await first.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Wait", mode: "background" }, undefined, undefined, first.ctx);
 	const service = first.services[0]!;
 	await first.fire("session_shutdown", { reason: "reload" });
 	const second = harness({
@@ -922,7 +1129,7 @@ test("reload catalog failure tears down the rebound manager and pending children
 test("replacement-session teardown suppresses stale background completion", async () => {
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
 	await f.fire("session_shutdown", { reason: "resume" });
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(f.sent.length, 0);
@@ -932,7 +1139,7 @@ test("tree navigation is cancelled only while this activation has active process
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
 	assert.equal(await f.fire("session_before_tree"), undefined);
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Test bounded assignment", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
 	assert.deepEqual(await f.fire("session_before_tree"), { cancel: true });
 	assert.match(f.notices.at(-1) ?? "", /unavailable while subagents are active/);
 	f.services[0]!.finish("agent-1");
@@ -954,7 +1161,7 @@ test("spawn exposes the loaded Markdown catalog and refreshes custom description
 	await f.fire("session_start", { reason: "reload" });
 	assert.match(f.tools.get("subagent_spawn").description, /custom-scout \[default tier: medium\]: Inspect revised local widgets/);
 	assert.doesNotMatch(f.tools.get("subagent_spawn").description, /Trace custom/);
-	const receipt = await f.tools.get("subagent_spawn").execute("custom", { agent: "custom-scout", task: "Look up widget", mode: "background" }, undefined, undefined, f.ctx);
+	const receipt = await f.tools.get("subagent_spawn").execute("custom", { agent: "custom-scout", title: "Test bounded assignment", task: "Look up widget", mode: "background" }, undefined, undefined, f.ctx);
 	assert.equal(receipt.details.agent, "custom-scout");
 	await f.fire("session_shutdown", { reason: "quit" });
 });
@@ -963,10 +1170,10 @@ test("standalone model selection is strict by default, including shorthand alias
 	const f = harness();
 	await f.fire("session_start", { reason: "startup" });
 	for (const routing of [{ model: "luna#max" }, { model: "ollama-cloud/missing#off" }, { model: "gpt-5.6-sol#high", effort: "low" }, { allowFallback: true }]) {
-		await assert.rejects(f.tools.get("subagent_spawn").execute("bad", { agent: "general-purpose", task: "Do not launch", ...routing }, undefined, undefined, f.ctx), /exact model IDs|Conflicting model efforts|requires an explicit model/);
+		await assert.rejects(f.tools.get("subagent_spawn").execute("bad", { agent: "general-purpose", title: "Test bounded assignment", task: "Do not launch", ...routing }, undefined, undefined, f.ctx), /exact model IDs|Conflicting model efforts|requires an explicit model/);
 	}
 	assert.equal(f.services[0]!.launches.length, 0);
-	const receipt = await f.tools.get("subagent_spawn").execute("fallback", { agent: "general-purpose", task: "Fallback permitted", model: "luna#max", allowFallback: true, mode: "background" }, undefined, undefined, f.ctx);
+	const receipt = await f.tools.get("subagent_spawn").execute("fallback", { agent: "general-purpose", title: "Test bounded assignment", task: "Fallback permitted", model: "luna#max", allowFallback: true, mode: "background" }, undefined, undefined, f.ctx);
 	assert.match(receipt.content[0].text, /Fallback luna#max → openai-codex\/gpt-5.6-sol#medium \(model unavailable\)/);
 	assert.equal(receipt.details.routing.fallbackUsed, true);
 	assert.equal(receipt.details.routing.requested.model, "luna");
@@ -981,7 +1188,7 @@ test("tier effort preserves configured fallback effort rather than pinning the u
 		return loaded;
 	} });
 	await f.fire("session_start", { reason: "startup" });
-	const receipt = await f.tools.get("subagent_spawn").execute("effort", { agent: "general-purpose", task: "Inspect", tier: "high", effort: "xhigh", mode: "background" }, undefined, undefined, f.ctx);
+	const receipt = await f.tools.get("subagent_spawn").execute("effort", { agent: "general-purpose", title: "Test bounded assignment", task: "Inspect", tier: "high", effort: "xhigh", mode: "background" }, undefined, undefined, f.ctx);
 	assert.equal(receipt.details.resolved.model, "fallback");
 	assert.equal(receipt.details.resolved.effort, "off");
 	assert.equal(receipt.details.routing.requested.effort, "xhigh");

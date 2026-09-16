@@ -16,7 +16,7 @@ The spawn tool exposes each loaded agent's name, description, and default tier. 
 }
 ```
 
-`title` is optional display text: preferably 3–7 words, without a hard character ceiling. It is normalized to one plain-text line. It does not enter the child prompt, select a role, grant permissions, or replace the opaque `agentId`. Spawn, continuation, background delivery and footer rows retain the title alongside the original agent type. Untitled historical entries still render.
+`title` is required for each new `subagent_spawn`: use a descriptive display label, preferably 3–7 words, without a hard word-count or character ceiling. Missing or blank titles are rejected after normalization to one plain-text line. It does not enter the child prompt, select a role, grant permissions, or replace the opaque `agentId`. Continuation, background delivery and footer rows retain the original title alongside the agent type; continuation does not request another title. Untitled historical entries still render using the agent type and opaque `agentId`.
 
 ## Models, effort and fallback
 
@@ -64,7 +64,7 @@ Foreground results inline small reports; large results return a bounded preview 
 { "path": "/tmp/pibox-subagent-attempt-EXAMPLE/report.md", "offset": 1, "limit": 200 }
 ```
 
-`subagent_read` remains a compatibility reader of the same saved report, not a second report store:
+`subagent_read` remains a compatibility reader, not a second report store. For ordinary agents it reads the same saved native report; for `e2e-tester` it reads the current attempt's validated workspace `report.json`:
 
 ```json
 { "agentId": "<handle>", "limit": 8000 }
@@ -80,7 +80,9 @@ Reports have `0600` permissions in private `0700` directories. Release and teard
 
 Only keep useful sanitized witnesses: individual relevant screenshots or focused text/JSON/log excerpts, with a reason for retention. Do not bulk-copy directories, builds, dependencies, databases, caches or full logs. Routine pass details can stay inline. Retained snapshots are not removed when the worker or worktree is torn down, but `/tmp` retention remains best effort. Missing workspace data is explicitly unavailable, not silently replaced or discovered elsewhere.
 
-The native `report.md` described above remains the process transport's final assistant text. The E2E-specific structured handoff identifies the exact tool-written JSON report separately; neither workflow nor callers need to guess that path from prose. Workspace capability owns its files; workflow is only a reader and never copies new E2E artifacts into Git. See [Workflow E2E](workflow-e2e.md) for the case and evidence contract.
+The native `report.md` described above remains the process transport's final assistant text. Standalone automatic delivery never treats that prose as E2E verdict. It validates the E2E-specific handoff and returns only a deterministic receipt: canonical outcome, case counts, finding severity counts, exact `report.json` path, retained evidence count/location, and a normal `read`/`grep` instruction. Full report content stays in authoritative workspace file and is returned only by an explicit read. Missing or invalid handoffs are reported as unavailable or error without inventing an outcome. Child process completion/failure status remains separate from report outcome.
+
+Workspace capability owns its files; workflow is only a reader and never copies new E2E artifacts into Git. Process-lifetime background delivery retains only bounded receipt/reference metadata so `/reload`, automatic steering, and `wait` deliver same result without duplicating report. Every automatic E2E envelope identifies attempt. If continuation has advanced same logical agent before older background delivery arrives, older receipt still delivers exactly once labeled as historical completion with current attempt ID; both immutable report paths remain valid. See [Workflow E2E](workflow-e2e.md) for case and evidence contract.
 
 ## Transport and completion
 

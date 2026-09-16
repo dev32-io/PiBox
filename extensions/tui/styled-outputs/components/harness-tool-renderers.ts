@@ -342,11 +342,11 @@ function appendTreeRows(container: Container, rows: string[], theme: Theme, expa
 	shown.forEach((row, index) => {
 		const last = index === shown.length - 1 && shown.length === rows.length;
 		const rendered = expanded ? row : compact(row, 180);
-		container.addChild(new Text(`${theme.fg("dim", last ? "└─" : "├─")} ${theme.fg("muted", rendered)}`, 0, 0));
+		container.addChild(new Text(`${theme.fg("dim", last ? "└─" : "├─")} ${theme.fg("muted", rendered)}`, 3, 0));
 	});
 	if (rows.length > shown.length) {
 		const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-		container.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("dim", `… +${rows.length - shown.length} more lines (${toggle} to expand)`)}`, 0, 0));
+		container.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("dim", `… +${rows.length - shown.length} more lines (${toggle} to expand)`)}`, 3, 0));
 	}
 }
 
@@ -358,7 +358,7 @@ function outputRows(text: string): string[] {
 }
 
 /** Render prose/code output as a block: shell padding plus original line indentation. */
-function appendOutputBlock(container: Container, text: string, theme: Theme, expanded: boolean, collapsedLimit: number, indent = 2): void {
+function appendOutputBlock(container: Container, text: string, theme: Theme, expanded: boolean, collapsedLimit: number, indent = 3): void {
 	const rows = outputRows(text);
 	if (rows.length === 0) return;
 	const shown = expanded ? rows : rows.slice(0, collapsedLimit);
@@ -540,10 +540,10 @@ function renderHarnessToolResultSnapshot(name: string, result: any, expanded: bo
 	if (resourceDiff?.diff) {
 		const lines = renderDiff(resourceDiff.diff).split("\n");
 		const shown = expanded ? lines : lines.slice(0, 12);
-		for (const line of shown) component.addChild(new Text(line, 0, 0));
+		for (const line of shown) component.addChild(new Text(line, 3, 0));
 		if (lines.length > shown.length) {
 			const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-			component.addChild(new Text(theme.fg("dim", `… ${lines.length - shown.length} more diff lines (${toggle} to expand)`), 0, 0));
+			component.addChild(new Text(theme.fg("dim", `… ${lines.length - shown.length} more diff lines (${toggle} to expand)`), 3, 0));
 		}
 		return component;
 	}

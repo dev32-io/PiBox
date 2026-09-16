@@ -50,7 +50,7 @@ export interface ResolvedExecutionConfig {
 export interface LaunchSpec extends PromptContext, ResolvedExecutionConfig {
 	readonly owner: RuntimeOwner;
 	readonly agent: string;
-	/** Optional display label, not an instruction or logical identity. */
+	/** Optional at service level for managed launches and legacy records; standalone spawn validates it. */
 	readonly title?: string;
 	readonly routing?: SubagentRoutingMetadata;
 	readonly cwd: string;

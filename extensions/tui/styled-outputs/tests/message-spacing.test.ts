@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
+import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent, generateDiffString, initTheme } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import styledOutputs from "../index.js";
 import { getSubagentUiProjectionRegistry } from "../../../subagent/ui-projection.js";
 
@@ -119,6 +120,106 @@ test("top-level messages own one leading boundary while sibling tool calls stay 
 	]));
 	const inlineTool = tool("three");
 	assert.equal(leadingRows(inlineTool), 0, "a tool following text in the same assistant message does not create an internal gap");
+});
+
+test("completed writes defer one metadata invalidation without duplicating their result", async () => {
+	initTheme("dark", false);
+	const definitions = new Map<string, any>();
+	install(undefined, definitions);
+	for (const [action, before, after] of [["create", "", "created\n"], ["rewrite", "old\n", "new\n"]] as const) {
+		let renders = 0;
+		const component = new ToolExecutionComponent("write", action, { path: `/tmp/${action}.txt`, content: after }, {}, definitions.get("write"), { requestRender() { renders++; } } as any, process.cwd());
+		component.updateResult({
+			content: [{ type: "text", text: `Wrote /tmp/${action}.txt` }],
+			details: { piboxWrite: { action, diff: generateDiffString(before, after).diff } },
+			isError: false,
+		});
+		const initial = component.render(120).map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
+		assert.match(initial, /✓ Write /);
+		assert.equal(initial.match(/└─ Done/g)?.length, 1);
+		assert.equal(renders, 0, "renderer does not invalidate during composition");
+
+		await Promise.resolve();
+		const settled = component.render(120).map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
+		assert.match(settled, new RegExp(`✓ ${action === "create" ? "Create" : "Rewrite"} `));
+		assert.equal(settled.match(/└─ Done/g)?.length, 1);
+		assert.equal(renders, 1, "metadata transition invalidates exactly once");
+	}
+});
+
+test("composed tool families share three-column semantic indentation", () => {
+	initTheme("dark", false);
+	const definitions = new Map<string, any>();
+	install(undefined, definitions);
+	const rows = (component: ToolExecutionComponent) => component.render(120)
+		.map((line) => stripTerminalSequences(line).trimEnd())
+		.filter((line) => line.length > 0);
+	const assertIndent = (rendered: string[], text: string, indent: number) => {
+		const line = rendered.find((candidate) => candidate.trimStart().startsWith(text));
+		assert.ok(line, `missing row: ${text}`);
+		assert.equal(line.match(/^ */)?.[0].length, indent, line);
+	};
+
+	const builtIn = new ToolExecutionComponent("bash", "built-in", { command: "echo output" }, {}, definitions.get("bash"), { requestRender() {} } as any, process.cwd());
+	builtIn.updateResult({ content: [{ type: "text", text: "output\n  nested" }], isError: false });
+	const builtInRows = rows(builtIn);
+	assertIndent(builtInRows, "✓ Bash", 3);
+	assertIndent(builtInRows, "└─ Done", 3);
+	assertIndent(builtInRows, "output", 6);
+	assertIndent(builtInRows, "nested", 8);
+
+	const harness = new ToolExecutionComponent("resource_list", "harness", {}, {}, { ...toolDefinition, name: "resource_list", renderShell: "default" }, { requestRender() {} } as any, process.cwd());
+	harness.updateResult({ content: [{ type: "text", text: JSON.stringify({ resources: [{ ref: "story:test", state: "active" }] }) }], isError: false });
+	const harnessRows = rows(harness);
+	assertIndent(harnessRows, "✓ List resources", 3);
+	assertIndent(harnessRows, "└─ Done", 3);
+	assertIndent(harnessRows, "└─ story:test", 6);
+
+	const harnessProse = new ToolExecutionComponent("workflow_status", "harness-prose", {}, {}, { ...toolDefinition, name: "workflow_status", renderShell: "default" }, { requestRender() {} } as any, process.cwd());
+	harnessProse.updateResult({ content: [{ type: "text", text: "plain\n  nested" }], isError: false });
+	const harnessProseRows = rows(harnessProse);
+	assertIndent(harnessProseRows, "plain", 6);
+	assertIndent(harnessProseRows, "nested", 8);
+
+	const harnessDiff = new ToolExecutionComponent("task_write", "harness-diff", {}, {}, { ...toolDefinition, name: "task_write", renderShell: "default" }, { requestRender() {} } as any, process.cwd());
+	harnessDiff.updateResult({ content: [{ type: "text", text: "updated" }], details: { piboxResourceDiff: { action: "update", ref: "task:test", diff: generateDiffString("old\n", "new\n").diff } }, isError: false });
+	const harnessDiffRows = rows(harnessDiff);
+	assertIndent(harnessDiffRows, "-1 old", 6);
+	assertIndent(harnessDiffRows, "+1 new", 6);
+
+	const subagent = new ToolExecutionComponent("subagent_spawn", "subagent", { agent: "investigator", mode: "foreground", task: "Inspect" }, {}, { ...toolDefinition, name: "subagent_spawn", renderShell: "default" }, { requestRender() {} } as any, process.cwd());
+	subagent.updateResult({ content: [{ type: "text", text: "Report\n  proof" }], details: { agent: "investigator", terminal: { status: "completed" } }, isError: false });
+	const subagentRows = rows(subagent);
+	assertIndent(subagentRows, "✓ investigator", 3);
+	assertIndent(subagentRows, "└─ Done", 3);
+	assertIndent(subagentRows, "Prompt:", 6);
+	assertIndent(subagentRows, "Inspect", 9);
+	assertIndent(subagentRows, "Result:", 6);
+	assertIndent(subagentRows, "Report", 9);
+	assertIndent(subagentRows, "proof", 11);
+
+	for (const renderShell of ["default", "self"] as const) {
+		const definition = {
+			...toolDefinition,
+			renderShell,
+			renderCall: () => ({ render: () => ["call", "call continuation"], invalidate() {} }),
+			renderResult: () => ({ render: () => ["result", "result continuation"], invalidate() {} }),
+		};
+		const thirdParty = new ToolExecutionComponent("spacing_test", `third-${renderShell}`, {}, {}, definition, { requestRender() {} } as any, process.cwd());
+		thirdParty.updateResult({ content: [{ type: "text", text: "result" }], isError: false });
+		const rendered = rows(thirdParty);
+		assertIndent(rendered, "✓ call", 3);
+		assertIndent(rendered, "call continuation", 6);
+		assertIndent(rendered, "└─ Done", 3);
+		assertIndent(rendered, "result continuation", 6);
+	}
+
+	const unknown = new ToolExecutionComponent("unknown_tool", "unknown", {}, {}, undefined, { requestRender() {} } as any, process.cwd());
+	unknown.updateResult({ content: [{ type: "text", text: "result\n  nested" }], isError: false });
+	const unknownRows = rows(unknown);
+	assertIndent(unknownRows, "unknown_tool", 3);
+	assertIndent(unknownRows, "result", 6);
+	assertIndent(unknownRows, "nested", 8);
 });
 
 test("native tool expansion toggles subagent prompts while streaming and after settlement", (t) => {

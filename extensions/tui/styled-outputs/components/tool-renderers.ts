@@ -154,7 +154,7 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 	const metadata = name === "write" ? writeMetadata(result) : undefined;
 	if (metadata && ctx.state && ctx.state.piboxWrite !== metadata) {
 		ctx.state.piboxWrite = metadata;
-		ctx.invalidate?.();
+		queueMicrotask(() => ctx.invalidate?.());
 	}
 
 	const raw = firstText(result);
