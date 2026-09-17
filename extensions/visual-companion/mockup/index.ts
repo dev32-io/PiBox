@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { VisualCompanionAsset, VisualCompanionRouteContext, VisualCompanionViewer } from "../backend.mjs";
 
 const assetsDir = resolve(dirname(fileURLToPath(import.meta.url)), "assets");
+const tweaksHelper = resolve(assetsDir, "tweaks.js");
 
 type MockupDocument = { root: string; entry: string };
 type MockupState = { lastValid?: MockupDocument };
@@ -42,6 +43,7 @@ function servedAsset(path: string | undefined): VisualCompanionAsset | undefined
 }
 
 function contentAsset(route: string, context: VisualCompanionRouteContext): VisualCompanionAsset | undefined {
+	if (route === "/tweaks.js") return servedAsset(tweaksHelper);
 	if (route !== "/content" && !route.startsWith("/content/")) return undefined;
 	const document = (context.state as MockupState | undefined)?.lastValid;
 	if (!document) return undefined;

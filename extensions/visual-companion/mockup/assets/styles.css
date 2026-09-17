@@ -1,6 +1,18 @@
 html, body { width: 100%; height: 100%; margin: 0; color-scheme: dark; }
 [hidden] { display: none !important; }
-body { overflow: hidden; background: var(--color-canvas, Canvas); color: var(--color-text, CanvasText); font-family: var(--font-sans, system-ui, sans-serif); }
+body { display: grid; grid-template-rows: minmax(0, 1fr) auto; overflow: hidden; background: var(--color-canvas, Canvas); color: var(--color-text, CanvasText); font-family: var(--font-sans, system-ui, sans-serif); }
+main { position: relative; min-height: 0; }
 #mockup { width: 100%; height: 100%; border: 0; background: var(--color-canvas, Canvas); }
 #status { box-sizing: border-box; display: grid; min-height: 100%; place-items: center; padding: var(--space-6, 24px); color: var(--color-text-muted, GrayText); text-align: center; }
-#status[data-state="error"] { color: var(--color-danger, LinkText); }
+#status[data-state="error"], #tweak-error { color: var(--color-danger, LinkText); }
+#tweaks { border-top: 1px solid var(--color-border-subtle, GrayText); background: var(--color-surface, Canvas); }
+#tweaks summary { cursor: pointer; padding: var(--space-2, 8px) var(--space-3, 12px); color: var(--color-text-secondary, CanvasText); font-size: var(--font-size-sm, 12px); font-weight: 600; }
+.tweak-body { max-height: 32vh; overflow: auto; padding: 0 var(--space-3, 12px) var(--space-3, 12px); }
+#tweak-error { max-width: 72ch; margin: 0 0 var(--space-2, 8px); overflow-wrap: anywhere; }
+#tweak-controls { display: flex; flex-wrap: wrap; gap: var(--space-2, 8px) var(--space-4, 16px); }
+.tweak-control { display: inline-flex; align-items: center; gap: var(--space-2, 8px); min-height: 28px; color: var(--color-text-secondary, CanvasText); font-size: var(--font-size-sm, 12px); }
+.tweak-control input[type="range"] { width: 120px; }
+.tweak-control select, .tweak-actions button { border: 1px solid var(--color-border, GrayText); border-radius: var(--radius-sm, 4px); background: var(--color-surface-raised, ButtonFace); color: var(--color-text, ButtonText); }
+.tweak-actions { display: flex; align-items: center; gap: var(--space-2, 8px); margin-top: var(--space-3, 12px); }
+.tweak-actions button { padding: var(--space-1, 4px) var(--space-2, 8px); }
+#tweak-copy-status { color: var(--color-text-muted, GrayText); font-size: var(--font-size-xs, 12px); }

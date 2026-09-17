@@ -19,6 +19,12 @@ test("published package separates the designer prompt, mode-only handoff skill, 
 	assert.match(prompt, /read and follow the `designer-handoff` skill/);
 	assert.doesNotMatch(prompt, /handoff\/static/);
 	assert.doesNotMatch(prompt, /A button reference contains one button only/);
+	assert.match(prompt, /proposed solution as a starting hypothesis/);
+	assert.match(prompt, /`general-purpose` for web references/);
+	assert.match(prompt, /independently combinable design dimensions/);
+	assert.match(prompt, /docs\/mockup-tweaks\.md/);
+	assert.match(prompt, /JSON describes controls only/);
+	assert.match(prompt, /reload the prototype with selections restored/);
 
 	const handoff = await readFile("skills/designer-handoff/SKILL.md", "utf8");
 	assert.match(handoff, /name: designer-handoff/);

@@ -9,13 +9,27 @@
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <div id="status" role="status">Loading mockup…</div>
-  <iframe
-    id="mockup"
-    title="Interactive visual mockup"
-    sandbox="allow-scripts allow-forms allow-modals"
-    hidden
-  ></iframe>
+  <main>
+    <div id="status" role="status">Loading mockup…</div>
+    <iframe
+      id="mockup"
+      title="Interactive visual mockup"
+      sandbox="allow-scripts allow-forms allow-modals"
+      hidden
+    ></iframe>
+  </main>
+  <details id="tweaks" hidden>
+    <summary>Tweaks</summary>
+    <div class="tweak-body">
+      <p id="tweak-error" role="alert" hidden></p>
+      <div id="tweak-controls"></div>
+      <div class="tweak-actions">
+        <button id="tweak-reset" type="button">Reset</button>
+        <button id="tweak-copy" type="button">Copy JSON</button>
+        <span id="tweak-copy-status" role="status"></span>
+      </div>
+    </div>
+  </details>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

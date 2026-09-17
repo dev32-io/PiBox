@@ -53,6 +53,10 @@ test("mockup viewer serves one bounded browser-renderable prototype directory", 
 		assert.equal(content.headers.get("access-control-allow-origin"), "null", "opaque sandbox origin may load local modules");
 		assert.match(await content.text(), /<h1>Mockup<\/h1>/);
 		assert.match(await fetch(`${shown.viewerUrl}content/assets/app.css`).then((response) => response.text()), /color: red/);
+		assert.equal((await fetch(`${shown.viewerUrl}content/tweaks.json`)).status, 404, "mockups need no tweak definition");
+		const helper = await fetch(`${shown.viewerUrl}tweaks.js`, { headers: { origin: "null" } });
+		assert.equal(helper.headers.get("access-control-allow-origin"), "null", "opaque sandbox may import helper module");
+		assert.match(await helper.text(), /export function connectTweaks/);
 		assert.equal((await fetch(`${shown.viewerUrl}content/../secret.txt`)).status, 404);
 
 		await symlink(join(root, "secret.txt"), join(prototype, "leak.txt"));
