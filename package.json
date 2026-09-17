@@ -48,6 +48,7 @@
       "./extensions/rule/index.ts",
       "./extensions/designer/index.ts",
       "./extensions/distill/index.ts",
+      "./extensions/simplify/index.ts",
       "./extensions/service-adapter/index.ts",
       "./extensions/memory-adapter/index.ts",
       "./extensions/visual-companion/index.ts",
@@ -64,7 +65,8 @@
     ],
     "skills": [
       "./skills",
-      "!./skills/designer-handoff/SKILL.md"
+      "!./skills/designer-handoff/SKILL.md",
+      "!./skills/simplify/SKILL.md"
     ],
     "themes": [
       "./themes/rattle.json"

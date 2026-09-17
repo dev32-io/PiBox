@@ -88,6 +88,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 | `/services` | Inspect or control local PiBox services. |
 | `/memory-status`, `/memory-audit` | Inspect repository-scoped memory or audit stored items without changing them. |
 | `/distill` | Turn an explicit code, release, time, path, workflow, or session range into user-reviewed knowledge proposals. |
+| `/simplify [focus]` | Review recent changes for reuse, quality, and efficiency, then apply justified cleanup. Explicit command only; never activated by ordinary prompts. |
 | `/skill:architecture-visualizer` | Open a live architecture explanation in the Visual Companion. |
 
 ## Documentation
