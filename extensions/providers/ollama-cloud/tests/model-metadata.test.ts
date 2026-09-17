@@ -47,6 +47,16 @@ test("maps Ollama Cloud IDs to library context and modality metadata", () => {
 	assert.equal(models[5]?.thinkingLevelMap, undefined);
 });
 
+test("exposes thinking levels for DeepSeek V4.1 Flash from ID-only discovery", () => {
+	const [model] = toPiModels({ data: [{ id: "deepseek-v4.1-flash" }] }, options);
+	assert.ok(model);
+	assert.equal(model.reasoning, true);
+	assert.deepEqual(getSupportedThinkingLevels(model), ["off", "low", "medium", "high", "max"]);
+	assert.equal(model.compat?.supportsReasoningEffort, true);
+	assert.equal(model.contextWindow, 1_048_576);
+	assert.deepEqual(model.input, ["text", "image"]);
+});
+
 test("normalizes Ollama Cloud Retry-After capacity hints without inventing quota", () => {
 	assert.equal(retryAfterTimestamp({ "Retry-After": "30" }, 1_000), 31_000);
 	assert.equal(retryAfterTimestamp({}, 1_000), undefined);
@@ -61,6 +71,7 @@ test("contains metadata for every currently advertised Ollama Cloud model", () =
 		"glm-5.3",
 		"glm-5.3-flash",
 		"deepseek-v4-flash:preview",
+		"deepseek-v4.1-flash",
 		"nemotron-3-nano:30b",
 		"qwen3.5:397b",
 		"glm-5.1",

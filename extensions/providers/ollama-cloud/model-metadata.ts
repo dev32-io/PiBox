@@ -45,6 +45,7 @@ export const OLLAMA_CLOUD_MODEL_METADATA: Readonly<Record<string, DiscoveredMode
 	"glm-5.2": { contextWindow: 1_000_000, reasoning: true, images: false },
 	"glm-5.3": { contextWindow: 1_000_000, reasoning: true, thinkingLevelMap: GLM_5_3_THINKING_LEVEL_MAP, images: false },
 	"glm-5.3-flash": { contextWindow: 1_000_000, reasoning: true, thinkingLevelMap: GLM_5_3_THINKING_LEVEL_MAP, images: true },
+	"deepseek-v4.1-flash": { contextWindow: 1_048_576, reasoning: true, images: true },
 	"deepseek-v4-flash:preview": { contextWindow: 1_048_576, reasoning: true, images: false },
 	"deepseek-v4-flash:0731": { contextWindow: 1_048_576, reasoning: true, images: false },
 	"nemotron-3-nano:30b": { contextWindow: 1_048_576, reasoning: true, images: false },
