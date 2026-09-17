@@ -52,6 +52,8 @@ pi install /absolute/path/to/PiBox
 
 Pi packages run with your user permissions; review the source and configuration before installation.
 
+Inside cmux, explicit `CMUX_WORKSPACE_ID` and `CMUX_SURFACE_ID` enable best-effort live subagent panes automatically. Set `PIBOX_CMUX_PANES=0` to disable them; non-cmux sessions remain unchanged.
+
 ## From idea to working product
 
 ![Accelerated Pi TUI recording of a todo app moving from an initial request through story shaping, staged implementation, review, E2E verification, and the delivered Aero Todo product](docs/assets/workflow-demo/workflow-demo.gif)

@@ -39,6 +39,7 @@
       "./extensions/model-tier-list-profiles/index.ts",
       "./extensions/provider-fallback/index.ts",
       "./extensions/subagent/index.ts",
+      "./extensions/cmux/index.ts",
       "./extensions/keep-awake/index.ts",
       "./extensions/workflow-runtime/index.ts",
       "./extensions/workflow/index.ts",
