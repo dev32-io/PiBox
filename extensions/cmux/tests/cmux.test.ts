@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import cmuxExtension from "../index.js";
 import { CmuxPaneAdapter, SocketViewerTransport, chooseLargestOwnedPane, sanitizeTerminalText, splitDirection, splitIsViable, type CmuxClient, type CmuxPane, type ViewerFrame, type ViewerTransport } from "../cmux.js";
+import { CMUX_PANES_ENTRY_TYPE, loadCmuxPanesDefault, resolveCmuxPanesDefault, restoreCmuxPanesEnabled } from "../config.js";
 import type { LogicalAgentSnapshot, RuntimeOwner, SubagentEvent, SubagentService } from "../../subagent/api.js";
 import type { SubagentDisplayEvent } from "../../subagent/display.js";
 
@@ -99,6 +100,83 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds = 2_000): Promis
 		clearTimeout(timer!);
 	}
 }
+
+test("cmux pane defaults are global-only, strict, and branch-restored", async () => {
+	for (const value of [undefined, null, [], {}, { enabled: "false" }, { enabled: true }]) assert.equal(resolveCmuxPanesDefault(value), true);
+	assert.equal(resolveCmuxPanesDefault({ enabled: false }), false);
+	let branch: unknown[] = [
+		{ type: "custom", customType: CMUX_PANES_ENTRY_TYPE, data: { schemaVersion: 1, enabled: false } },
+		{ type: "custom", customType: CMUX_PANES_ENTRY_TYPE, data: { schemaVersion: 2, enabled: true } },
+	];
+	const ctx = { sessionManager: { getBranch: () => branch } } as unknown as ExtensionContext;
+	assert.equal(restoreCmuxPanesEnabled(ctx, true), false);
+	branch = [];
+	assert.equal(restoreCmuxPanesEnabled(ctx, false), false);
+	const root = await mkdtemp(join(tmpdir(), "pibox-cmux-config-"));
+	try {
+		const global = join(root, "global"); const repo = join(root, "repo");
+		await mkdir(global); await mkdir(join(repo, ".pi"), { recursive: true });
+		await writeFile(join(global, "settings.json"), JSON.stringify({ cmuxPanes: { enabled: false } }));
+		await writeFile(join(repo, ".pi", "settings.json"), JSON.stringify({ cmuxPanes: { enabled: true } }));
+		assert.equal(loadCmuxPanesDefault(repo, global), false);
+		await writeFile(join(global, "settings.json"), JSON.stringify({ cmuxPanes: { enabled: "no" } }));
+		assert.equal(loadCmuxPanesDefault(repo, global), true);
+	} finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("cmux panes command toggles active observers and restores branch state across tree and reload", async () => {
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+	let command: any; let branch: any[] = []; let listener: ((event: SubagentEvent) => void) | undefined;
+	const notices: string[] = []; const viewers: FakeViewers[] = []; const clients: FakeCmux[] = [];
+	const emit = (value: SubagentEvent) => listener?.(value);
+	const active = snapshot("a", "one");
+	const service = {
+		owner, protocolVersion: 1, inspect: () => [active], replay: () => ({ snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false }),
+		subscribe: (_owner: RuntimeOwner, _cursor: number, callback: (value: SubagentEvent) => void) => { listener = callback; return { initial: { snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false }, unsubscribe() { listener = undefined; } }; },
+	} as unknown as SubagentService;
+	const pi = {
+		on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (_name: string, value: any) => { command = value; },
+		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+	} as unknown as ExtensionAPI;
+	cmuxExtension(pi, {
+		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, loadDefault: () => true,
+		resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+		createClient: () => { const value = new FakeCmux([pane("main-pane", "main", 1200, 600)]); clients.push(value); return value; },
+		createViewers: async () => { const value = new FakeViewers(); viewers.push(value); return value; },
+	});
+	const ctx = { cwd: process.cwd(), ui: { notify: (message: string) => notices.push(message) }, sessionManager: { getSessionId: () => "session", getBranch: () => branch } } as unknown as ExtensionContext;
+	await handlers.get("session_start")!({}, ctx);
+	assert.ok(listener); assert.equal(viewers[0]!.commands.length, 1);
+	await command.handler("off", ctx);
+	assert.equal(listener, undefined); assert.ok(viewers[0]!.log.includes("shutdown")); assert.ok(clients[0]!.log.includes("close:surface-1"));
+	await command.handler("on", ctx);
+	assert.ok(listener); assert.equal(viewers[1]!.commands.length, 1, "on reseeds active attempts");
+	emit(event("b", "two", "attempt_started"));
+	assert.equal(viewers[1]!.commands.length, 2, "on observes future attempts");
+	await command.handler("", ctx);
+	assert.equal(listener, undefined, "no args toggles off");
+	branch = [{ type: "custom", customType: CMUX_PANES_ENTRY_TYPE, data: { schemaVersion: 1, enabled: true } }];
+	await handlers.get("session_tree")!({}, ctx);
+	assert.ok(listener); assert.equal(viewers[2]!.commands.length, 1, "tree restoration reattaches active attempts");
+	await handlers.get("session_shutdown")!({}, ctx);
+	await handlers.get("session_start")!({ reason: "reload" }, ctx);
+	assert.ok(listener); assert.equal(viewers[3]!.commands.length, 1, "reload restores branch override");
+	await command.handler("status", ctx); assert.match(notices.at(-1)!, /on.*active/);
+	await command.handler("bad", ctx); assert.match(notices.at(-1)!, /Usage:/);
+	await handlers.get("session_shutdown")!({}, ctx);
+});
+
+test("command remains available outside cmux without creating resources", async () => {
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>(); let command: any; const notices: string[] = []; const entries: unknown[] = [];
+	cmuxExtension({
+		on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (_name: string, value: any) => { command = value; }, appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
+	} as unknown as ExtensionAPI, { env: {}, loadDefault: () => true, resolveSubagents: () => { throw new Error("must not resolve"); }, createClient: () => { throw new Error("must not create"); } });
+	const ctx = { cwd: process.cwd(), ui: { notify: (message: string) => notices.push(message) }, sessionManager: { getBranch: () => [], getSessionId: () => "session" } } as unknown as ExtensionContext;
+	await handlers.get("session_start")!({}, ctx);
+	await command.handler("status", ctx); assert.match(notices.at(-1)!, /on.*unavailable outside cmux/);
+	await command.handler("", ctx); assert.match(notices.at(-1)!, /off.*unavailable outside cmux/); assert.equal(entries.length, 1);
+	await handlers.get("session_shutdown")!({}, ctx);
+});
 
 test("layout reserves one third initially then halves owned panes along their longest axis", async () => {
 	const { adapter, client, viewers } = await opened();
@@ -275,14 +353,14 @@ test("user close never reopens same attempt; continuation gets a fresh pane", as
 	await adapter.shutdown();
 });
 
-test("extension silently no-ops outside cmux and observes service without child controls", async () => {
-	for (const env of [{}, { CMUX_WORKSPACE_ID: "w", CMUX_SURFACE_ID: "s", PIBOX_CMUX_PANES: "0" }, { CMUX_WORKSPACE_ID: "w", CMUX_SURFACE_ID: "s", PIBOX_RUNTIME_ROLE: "subagent" }]) {
-		const noOpHandlers = new Map<string, unknown>();
-		cmuxExtension({ on: (name: string, handler: unknown) => noOpHandlers.set(name, handler) } as unknown as ExtensionAPI, { env });
-		assert.equal(noOpHandlers.size, 0);
-	}
+test("extension ignores legacy opt-out, observes without child controls, and remains absent in children", async () => {
+	const childRegistrations: string[] = [];
+	cmuxExtension({ on: (name: string) => childRegistrations.push(name), registerCommand: (name: string) => childRegistrations.push(name) } as unknown as ExtensionAPI, {
+		env: { CMUX_WORKSPACE_ID: "w", CMUX_SURFACE_ID: "s", PIBOX_RUNTIME_ROLE: "subagent" },
+	});
+	assert.deepEqual(childRegistrations, []);
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	const pi = { on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI;
+	const pi = { on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI;
 	const active = snapshot("a", "one");
 	let listener: ((event: SubagentEvent) => void) | undefined;
 	const forbidden = () => { throw new Error("child control called"); };
@@ -293,11 +371,11 @@ test("extension silently no-ops outside cmux and observes service without child 
 	} as unknown as SubagentService;
 	const viewers: FakeViewers[] = []; const clients: FakeCmux[] = [];
 	cmuxExtension(pi, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main", PIBOX_CMUX_PANES: "0" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
 		createClient: () => { const value = new FakeCmux([pane("main-pane", "main", 1200, 600)]); clients.push(value); return value; },
 		createViewers: async () => { const value = new FakeViewers(); viewers.push(value); return value; },
 	});
-	const ctx = { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
 	await handlers.get("session_start")!({ reason: "startup" }, ctx);
 	assert.ok(listener);
 	await new Promise((resolve) => setTimeout(resolve, 0));
@@ -325,11 +403,11 @@ test("rich observer is capability-gated, metadata inspect runs only at attempt s
 		subscribeDisplay: (_owner: RuntimeOwner, listener: (event: SubagentDisplayEvent) => void) => { richListener = listener; return { unsubscribe() { richListener = undefined; richUnsubscribed = true; } }; },
 	} as unknown as SubagentService;
 	const viewers = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
 		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
 		createViewers: async () => viewers, createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),
 	});
-	const ctx = { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
 	await handlers.get("session_start")!({}, ctx);
 	compactListener!(event("a", "one", "attempt_started"));
 	compactListener!(event("a", "one", "message_delta", { text: "one" }));
@@ -345,41 +423,42 @@ test("failed cmux probe does not attach rich observer or create viewer", async (
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
 	let subscribed = false; let viewerCreated = false;
 	const service = { owner, protocolVersion: 1, subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } } as unknown as SubagentService;
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
 		env: { CMUX_WORKSPACE_ID: "stale", CMUX_SURFACE_ID: "missing" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
 		createClient: () => ({ listPanes: async () => { throw new Error("cmux missing"); } }) as unknown as CmuxClient,
 		createViewers: async () => { viewerCreated = true; return new FakeViewers(); },
 	});
-	await handlers.get("session_start")!({}, { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext);
+	await handlers.get("session_start")!({}, { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext);
 	assert.equal(subscribed, false);
 	assert.equal(viewerCreated, false);
 });
 
-test("shutdown fences delayed startup and disposes its transport", async () => {
+test("disable fences delayed startup and disposes its transport", async () => {
 	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	let resolveViewer!: (viewer: ViewerTransport) => void; let subscribed = false;
+	let command: any; let resolveViewer!: (viewer: ViewerTransport) => void; let subscribed = false;
 	const pendingViewer = new Promise<ViewerTransport>((resolve) => { resolveViewer = resolve; });
 	const service = { owner, protocolVersion: 1, subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } } as unknown as SubagentService;
 	const viewer = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand(_name: string, value: any) { command = value; }, appendEntry() {} } as unknown as ExtensionAPI, {
 		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
 		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]), createViewers: () => pendingViewer,
 	});
-	const ctx = { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const ctx = { cwd: process.cwd(), ui: { notify() {} }, sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
 	const starting = handlers.get("session_start")!({}, ctx);
 	await new Promise((resolve) => setImmediate(resolve));
-	await handlers.get("session_shutdown")!({}, ctx);
+	await command.handler("off", ctx);
 	resolveViewer(viewer);
 	await starting;
 	assert.equal(subscribed, false);
 	assert.ok(viewer.log.includes("shutdown"));
+	await handlers.get("session_shutdown")!({}, ctx);
 });
 
 test("startup failure shuts transport down and current-cursor handshake replays only initial memory events", async () => {
-	const ctx = { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
 	const failedHandlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
 	const failedViewer = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => failedHandlers.set(name, handler) } as unknown as ExtensionAPI, {
+	cmuxExtension({ on: (name: string, handler: any) => failedHandlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
 		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" },
 		resolveSubagents: () => ({ owner, protocolVersion: 1, service: {
 			replay: () => ({ snapshot: { owner, cursor: 7, agents: [] }, events: [], reset: false }),
@@ -407,7 +486,7 @@ test("startup failure shuts transport down and current-cursor handshake replays 
 		},
 	} as unknown as SubagentService;
 	const viewers = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
 		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" },
 		resolveSubagents: () => ({ owner, protocolVersion: 1, service }), createViewers: async () => viewers,
 		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),

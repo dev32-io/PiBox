@@ -6,4 +6,14 @@ The first split gives one third to the agent area, keeping two thirds for the ma
 
 Rich assistant/tool detail is local, ephemeral, bounded, and enabled only after a bounded cmux availability probe. It is never added to subagent replay, reports, workflow state, or model-facing output. Existing attempts rebound by `/reload`, and older services without display subscription support, use limited compact output instead. Missing cmux, rename failures, viewer failure, or queue pressure never affect subagent execution; omitted live detail is marked in the viewer.
 
-Set `PIBOX_CMUX_PANES=0` before starting Pi to disable panes. Outside cmux, integration is a silent no-op.
+Panes default on. Set machine-wide default in `~/.pi/agent/settings.json`:
+
+```json
+{
+  "cmuxPanes": { "enabled": false }
+}
+```
+
+Use `/cmux-panes on`, `/cmux-panes off`, or `/cmux-panes status` for current session branch. `/cmux-panes` with no argument toggles current state. Session choice survives reload and tree navigation. Turning panes off closes only PiBox-owned viewer panes and subscriptions; agents keep running. Turning panes on reattaches active attempts and observes future attempts.
+
+Outside cmux, command remains available and reports pane resources unavailable. Child runtimes never register command or create pane resources.
