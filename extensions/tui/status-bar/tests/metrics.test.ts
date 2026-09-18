@@ -41,3 +41,27 @@ test("collects cumulative usage independently of active context", () => {
 	assert.equal(metrics.cacheHitPercent, 70);
 	assert.equal(metrics.durationMs, 600_000);
 });
+
+test("cache hit percentage uses normalized input across providers, including writes but excluding output", () => {
+	const messages = [
+		{ ...assistant(100, 900, 300, 0), provider: "openai-codex" },
+		{ ...assistant(0, 800, 200, 0), provider: "anthropic" },
+		{ ...assistant(100, 700, 0, 0), provider: "ollama-cloud" },
+		{ ...assistant(100, 600, 0, 0), provider: "local-llm" },
+	];
+	messages[1]!.usage.cacheWrite = 200;
+	messages[1]!.usage.totalTokens += 200;
+	const ctx = {
+		sessionManager: { getBranch: () => messages.map((message) => ({ type: "message", timestamp: "2026-01-01T00:00:00.000Z", message })) },
+	} as unknown as ExtensionContext;
+	assert.equal(collectSessionMetrics(ctx).cacheHitPercent, 50);
+});
+
+test("cache percentage handles no reported hits and empty input", () => {
+	for (const [input, expected] of [[100, 0], [0, undefined]] as const) {
+		const ctx = {
+			sessionManager: { getBranch: () => [{ type: "message", timestamp: "2026-01-01T00:00:00.000Z", message: assistant(input, 20, 0, 0) }] },
+		} as unknown as ExtensionContext;
+		assert.equal(collectSessionMetrics(ctx).cacheHitPercent, expected);
+	}
+});

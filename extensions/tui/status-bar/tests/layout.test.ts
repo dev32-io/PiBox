@@ -266,3 +266,14 @@ test("structured subagent projection renders bounded semantic rows and overflow 
 	assert.match(text, /Medium \(openai-codex\/gpt-5\.6-sol-with-a-very-long-route-name#high\) · 1m 05s · 2 turns · 3 tools · ↓ 1\.2k/);
 	assert.doesNotMatch(text, /R 400|W 20| · active/);
 });
+
+test("renders rounded cumulative cache percentage inside cached tokens", () => {
+	const text = renderStatusBar(160, data).join("\n");
+	assert.match(text, /T: 17k \(4\.0k cached ~24%\) ↑ 12k ↓ 810/);
+	for (const cacheHitPercent of [0, 99.6, undefined]) {
+		const { cacheHitPercent: _previous, ...metrics } = data.metrics;
+		const text = renderStatusBar(160, { ...data, metrics: { ...metrics, ...(cacheHitPercent === undefined ? {} : { cacheHitPercent }) } }).join("\n");
+		assert.ok(text.includes(cacheHitPercent === undefined ? "(4.0k cached)" : `(4.0k cached ~${Math.round(cacheHitPercent)}%)`));
+		assert.doesNotMatch(text, /NaN|undefined/);
+	}
+});

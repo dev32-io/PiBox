@@ -37,7 +37,8 @@ export function collectSessionMetrics(ctx: ExtensionContext, now = Date.now()): 
 		if (usage.cost.total > 0) hasReportedCost = true;
 	}
 
-	const cacheBase = input + cacheRead;
+	// Cache writes are input, but not cache hits; output never enters the denominator.
+	const cacheBase = input + cacheRead + cacheWrite;
 	return {
 		input,
 		output,

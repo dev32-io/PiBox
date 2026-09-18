@@ -216,9 +216,10 @@ function tokenSegment(data: StatusRenderData): string {
 	const { metrics, theme } = data;
 	const cached = metrics.cacheRead + metrics.cacheWrite;
 	const total = metrics.input + metrics.output + cached;
+	const cacheRate = metrics.cacheHitPercent === undefined ? "" : ` ~${Math.round(metrics.cacheHitPercent)}%`;
 	return [
 		`${theme.fg("dim", "T:")} ${theme.fg("muted", formatTokens(total))}`,
-		`${theme.fg("dim", "(")}${theme.fg("muted", formatTokens(cached))}${theme.fg("dim", " cached)")}`,
+		`${theme.fg("dim", "(")}${theme.fg("muted", formatTokens(cached))}${theme.fg("dim", ` cached${cacheRate})`)}`,
 		`${theme.fg("dim", "↑")} ${theme.fg("muted", formatTokens(metrics.input))}`,
 		`${theme.fg("dim", "↓")} ${theme.fg("muted", formatTokens(metrics.output))}`,
 	].join(" ");
