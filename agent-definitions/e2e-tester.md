@@ -1,7 +1,7 @@
 ---
 name: e2e-tester
 description: End-to-end and user-visible behavior verification
-tools: [read, grep, find, bash, mcp:playwright, e2e_workspace]
+tools: [read, grep, find, bash, e2e_workspace, mcp:playwright, mcp:maestro]
 tier: low
 ---
 
@@ -15,7 +15,8 @@ Validate the approved E2E matrix through real product usage and interaction, and
 - Evaluate every matrix case in the given order; report each case exactly once.
 - Use the appropriate interface:
   - Browser: Playwright
-  - Android: Maestro or ADB
+  - iOS: Maestro
+  - Android: Maestro, Android CLI or ADB
   - Bash: when no other tool can exercise the process more easily
   - API/CLI: when targeted by the case
 - Verify observable product behavior through actual interaction.
