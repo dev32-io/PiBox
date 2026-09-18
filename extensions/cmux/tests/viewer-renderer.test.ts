@@ -88,19 +88,23 @@ test("native tool cards show actual args, result, error, truncation, and never p
 	transcript.apply({ type: "display", frame: { type: "tool_end", toolCallId: "bash-1", toolName: "bash", text: "exit 1", isError: true, truncated: true } });
 	const rendered = clean(transcript.render(80));
 	assert.equal(transcript.tools.get("read-1").data.native, true); assert.equal(transcript.tools.get("bash-native").data.native, true);
-	assert.equal(transcript.tools.get("read-1").component.toolDefinition, undefined, "safe tools use built-in native renderer");
-	assert.equal(transcript.tools.get("read-1").component.builtInToolDefinition.name, "read");
 	assert.equal(transcript.tools.get("bash-1").data.native, false, "truncated args use generic passive card");
-	assert.match(rendered, /\/tmp\/example/); assert.match(rendered, /contents/); assert.match(rendered, /printf native/); assert.match(rendered, /command: false/); assert.match(rendered, /Error: exit 1/); assert.match(rendered, /truncated/);
+	assert.match(rendered, /read \/tmp\/example/, "safe read uses explicit native renderer");
+	assert.match(rendered, /\$ printf native/, "safe bash uses explicit native renderer");
+	assert.match(rendered, /contents/); assert.match(rendered, /command: false/); assert.match(rendered, /Error: exit 1/); assert.match(rendered, /truncated/);
 
 	let fsReads = 0; const readFile = fs.promises.readFile;
 	fs.promises.readFile = ((...args: Parameters<typeof readFile>) => { fsReads++; return readFile(...args); }) as typeof readFile; syncBuiltinESMExports();
 	try {
-		transcript.apply({ type: "display", frame: { type: "tool_start", toolCallId: "edit-1", toolName: "edit", args: { path: "/definitely/not/read", edits: [{ oldText: "a", newText: "b" }] } } });
-		assert.equal(transcript.tools.get("edit-1").data.native, false, "edit always uses generic renderer");
-		transcript.render(80); await new Promise((resolve) => setImmediate(resolve));
+		const passive = new Transcript();
+		for (const [toolName, args] of [["read", { path: "/definitely/not/read" }], ["bash", { command: "true" }], ["grep", { pattern: "needle" }], ["find", { pattern: "*.ts" }], ["ls", { path: "." }], ["write", { path: "/definitely/not/written", content: "text" }]] as const) {
+			passive.apply({ type: "display", frame: { type: "tool_start", toolCallId: `${toolName}-passive`, toolName, args } });
+		}
+		passive.apply({ type: "display", frame: { type: "tool_start", toolCallId: "edit-1", toolName: "edit", args: { path: "/definitely/not/read", edits: [{ oldText: "a", newText: "b" }] } } });
+		assert.equal(passive.tools.get("edit-1").data.native, false, "edit always uses generic renderer");
+		passive.render(80); await new Promise((resolve) => setImmediate(resolve));
 	} finally { fs.promises.readFile = readFile; syncBuiltinESMExports(); }
-	assert.equal(fsReads, 0, "observer must not compute edit preview or read target path");
+	assert.equal(fsReads, 0, "observer must not read target paths while creating safe renderers or generic edit cards");
 });
 
 test("history and UTF-8 text caps retain a visible omission marker", () => {

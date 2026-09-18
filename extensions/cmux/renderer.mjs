@@ -1,10 +1,23 @@
-import { AssistantMessageComponent, ToolExecutionComponent, initTheme } from "@earendil-works/pi-coding-agent";
+import {
+	AssistantMessageComponent,
+	ToolExecutionComponent,
+	createBashToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
+	initTheme,
+} from "@earendil-works/pi-coding-agent";
 import { ProcessTerminal, ScrollView, Text, TuiAltScreen, VStack, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export const MAX_BLOCKS = 128;
 export const MAX_TEXT_BYTES = 1024 * 1024;
 export const REDRAW_MS = 100;
-const SAFE_NATIVE_TOOLS = new Set(["read", "bash", "grep", "find", "ls", "write"]);
+const SAFE_NATIVE_TOOLS = new Map([
+	["read", createReadToolDefinition], ["bash", createBashToolDefinition], ["grep", createGrepToolDefinition],
+	["find", createFindToolDefinition], ["ls", createLsToolDefinition], ["write", createWriteToolDefinition],
+]);
 const OMITTED_TEXT = "… Earlier output omitted to keep viewer history bounded.";
 
 initTheme(undefined, false);
@@ -74,7 +87,7 @@ class NativeBlock {
 		if (!this.component) {
 			if (this.kind === "assistant") this.component = new AssistantMessageComponent(undefined, true, undefined, undefined, 1);
 			else if (this.kind === "tool") {
-				const renderer = this.data.native ? undefined : toolDefinition(this.data.name, this.data.argsText);
+				const renderer = this.data.native ? SAFE_NATIVE_TOOLS.get(this.data.name)(this.cwd) : toolDefinition(this.data.name, this.data.argsText);
 				this.component = new ToolExecutionComponent(this.data.name, this.data.id, this.data.args, { showImages: false }, renderer, this.ui, this.cwd);
 				this.component.markExecutionStarted();
 			}
