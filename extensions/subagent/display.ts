@@ -1,7 +1,90 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { formatAgentProgressSegments, type AgentProgress } from "./agent-progress.js";
+import type { RuntimeOwner } from "./api.js";
 import { shortSubagentTitle } from "./presentation.js";
 import type { SubagentUiAgentProjection, SubagentUiRouting } from "./ui-projection.js";
+
+export const SUBAGENT_DISPLAY_ENV = "PIBOX_SUBAGENT_DISPLAY";
+export const MAX_SUBAGENT_DISPLAY_RECORD_BYTES = 16 * 1024;
+
+export type SubagentDisplayFrame =
+	| { readonly type: "display_ready" }
+	| { readonly type: "assistant_start" }
+	| { readonly type: "assistant_end"; readonly error?: string }
+	| { readonly type: "tool_start"; readonly toolCallId: string; readonly toolName: string; readonly args?: Readonly<Record<string, unknown>>; readonly argsText?: string; readonly truncated?: boolean }
+	| { readonly type: "tool_end"; readonly toolCallId: string; readonly toolName: string; readonly text: string; readonly isError: boolean; readonly truncated?: boolean };
+
+export interface SubagentDisplayEvent {
+	readonly owner: RuntimeOwner;
+	readonly agentId: string;
+	readonly attemptId: string;
+	readonly frame: SubagentDisplayFrame;
+}
+
+export type SubagentDisplayListener = (event: SubagentDisplayEvent) => void;
+
+export interface SubagentDisplaySubscription {
+	unsubscribe(): void;
+}
+
+const DISPLAY_ARG_KEYS: Readonly<Record<string, readonly string[]>> = {
+	bash: ["command", "timeout"], read: ["path", "offset", "limit"], write: ["path", "content"],
+	edit: ["path", "edits"], grep: ["pattern", "path", "glob", "ignoreCase", "literal", "context", "limit"],
+	find: ["pattern", "path", "limit"], ls: ["path", "limit"],
+};
+
+/** Accept only bounded bridge frames. Rich protocol faults never enter lifecycle validation. */
+export function parseSubagentDisplayFrame(value: unknown): SubagentDisplayFrame | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const frame = value as Record<string, unknown>;
+	let parsed: SubagentDisplayFrame | undefined;
+	if (frame.type === "display_ready") parsed = { type: "display_ready" };
+	else if (frame.type === "assistant_start") parsed = { type: "assistant_start" };
+	else if (frame.type === "assistant_end" && (frame.error === undefined || typeof frame.error === "string")) {
+		parsed = { type: "assistant_end", ...(frame.error ? { error: frame.error } : {}) };
+	} else if (frame.type === "tool_start" && validDisplayIdentifier(frame.toolCallId, 128) && validDisplayToolName(frame.toolName)) {
+		if (frame.args !== undefined && !validDisplayArgs(frame.toolName, frame.args)) return undefined;
+		if (frame.argsText !== undefined && typeof frame.argsText !== "string") return undefined;
+		if (frame.truncated !== undefined && typeof frame.truncated !== "boolean") return undefined;
+		parsed = {
+			type: "tool_start", toolCallId: frame.toolCallId, toolName: frame.toolName,
+			...(frame.args ? { args: frame.args as Record<string, unknown> } : {}),
+			...(frame.argsText ? { argsText: frame.argsText } : {}),
+			...(frame.truncated === true ? { truncated: true } : {}),
+		};
+	} else if (frame.type === "tool_end" && validDisplayIdentifier(frame.toolCallId, 128) && validDisplayToolName(frame.toolName) && typeof frame.text === "string" && typeof frame.isError === "boolean") {
+		if (frame.truncated !== undefined && typeof frame.truncated !== "boolean") return undefined;
+		parsed = { type: "tool_end", toolCallId: frame.toolCallId, toolName: frame.toolName, text: frame.text, isError: frame.isError, ...(frame.truncated === true ? { truncated: true } : {}) };
+	}
+	if (!parsed) return undefined;
+	try {
+		return Buffer.byteLength(JSON.stringify({ type: "display", frame: parsed }) + "\n", "utf8") <= MAX_SUBAGENT_DISPLAY_RECORD_BYTES ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function validDisplayIdentifier(value: unknown, maximum: number): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= maximum && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function validDisplayToolName(value: unknown): value is string {
+	return typeof value === "string" && /^[a-zA-Z0-9_.:-]{1,32}$/.test(value);
+}
+
+function validDisplayArgs(toolName: string, value: unknown): value is Record<string, unknown> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const keys = DISPLAY_ARG_KEYS[toolName];
+	if (!keys) return false;
+	const args = value as Record<string, unknown>;
+	if (Object.keys(args).some((key) => !keys.includes(key))) return false;
+	for (const [key, entry] of Object.entries(args)) {
+		if (key === "edits") {
+			if (!Array.isArray(entry) || entry.length > 4 || entry.some((edit) => !edit || typeof edit !== "object" || Array.isArray(edit) || Object.keys(edit).some((editKey) => editKey !== "oldText" && editKey !== "newText") || typeof (edit as Record<string, unknown>).oldText !== "string" || typeof (edit as Record<string, unknown>).newText !== "string")) return false;
+		} else if (!(typeof entry === "string" || typeof entry === "boolean" || (typeof entry === "number" && Number.isFinite(entry)))) return false;
+	}
+	return true;
+}
 
 export const SUBAGENT_STARTING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 export const SUBAGENT_RUNNING_FRAMES = ["·", "•", "●", "•"] as const;

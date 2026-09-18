@@ -19,7 +19,16 @@ function harness(initialEntries: any[] = [], flags: Record<string, unknown> = {}
 	const pi = {
 		registerFlag() {},
 		registerCommand(name: string, spec: any) { commands.set(name, spec.handler); },
-		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
+		on(name: string, handler: (...args: any[]) => any) {
+			const previous = handlers.get(name);
+			handlers.set(name, async (event, ctx) => {
+				const result = await previous?.(event, ctx);
+				const next = name === "context" && result?.messages ? { ...event, messages: result.messages }
+					: name === "before_provider_request" && result ? { ...event, payload: result }
+						: name === "before_agent_start" && result?.systemPrompt ? { ...event, systemPrompt: result.systemPrompt } : event;
+				return await handler(next, ctx) ?? result;
+			});
+		},
 		getFlag(name: string) { return flags[name]; },
 		getAllTools() { return allNames.map((name) => ({ name })); },
 		getActiveTools() { return [...active]; },
@@ -53,6 +62,19 @@ function custom(data: unknown) {
 	return { type: "custom", customType: WORK_MODE_ENTRY_TYPE, data };
 }
 
+test("child runtime registers no parent mode system contribution", () => {
+	let registrations = 0;
+	const priorRole = process.env.PIBOX_RUNTIME_ROLE;
+	process.env.PIBOX_RUNTIME_ROLE = "subagent";
+	try {
+		workModeExtension({ on() { registrations++; } } as unknown as ExtensionAPI);
+	} finally {
+		if (priorRole === undefined) delete process.env.PIBOX_RUNTIME_ROLE;
+		else process.env.PIBOX_RUNTIME_ROLE = priorRole;
+	}
+	assert.equal(registrations, 0);
+});
+
 test("mode transitions stage workflow schemas, persist privately, and gate stale calls", async () => {
 	resetInteractiveFooterRegistryForTests();
 	const testHarness = harness();
@@ -84,23 +106,32 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	await dialog.confirm("workflow", new AbortController().signal);
 	assert.equal(currentWorkMode(), "workflow");
 	assert.deepEqual(testHarness.active(), ["read", "subagent_spawn", "unrelated", ...WORKFLOW_TOOL_NAMES]);
+	const workflowPrompt = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
+	assert.equal(workflowPrompt.systemPrompt, "base", "Workflow keeps base system authority unchanged");
 
 	await handlers.get("before_provider_request")?.({}, ctx);
 	assert.equal(testHarness.appended.at(-1)?.data.workflowToolsExposed, true);
 	await testHarness.commands.get("mode")?.("agent", ctx);
 	assert.equal(currentWorkMode(), "agent");
 	assert.ok(WORKFLOW_TOOL_NAMES.every((name) => testHarness.active().includes(name)), "exposed schemas remain resident");
+	const agentPrompt = await handlers.get("before_agent_start")?.({ systemPrompt: workflowPrompt.systemPrompt }, ctx) as { systemPrompt: string };
+	assert.equal(agentPrompt.systemPrompt, workflowPrompt.systemPrompt, "Agent and Workflow share identical system instructions");
+	assert.equal(modeTransitionImpact({ schemaVersion: 1, mode: "workflow", providerMode: "workflow", workflowToolsExposed: true }, "agent").changesSystemPrompt, false);
 	assert.deepEqual(await handlers.get("tool_call")?.({ toolName: "workflow_status" }, ctx), {
 		block: true,
 		reason: "PiBox Workflow mode is required. Select the Workflow icon in the interactive footer, then retry.",
 	});
 	assert.equal(await handlers.get("tool_call")?.({ toolName: "read" }, ctx), undefined);
-	const context = await handlers.get("context")?.({ messages: [
-		{ role: "custom", customType: "pibox-work-mode-context", content: "stale workflow authority" },
-		{ role: "user", content: "continue" },
-	] }, ctx) as { messages: any[] };
-	assert.equal(context.messages.filter((message) => message.customType === "pibox-work-mode-context").length, 1);
+	const context = await handlers.get("context")?.({ messages: [{ role: "user", content: "continue" }] }, ctx) as { messages: any[] };
+	const markers = context.messages.filter((message) => message.customType === "pibox-system-prompt-request");
+	assert.equal(markers.length, 1);
+	assert.match(markers[0].content, /^pibox-request-/);
+	assert.doesNotMatch(markers[0].content, /mode: Agent/);
 	assert.match(context.messages.find((message) => message.customType === "pibox-work-mode-context").content, /mode: Agent/);
+	const completion = { role: "custom", customType: "pibox-subagent-result", content: "completed" };
+	const noUser = await handlers.get("context")?.({ messages: [{ role: "compactionSummary", summary: "Prior work" }, completion] }, ctx);
+	assert.equal(noUser.messages[0].customType, "pibox-work-mode-context");
+	assert.equal(noUser.messages.filter((message: any) => message.customType !== "pibox-system-prompt-request").at(-1), completion);
 	await handlers.get("session_shutdown")?.({}, ctx);
 	resetInteractiveFooterRegistryForTests();
 });
@@ -112,7 +143,8 @@ test("new defaults preserve explicit Agent choices and startup overrides", async
 		const restored = harness([savedAgent]);
 		await restored.handlers.get("session_start")?.({ reason }, restored.ctx);
 		assert.equal(currentWorkMode(), "agent", reason);
-		assert.equal(await restored.handlers.get("before_agent_start")?.({ systemPrompt: "base" }, restored.ctx), undefined);
+		const prompt = await restored.handlers.get("before_agent_start")?.({ systemPrompt: "base" }, restored.ctx) as { systemPrompt: string };
+		assert.equal(prompt.systemPrompt, "base");
 		await restored.handlers.get("session_shutdown")?.({}, restored.ctx);
 	}
 	const explicit = harness([], { "work-mode": "agent" });
@@ -148,27 +180,37 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode[\s\S]+plan\.md[\s\S]+ledger\.md/);
 	// Text contract guards only: these do not prove live model behavior.
 	const prompt = result.systemPrompt;
-	// Research precedes plan approval; approval is not permission bypass.
+	// Research, plan, approval, and execution are distinct authority phases.
+	assert.match(prompt, /## Research -> Plan -> Approval -> Execution until goal/);
+	assert.match(prompt, /### Research[\s\S]+### Plan[\s\S]+### Approval[\s\S]+### Execution/);
+	assert.match(prompt, /Do not wait for a separate request to write the plan/);
 	assert.match(prompt, /Before substantial delivery planning, identify unknowns/);
 	assert.match(prompt, /exploration, research, and investigation early, not after completing the broad investigation yourself/);
 	assert.match(prompt, /Pre-approval delegation is read-only research or critique, not implementation/);
-	assert.match(prompt, /Before drafting or presenting the delivery plan, collect, review, and reconcile delegated findings that could affect it/);
+	assert.match(prompt, /Collect, review, and reconcile delegated findings that could affect the plan/);
 	assert.match(prompt, /While these are pending[^\n]+do not present a plan for approval/);
 	assert.match(prompt, /Distinguish facts from assumptions and resolve material decision blockers with the user/);
-	assert.match(prompt, /draft in scratch `plan\.md`, then present it for discussion and explicit approval/);
-	assert.match(prompt, /Revise the same plan during discussion\. Wait for approval before implementation or delegating implementation/);
-	assert.match(prompt, /a plan request is not approval, and approval does not bypass tool permissions/);
+	assert.match(prompt, /proactively write a discussion draft in scratch `plan\.md` and show it to the user; no explicit plan request is needed/);
+	assert.match(prompt, /Use the visible scratch draft to clarify what the user wants/);
+	assert.match(prompt, /revise the same file as decisions change/);
+	assert.match(prompt, /drafting and discussion do not authorize implementation/);
+	assert.match(prompt, /Wait for explicit user approval before implementation or delegating implementation/);
+	assert.match(prompt, /A plan request is not approval, and approval does not bypass tool permissions/);
 
-	// The approved plan remains a live control loop, not a one-time proposal.
+	// Approved plan drives concrete recovery and result-processing loop.
 	assert.match(prompt, /Record Goal, Deliverable, verifiable Done criteria/);
 	assert.match(prompt, /concise step-by-step Markdown checklist \(`- \[ \]` \/ `- \[x\]`\)/);
 	assert.match(prompt, /next action, dependencies, completion checks, sequential versus independent work, and remaining assumptions/);
-	assert.match(prompt, /After approval, keep working within the agreed scope without waiting for routine user prompts/);
-	assert.match(prompt, /Track the current step; mark each item `\[x\]` as soon as its checks pass/);
-	assert.match(prompt, /Keep unfinished or blocked work unchecked; reconcile the checklist before reporting progress or completion/);
-	assert.match(prompt, /Iterate investigation, delegation, implementation, and verification until Done criteria are met/);
-	assert.match(prompt, /Pause only for a genuine blocker, required approval, or a material decision reserved for the user; record what remains and the input needed/);
-	assert.match(prompt, /Routine iteration needs no renewed approval; material changes to the agreed plan do/);
+	assert.match(prompt, /After approval, keep working within agreed scope without routine prompt pauses/);
+	assert.match(prompt, /after compaction, resume, or a background completion—recover them from `plan\.md` and recover relevant evidence and decisions from `ledger\.md`/);
+	assert.match(prompt, /For every local or delegated result: inspect it, run the current step's completion checks/);
+	assert.match(prompt, /immediately edit the actual `plan\.md` checkbox from `- \[ \]` to `- \[x\]`/);
+	assert.match(prompt, /If partial or blocked, leave it unchecked and record completed substeps plus the remaining gap/);
+	assert.match(prompt, /Record useful evidence pointers, decisions, and rationale in `ledger\.md`, then launch or continue all safely ready checklist items within available capacity/);
+	assert.match(prompt, /When a background result starts or resumes a turn, process it through this loop rather than merely summarizing it or waiting for user direction/);
+	assert.match(prompt, /Material goal, scope, policy, privacy\/security, destructive, irreversible, or critical-risk changes require renewed approval/);
+	assert.match(prompt, /Pause for these, another required approval, or a genuine blocker; record the remaining gap and specific input needed/);
+	assert.match(prompt, /Never claim completion from an agent report, checkbox, or assertion alone/);
 
 	// Default delegation, direct-work exceptions, and explicit handoff ownership.
 	assert.match(prompt, /Use ad hoc `subagent_spawn` by default for substantial, separable research, implementation after approval, and independent review/);
@@ -186,7 +228,18 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	// Safe asynchronous work and recovery from incomplete assignments.
 	assert.match(prompt, /Use foreground for a prerequisite needed next and background for independent assignments/);
 	assert.match(prompt, /Run independent work concurrently within harness limits; do non-overlapping work while children run, not their assignment again/);
-	assert.match(prompt, /Parallel edits require disjoint file ownership and compatible interfaces; sequence shared-file work and resolve newly discovered conflicts before continuing\. Preserve existing user work/);
+	assert.match(prompt, /Plan to maximize safe concurrency, not to execute checkboxes in listed order/);
+	assert.match(prompt, /parallel lanes with explicit prerequisites, file ownership, shared interfaces\/resources, and integration checks/);
+	assert.match(prompt, /checklist order is not a scheduling dependency/);
+	assert.match(prompt, /Subagents and ad hoc branches\/worktrees are available/);
+	assert.match(prompt, /After each result, reassess dependencies and fill available capacity with newly ready work/);
+	assert.match(prompt, /do not impose numbered-order waves or wait for a whole batch/);
+	assert.match(prompt, /Reviews can begin on settled outputs while independent implementation continues/);
+	assert.match(prompt, /In one worktree, parallel edits require disjoint file ownership and compatible interfaces/);
+	assert.match(prompt, /Use separate branches\/worktrees when isolation enables safe parallel edits/);
+	assert.match(prompt, /define prerequisite baselines and integration ownership before launch, then integrate and verify contributions in dependency order/);
+	assert.match(prompt, /Worktrees isolate files, not incompatible contracts or shared test services\/build outputs/);
+	assert.match(prompt, /Preserve existing user work and follow repository Git controls/);
 	assert.match(prompt, /Background results arrive automatically\. End the turn if no useful independent work remains, or use `wait` with `event: subagent_settled` at a genuine dependency barrier/);
 	assert.match(prompt, /A wake-up does not mean every prerequisite finished/);
 	assert.match(prompt, /Never sleep or poll for completion; `subagent_status` is diagnostic only/);
@@ -205,6 +258,7 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.match(prompt, /Retain useful pointers without forced archives, hard caps, or automatic deletion/);
 	assert.match(prompt, /After compaction or resume, consult relevant notes; current user direction, repository evidence, and reviewed contracts outrank scratch/);
 	assert.match(prompt, /Scratch is private, temporary, non-authoritative `\/tmp` state; keep secrets out of it/);
+	assert.doesNotMatch(prompt, /\/tmp\/pibox-session-[0-9a-f]+/, "static mode prompt contains no workspace path");
 	assert.match(prompt, /Do not invoke Workflow resource or execution tools in Orchestrator mode/);
 	assert.doesNotMatch(prompt, /detailed, step-by-step checklist|Before context compaction|Retain a note only if/);
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {

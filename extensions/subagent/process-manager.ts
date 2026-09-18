@@ -21,6 +21,13 @@ import type {
 	TerminalStatus,
 } from "./api.js";
 import { initialAgentProgress, markAgentProcessExited, markAgentProcessStarted, projectAgentProgress, type AgentProgress } from "./agent-progress.js";
+import {
+	parseSubagentDisplayFrame,
+	SUBAGENT_DISPLAY_ENV,
+	type SubagentDisplayEvent,
+	type SubagentDisplayListener,
+	type SubagentDisplaySubscription,
+} from "./display.js";
 import { ContinuationCapabilityStore, type ContinuationReservation } from "./continuations.js";
 import { SubagentEventBuffer } from "./events.js";
 import { attemptUserPromptPath, createPiInvocationResolver, stableSystemPromptPath, type SubagentInvocation, type SubagentInvocationRequest, type SubagentInvocationResolver } from "./invocation.js";
@@ -93,6 +100,7 @@ interface AttemptRecord {
 	readonly continuation: boolean;
 	readonly publicResult: Deferred<TerminalResult>;
 	readonly completion: Deferred<void>;
+	readonly displayEnabled: boolean;
 	stopRequested: boolean;
 	terminationReason: Extract<TerminalReason, "explicit_stop" | "owner_lost"> | undefined;
 	termSent: boolean;
@@ -121,6 +129,7 @@ export class SubagentProcessManager implements SubagentService {
 	private readonly capabilities: ContinuationCapabilityStore<AgentRecord>;
 	private readonly agents = new Map<string, AgentRecord>();
 	private readonly transcriptWriters = new Set<string>();
+	private readonly displayListeners = new Set<SubagentDisplayListener>();
 	private closed = false;
 	private teardownPromise: Promise<void> | undefined;
 
@@ -301,6 +310,14 @@ export class SubagentProcessManager implements SubagentService {
 		return this.events.subscribe(owner, afterCursor, listener);
 	}
 
+	subscribeDisplay(owner: RuntimeOwner, listener: SubagentDisplayListener): SubagentDisplaySubscription {
+		this.assertOpen();
+		this.assertOwner(owner);
+		if (typeof listener !== "function") throw new Error("Display listener must be a function");
+		this.displayListeners.add(listener);
+		return { unsubscribe: () => { this.displayListeners.delete(listener); } };
+	}
+
 	teardown(): Promise<void> {
 		return this.teardownPromise ??= this.performTeardown();
 	}
@@ -308,6 +325,7 @@ export class SubagentProcessManager implements SubagentService {
 	private async performTeardown(): Promise<void> {
 		this.closed = true;
 		this.capabilities.clear();
+		this.displayListeners.clear();
 		const records = [...this.agents.values()];
 		for (const record of records) {
 			if (record.launching) this.terminalizeLaunching(record, record.launching, "owner_lost");
@@ -429,6 +447,7 @@ export class SubagentProcessManager implements SubagentService {
 			throw error;
 		}
 
+		const displayEnabled = this.displayListeners.size > 0;
 		let child: ChildProcessWithoutNullStreams;
 		try {
 			child = spawn(invocation.command, [...invocation.args], {
@@ -437,6 +456,7 @@ export class SubagentProcessManager implements SubagentService {
 				env: {
 					...process.env,
 					...invocation.env,
+					[SUBAGENT_DISPLAY_ENV]: displayEnabled ? "1" : "0",
 					[SUBAGENT_REPORT_PATH_ENV]: reportPath,
 					[SUBAGENT_EVENT_FD_ENV]: String(SUBAGENT_EVENT_FD),
 				},
@@ -457,6 +477,7 @@ export class SubagentProcessManager implements SubagentService {
 			continuation: launching.continuation,
 			publicResult: deferred<TerminalResult>(),
 			completion: deferred<void>(),
+			displayEnabled,
 			stopRequested: false,
 			terminationReason: undefined,
 			termSent: false,
@@ -474,6 +495,7 @@ export class SubagentProcessManager implements SubagentService {
 		launching.reservation?.settle();
 		launching.completion.resolve(undefined);
 		this.append(record, attempt, "attempt_started", { pid: child.pid ?? null, continuation: attempt.continuation, ...attempt.contextHashes });
+		if (attempt.displayEnabled) this.dispatchDisplay(record, attempt, { type: "display_ready" });
 		this.observeProcess(record, attempt);
 		return attempt;
 	}
@@ -540,12 +562,19 @@ export class SubagentProcessManager implements SubagentService {
 		const parser = new JsonlStreamParser({
 			maximumLineCharacters: this.maximumJsonlLineCharacters,
 			onMalformed: (line, reason) => {
+				if (/^\s*\{\s*"type"\s*:\s*"display"\s*,/.test(line)) return;
 				malformedOutput = true;
 				diagnose(`Malformed child event channel (${reason}): ${boundedText(line, 2_048)}`);
 			},
 			onValue: (raw) => {
 				if (this.closed || attempt.settled || !raw || typeof raw !== "object") return;
 				const value = raw as Record<string, unknown>;
+				if (value.type === "display") {
+					if (!attempt.displayEnabled) return;
+					const frame = parseSubagentDisplayFrame(value.frame);
+					if (frame && frame.type !== "display_ready") this.dispatchDisplay(record, attempt, frame);
+					return;
+				}
 				const observedAt = new Date().toISOString();
 				const previousProgress = record.progress ?? initialAgentProgress(observedAt);
 				const nextProgress = projectAgentProgress(previousProgress, value, observedAt);
@@ -727,6 +756,17 @@ export class SubagentProcessManager implements SubagentService {
 			try { attempt.child.kill("SIGKILL"); } catch { /* wait for confirmed close */ }
 		}
 		await attempt.completion.promise;
+	}
+
+	private dispatchDisplay(record: AgentRecord, attempt: Pick<AttemptRecord, "attemptId">, frame: SubagentDisplayEvent["frame"]): void {
+		if (this.closed || this.displayListeners.size === 0) return;
+		const event: SubagentDisplayEvent = { owner: this.owner, agentId: record.agentId, attemptId: attempt.attemptId, frame };
+		for (const listener of [...this.displayListeners]) {
+			try {
+				const result = listener(structuredClone(event)) as unknown;
+				if (result && typeof (result as PromiseLike<unknown>).then === "function") void Promise.resolve(result).catch(() => undefined);
+			} catch { /* Observer failure cannot affect child lifecycle. */ }
+		}
 	}
 
 	private append(record: AgentRecord, attempt: Pick<AttemptRecord, "attemptId">, type: Parameters<SubagentEventBuffer["append"]>[0]["type"], data?: Readonly<Record<string, unknown>>, at?: string): void {

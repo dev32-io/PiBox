@@ -112,6 +112,9 @@ interface SessionBinding {
 	waiter?: WaitSubscription;
 	unsubscribe: () => void;
 	active: boolean;
+	compacting: boolean;
+	compactionGeneration: number;
+	bridgeGeneration?: number;
 }
 
 /** Complete standalone generic subagent tool surface. */
@@ -289,7 +292,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	};
 
 	const deliverBackgroundBatch = (current: SessionBinding, settlements: readonly PendingBackgroundSettlement[]): boolean => {
-		if (!current.active || binding !== current || settlements.length === 0) return false;
+		if (!current.active || binding !== current || current.compacting || settlements.length === 0) return false;
 		const waiter = current.waiter;
 		if (waiter) {
 			delete current.waiter;
@@ -580,6 +583,48 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		}
 	});
 
+	const retryBackgroundDeliveries = (): void => {
+		const current = binding;
+		if (!current?.active || current.compacting) return;
+		const compatible = pendingDeliveries as PendingSubagentDeliveryRegistry & { retry?: (owner: RuntimeOwner) => boolean; bindBatched?: PendingSubagentDeliveryRegistry["bindBatched"] };
+		if (typeof compatible.retry === "function") compatible.retry(current.owner);
+		else {
+			current.delivery.release();
+			current.delivery = typeof compatible.bindBatched === "function"
+				? compatible.bindBatched(current.owner, idFactory(), (settlements) => deliverBackgroundBatch(current, settlements))
+				: compatible.bind(current.owner, idFactory(), (delivery, outcome) => deliverBackgroundBatch(current, [{ delivery, outcome }]));
+		}
+	};
+	const deliveryBridgeCommand = `pibox-subagent-delivery-${randomUUID()}`;
+	pi.registerCommand(deliveryBridgeCommand, {
+		async handler(_args, ctx) {
+			const current = binding;
+			if (!current?.active || !current.compacting) return;
+			const owner = current.owner;
+			const generation = current.compactionGeneration;
+			await ctx.waitForIdle();
+			if (binding !== current || !current.active || !current.compacting
+				|| current.compactionGeneration !== generation || current.bridgeGeneration !== generation
+				|| !sameRuntimeOwner(current.owner, owner) || ctx.sessionManager.getSessionId() !== owner.sessionId) return;
+			current.compacting = false;
+			retryBackgroundDeliveries();
+		},
+	});
+	pi.on("session_before_compact", () => {
+		if (!binding?.active) return;
+		binding.compacting = true;
+		binding.compactionGeneration++;
+	});
+	const finishCompaction = () => {
+		const current = binding;
+		if (!current?.active || !current.compacting || current.bridgeGeneration === current.compactionGeneration) return;
+		current.bridgeGeneration = current.compactionGeneration;
+		try { pi.sendUserMessage(`/${deliveryBridgeCommand}`, { expandPromptTemplates: true }); } catch { /* stale runtime; retained delivery survives reload */ }
+	};
+	pi.on("session_compact", finishCompaction);
+	pi.on("session_compact_failed", finishCompaction);
+	pi.on("agent_settled", retryBackgroundDeliveries);
+
 	pi.on("session_start", async (event, ctx) => {
 		const lifecycle = event.reason as ActivationLifecycle;
 		const repositoryRoot = findRepositoryRoot(ctx.cwd);
@@ -632,6 +677,8 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 			delivery: { release: () => false },
 			unsubscribe: () => undefined,
 			active: true,
+			compacting: false,
+			compactionGeneration: 0,
 		} as SessionBinding;
 		const subscription = current.service.subscribe(current.owner, current.service.replay(current.owner).snapshot.cursor, () => publishProjection(current));
 		current.unsubscribe = () => subscription.unsubscribe();

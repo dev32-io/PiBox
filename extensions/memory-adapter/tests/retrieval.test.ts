@@ -92,6 +92,18 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	assert.match(query, /Earlier audio investigation[\s\S]*Fix interrupted assistant playback/);
 	await handlers.get("context")?.({ messages: original }, ctx);
 	assert.equal(searches, 1, "tool-loop model calls reuse the run-scoped retrieval");
+	const compacted = [
+		{ role: "compactionSummary", summary: "Approved work remains" },
+		{ role: "assistant", content: [{ type: "toolCall", id: "read-report", name: "read", arguments: {} }] },
+		{ role: "toolResult", toolCallId: "read-report", toolName: "read", content: [{ type: "text", text: "report" }] },
+		{ role: "custom", customType: "pibox-subagent-result", content: "Completed; verify and continue" },
+	];
+	const recovered = await handlers.get("context")?.({ messages: compacted }, ctx);
+	assert.equal(recovered.messages[0]?.customType, "pibox-memory");
+	assert.deepEqual(recovered.messages.slice(1), compacted, "no-user advisory precedes work without splitting tool pairs");
+	const repeated = await handlers.get("context")?.({ messages: recovered.messages }, ctx);
+	assert.equal(repeated.messages.filter((message: any) => message.customType === "pibox-memory").length, 1);
+	assert.equal(repeated.messages.at(-1)?.customType, "pibox-subagent-result");
 	await handlers.get("agent_settled")?.({}, ctx);
 	assert.equal(await handlers.get("context")?.({ messages: original }, ctx), undefined);
 	let provider: any;

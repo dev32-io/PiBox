@@ -233,11 +233,15 @@ function harness(options: {
 	refreshedModels?: Model<Api>[];
 	scopedModels?: Array<{ model: Model<Api> }>;
 	loadCatalog?: SubagentExtensionDependencies["loadCatalog"];
+	waitForIdle?: () => Promise<void>;
 } = {}) {
 	const tools = new Map<string, any>();
+	const commands = new Map<string, any>();
 	const handlers = new Map<string, Array<(...args: any[]) => any>>();
 	const bus = new Map<string, Array<(value: unknown) => void>>();
 	const sent: any[] = [];
+	const commandDispatches: string[] = [];
+	const userMessages: string[] = [];
 	const notices: string[] = [];
 	const services: FakeService[] = [];
 	const catalogOptions: any[] = [];
@@ -246,6 +250,7 @@ function harness(options: {
 	let sessionId = options.sessionId ?? "session-1";
 	const pi = {
 		registerTool(definition: any) { tools.set(definition.name, definition); },
+		registerCommand(name: string, definition: any) { commands.set(name, definition); },
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 		events: {
 			on(name: string, handler: (value: unknown) => void) { bus.set(name, [...(bus.get(name) ?? []), handler]); },
@@ -253,6 +258,18 @@ function harness(options: {
 		},
 		getAllTools() { return [...tools.values()].map((tool) => ({ name: tool.name })); },
 		sendMessage(message: unknown, delivery: unknown) { sent.push({ message, delivery }); },
+		sendUserMessage(content: string, delivery: { expandPromptTemplates?: boolean } = {}) {
+			if (delivery.expandPromptTemplates && content.startsWith("/")) {
+				const name = content.slice(1).split(" ", 1)[0]!;
+				const command = commands.get(name);
+				if (command) {
+					commandDispatches.push(content);
+					void Promise.resolve().then(() => command.handler("", { ...ctx, waitForIdle: options.waitForIdle ?? (async () => undefined) })).catch(() => undefined);
+					return;
+				}
+			}
+			userMessages.push(content);
+		},
 	} as unknown as ExtensionAPI;
 	const ctx = {
 		cwd: process.cwd(),
@@ -287,7 +304,7 @@ function harness(options: {
 		for (const handler of handlers.get(name) ?? []) returned = await handler(event, ctx) ?? returned;
 		return returned;
 	};
-	return { pi, ctx, tools, handlers, sent, notices, services, catalogOptions, modelRefreshes, dependencies, fire, setSessionId(value: string) { sessionId = value; } };
+	return { pi, ctx, tools, commands, handlers, sent, commandDispatches, userMessages, notices, services, catalogOptions, modelRefreshes, dependencies, fire, setSessionId(value: string) { sessionId = value; } };
 }
 
 async function settleForeground(f: ReturnType<typeof harness>, operation: Promise<any>, text = "done") {
@@ -725,6 +742,109 @@ test("near-simultaneous background settlements are steered in one message", asyn
 	assert.match(f.sent[0].message.content, /first report/);
 	assert.match(f.sent[0].message.content, /second report/);
 	assert.equal(f.sent[0].message.details.settlements.length, 2);
+});
+
+for (const outcome of [
+	{ label: "success", event: "session_compact", data: {} },
+	{ label: "failure", event: "session_compact_failed", data: { aborted: false, errorMessage: "failed" } },
+	{ label: "cancellation", event: "session_compact_failed", data: { aborted: true } },
+] as const) {
+	test(`background results wait for compaction ${outcome.label} and flush once`, async () => {
+		const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
+		const idle = deferred<void>();
+		const f = harness({ pendingDeliveries, waitForIdle: () => idle.promise });
+		await f.fire("session_start", { reason: "startup" });
+		await f.tools.get("subagent_spawn").execute("one", { agent: "general-purpose", title: "First compacted result", task: "One", mode: "background" }, undefined, undefined, f.ctx);
+		await f.tools.get("subagent_spawn").execute("two", { agent: "general-purpose", title: "Second compacted result", task: "Two", mode: "background" }, undefined, undefined, f.ctx);
+		await f.fire("session_before_compact", { reason: "manual" });
+		f.services[0]!.finish("agent-1", "completed", "first compacted report");
+		f.services[0]!.finish("agent-2", "completed", "second compacted report");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(f.sent.length, 0, "compaction must not receive a competing turn");
+		assert.equal(pendingDeliveries.count(f.services[0]!.owner), 2);
+		await f.fire(outcome.event, outcome.data);
+		await f.fire(outcome.event, outcome.data);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(f.commandDispatches.length, 1, "one bridge command is dispatched per compaction generation");
+		assert.equal(f.sent.length, 0, "compaction bridge must wait for real idle");
+		assert.equal(f.userMessages.length, 0, "internal command is handled, not submitted as a user message");
+		idle.resolve(undefined);
+		await waitUntil(() => f.sent.length === 1, `results did not flush after compaction ${outcome.label}`);
+		assert.match(f.sent[0].message.content, /first compacted report/);
+		assert.match(f.sent[0].message.content, /second compacted report/);
+		assert.equal(f.sent[0].message.details.settlements.length, 2);
+		await f.fire("agent_settled");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(f.sent.length, 1);
+		assert.equal(pendingDeliveries.count(), 0);
+	});
+}
+
+test("pre-batch process-global registry rebinds through legacy delivery after compaction", async () => {
+	const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
+	Object.defineProperties(pendingDeliveries, { retry: { value: undefined }, bindBatched: { value: undefined } });
+	const idle = deferred<void>();
+	const f = harness({ pendingDeliveries, waitForIdle: () => idle.promise });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Legacy compacted result", task: "Wait", mode: "background" }, undefined, undefined, f.ctx);
+	await f.fire("session_before_compact", { reason: "manual" });
+	f.services[0]!.finish("agent-1", "completed", "legacy compacted report");
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(f.sent.length, 0);
+	await f.fire("session_compact", { reason: "manual" });
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(f.sent.length, 0);
+	idle.resolve(undefined);
+	await waitUntil(() => f.sent.length === 1, "legacy registry did not flush after compaction");
+	assert.match(f.sent[0].message.content, /legacy compacted report/);
+});
+
+test("compaction-delayed settlement resolves an explicit waiter as sole delivery", async () => {
+	const idle = deferred<void>();
+	const f = harness({ pendingDeliveries: new PendingSubagentDeliveryRegistry(0), waitForIdle: () => idle.promise });
+	await f.fire("session_start", { reason: "startup" });
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Compacted dependency", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, undefined, f.ctx);
+	await f.fire("session_before_compact", { reason: "manual" });
+	f.services[0]!.finish("agent-1", "completed", "compacted dependency report");
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(f.sent.length, 0);
+	await f.fire("session_compact", { reason: "manual" });
+	idle.resolve(undefined);
+	const settled = await waiting;
+	assert.match(settled.content[0].text, /compacted dependency report/);
+	assert.equal(f.sent.length, 0, "wait result remains sole model-visible delivery");
+});
+
+test("reload adopts a compaction-delayed result only for the same owner", async () => {
+	const registry = new SubagentCapabilityRegistry();
+	const pendingDeliveries = new PendingSubagentDeliveryRegistry(0);
+	const dependencies = { registry, pendingDeliveries, processInstanceId: "compact-reload" };
+	const oldIdle = deferred<void>();
+	const first = harness({ ...dependencies, waitForIdle: () => oldIdle.promise });
+	await first.fire("session_start", { reason: "startup" });
+	await first.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Reload compacted result", task: "Wait", mode: "background" }, undefined, undefined, first.ctx);
+	await first.fire("session_before_compact", { reason: "manual" });
+	const service = first.services[0]!;
+	service.finish("agent-1", "completed", "reload compacted report");
+	await first.fire("session_compact", { reason: "manual" });
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(first.sent.length, 0);
+	await first.fire("session_shutdown", { reason: "reload" });
+	oldIdle.resolve(undefined);
+
+	let staleDeliveries = 0;
+	const stale = pendingDeliveries.bind({ ...service.owner, sessionId: "other-session" }, "stale", () => { staleDeliveries++; return true; });
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(staleDeliveries, 0);
+	stale.release();
+
+	const second = harness(dependencies);
+	await second.fire("session_start", { reason: "reload" });
+	await waitUntil(() => second.sent.length === 1, "same-owner reload did not adopt compacted result");
+	assert.match(second.sent[0].message.content, /reload compacted report/);
+	assert.equal(pendingDeliveries.count(service.owner), 0);
+	await second.fire("session_shutdown", { reason: "quit" });
 });
 
 test("large completion sets are chunked without consuming model-invisible settlements", async () => {

@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { LogicalAgentSnapshot, SubagentEvent } from "../subagent/api.js";
+import type { SubagentDisplayEvent, SubagentDisplayFrame } from "../subagent/display.js";
+import { shortSubagentTitle } from "../subagent/presentation.js";
 
 const ACTIVE_STATES = new Set(["launching", "running", "stopping"]);
 const MAX_CHANNEL_BYTES = 64 * 1024;
+const MAX_VIEWER_FRAME_BYTES = 16 * 1024;
 const CLI_TIMEOUT_MS = 750;
 const UI_READY_MS = 1_500;
 const VIEWER_CONNECT_MS = 4_000;
@@ -37,10 +40,21 @@ export interface CmuxClient {
 	split(direction: "right" | "down", sourceSurfaceId: string, command: string): Promise<CmuxSplit>;
 	resizeSource(paneId: string, direction: "right" | "down", amount: number): Promise<void>;
 	closeSurface(surfaceId: string): Promise<void>;
+	renameTab?(surfaceId: string, title: string): Promise<void>;
 }
+
+export type ViewerFrame =
+	| { type: "init"; title: string; cwd?: string; limited?: boolean }
+	| { type: "usage"; inputTokens?: number; outputTokens?: number }
+	| { type: "status"; text: string }
+	| { type: "text"; text: string }
+	| { type: "display"; frame: SubagentDisplayFrame }
+	| { type: "notice"; text: string }
+	| { type: "close" };
 
 export interface ViewerTransport {
 	command(key: string, onUnexpectedClose: () => void): string;
+	send(key: string, frame: ViewerFrame): void;
 	write(key: string, text: string): void;
 	close(key: string): Promise<void>;
 	abandon(key: string): void;
@@ -51,6 +65,7 @@ export interface CmuxPaneAdapterOptions {
 	readonly mainSurfaceId: string;
 	readonly client: CmuxClient;
 	readonly viewers: ViewerTransport;
+	readonly limited?: boolean;
 }
 
 interface AttemptView {
@@ -63,6 +78,8 @@ interface AttemptView {
 	terminal: boolean;
 	drained: boolean;
 	userClosed: boolean;
+	richReady: boolean;
+	readonly title: string;
 }
 
 /** Plain terminal text only. Removing every control introducer makes chunk boundaries irrelevant. */
@@ -76,13 +93,13 @@ export function splitDirection(pane: CmuxPane): "right" | "down" {
 	return pane.width >= pane.height ? "right" : "down";
 }
 
-export function splitIsViable(pane: CmuxPane, direction = splitDirection(pane)): boolean {
+export function splitIsViable(pane: CmuxPane, direction = splitDirection(pane), divisor: 2 | 3 = 3): boolean {
 	if (direction === "right") {
-		if (pane.columns !== undefined && pane.rows !== undefined) return Math.floor(pane.columns / 3) >= 20 && pane.rows >= 5;
-		return pane.width / 3 >= 160 && pane.height >= 80;
+		if (pane.columns !== undefined && pane.rows !== undefined) return Math.floor(pane.columns / divisor) >= 20 && pane.rows >= 5;
+		return pane.width / divisor >= 160 && pane.height >= 80;
 	}
-	if (pane.columns !== undefined && pane.rows !== undefined) return Math.floor(pane.rows / 3) >= 5 && pane.columns >= 20;
-	return pane.height / 3 >= 80 && pane.width >= 160;
+	if (pane.columns !== undefined && pane.rows !== undefined) return Math.floor(pane.rows / divisor) >= 5 && pane.columns >= 20;
+	return pane.height / divisor >= 80 && pane.width >= 160;
 }
 
 export function chooseLargestOwnedPane(panes: readonly CmuxPane[], ownedSurfaceIds: ReadonlySet<string>): CmuxPane | undefined {
@@ -102,7 +119,7 @@ export class CmuxPaneAdapter {
 
 	seed(agents: readonly LogicalAgentSnapshot[]): void {
 		for (const agent of [...agents].sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.handle.agentId.localeCompare(b.handle.agentId))) {
-			if (agent.attemptId && ACTIVE_STATES.has(agent.state)) this.ensureAttempt(agent.handle.agentId, agent.attemptId, agent);
+			if (agent.attemptId && ACTIVE_STATES.has(agent.state)) this.ensureAttempt(agent.handle.agentId, agent.attemptId, agent, true);
 		}
 	}
 
@@ -113,21 +130,33 @@ export class CmuxPaneAdapter {
 		const view = this.attempts.get(key);
 		if (!view || view.userClosed) return;
 		if (event.type === "message_delta" && typeof event.data?.text === "string") {
-			this.options.viewers.write(key, sanitizeTerminalText(event.data.text));
-		} else if (event.type === "tool_activity") {
+			this.options.viewers.send(key, { type: "text", text: sanitizeTerminalText(event.data.text) });
+		} else if (event.type === "usage") {
+			const inputTokens = count(event.data?.inputTokens);
+			const outputTokens = count(event.data?.outputTokens);
+			this.options.viewers.send(key, { type: "usage", ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) });
+		} else if (event.type === "tool_activity" && !view.richReady) {
 			const tool = typeof event.data?.tool === "string" ? sanitizeTerminalText(event.data.tool) : "tool";
 			const state = event.data?.active === true ? "started" : "finished";
 			const errors = Number.isSafeInteger(event.data?.toolErrors) && Number(event.data?.toolErrors) > 0 ? ` · ${event.data?.toolErrors} errors` : "";
-			this.options.viewers.write(key, `\n[tool] ${tool} ${state}${errors}\n`);
+			this.options.viewers.send(key, { type: "notice", text: `${tool} ${state}${errors}` });
 		} else if (event.type === "output_drained") {
 			view.drained = true;
 			if (view.terminal) this.enqueue(() => this.closeAttempt(view));
 		} else if (event.type === "terminal") {
 			view.terminal = true;
 			const status = typeof event.data?.status === "string" ? sanitizeTerminalText(event.data.status) : "settled";
-			this.options.viewers.write(key, `\n[${status}]\n`);
+			this.options.viewers.send(key, { type: "status", text: status });
 			if (view.drained || event.data?.spawned === false) this.enqueue(() => this.closeAttempt(view));
 		}
+	}
+
+	handleDisplay(event: SubagentDisplayEvent): void {
+		if (this.closed) return;
+		const view = this.attempts.get(attemptKey(event.agentId, event.attemptId));
+		if (!view || view.userClosed) return;
+		if (event.frame.type === "display_ready") view.richReady = true;
+		this.options.viewers.send(view.key, { type: "display", frame: event.frame });
 	}
 
 	async idle(): Promise<void> {
@@ -148,14 +177,20 @@ export class CmuxPaneAdapter {
 		this.pendingClosures.clear();
 	}
 
-	private ensureAttempt(agentId: string, attemptId: string, snapshot?: LogicalAgentSnapshot): void {
+	private ensureAttempt(agentId: string, attemptId: string, snapshot?: LogicalAgentSnapshot, reloaded = false): void {
 		const key = attemptKey(agentId, attemptId);
 		if (this.attempts.has(key)) return;
-		const view: AttemptView = { key, agentId, attemptId, opening: true, terminal: false, drained: false, userClosed: false };
+		const rawTitle = sanitizeTerminalText(snapshot ? `${snapshot.agent}${snapshot.title ? ` · ${snapshot.title}` : ""}` : `Subagent ${agentId}`);
+		const title = shortSubagentTitle(rawTitle) ?? "Subagent";
+		const view: AttemptView = { key, agentId, attemptId, opening: true, terminal: false, drained: false, userClosed: false, richReady: false, title };
 		this.attempts.set(key, view);
-		const label = snapshot ? `${snapshot.agent}${snapshot.title ? ` · ${snapshot.title}` : ""}` : `Subagent ${agentId}`;
 		const command = this.options.viewers.command(key, () => this.viewerClosed(view));
-		this.options.viewers.write(key, `[${sanitizeTerminalText(label)} — running]\n\n`);
+		const limited = this.options.limited === true || reloaded;
+		this.options.viewers.send(key, { type: "init", title, ...(limited ? { limited: true } : {}) });
+		this.options.viewers.send(key, { type: "status", text: "running" });
+		const progress = snapshot?.progress;
+		if (progress && progress.turns > 0) this.options.viewers.send(key, { type: "usage", ...(progress.inputTokens === undefined ? {} : { inputTokens: progress.inputTokens }), outputTokens: progress.outputTokens });
+		if (reloaded) this.options.viewers.send(key, { type: "notice", text: "Earlier rich detail unavailable after reload." });
 		this.enqueue(() => this.openAttempt(view, command));
 	}
 
@@ -174,13 +209,14 @@ export class CmuxPaneAdapter {
 		try {
 			const panes = await this.readyPanes();
 			if (!panes) return this.skip(view);
-			const source = this.ownedSurfaceIds.size > 0
-				? chooseLargestOwnedPane(panes, this.ownedSurfaceIds)
-				: panes.find((pane) => pane.surfaceIds.includes(this.options.mainSurfaceId));
+			const splitMain = this.ownedSurfaceIds.size === 0;
+			const source = splitMain
+				? panes.find((pane) => pane.surfaceIds.includes(this.options.mainSurfaceId))
+				: chooseLargestOwnedPane(panes, this.ownedSurfaceIds);
 			if (!source) return this.skip(view);
 			const direction = splitDirection(source);
-			if (!splitIsViable(source, direction)) return this.skip(view);
-			const sourceSurface = this.ownedSurfaceIds.size > 0
+			if (!splitIsViable(source, direction, splitMain ? 3 : 2)) return this.skip(view);
+			const sourceSurface = !splitMain
 				? source.surfaceIds.filter((id) => this.ownedSurfaceIds.has(id)).sort()[0]
 				: this.options.mainSurfaceId;
 			if (!sourceSurface) return this.skip(view);
@@ -190,12 +226,16 @@ export class CmuxPaneAdapter {
 			this.ownedSurfaceIds.add(split.surfaceId);
 			const afterSplit = await this.waitForPane(split.surfaceId);
 			if (!afterSplit) return this.rollback(view);
+			await this.options.client.renameTab?.(split.surfaceId, view.title).catch(() => undefined);
 			const sourceAfter = afterSplit.panes.find((pane) => pane.surfaceIds.includes(sourceSurface));
 			if (!sourceAfter || sourceAfter.paneId === afterSplit.pane.paneId) return this.rollback(view);
-			const amount = Math.max(1, Math.round((direction === "right" ? source.width : source.height) / 6));
-			await this.options.client.resizeSource(sourceAfter.paneId, direction, amount);
-			const resized = await this.waitForResize(sourceSurface, direction, sourceAfter);
-			if (!resized) return this.rollback(view);
+			// Preserve two thirds for main; cmux's equal split already balances agent siblings.
+			if (splitMain) {
+				const amount = Math.max(1, Math.round((direction === "right" ? source.width : source.height) / 6));
+				await this.options.client.resizeSource(sourceAfter.paneId, direction, amount);
+				const resized = await this.waitForResize(sourceSurface, direction, sourceAfter);
+				if (!resized) return this.rollback(view);
+			}
 			view.opening = false;
 			if (view.terminal) await this.closeAttempt(view);
 		} catch {
@@ -313,14 +353,26 @@ export class CmuxCli implements CmuxClient {
 	async closeSurface(surfaceId: string): Promise<void> {
 		await runCmux(["close-surface", "--surface", surfaceId]);
 	}
+
+	async renameTab(surfaceId: string, title: string): Promise<void> {
+		await runCmux(["rename-tab", "--surface", surfaceId, "--title", title]);
+	}
+}
+
+interface QueuedViewerFrame {
+	readonly frame: ViewerFrame;
+	readonly line: string;
+	readonly bytes: number;
 }
 
 interface ViewerChannel {
 	readonly token: string;
 	readonly onUnexpectedClose: () => void;
 	socket?: Socket;
-	buffer: string;
+	queue: QueuedViewerFrame[];
 	bytes: number;
+	writing: boolean;
+	omissionPending: boolean;
 	closing: boolean;
 	connected?: () => void;
 	drained?: () => void;
@@ -354,21 +406,20 @@ export class SocketViewerTransport implements ViewerTransport {
 
 	command(key: string, onUnexpectedClose: () => void): string {
 		const token = randomUUID();
-		this.channels.set(key, { token, onUnexpectedClose, buffer: "", bytes: 0, closing: false });
+		this.channels.set(key, { token, onUnexpectedClose, queue: [], bytes: 0, writing: false, omissionPending: false, closing: false });
 		const viewer = fileURLToPath(new URL("./viewer.mjs", import.meta.url));
 		return [process.execPath, viewer, this.socketPath, token].map(shellQuote).join(" ");
 	}
 
-	write(key: string, text: string): void {
+	send(key: string, frame: ViewerFrame): void {
 		const channel = this.channels.get(key);
-		if (!channel || channel.closing || !text) return;
-		const frame = `${JSON.stringify({ type: "text", text })}\n`;
-		const bytes = Buffer.byteLength(frame);
-		if (bytes > MAX_CHANNEL_BYTES || channel.bytes + bytes > MAX_CHANNEL_BYTES) return;
-		channel.bytes += bytes;
-		if (channel.socket && channel.socket.writableLength + bytes <= MAX_CHANNEL_BYTES) channel.socket.write(frame, () => { channel.bytes = Math.max(0, channel.bytes - bytes); });
-		else if (!channel.socket) channel.buffer += frame;
-		else channel.bytes -= bytes;
+		if (!channel || channel.closing || (frame.type === "text" && !frame.text)) return;
+		this.enqueueFrame(channel, frame);
+		this.pump(channel);
+	}
+
+	write(key: string, text: string): void {
+		this.send(key, { type: "text", text });
 	}
 
 	async close(key: string): Promise<void> {
@@ -383,11 +434,18 @@ export class SocketViewerTransport implements ViewerTransport {
 		}
 		const socket = channel.socket;
 		if (!socket) return this.abandon(key);
+		this.enqueueOmissionNotice(channel);
+		this.enqueueFrame(channel, { type: "close" }, true);
+		if (channel.omissionPending && channel.queue.at(-1)?.frame.type === "close") {
+			const close = channel.queue.pop()!; channel.bytes -= close.bytes;
+			this.enqueueOmissionNotice(channel);
+			this.enqueueFrame(channel, { type: "close" }, true);
+		}
+		this.pump(channel);
 		await new Promise<void>((resolve) => {
 			let done = false;
 			const finish = () => { if (!done) { done = true; resolve(); } };
 			channel.drained = finish;
-			socket.write(`${JSON.stringify({ type: "close" })}\n`);
 			setTimeout(finish, VIEWER_DRAIN_MS).unref();
 		});
 		socket.end();
@@ -415,6 +473,77 @@ export class SocketViewerTransport implements ViewerTransport {
 		await rm(this.directory, { recursive: true, force: true });
 	}
 
+	private enqueueFrame(channel: ViewerChannel, input: ViewerFrame, force = false): void {
+		const frame = constrainViewerFrame(input);
+		if (frame.type === "text") {
+			for (const part of splitViewerText(frame.text)) this.enqueueTextFrame(channel, part);
+			return;
+		}
+		const queued = encodeViewerFrame(frame);
+		if (queued.bytes > MAX_VIEWER_FRAME_BYTES) {
+			channel.omissionPending = true;
+			return;
+		}
+		this.enqueueQueuedFrame(channel, queued, force);
+	}
+
+	private enqueueTextFrame(channel: ViewerChannel, frame: Extract<ViewerFrame, { type: "text" }>): void {
+		const tail = channel.queue.at(-1);
+		if (tail?.frame.type === "text") {
+			const combined = encodeViewerFrame({ type: "text", text: tail.frame.text + frame.text });
+			if (combined.bytes <= MAX_VIEWER_FRAME_BYTES) {
+				channel.queue.pop(); channel.bytes -= tail.bytes;
+				this.enqueueQueuedFrame(channel, combined);
+				return;
+			}
+		}
+		this.enqueueQueuedFrame(channel, encodeViewerFrame(frame));
+	}
+
+	private enqueueQueuedFrame(channel: ViewerChannel, queued: QueuedViewerFrame, force = false): void {
+		const replaceable = queued.frame.type === "init" || queued.frame.type === "usage" || queued.frame.type === "status";
+		if (replaceable) {
+			const index = channel.queue.findIndex((candidate) => candidate.frame.type === queued.frame.type);
+			if (index >= 0) { channel.bytes -= channel.queue[index]!.bytes; channel.queue.splice(index, 1); }
+		}
+		while (channel.bytes + queued.bytes > MAX_CHANNEL_BYTES) {
+			const index = channel.queue.findIndex((candidate) => candidate.frame.type === "text" || candidate.frame.type === "display" || candidate.frame.type === "notice");
+			if (index < 0) break;
+			const [removed] = channel.queue.splice(index, 1);
+			channel.bytes -= removed!.bytes;
+			if (removed!.frame.type !== "notice") channel.omissionPending = true;
+		}
+		if (channel.bytes + queued.bytes > MAX_CHANNEL_BYTES && !force) {
+			if (!replaceable) channel.omissionPending = true;
+			return;
+		}
+		if (channel.bytes + queued.bytes > MAX_CHANNEL_BYTES) return;
+		channel.queue.push(queued);
+		channel.bytes += queued.bytes;
+	}
+
+	private enqueueOmissionNotice(channel: ViewerChannel): void {
+		if (!channel.omissionPending) return;
+		const notice = encodeViewerFrame({ type: "notice", text: "Live detail omitted while viewer was slow." });
+		if (channel.bytes + notice.bytes > MAX_CHANNEL_BYTES) return;
+		channel.queue.push(notice);
+		channel.bytes += notice.bytes;
+		channel.omissionPending = false;
+	}
+
+	private pump(channel: ViewerChannel): void {
+		if (!channel.socket || channel.writing) return;
+		if (!channel.queue.some((queued) => queued.frame.type === "close")) this.enqueueOmissionNotice(channel);
+		const queued = channel.queue.shift();
+		if (!queued) return;
+		channel.writing = true;
+		channel.socket.write(queued.line, () => {
+			channel.writing = false;
+			channel.bytes = Math.max(0, channel.bytes - queued.bytes);
+			this.pump(channel);
+		});
+	}
+
 	private accept(socket: Socket): void {
 		this.sockets.add(socket);
 		socket.setEncoding("utf8");
@@ -440,13 +569,7 @@ export class SocketViewerTransport implements ViewerTransport {
 					if (!channel || channel.socket) return reject();
 					clearTimeout(timer);
 					channel.socket = socket;
-					if (channel.buffer) {
-						const buffer = channel.buffer;
-						const bytes = Buffer.byteLength(buffer);
-						const connectedChannel = channel;
-						channel.buffer = "";
-						socket.write(buffer, () => { connectedChannel.bytes = Math.max(0, connectedChannel.bytes - bytes); });
-					}
+					this.pump(channel);
 					channel.connected?.();
 				} else if (frame.type === "drained") channel.drained?.();
 			}
@@ -464,6 +587,50 @@ export class SocketViewerTransport implements ViewerTransport {
 		});
 		socket.on("error", () => undefined);
 	}
+}
+
+function encodeViewerFrame(frame: ViewerFrame): QueuedViewerFrame {
+	const line = `${JSON.stringify(frame)}\n`;
+	return { frame, line, bytes: Buffer.byteLength(line) };
+}
+
+function splitViewerText(text: string): Array<Extract<ViewerFrame, { type: "text" }>> {
+	const frames: Array<Extract<ViewerFrame, { type: "text" }>> = [];
+	let offset = 0;
+	while (offset < text.length) {
+		let low = 1;
+		let high = Math.min(text.length - offset, MAX_VIEWER_FRAME_BYTES);
+		while (low < high) {
+			const length = Math.ceil((low + high) / 2);
+			const end = safeUtf16End(text, offset + length);
+			if (encodeViewerFrame({ type: "text", text: text.slice(offset, end) }).bytes <= MAX_VIEWER_FRAME_BYTES) low = length;
+			else high = length - 1;
+		}
+		let end = safeUtf16End(text, offset + low);
+		while (end > offset && encodeViewerFrame({ type: "text", text: text.slice(offset, end) }).bytes > MAX_VIEWER_FRAME_BYTES) end = safeUtf16End(text, end - 1);
+		if (end <= offset) end = Math.min(text.length, offset + 1);
+		frames.push({ type: "text", text: text.slice(offset, end) });
+		offset = end;
+	}
+	return frames;
+}
+
+function safeUtf16End(value: string, end: number): number {
+	return end < value.length && end > 0 && /[\uD800-\uDBFF]/.test(value[end - 1]!) ? end - 1 : end;
+}
+
+function constrainViewerFrame(frame: ViewerFrame): ViewerFrame {
+	if (frame.type === "init") return { ...frame, title: codePointPrefix(frame.title, 80), ...(frame.cwd === undefined ? {} : { cwd: codePointPrefix(frame.cwd, 1_024) }) };
+	if (frame.type === "status" || frame.type === "notice") return { ...frame, text: codePointPrefix(frame.text, 2_000) };
+	return frame;
+}
+
+function codePointPrefix(value: string, maximum: number): string {
+	return Array.from(value.slice(0, maximum * 2)).slice(0, maximum).join("");
+}
+
+function count(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function attemptKey(agentId: string, attemptId: string): string {

@@ -466,7 +466,8 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 		const content = await run.promise;
 		if (!content) return;
 		const messages = event.messages.filter((message: any) => !(message?.role === "custom" && message?.customType === "pibox-memory"));
-		let insertion = messages.length;
+		// Compaction may retain no user message; keep advisory memory before work/results.
+		let insertion = 0;
 		for (let index = messages.length - 1; index >= 0; index--) {
 			if ((messages[index] as any)?.role === "user") { insertion = index; break; }
 		}

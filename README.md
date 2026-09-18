@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/dev32-io/PiBox/actions/workflows/ci.yml?query=branch%3Adevelop"><img src="https://img.shields.io/github/actions/workflow/status/dev32-io/PiBox/ci.yml?branch=develop&amp;style=flat-square&amp;label=CI" alt="CI status on develop"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-d99a7b?style=flat-square" alt="MIT license"></a>
-  <a href="https://github.com/badlogic/pi-mono"><img src="https://img.shields.io/badge/Pi-%E2%89%A5%200.84.3-62656f?style=flat-square" alt="Pi 0.84.3 or newer"></a>
+  <a href="https://github.com/badlogic/pi-mono"><img src="https://img.shields.io/badge/Pi-%E2%89%A5%200.85.1-62656f?style=flat-square" alt="Pi 0.85.1 or newer"></a>
 </p>
 
 PiBox is a mode-driven extension pack for the [Pi coding agent](https://github.com/badlogic/pi-mono). It adds a focused terminal, activation-scoped subagents, private session scratch, repository-aware visual design, and an optional managed workflow that carries reviewed ideas through implementation and verification.
@@ -36,7 +36,7 @@ Modes are session-branch-local and select authority, not permission: Workflow st
 
 ## Quick start
 
-Requires [Pi 0.84.3 or newer](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#quick-start).
+Requires [Pi 0.85.1 or newer](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#quick-start).
 
 ```bash
 npm install

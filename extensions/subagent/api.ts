@@ -1,4 +1,5 @@
 import type { AgentProgress } from "./agent-progress.js";
+import type { SubagentDisplayListener, SubagentDisplaySubscription } from "./display.js";
 
 /** Identity of the one live main-session activation that owns a service. */
 export interface RuntimeOwner {
@@ -191,5 +192,7 @@ export interface SubagentService {
 	release(owner: RuntimeOwner, handle: LogicalAgentHandle): Promise<void>;
 	replay(owner: RuntimeOwner, afterCursor?: number): SubagentReplay;
 	subscribe(owner: RuntimeOwner, afterCursor: number, listener: SubagentEventListener): SubagentSubscription;
+	/** Optional live-only rich display observer. Older retained services may omit it. */
+	subscribeDisplay?(owner: RuntimeOwner, listener: SubagentDisplayListener): SubagentDisplaySubscription;
 	teardown(): void | Promise<void>;
 }

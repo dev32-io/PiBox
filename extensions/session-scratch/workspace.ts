@@ -16,15 +16,27 @@ const FILE_MODE = 0o600;
 
 const PLAN_TEMPLATE = `# Session Scratch Plan
 
-> Non-authoritative scratch material. This file is temporary and is not a product, workflow, or repository source of truth.
+> Non-authoritative private scratch. Temporary; not a product, workflow, or repository source of truth.
 
-In Orchestrator mode, for substantial work, complete the necessary read-only research, exploration, and investigation before drafting a suitable plan. If delegated findings could affect the plan's scope, approach, dependencies, or verification, wait for those results, review them, and reconcile them with other evidence before drafting or presenting the plan. While that research is pending, keep working notes and ask clarifying questions as needed, but do not present a plan for approval.
+Research -> Plan -> Approval -> Execution until the agreed goal and Done criteria are met. Proactively draft once enough findings support a useful approach; do not wait for a separate plan request.
 
-Once sufficiently informed, draft the plan here, then present it concisely for user discussion and approval. State remaining assumptions and unresolved decisions rather than treating them as established facts. Keep it focused on the current goal as a concise step-by-step Markdown checklist (- [ ] / - [x]), not an accumulation of projects. Resolve a clear Goal, Deliverable, and verifiable Done criteria through discussion and record them before implementation. Make the next action, dependencies, completion checks, and sequential versus independent implementation work clear. Revise this same plan during discussion and delivery; wait for approval before implementation or delegating implementation.
+## Research
 
-Treat the plan as the working control loop, not a one-time proposal: identify the current step, mark each completed item [x] as soon as its completion checks pass, and update remaining steps or blockers as evidence changes. Keep unfinished or blocked work unchecked; reconcile the checklist before reporting progress or completion.
+Complete enough read-only research for a defensible approach. Review and reconcile relevant delegated findings before presenting a plan; keep researching or ask clarifying questions while they remain pending. Separate facts, assumptions, and material decisions.
 
-Once the plan is approved, keep working toward its agreed deliverable without waiting for routine user prompts. Repeat investigation, implementation, delegation, and verification as needed within the approved scope until the Done criteria are met. Pause only for a genuine blocker, required approval, or a material decision reserved for the user; record what remains and the specific input needed. Routine iteration needs no renewed approval, but a material goal or scope change does.
+## Plan
+
+Write and show a discussion draft as soon as enough evidence is available. Record one current Goal, Deliverable, verifiable Done criteria, and a concise checklist (- [ ] / - [x]). Each step should name its next action, dependencies, completion checks, and whether work is sequential or independent. Group independent work into parallel lanes with explicit prerequisites, file ownership, shared interfaces/resources, and integration checks. Checklist order is not a scheduling dependency. Subagents and ad hoc branches/worktrees are available for safe concurrency; plan isolation and integration where needed. State remaining assumptions. Use this draft to clarify what the user wants and revise it as discussion and targeted research resolve open questions; planning does not authorize implementation.
+
+## Approval
+
+Wait for explicit user approval before implementation or implementation delegation. Routine iteration within approved scope needs no renewed approval. Material goal, scope, or reserved user decisions do; genuine blockers also pause with the remaining gap and required input recorded.
+
+## Execution
+
+After approval, use this file as the control loop without routine prompt pauses. After compaction, resume, background completion, or missing context, recover the approved goal and current unchecked step here; consult ledger.md for evidence and decisions.
+
+For every result, inspect it and run the current step's completion checks. Once verified, immediately edit the actual checkbox from - [ ] to - [x]. Leave partial or blocked work unchecked and record completed substeps plus the remaining gap. Record evidence and decisions in ledger.md, then launch or continue all safely ready items within available capacity. Reassess dependencies after each result; do not wait for unrelated lanes or impose numbered-order waves. Serialize only actual dependencies or conflicting edits/resources; worktrees do not isolate shared test services. Verify all Done criteria before claiming completion.
 
 At goal changes and completion, remove obsolete or superseded detail using judgment, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
 

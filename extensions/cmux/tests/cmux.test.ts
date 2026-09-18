@@ -8,17 +8,24 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import cmuxExtension from "../index.js";
-import { CmuxPaneAdapter, SocketViewerTransport, chooseLargestOwnedPane, sanitizeTerminalText, splitDirection, splitIsViable, type CmuxClient, type CmuxPane, type ViewerTransport } from "../cmux.js";
+import { CmuxPaneAdapter, SocketViewerTransport, chooseLargestOwnedPane, sanitizeTerminalText, splitDirection, splitIsViable, type CmuxClient, type CmuxPane, type ViewerFrame, type ViewerTransport } from "../cmux.js";
 import type { LogicalAgentSnapshot, RuntimeOwner, SubagentEvent, SubagentService } from "../../subagent/api.js";
+import type { SubagentDisplayEvent } from "../../subagent/display.js";
 
 class FakeViewers implements ViewerTransport {
 	readonly writes = new Map<string, string>();
+	readonly frames = new Map<string, ViewerFrame[]>();
 	readonly commands: string[] = [];
 	readonly log: string[] = [];
 	private readonly closes = new Map<string, () => void>();
 	constructor(private readonly sequence: string[] = []) {}
 	command(key: string, onUnexpectedClose: () => void): string { this.commands.push(key); this.closes.set(key, onUnexpectedClose); return `viewer-${this.commands.length}`; }
-	write(key: string, text: string): void { this.log.push(`write:${key}`); this.writes.set(key, (this.writes.get(key) ?? "") + text); }
+	send(key: string, frame: ViewerFrame): void {
+		this.log.push(`send:${key}:${frame.type}`);
+		this.frames.set(key, [...(this.frames.get(key) ?? []), frame]);
+		if (frame.type === "text") this.writes.set(key, (this.writes.get(key) ?? "") + frame.text);
+	}
+	write(key: string, text: string): void { this.send(key, { type: "text", text }); }
 	async close(key: string): Promise<void> { this.log.push(`flush:${key}`); this.sequence.push(`flush:${key}`); this.closes.delete(key); }
 	abandon(key: string): void { this.log.push(`abandon:${key}`); this.closes.delete(key); }
 	async shutdown(): Promise<void> { this.log.push("shutdown"); }
@@ -59,6 +66,7 @@ class FakeCmux implements CmuxClient {
 		const index = this.panes.findIndex((pane) => pane.surfaceIds.includes(surfaceId));
 		if (index >= 0) this.panes.splice(index, 1);
 	}
+	async renameTab(surfaceId: string, title: string): Promise<void> { this.log.push(`rename:${surfaceId}:${title}`); }
 }
 
 const owner: RuntimeOwner = { sessionId: "session", processInstanceId: "process", activationId: "activation" };
@@ -68,6 +76,7 @@ const snapshot = (agentId: string, attemptId: string, title = "Task"): LogicalAg
 	provider: "test", model: "test", effort: "off", fast: false, startedAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
 });
 const event = (agentId: string, attemptId: string, type: SubagentEvent["type"], data?: Record<string, unknown>): SubagentEvent => ({ owner, cursor: 1, agentId, attemptId, sequence: 1, type, at: "2026-01-01T00:00:00Z", ...(data ? { data } : {}) });
+const displayEvent = (agentId: string, attemptId: string, frame: SubagentDisplayEvent["frame"]): SubagentDisplayEvent => ({ owner, agentId, attemptId, frame });
 
 async function opened(width = 1200, height = 600) {
 	const client = new FakeCmux([pane("main-pane", "main", width, height)]);
@@ -91,15 +100,51 @@ async function withTimeout<T>(promise: Promise<T>, milliseconds = 2_000): Promis
 	}
 }
 
-test("layout uses pixel longest axis, one-third resize, and only owned panes after first", async () => {
+test("layout reserves one third initially then halves owned panes along their longest axis", async () => {
 	const { adapter, client, viewers } = await opened();
 	assert.deepEqual(client.resizes[0], { paneId: "main-pane", direction: "right", amount: 200 });
 	adapter.handle(event("b", "two", "attempt_started"), snapshot("b", "two"));
 	await adapter.idle();
-	assert.deepEqual(client.resizes[1], { paneId: "pane-1", direction: "down", amount: 100 });
+	assert.equal(client.resizes.length, 1, "agent split keeps cmux's equal halves");
 	assert.match(client.log.find((line) => line.startsWith("split:down"))!, /^split:down:surface-1:/, "later split stays inside owned agent pane");
-	assert.equal(viewers.commands.length, 2);
+	assert.equal(client.panes.find((pane) => pane.paneId === "pane-1")!.height, 300);
+	assert.equal(client.panes.find((pane) => pane.paneId === "pane-2")!.height, 300);
+	adapter.handle(event("c", "three", "attempt_started"), snapshot("c", "three"));
+	await adapter.idle();
+	assert.equal(client.resizes.length, 1);
+	assert.equal(client.panes.find((pane) => pane.paneId === "main-pane")!.width, 800, "main remains protected");
+	assert.equal(client.panes.find((pane) => pane.paneId === "pane-1")!.width, 200);
+	assert.equal(client.panes.find((pane) => pane.paneId === "pane-3")!.width, 200);
+	assert.equal(viewers.commands.length, 3);
+	assert.ok(client.log.includes("rename:surface-1:worker · Task"));
 	await adapter.shutdown();
+});
+
+test("portrait layout reserves main height then halves agent width", async () => {
+	const { adapter, client } = await opened(600, 1200);
+	assert.deepEqual(client.resizes, [{ paneId: "main-pane", direction: "down", amount: 200 }]);
+	adapter.handle(event("b", "two", "attempt_started"), snapshot("b", "two"));
+	await adapter.idle();
+	assert.equal(client.resizes.length, 1);
+	assert.equal(client.panes.find((pane) => pane.paneId === "main-pane")!.height, 800);
+	assert.equal(client.panes.find((pane) => pane.paneId === "pane-1")!.width, 300);
+	assert.equal(client.panes.find((pane) => pane.paneId === "pane-2")!.width, 300);
+	await adapter.shutdown();
+});
+
+test("minimum sizes use the actual half or third split for cell and pixel geometry", () => {
+	const wide = pane("p", "s", 400, 200, 40, 10);
+	const tall = pane("p", "s", 200, 400, 20, 10);
+	assert.equal(splitIsViable(wide, "right", 3), false);
+	assert.equal(splitIsViable(wide, "right", 2), true);
+	assert.equal(splitIsViable(tall, "down", 3), false);
+	assert.equal(splitIsViable(tall, "down", 2), true);
+	const pixelWide: CmuxPane = { paneId: "p", surfaceIds: ["s"], x: 0, y: 0, width: 360, height: 180 };
+	const pixelTall: CmuxPane = { ...pixelWide, width: 180, height: 200 };
+	assert.equal(splitIsViable(pixelWide, "right", 3), false);
+	assert.equal(splitIsViable(pixelWide, "right", 2), true);
+	assert.equal(splitIsViable(pixelTall, "down", 3), false);
+	assert.equal(splitIsViable(pixelTall, "down", 2), true);
 });
 
 test("layout waits through stale post-split and post-resize geometry", async () => {
@@ -132,24 +177,74 @@ test("layout helpers are deterministic and tiny panes are skipped", async () => 
 	await adapter.shutdown();
 });
 
-test("display whitelists deltas/tool state, strips controls across chunks, and flushes before close", async () => {
+test("adapter sends structured init, cumulative usage, sanitized text, and flushes before close", async () => {
 	const sequence: string[] = []; const client = new FakeCmux([pane("main-pane", "main", 1200, 600)], sequence); const viewers = new FakeViewers(sequence);
 	const adapter = new CmuxPaneAdapter({ mainSurfaceId: "main", client, viewers });
 	adapter.handle(event("a", "one", "attempt_started"), snapshot("a", "one")); await adapter.idle();
 	adapter.handle(event("a", "one", "message_delta", { text: "ok\u001b]0;owned", secret: "never" }));
 	adapter.handle(event("a", "one", "message_delta", { text: " title\u0007done\u001b[31m" }));
+	adapter.handle(event("a", "one", "usage", { inputTokens: 120, outputTokens: 7, cacheReadTokens: 999 }));
 	adapter.handle(event("a", "one", "tool_activity", { tool: "read\u001b[2J", active: true, args: "never" }));
 	assert.equal(sanitizeTerminalText("a\u001b"), "a");
+	const frames = viewers.frames.get("a\0one")!;
+	assert.deepEqual(frames[0], { type: "init", title: "worker · Task" });
+	assert.deepEqual(frames.find((frame) => frame.type === "usage"), { type: "usage", inputTokens: 120, outputTokens: 7 });
+	assert.deepEqual(frames.find((frame) => frame.type === "notice"), { type: "notice", text: "read[2J started" });
 	const output = viewers.writes.get("a\0one")!;
-	assert.doesNotMatch(output, /[\u001b\u0007]/);
-	assert.doesNotMatch(output, /secret|args|never/);
-	assert.match(output, /\[tool\] read\[2J started/);
+	assert.doesNotMatch(output, /[\u001b\u0007]|secret|args|never/);
 	adapter.handle(event("a", "one", "output_drained"));
 	adapter.handle(event("a", "one", "terminal", { status: "completed", reportPath: "/private/report" }));
 	await adapter.idle();
 	assert.deepEqual(sequence.slice(-2), ["flush:a\0one", "close:surface-1"]);
-	assert.doesNotMatch(viewers.writes.get("a\0one")!, /report/);
+	assert.equal(viewers.frames.get("a\0one")!.at(-1)?.type, "status");
+	assert.doesNotMatch(JSON.stringify(viewers.frames.get("a\0one")), /report/);
 	await adapter.shutdown();
+});
+
+test("seed sends cumulative usage and leaves missing usage unknown", async () => {
+	const client = new FakeCmux([pane("main-pane", "main", 1200, 600)]); const viewers = new FakeViewers();
+	const adapter = new CmuxPaneAdapter({ mainSurfaceId: "main", client, viewers });
+	adapter.seed([
+		{ ...snapshot("a", "one"), progress: { startedAt: "2026-01-01T00:00:00Z", lastEventAt: "2026-01-01T00:00:01Z", turns: 2, toolCalls: 0, toolErrors: 0, inputTokens: 55, outputTokens: 8, reasoningTokens: 0 } },
+		snapshot("b", "two"),
+	]);
+	await adapter.idle();
+	assert.deepEqual(viewers.frames.get("a\0one")?.find((frame) => frame.type === "usage"), { type: "usage", inputTokens: 55, outputTokens: 8 });
+	assert.equal(viewers.frames.get("b\0two")?.some((frame) => frame.type === "usage"), false);
+	await adapter.shutdown();
+});
+
+test("rich display frames are ephemeral and suppress compact tool summaries after ready", async () => {
+	const { adapter, viewers } = await opened();
+	const key = "a\0one";
+	adapter.handle(event("a", "one", "tool_activity", { tool: "read", active: true }));
+	adapter.handleDisplay(displayEvent("a", "one", { type: "display_ready" }));
+	adapter.handleDisplay(displayEvent("a", "one", { type: "tool_start", toolCallId: "tool-1", toolName: "read", args: { path: "README.md" } }));
+	adapter.handle(event("a", "one", "tool_activity", { tool: "read", active: false }));
+	const frames = viewers.frames.get(key)!;
+	assert.equal(frames.filter((frame) => frame.type === "notice").length, 1);
+	assert.deepEqual(frames.filter((frame) => frame.type === "display").map((frame) => frame.frame.type), ["display_ready", "tool_start"]);
+	await adapter.shutdown();
+});
+
+test("viewer and tab title stay meaningful and bounded; rename failure is harmless", async () => {
+	const client = new FakeCmux([pane("main-pane", "main", 1200, 600)]);
+	const viewers = new FakeViewers();
+	const adapter = new CmuxPaneAdapter({ mainSurfaceId: "main", client, viewers });
+	adapter.handle(event("a", "one", "attempt_started"), snapshot("a", "one", `Task ${"🙂".repeat(100_000)}`));
+	await assert.doesNotReject(adapter.idle());
+	const title = (viewers.frames.get("a\0one")?.[0] as Extract<ViewerFrame, { type: "init" }>).title;
+	assert.equal(Array.from(title).length, 80);
+	assert.equal(client.log.includes(`rename:surface-1:${title}`), true);
+	assert.equal(viewers.log.some((line) => line.startsWith("abandon:")), false);
+	await adapter.shutdown();
+
+	const failingClient = new FakeCmux([pane("main-pane", "main", 1200, 600)]);
+	failingClient.renameTab = async () => { throw new Error("rename denied"); };
+	const failingAdapter = new CmuxPaneAdapter({ mainSurfaceId: "main", client: failingClient, viewers: new FakeViewers() });
+	failingAdapter.handle(event("b", "two", "attempt_started"), snapshot("b", "two"));
+	await assert.doesNotReject(failingAdapter.idle());
+	await failingAdapter.shutdown();
 });
 
 test("cmux failures omit viewer without escaping into agent lifecycle", async () => {
@@ -173,7 +268,7 @@ test("user close never reopens same attempt; continuation gets a fresh pane", as
 	adapter.handle(event("a", "one", "attempt_started"), snapshot("a", "one"));
 	adapter.handle(event("a", "one", "message_delta", { text: "hidden" }));
 	assert.equal(viewers.commands.length, 1);
-	assert.doesNotMatch(viewers.writes.get("a\0one")!, /hidden/);
+	assert.doesNotMatch(viewers.writes.get("a\0one") ?? "", /hidden/);
 	adapter.handle(event("a", "two", "attempt_started"), snapshot("a", "two"));
 	await adapter.idle();
 	assert.equal(viewers.commands.length, 2);
@@ -206,6 +301,7 @@ test("extension silently no-ops outside cmux and observes service without child 
 	await handlers.get("session_start")!({ reason: "startup" }, ctx);
 	assert.ok(listener);
 	await new Promise((resolve) => setTimeout(resolve, 0));
+	assert.deepEqual(viewers[0]!.frames.get("a\0one")?.[0], { type: "init", title: "worker · Task", limited: true });
 	await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
 	assert.equal(listener, undefined);
 	assert.ok(viewers[0]!.log.includes("shutdown"));
@@ -214,6 +310,69 @@ test("extension silently no-ops outside cmux and observes service without child 
 	assert.equal(viewers.length, 2);
 	assert.deepEqual(viewers.map((viewer) => viewer.commands.length), [1, 1], "reload closes and rebinds active attempts live-only");
 	await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
+});
+
+test("rich observer is capability-gated, metadata inspect runs only at attempt start, and cleanup unsubscribes", async () => {
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+	let compactListener: ((event: SubagentEvent) => void) | undefined;
+	let richListener: ((event: SubagentDisplayEvent) => void) | undefined;
+	let inspectCount = 0; let richUnsubscribed = false;
+	const service = {
+		owner, protocolVersion: 1,
+		inspect: () => { inspectCount++; return [snapshot("a", "one")]; },
+		replay: () => ({ snapshot: { owner, cursor: 0, agents: [] }, events: [], reset: false }),
+		subscribe: (_owner: RuntimeOwner, _cursor: number, listener: (event: SubagentEvent) => void) => { compactListener = listener; return { initial: { snapshot: { owner, cursor: 0, agents: [] }, events: [], reset: false }, unsubscribe() { compactListener = undefined; } }; },
+		subscribeDisplay: (_owner: RuntimeOwner, listener: (event: SubagentDisplayEvent) => void) => { richListener = listener; return { unsubscribe() { richListener = undefined; richUnsubscribed = true; } }; },
+	} as unknown as SubagentService;
+	const viewers = new FakeViewers();
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+		createViewers: async () => viewers, createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),
+	});
+	const ctx = { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	await handlers.get("session_start")!({}, ctx);
+	compactListener!(event("a", "one", "attempt_started"));
+	compactListener!(event("a", "one", "message_delta", { text: "one" }));
+	compactListener!(event("a", "one", "message_delta", { text: "two" }));
+	richListener!(displayEvent("a", "one", { type: "display_ready" }));
+	assert.equal(inspectCount, 1);
+	assert.equal(viewers.frames.get("a\0one")?.some((frame) => frame.type === "display"), true);
+	await handlers.get("session_shutdown")!({}, ctx);
+	assert.equal(richUnsubscribed, true);
+});
+
+test("failed cmux probe does not attach rich observer or create viewer", async () => {
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+	let subscribed = false; let viewerCreated = false;
+	const service = { owner, protocolVersion: 1, subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } } as unknown as SubagentService;
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+		env: { CMUX_WORKSPACE_ID: "stale", CMUX_SURFACE_ID: "missing" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+		createClient: () => ({ listPanes: async () => { throw new Error("cmux missing"); } }) as unknown as CmuxClient,
+		createViewers: async () => { viewerCreated = true; return new FakeViewers(); },
+	});
+	await handlers.get("session_start")!({}, { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext);
+	assert.equal(subscribed, false);
+	assert.equal(viewerCreated, false);
+});
+
+test("shutdown fences delayed startup and disposes its transport", async () => {
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+	let resolveViewer!: (viewer: ViewerTransport) => void; let subscribed = false;
+	const pendingViewer = new Promise<ViewerTransport>((resolve) => { resolveViewer = resolve; });
+	const service = { owner, protocolVersion: 1, subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } } as unknown as SubagentService;
+	const viewer = new FakeViewers();
+	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]), createViewers: () => pendingViewer,
+	});
+	const ctx = { sessionManager: { getSessionId: () => "session" } } as unknown as ExtensionContext;
+	const starting = handlers.get("session_start")!({}, ctx);
+	await new Promise((resolve) => setImmediate(resolve));
+	await handlers.get("session_shutdown")!({}, ctx);
+	resolveViewer(viewer);
+	await starting;
+	assert.equal(subscribed, false);
+	assert.ok(viewer.log.includes("shutdown"));
 });
 
 test("startup failure shuts transport down and current-cursor handshake replays only initial memory events", async () => {
@@ -227,6 +386,7 @@ test("startup failure shuts transport down and current-cursor handshake replays 
 			subscribe: () => { throw new Error("activation ended"); },
 		} as unknown as SubagentService }),
 		createViewers: async () => failedViewer,
+		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),
 	});
 	await failedHandlers.get("session_start")!({}, ctx);
 	assert.ok(failedViewer.log.includes("shutdown"));
@@ -329,13 +489,15 @@ test("socket transport waits for viewer, flushes before close, force-closes malf
 		for (;;) {
 			const end = budgetInput.indexOf("\n"); if (end < 0) break;
 			budgetFrames.push(JSON.parse(budgetInput.slice(0, end))); budgetInput = budgetInput.slice(end + 1);
-			if (budgetFrames.length === 1) setImmediate(() => transport.write("budget", laterText));
-			if (budgetFrames.length === 2) resolve();
+			const receivedLength = budgetFrames.reduce((total, frame) => total + (frame.type === "text" ? frame.text.length : 0), 0);
+			if (receivedLength === initialText.length) setImmediate(() => transport.write("budget", laterText));
+			if (receivedLength === initialText.length + laterText.length) resolve();
 		}
 	}));
 	budgetViewer.write(`${JSON.stringify({ type: "hello", token: budgetToken })}\n`);
 	await withTimeout(received);
-	assert.deepEqual(budgetFrames.map((frame) => frame.text.length), [initialText.length, laterText.length]);
+	assert.equal(budgetFrames.filter((frame) => frame.type === "text").map((frame) => frame.text).join(""), initialText + laterText);
+	assert.ok(budgetFrames.every((frame) => Buffer.byteLength(`${JSON.stringify(frame)}\n`) <= 16 * 1024));
 	transport.abandon("budget");
 
 	const invalid = connect(socketPath!);
@@ -352,6 +514,44 @@ test("socket transport waits for viewer, flushes before close, force-closes malf
 	await assert.rejects(access(socketPath!));
 });
 
+test("socket queue coalesces headers, marks dropped detail, preserves orphan tool end, and closes last", async () => {
+	const transport = await SocketViewerTransport.create();
+	const command = transport.command("queued", () => undefined);
+	const [, , socketPath, token] = commandParts(command);
+	transport.send("queued", { type: "init", title: "old" });
+	const latestTitle = `latest ${"🙂".repeat(100_000)}`;
+	transport.send("queued", { type: "init", title: latestTitle });
+	transport.send("queued", { type: "usage", inputTokens: 1 });
+	transport.send("queued", { type: "usage", inputTokens: 9, outputTokens: 4 });
+	transport.send("queued", { type: "status", text: "starting" });
+	transport.send("queued", { type: "status", text: "running" });
+	transport.send("queued", { type: "display", frame: { type: "tool_start", toolCallId: "orphan", toolName: "read", argsText: "x".repeat(12 * 1024) } });
+	transport.send("queued", { type: "text", text: "y".repeat(60 * 1024) });
+	transport.send("queued", { type: "display", frame: { type: "tool_end", toolCallId: "orphan", toolName: "read", text: "done", isError: false } });
+	const viewer = connect(socketPath!); viewer.setEncoding("utf8");
+	await once(viewer, "connect");
+	let input = ""; const frames: ViewerFrame[] = [];
+	viewer.on("data", (chunk) => {
+		input += chunk;
+		for (;;) {
+			const end = input.indexOf("\n"); if (end < 0) break;
+			const frame = JSON.parse(input.slice(0, end)) as ViewerFrame; input = input.slice(end + 1); frames.push(frame);
+			if (frame.type === "close") viewer.write(`${JSON.stringify({ type: "drained" })}\n`);
+		}
+	});
+	viewer.write(`${JSON.stringify({ type: "hello", token })}\n`);
+	await withTimeout(transport.close("queued"));
+	const init = frames.find((frame) => frame.type === "init") as Extract<ViewerFrame, { type: "init" }>;
+	assert.equal(init.title, Array.from(latestTitle).slice(0, 80).join(""));
+	assert.ok(Buffer.byteLength(`${JSON.stringify(init)}\n`) <= 16 * 1024);
+	assert.deepEqual(frames.find((frame) => frame.type === "usage"), { type: "usage", inputTokens: 9, outputTokens: 4 });
+	assert.deepEqual(frames.find((frame) => frame.type === "status"), { type: "status", text: "running" });
+	assert.equal(frames.some((frame) => frame.type === "notice" && /omitted/.test(frame.text)), true);
+	assert.equal(frames.some((frame) => frame.type === "display" && frame.frame.type === "tool_end"), true);
+	assert.equal(frames.at(-1)?.type, "close");
+	await transport.shutdown();
+});
+
 test("socket listen failure removes temporary directory", { concurrency: false }, async () => {
 	const root = join(tmpdir(), "pibox-cmux-long-" + "x".repeat(110));
 	await mkdir(root, { recursive: true });
@@ -364,6 +564,31 @@ test("socket listen failure removes temporary directory", { concurrency: false }
 		if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("delayed real viewer accepts framed multibyte escaped text under stdout backpressure", async () => {
+	const transport = await SocketViewerTransport.create();
+	let unexpectedlyClosed = false;
+	const command = transport.command("real", () => { unexpectedlyClosed = true; });
+	const parts = commandParts(command);
+	const text = `begin\n${"🙂\\\tline\n".repeat(4_000)}end`;
+	transport.write("real", text);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	const child = spawn(parts[0]!, parts.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
+	child.stdout!.pause();
+	let output = "";
+	child.stdout!.setEncoding("utf8");
+	child.stdout!.on("data", (chunk) => { output += chunk; });
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	child.stdout!.resume();
+	await withTimeout(new Promise<void>((resolve) => {
+		const timer = setInterval(() => { if (output.length === text.length) { clearInterval(timer); resolve(); } }, 5);
+	}), 5_000);
+	assert.equal(output, text);
+	await withTimeout(transport.close("real"));
+	await withTimeout(once(child, "close").then(() => undefined));
+	assert.equal(unexpectedlyClosed, false);
+	await transport.shutdown();
 });
 
 test("real viewer preserves split UTF-8 and applies stdout backpressure", async () => {

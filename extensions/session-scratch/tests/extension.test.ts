@@ -9,16 +9,18 @@ import type { PiBoxWorkMode } from "../../work-mode/policy.js";
 function harness(branch: any[] = [], sessionId = "session-a") {
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const tools = new Map<string, any>();
-	const commands = new Map<string, any>();
 	const appended: any[] = [];
 	const pi = {
 		registerTool(spec: any) { tools.set(spec.name, spec); },
-		registerCommand(name: string, spec: any) { commands.set(name, spec); },
-		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
+		registerCommand() {},
+		on(name: string, handler: (...args: any[]) => any) {
+			const previous = handlers.get(name);
+			handlers.set(name, async (...args: any[]) => { await previous?.(...args); return handler(...args); });
+		},
 		appendEntry(customType: string, data: unknown) { appended.push({ type: "custom", customType, data }); },
 	} as unknown as ExtensionAPI;
 	const ctx = {
-		hasUI: false,
+		hasUI: false, model: { api: "openai-completions" },
 		sessionManager: { getBranch: () => branch, getEntries: () => branch, getSessionId: () => sessionId },
 		ui: { setStatus() {}, notify() {}, confirm: async () => true },
 		waitForIdle: async () => {},
@@ -29,77 +31,92 @@ function harness(branch: any[] = [], sessionId = "session-a") {
 		if (priorRole === undefined) delete process.env.PIBOX_RUNTIME_ROLE;
 		else process.env.PIBOX_RUNTIME_ROLE = priorRole;
 	}
-	return { handlers, tools, commands, appended, ctx };
+	return {
+		handlers, tools, appended, ctx,
+		async request(messages: any[] = [{ role: "user", content: "continue" }]) {
+			const context = await handlers.get("context")?.({ messages }, ctx);
+			const payload = { messages: [{ role: "system", content: "BASE" }, ...(context?.messages ?? messages).map((message: any) => ({ ...message, role: message.role === "custom" ? "user" : message.role }))] };
+			const result = await handlers.get("before_provider_request")?.({ payload }, ctx) ?? payload;
+			return { system: result.messages[0].content as string, messages: result.messages.slice(1) };
+		},
+	};
 }
 
 function scratchEntry(binding: { workspaceId: string; sessionId: string } | null) {
 	return { type: "custom", customType: SESSION_SCRATCH_ENTRY_TYPE, data: { schemaVersion: 1, binding } };
 }
 
-test("Agent startup is disk-idle while Orchestrator demand creates and reinjects private scratch", async () => {
+function modeRuntime(mode: () => PiBoxWorkMode) {
+	return installWorkModeRuntime({ snapshot: () => ({ sessionId: "session-a", mode: mode(), workflowToolsExposed: false, generation: 1 }) });
+}
+
+test("system pointers are stable across idle wakes and compaction without a per-turn activation hook", async () => {
 	let mode: PiBoxWorkMode = "agent";
-	const uninstall = installWorkModeRuntime({ snapshot: () => ({ sessionId: "session-a", mode, workflowToolsExposed: false, generation: 1 }) });
-	const testHarness = harness();
+	const uninstall = modeRuntime(() => mode);
+	const host = harness();
 	let root: string | undefined;
 	try {
-		await testHarness.handlers.get("session_start")?.({ reason: "startup" }, testHarness.ctx);
-		await testHarness.handlers.get("before_agent_start")?.({}, testHarness.ctx);
-		assert.equal(await testHarness.handlers.get("context")?.({ messages: [{ role: "user", content: "hello" }] }, testHarness.ctx), undefined);
-		assert.equal(testHarness.appended.length, 0, "fresh Agent mode does not initialize scratch");
-
+		await host.handlers.get("session_start")?.({ reason: "startup" }, host.ctx);
+		assert.doesNotMatch((await host.request()).system, /Plan:/);
+		assert.equal(host.appended.length, 0, "Agent requests do not create optional scratch");
 		mode = "orchestrator";
-		await testHarness.handlers.get("before_agent_start")?.({}, testHarness.ctx);
-		const projected = await testHarness.handlers.get("context")?.({ messages: [{ role: "user", content: "coordinate" }] }, testHarness.ctx) as { messages: any[] };
-		const saved = testHarness.appended.at(-1)?.data.binding;
-		assert.equal(saved.sessionId, "session-a");
-		assert.match(saved.workspaceId, /^[0-9a-f]{32}$/);
-		root = `/tmp/pibox-session-${saved.workspaceId}`;
-		const pointer = projected.messages.find((message) => message.customType === "pibox-session-scratch");
-		assert.match(pointer.content, new RegExp(root));
-		assert.match(pointer.content, /non-authoritative[\s\S]+plan\.md[\s\S]+ledger\.md/i);
-		const next = await testHarness.handlers.get("context")?.({ messages: [...projected.messages, { role: "assistant", content: "ok" }] }, testHarness.ctx) as { messages: any[] };
-		assert.equal(next.messages.filter((message) => message.customType === "pibox-session-scratch").length, 1, "compaction pointer is replaced, not duplicated");
+		const first = await host.request();
+		const binding = host.appended.at(-1).data.binding;
+		root = `/tmp/pibox-session-${binding.workspaceId}`;
+		assert.ok(first.system.includes(`Plan: ${root}/plan.md`));
+		assert.ok(first.system.includes(`Ledger: ${root}/ledger.md`));
+		assert.deepEqual(first.messages, [{ role: "user", content: "continue" }], "paths and private marker never become conversation messages");
+		await host.handlers.get("agent_settled")?.({}, host.ctx);
+		const completion = [{ role: "custom", customType: "pibox-subagent-result", content: "Completed work" }];
+		assert.equal((await host.request(completion)).system, first.system, "idle wake retains identical system pointers");
+		assert.equal((await host.request([{ role: "compactionSummary", summary: "Prior work" }])).system, first.system);
+		mode = "workflow";
+		assert.doesNotMatch((await host.request()).system, /Plan:/);
 	} finally {
-		await testHarness.handlers.get("session_shutdown")?.({}, testHarness.ctx);
+		await host.handlers.get("session_shutdown")?.({}, host.ctx);
 		uninstall();
 		if (root) await rm(root, { recursive: true, force: true });
 	}
 });
 
-test("recovery guidance survives context replacement and resume without rewriting notes", async () => {
-	const uninstall = installWorkModeRuntime({ snapshot: () => ({ sessionId: "session-a", mode: "orchestrator", workflowToolsExposed: false, generation: 1 }) });
+test("Agent init publishes workspace on the next tool continuation without a new user turn", async () => {
+	const uninstall = modeRuntime(() => "agent");
+	const host = harness();
+	let root: string | undefined;
+	try {
+		await host.handlers.get("session_start")?.({}, host.ctx);
+		assert.doesNotMatch((await host.request()).system, /Plan:/);
+		await host.tools.get("scratch_workspace").execute("init", { action: "init" });
+		root = `/tmp/pibox-session-${host.appended.at(-1).data.binding.workspaceId}`;
+		assert.ok((await host.request()).system.includes(root));
+	} finally {
+		await host.handlers.get("session_shutdown")?.({}, host.ctx);
+		uninstall();
+		if (root) await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("resume reuses binding without injecting or rewriting plan and ledger contents", async () => {
+	const uninstall = modeRuntime(() => "orchestrator");
 	const seed = harness();
 	let root: string | undefined;
 	try {
-		await seed.handlers.get("session_start")?.({ reason: "startup" }, seed.ctx);
-		await seed.handlers.get("before_agent_start")?.({}, seed.ctx);
-		await seed.handlers.get("context")?.({ messages: [{ role: "user", content: "coordinate" }] }, seed.ctx);
+		await seed.handlers.get("session_start")?.({}, seed.ctx);
+		await seed.request();
 		const binding = seed.appended.at(-1).data.binding;
 		root = `/tmp/pibox-session-${binding.workspaceId}`;
-		const plan = "Existing free-form plan, including obsolete scope.\n";
-		const ledger = "Existing decisions and evidence.\n";
+		const plan = "Existing private plan.\n";
+		const ledger = "Existing private evidence.\n";
 		await writeFile(`${root}/plan.md`, plan);
 		await writeFile(`${root}/ledger.md`, ledger);
-
-		const assertPointer = (messages: any[]) => {
-			const pointers = messages.filter((message) => message.customType === "pibox-session-scratch");
-			assert.equal(pointers.length, 1);
-			assert.match(pointers[0].content, /After compaction or resume, consult relevant scratch notes to recover context/);
-			assert.match(pointers[0].content, /current user direction and repository evidence take precedence[\s\S]+may be stale/);
-			assert.equal(pointers[0].content.includes(plan.trim()), false, "notes are not automatically injected");
-			assert.equal(pointers[0].content.includes(ledger.trim()), false);
-		};
-		// Pi has rebuilt context without the previous scratch pointer.
-		const compacted = await seed.handlers.get("context")?.({ messages: [{ role: "compactionSummary", summary: "Prior work" }] }, seed.ctx);
-		assertPointer(compacted.messages);
 		await seed.handlers.get("session_shutdown")?.({}, seed.ctx);
-
 		const resumed = harness([scratchEntry(binding)]);
 		await resumed.handlers.get("session_start")?.({ reason: "resume" }, resumed.ctx);
-		await resumed.handlers.get("before_agent_start")?.({}, resumed.ctx);
-		const restored = await resumed.handlers.get("context")?.({ messages: [{ role: "user", content: "narrow the scope" }] }, resumed.ctx);
-		assertPointer(restored.messages);
-		assert.equal(resumed.appended.length, 0, "the existing binding is reused");
+		const { system } = await resumed.request();
+		assert.ok(system.includes(root));
+		assert.match(system, /After compaction or resume/);
+		assert.ok(!system.includes(plan.trim()) && !system.includes(ledger.trim()));
+		assert.equal(resumed.appended.length, 0);
 		assert.equal(await readFile(`${root}/plan.md`, "utf8"), plan);
 		assert.equal(await readFile(`${root}/ledger.md`, "utf8"), ledger);
 		await resumed.handlers.get("session_shutdown")?.({}, resumed.ctx);
@@ -109,27 +126,24 @@ test("recovery guidance survives context replacement and resume without rewritin
 	}
 });
 
-test("forks inherit mode but allocate a distinct mutable Orchestrator scratch", async () => {
-	const mode: PiBoxWorkMode = "orchestrator";
-	const uninstall = installWorkModeRuntime({ snapshot: () => ({ sessionId: "child-session", mode, workflowToolsExposed: false, generation: 1 }) });
-	const parent = harness([], "parent-session");
+test("forks allocate distinct mutable scratch without inheriting parent paths", async () => {
+	const uninstall = modeRuntime(() => "orchestrator");
+	const parent = harness([], "parent");
 	const roots: string[] = [];
 	try {
-		await parent.handlers.get("session_start")?.({ reason: "startup" }, parent.ctx);
-		await parent.tools.get("scratch_workspace").execute("call", { action: "init" }, undefined, undefined, parent.ctx);
-		const parentBinding = parent.appended.at(-1).data.binding;
-		roots.push(`/tmp/pibox-session-${parentBinding.workspaceId}`);
+		await parent.handlers.get("session_start")?.({}, parent.ctx);
+		await parent.request();
+		const binding = parent.appended.at(-1).data.binding;
+		roots.push(`/tmp/pibox-session-${binding.workspaceId}`);
 		await parent.handlers.get("session_shutdown")?.({}, parent.ctx);
-
-		const child = harness([scratchEntry(parentBinding)], "child-session");
+		const child = harness([scratchEntry(binding)], "child");
 		await child.handlers.get("session_start")?.({ reason: "fork" }, child.ctx);
-		await child.handlers.get("before_agent_start")?.({}, child.ctx);
-		const projected = await child.handlers.get("context")?.({ messages: [{ role: "user", content: "fork" }] }, child.ctx) as { messages: any[] };
-		const childBinding = child.appended.at(-1).data.binding;
-		roots.push(`/tmp/pibox-session-${childBinding.workspaceId}`);
-		assert.equal(childBinding.sessionId, "child-session");
-		assert.notEqual(childBinding.workspaceId, parentBinding.workspaceId);
-		assert.match(projected.messages.find((message) => message.customType === "pibox-session-scratch").content, /not its parent session's mutable scratch[\s\S]+distinct workspace/i);
+		const { system } = await child.request();
+		const next = child.appended.at(-1).data.binding;
+		roots.push(`/tmp/pibox-session-${next.workspaceId}`);
+		assert.notEqual(next.workspaceId, binding.workspaceId);
+		assert.match(system, /not its parent session's mutable scratch/);
+		assert.ok(!system.includes(roots[0]!));
 		await child.handlers.get("session_shutdown")?.({}, child.ctx);
 	} finally {
 		uninstall();
@@ -137,35 +151,37 @@ test("forks inherit mode but allocate a distinct mutable Orchestrator scratch", 
 	}
 });
 
-test("missing resumed scratch is reported before explicit fresh initialization", async () => {
-	let mode: PiBoxWorkMode = "orchestrator";
-	const uninstall = installWorkModeRuntime({ snapshot: () => ({ sessionId: "session-a", mode, workflowToolsExposed: false, generation: 1 }) });
-	const seed = harness();
-	let replacementRoot: string | undefined;
+test("live deletion and missing resumed scratch remove system paths until explicit replacement", async () => {
+	const uninstall = modeRuntime(() => "orchestrator");
+	const host = harness();
+	let root: string | undefined;
 	try {
-		await seed.handlers.get("session_start")?.({ reason: "startup" }, seed.ctx);
-		const initialized = await seed.tools.get("scratch_workspace").execute("call", { action: "init" }, undefined, undefined, seed.ctx);
-		assert.match(initialized.content[0].text, /Root: \/tmp\/pibox-session-/);
-		const binding = seed.appended.at(-1).data.binding;
-		await rm(`/tmp/pibox-session-${binding.workspaceId}`, { recursive: true, force: true });
-		await seed.handlers.get("session_shutdown")?.({}, seed.ctx);
-
-		const resumed = harness([scratchEntry(binding)]);
+		await host.handlers.get("session_start")?.({}, host.ctx);
+		await host.request();
+		const old = host.appended.at(-1).data.binding;
+		root = `/tmp/pibox-session-${old.workspaceId}`;
+		await rm(root, { recursive: true, force: true });
+		const tool = host.tools.get("scratch_workspace");
+		assert.equal((await tool.execute("status", { action: "status" })).details.available, false);
+		const missing = await host.request();
+		assert.match(missing.system, /unavailable[\s\S]+Continuity was not silently recreated/);
+		assert.ok(!missing.system.includes(`Plan: ${root}`));
+		assert.equal(host.appended.length, 1);
+		await host.handlers.get("session_shutdown")?.({}, host.ctx);
+		const resumed = harness([scratchEntry(old)]);
 		await resumed.handlers.get("session_start")?.({ reason: "resume" }, resumed.ctx);
-		await resumed.handlers.get("before_agent_start")?.({}, resumed.ctx);
-		const context = await resumed.handlers.get("context")?.({ messages: [{ role: "user", content: "resume" }] }, resumed.ctx) as { messages: any[] };
-		const pointer = context.messages.find((message) => message.customType === "pibox-session-scratch");
-		assert.match(pointer.content, /unavailable[\s\S]+Continuity was not silently recreated/i);
+		assert.match((await resumed.request()).system, /unavailable/);
 		assert.equal(resumed.appended.length, 0);
-
-		const fresh = await resumed.tools.get("scratch_workspace").execute("call", { action: "init" }, undefined, undefined, resumed.ctx);
-		assert.match(fresh.content[0].text, /fresh workspace was created without claiming continuity/i);
-		const replacement = resumed.appended.at(-1).data.binding;
-		assert.notEqual(replacement.workspaceId, binding.workspaceId);
-		replacementRoot = `/tmp/pibox-session-${replacement.workspaceId}`;
+		await resumed.tools.get("scratch_workspace").execute("init", { action: "init" });
+		const next = resumed.appended.at(-1).data.binding;
+		root = `/tmp/pibox-session-${next.workspaceId}`;
+		assert.notEqual(next.workspaceId, old.workspaceId);
+		const replaced = await resumed.request();
+		assert.match(replaced.system, /without claiming continuity/);
+		assert.ok(replaced.system.includes(`Plan: ${root}/plan.md`));
 		await resumed.handlers.get("session_shutdown")?.({}, resumed.ctx);
 	} finally {
 		uninstall();
-		if (replacementRoot) await rm(replacementRoot, { recursive: true, force: true });
+		if (root) await rm(root, { recursive: true, force: true });
 	}
 });

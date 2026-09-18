@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isSubagentRuntime } from "../core/runtime-role.js";
+import { registerSystemPromptContribution, replaceSystemPromptContributions } from "../core/system-prompt.js";
 import { registerInteractiveFooterItem } from "../tui/interactive-footer/registry.js";
 import type { InteractiveFooterRegistration } from "../tui/interactive-footer/types.js";
 import {
@@ -44,6 +45,12 @@ function promptFamily(mode: PiBoxWorkMode): "base" | "orchestrator" | "designer"
 	return "base";
 }
 
+function modeSystemPrompt(mode: PiBoxWorkMode): string | undefined {
+	return mode === "orchestrator"
+		? `[PiBox mode: Orchestrator] Continue approved work with ordinary tools and ad hoc subagents; no Workflow tools are needed.\n\n${ORCHESTRATOR_PROMPT}`
+		: undefined;
+}
+
 export function modeTransitionImpact(state: WorkModeEntry, target: PiBoxWorkMode): ModeTransitionImpact {
 	if (!state.providerMode) return { changesSystemPrompt: false, changesToolDefinitions: false, mayMissPromptCache: false };
 	const changesSystemPrompt = promptFamily(state.providerMode) !== promptFamily(target);
@@ -81,6 +88,8 @@ export default function workModeExtension(pi: ExtensionAPI): void {
 	let mainAgentActive = false;
 	let registration: InteractiveFooterRegistration | undefined;
 	let uninstallRuntime: (() => void) | undefined;
+
+	registerSystemPromptContribution(pi, { id: "work-mode", order: 100, render: () => modeSystemPrompt(state.mode) });
 
 	const snapshot = () => ({
 		sessionId: sessionCtx?.sessionManager.getSessionId() ?? "unbound",
@@ -213,16 +222,19 @@ export default function workModeExtension(pi: ExtensionAPI): void {
 		publish(true);
 	});
 	pi.on("before_agent_start", (event) => {
-		if (state.mode === "orchestrator") return { systemPrompt: `${event.systemPrompt}\n\n${ORCHESTRATOR_PROMPT}` };
+		const text = modeSystemPrompt(state.mode);
+		return { systemPrompt: replaceSystemPromptContributions(event.systemPrompt, text ? [{ id: "work-mode", text }] : []) };
 	});
 	pi.on("context", (event) => {
-		const content = state.mode === "workflow"
-			? "[PiBox mode: Workflow] Workflow tools are authorized. Follow the phase-specific PiBox skills and preserve every review and execution gate."
-			: `[PiBox mode: ${workModeLabel(state.mode)}] Workflow resource and execution tools are not authorized in this mode.`;
 		const messages = event.messages.filter((message: any) => !(message?.role === "custom" && message?.customType === "pibox-work-mode-context"));
-		let insertion = messages.length;
+		if (state.mode === "orchestrator") return { messages };
+		// Agent and Workflow share system authority; keep their status advisory outside it.
+		const content = state.mode === "workflow"
+			? "[PiBox mode: Workflow] Workflow tools are authorized. Follow phase-specific PiBox skills and preserve every review and execution gate."
+			: `[PiBox mode: ${workModeLabel(state.mode)}] Workflow resource and execution tools are not authorized in this mode.`;
+		let insertion = 0;
 		for (let index = messages.length - 1; index >= 0; index--) if ((messages[index] as any)?.role === "user") { insertion = index; break; }
-		messages.splice(insertion, 0, { role: "custom", customType: "pibox-work-mode-context", content, display: false, timestamp: Date.now() });
+		messages.splice(insertion, 0, { role: "custom", customType: "pibox-work-mode-context", content, display: false, timestamp: 0 });
 		return { messages };
 	});
 	pi.on("agent_start", () => { mainAgentActive = true; registration?.changed(); });

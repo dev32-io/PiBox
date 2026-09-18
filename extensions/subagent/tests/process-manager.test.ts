@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
 	LIFETIME_WRAPPER_PATH,
+	MAX_SUBAGENT_DISPLAY_RECORD_BYTES,
 	REPORT_BRIDGE_EXTENSION_PATH,
 	SubagentProcessManager,
 	attemptUserPromptPath,
@@ -14,6 +15,7 @@ import {
 	stableSystemPromptPath,
 	type RuntimeOwner,
 	type SubagentInvocation,
+	type SubagentDisplayEvent,
 	type SubagentInvocationRequest,
 } from "../index.js";
 import { normalizeSubagentTitle } from "../presentation.js";
@@ -86,7 +88,7 @@ async function productionBridgeFixture(t: TestContext, mode: string, finalText?:
 		piInvocation: {
 			command: process.execPath,
 			args: ["--import", "tsx", PRODUCTION_BRIDGE_CHILD],
-			env: { FAKE_PI_MODE: mode, ...(finalText === undefined ? {} : { FAKE_FINAL_TEXT: finalText }) },
+			env: { FAKE_PI_MODE: mode, PIBOX_SUBAGENT_DISPLAY: "1", ...(finalText === undefined ? {} : { FAKE_FINAL_TEXT: finalText }) },
 		},
 		lifetimeTermGraceMs: 50,
 	});
@@ -205,6 +207,70 @@ test("production bridge drains oversized cumulative, tool, and final events into
 	t.after(() => rm(dirname(retainedPath), { recursive: true, force: true }));
 });
 
+test("rich display is subscriber-gated, bounded, isolated from replay, and observer failures are harmless", async (t) => {
+	const manager = await productionBridgeFixture(t, "oversized", "done");
+	const frames: SubagentDisplayEvent[] = [];
+	manager.subscribeDisplay(owner(), (event) => frames.push(event));
+	manager.subscribeDisplay(owner(), () => { throw new Error("viewer died"); });
+	const terminal = await (await launch(manager, "bridge")).result;
+	assert.equal(terminal.status, "completed", terminal.stderr);
+	assert.deepEqual(frames.map(({ frame }) => frame.type), ["display_ready", "assistant_start", "tool_start", "tool_end", "assistant_end"]);
+	const start = frames.find(({ frame }) => frame.type === "tool_start")!.frame;
+	assert.equal(start.type, "tool_start");
+	if (start.type === "tool_start") {
+		assert.equal(start.args, undefined);
+		assert.equal(start.truncated, true);
+		assert.match(start.argsText ?? "", /display limit/);
+	}
+	const end = frames.find(({ frame }) => frame.type === "tool_end")!.frame;
+	assert.equal(end.type, "tool_end");
+	if (end.type === "tool_end") {
+		assert.equal(end.truncated, true);
+		assert.ok(Buffer.byteLength(end.text, "utf8") <= 4 * 1024);
+		assert.doesNotMatch(end.text, /private-image|private-stderr/);
+		assert.equal(end.text.includes("�"), false);
+	}
+	for (const { frame } of frames) {
+		assert.ok(Buffer.byteLength(`${JSON.stringify({ type: "display", frame })}\n`, "utf8") <= MAX_SUBAGENT_DISPLAY_RECORD_BYTES);
+	}
+	const replay = JSON.stringify(manager.replay(owner(), 0));
+	assert.doesNotMatch(replay, /tool-output|unicode-🙂|private-image|private-stderr|display_ready/);
+});
+
+test("task environment cannot spoof display opt-in and continuation samples active subscribers again", async (t) => {
+	const manager = await productionBridgeFixture(t, "display-env");
+	const disabled = await (await launch(manager, "bridge", "zero")).result;
+	assert.equal(disabled.text, "display:0");
+
+	const frames: SubagentDisplayEvent[] = [];
+	const subscription = manager.subscribeDisplay(owner(), (event) => frames.push(event));
+	const first = await (await manager.continue({ owner: owner(), handle: disabled.handle, attemptUserPrompt: "one" })).result;
+	assert.equal(first.text, "display:1");
+	assert.ok(frames.some(({ frame }) => frame.type === "display_ready"));
+	const boundedStart = frames.find(({ frame }) => frame.type === "tool_start")?.frame;
+	assert.deepEqual(boundedStart?.type === "tool_start" ? boundedStart.args : undefined, { path: "unicode-🙂.txt", content: "tool-output" });
+	const observed = frames.length;
+	const firstAttemptId = frames[0]!.attemptId;
+	assert.ok(frames.every(({ attemptId }) => attemptId === firstAttemptId));
+
+	subscription.unsubscribe();
+	const second = await (await manager.continue({ owner: owner(), handle: first.handle, attemptUserPrompt: "two" })).result;
+	assert.equal(second.text, "display:0");
+	assert.equal(frames.length, observed, "unobserved continuation emits no rich frames");
+	assert.throws(() => manager.subscribeDisplay(owner({ activationId: "other" }), () => undefined), /another runtime activation/);
+});
+
+test("malformed and oversized display records do not fail a successful worker", async (t) => {
+	const manager = await productionBridgeFixture(t, "malformed-display", "safe final");
+	const frames: SubagentDisplayEvent[] = [];
+	manager.subscribeDisplay(owner(), (event) => frames.push(event));
+	const terminal = await (await launch(manager, "bridge")).result;
+	assert.equal(terminal.status, "completed", terminal.stderr);
+	assert.equal(terminal.text, "safe final");
+	assert.ok(frames.some(({ frame }) => frame.type === "display_ready"));
+	assert.doesNotMatch(terminal.stderr ?? "", /Malformed child event channel|configured limit/);
+});
+
 test("real Pi CLI loads the provider and report bridge, selects a tool, and settles oversized native events", { skip: process.platform === "win32" }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-real-pi-bridge-"));
 	const marker = join(root, "tool-selected.log");
@@ -283,6 +349,7 @@ test("production bridge makes report write, missing file, malformed channel, and
 		["report-error", /Child report write failed/],
 		["missing-report", /report file is missing/],
 		["malformed-channel", /Malformed child event channel/],
+		["malformed-lifecycle-display-text", /Malformed child event channel/],
 		["missing-settlement", /agent_settled/],
 	] as const) {
 		const manager = await productionBridgeFixture(t, mode, "final text");
@@ -343,12 +410,16 @@ test("failed, terminated, and partial report allocations are cleaned only after 
 
 test("assistant failure metadata stays separate from captured report contents", async (t) => {
 	const manager = await productionBridgeFixture(t, "assistant-error", "safe final text");
+	const frames: SubagentDisplayEvent[] = [];
+	manager.subscribeDisplay(owner(), (event) => frames.push(event));
 	const terminal = await (await launch(manager, "bridge")).result;
 	assert.equal(terminal.status, "failed");
 	assert.equal(terminal.text, "safe final text");
 	assert.match(terminal.stderr ?? "", /provider failed/);
 	assert.equal(await readFile(terminal.reportPath!, "utf8"), "safe final text");
 	assert.doesNotMatch(await readFile(terminal.reportPath!, "utf8"), /provider failed|private reasoning/);
+	assert.deepEqual(frames.find(({ frame }) => frame.type === "assistant_end")?.frame, { type: "assistant_end", error: "provider failed" });
+	assert.doesNotMatch(JSON.stringify(frames), /private reasoning/);
 	t.after(() => rm(dirname(terminal.reportPath!), { recursive: true, force: true }));
 });
 
@@ -479,6 +550,8 @@ test("a late beforeSpawn completion cannot spawn or publish after launch stop", 
 	});
 	t.after(async () => { await manager.teardown(); await rm(root, { recursive: true, force: true }); });
 
+	const displayFrames: SubagentDisplayEvent[] = [];
+	manager.subscribeDisplay(owner(), (event) => displayFrames.push(event));
 	const launching = manager.launch({
 		owner: owner(), agent: "wait", cwd: root, stableSystemContext: "stable", attemptUserPrompt: "prompt", ...EXECUTION,
 		beforeSpawn() { beforeSpawnEntered(); return gate; },
@@ -492,6 +565,7 @@ test("a late beforeSpawn completion cannot spawn or publish after launch stop", 
 	await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
 	await assert.rejects(access(marker), /ENOENT/);
 	assert.deepEqual(await eventTypes(manager), ["stop_requested", "terminal"]);
+	assert.deepEqual(displayFrames, [], "cancelled pre-spawn attempt never becomes display-ready");
 });
 
 test("stop during report allocation terminalizes without spawning and cleans the late allocation", async (t) => {
@@ -759,6 +833,7 @@ test("every owner-bearing call rejects another activation", async (t) => {
 	assert.throws(() => manager.replay(other), /another runtime activation/);
 	assert.throws(() => manager.inspect(other), /another runtime activation/);
 	assert.throws(() => manager.subscribe(other, 0, () => undefined), /another runtime activation/);
+	assert.throws(() => manager.subscribeDisplay(other, () => undefined), /another runtime activation/);
 	const started = await launch(manager, "success");
 	await assert.rejects(manager.wait(other, started.handle), /another runtime activation/);
 	await assert.rejects(manager.stop(other, started.handle), /another runtime activation/);

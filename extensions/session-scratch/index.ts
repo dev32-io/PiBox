@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { isSubagentRuntime } from "../core/runtime-role.js";
+import { registerSystemPromptContribution } from "../core/system-prompt.js";
 import { currentWorkMode } from "../work-mode/runtime.js";
 import {
 	createSessionScratchWorkspace,
@@ -36,7 +37,6 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 	let workspace: SessionScratchWorkspace | undefined;
 	let unavailable: string | undefined;
 	let continuityNote: string | undefined;
-	let runUsesScratch = false;
 
 	const sessionId = () => {
 		if (!sessionCtx) throw new Error("Session scratch is not bound to an active Pi session");
@@ -55,7 +55,6 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 		return workspace;
 	};
 	const attach = async (createWhenAbsent: boolean): Promise<SessionScratchWorkspace | undefined> => {
-		if (workspace) return workspace;
 		const binding = entry.binding;
 		if (!binding) return createWhenAbsent ? createFresh() : undefined;
 		if (binding.sessionId !== sessionId()) {
@@ -68,8 +67,8 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 			unavailable = undefined;
 			return workspace;
 		} catch (error) {
+			workspace = undefined;
 			unavailable = error instanceof Error ? error.message : String(error);
-			if (createWhenAbsent) return undefined;
 			return undefined;
 		}
 	};
@@ -156,7 +155,6 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 		workspace = undefined;
 		unavailable = undefined;
 		continuityNote = undefined;
-		runUsesScratch = false;
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, entry.binding ? "scratch:saved" : undefined);
 	});
 	pi.on("session_tree", (_event, ctx) => {
@@ -165,35 +163,28 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 		workspace = undefined;
 		unavailable = undefined;
 		continuityNote = undefined;
-		runUsesScratch = false;
 	});
-	pi.on("before_agent_start", () => {
-		const mode = currentWorkMode();
-		runUsesScratch = mode === "orchestrator" || mode === "agent" && Boolean(entry.binding || workspace);
+	registerSystemPromptContribution(pi, {
+		id: "session-scratch",
+		order: 200,
+		async render() {
+			const mode = currentWorkMode();
+			if (mode !== "orchestrator" && !(mode === "agent" && entry.binding)) return;
+			let current: SessionScratchWorkspace | undefined;
+			try {
+				current = await attach(mode === "orchestrator");
+			} catch (error) {
+				unavailable = error instanceof Error ? error.message : String(error);
+			}
+			return current
+				? workspaceSummary(current, continuityNote)
+				: unavailable
+					? `Session scratch is unavailable: ${unavailable}\nContinuity was not silently recreated. Initialize a fresh workspace explicitly before relying on scratch.`
+					: entry.binding && entry.binding.sessionId !== sessionId()
+						? "This fork does not share its parent session's mutable scratch. Initialize a distinct workspace before relying on scratch."
+						: "This session has no scratch workspace.";
+		},
 	});
-	pi.on("context", async (event) => {
-		if (!runUsesScratch) return;
-		const autoInitialize = currentWorkMode() === "orchestrator";
-		let current: SessionScratchWorkspace | undefined;
-		try {
-			current = await attach(autoInitialize);
-		} catch (error) {
-			unavailable = error instanceof Error ? error.message : String(error);
-		}
-		const content = current
-			? workspaceSummary(current, continuityNote)
-			: unavailable
-				? `Session scratch is unavailable: ${unavailable}\nContinuity was not silently recreated. Initialize a fresh workspace explicitly before relying on scratch.`
-				: entry.binding && entry.binding.sessionId !== sessionId()
-					? "This fork does not share its parent session's mutable scratch. Initialize a distinct workspace before relying on scratch."
-					: "This session has no scratch workspace.";
-		const messages = event.messages.filter((message: any) => !(message?.role === "custom" && message?.customType === "pibox-session-scratch"));
-		let insertion = messages.length;
-		for (let index = messages.length - 1; index >= 0; index--) if ((messages[index] as any)?.role === "user") { insertion = index; break; }
-		messages.splice(insertion, 0, { role: "custom", customType: "pibox-session-scratch", content, display: false, timestamp: Date.now() });
-		return { messages };
-	});
-	pi.on("agent_settled", () => { runUsesScratch = false; });
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 		sessionCtx = undefined;
@@ -201,7 +192,6 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 		workspace = undefined;
 		unavailable = undefined;
 		continuityNote = undefined;
-		runUsesScratch = false;
 	});
 }
 

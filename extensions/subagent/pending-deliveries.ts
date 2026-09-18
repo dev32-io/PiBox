@@ -106,6 +106,26 @@ export class PendingSubagentDeliveryRegistry {
 		return owner ? [...this.records.values()].filter((record) => sameRuntimeOwner(record.owner, owner)).length : this.records.size;
 	}
 
+	/** Retry settled records retained after an observer temporarily rejected delivery. */
+	retry(owner: RuntimeOwner): boolean {
+		const key = ownerKey(owner);
+		const observer = this.observers.get(key);
+		if (!observer) return false;
+		if (observer.mode === "batch") this.scheduleBatch(owner, observer);
+		else if (!this.batchTimers.has(key) && [...this.records.values()].some((record) =>
+			sameRuntimeOwner(record.owner, owner) && record.outcome && record.observer?.id === observer.id,
+		)) {
+			this.batchTimers.set(key, setTimeout(() => {
+				this.batchTimers.delete(key);
+				if (this.observers.get(key)?.id !== observer.id) return;
+				for (const record of this.records.values()) {
+					if (sameRuntimeOwner(record.owner, owner) && record.observer?.id === observer.id) this.flushSingle(record);
+				}
+			}, this.batchDelayMs));
+		}
+		return true;
+	}
+
 	private bindObserver(owner: RuntimeOwner, observer: DeliveryObserver): PendingDeliveryBinding {
 		if (!observer.id) throw new Error("Pending delivery binding id is required");
 		const key = ownerKey(owner);

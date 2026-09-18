@@ -2,6 +2,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { isSubagentRuntime } from "../core/runtime-role.js";
+import { registerSystemPromptContribution } from "../core/system-prompt.js";
 import { SUBAGENT_REPORT_PATH_ENV } from "../subagent/report-bridge.js";
 import { PIBOX_SUBAGENT_AGENT_ENV } from "../subagent/invocation.js";
 import {
@@ -39,11 +40,10 @@ export default function e2eWorkspaceExtension(pi: ExtensionAPI): void {
 	let unavailable: string | undefined;
 	const sessionId = () => { if (!ctx) throw new Error("E2E workspace is not bound to an active child session"); return ctx.sessionManager.getSessionId(); };
 	const attach = async (): Promise<E2eWorkspace | undefined> => {
-		if (workspace) return workspace;
 		if (!binding) return undefined;
 		if (binding.sessionId !== sessionId()) { unavailable = "Saved workspace belongs to another Pi session; forks and new agents do not inherit it"; return undefined; }
 		try { workspace = await restoreE2eWorkspace({ binding }); unavailable = undefined; return workspace; }
-		catch (error) { unavailable = error instanceof Error ? error.message : String(error); return undefined; }
+		catch (error) { workspace = undefined; evaluation = undefined; unavailable = error instanceof Error ? error.message : String(error); return undefined; }
 	};
 	const activeEvaluation = async () => {
 		const current = await attach();
@@ -69,7 +69,7 @@ export default function e2eWorkspaceExtension(pi: ExtensionAPI): void {
 			if (params.action === "init") {
 				let current = await attach();
 				const continuityLoss = current ? undefined : unavailable;
-				if (!current) { current = await createE2eWorkspace({ sessionId: sessionId() }); binding = current.binding; workspace = current; unavailable = undefined; pi.appendEntry(E2E_WORKSPACE_ENTRY_TYPE, { schemaVersion: 1, binding }); }
+				if (!current) { current = await createE2eWorkspace({ sessionId: sessionId() }); binding = current.binding; workspace = current; evaluation = undefined; unavailable = undefined; pi.appendEntry(E2E_WORKSPACE_ENTRY_TYPE, { schemaVersion: 1, binding }); }
 				const run = await activeEvaluation();
 				return { content: [{ type: "text", text: `${continuityLoss ? `Saved E2E workspace continuity was lost: ${continuityLoss}\nFresh workspace created; prior unfinished data is unavailable.\n` : ""}Evaluation ready as a distinct immutable-on-finalization snapshot. Write only curated candidate captures here, then retain useful individual files with action=evidence.\nOutput directory: ${run.outputDirectory}\nNo evidence file is required for routine passing cases.` }], details: { available: true, ...(continuityLoss ? { continuityLost: true } : {}), workspaceId: current.binding.workspaceId, runId: run.runId, outputDirectory: run.outputDirectory } };
 			}
@@ -85,6 +85,27 @@ export default function e2eWorkspaceExtension(pi: ExtensionAPI): void {
 			if (!nativeReportPath) throw new Error("report requires harness-managed native report path");
 			const submitted = await submitE2eWorkspaceReport({ evaluation: run, submission: params.report as E2eReportInput, nativeReportPath });
 			return { content: [{ type: "text", text: `E2E snapshot finalized: ${submitted.reportPath}\nResult: ${submitted.report.result}; referenced evidence: ${submitted.evidence.length} file(s), ${submitted.evidence.reduce((sum, item) => sum + item.bytes, 0)} bytes.` }], details: { reference: submitted.reference, reportPath: submitted.reportPath, evidenceFiles: submitted.evidence.length, evidenceBytes: submitted.evidence.reduce((sum, item) => sum + item.bytes, 0) }, terminate: true };
+		},
+	});
+
+	registerSystemPromptContribution(pi, {
+		id: "e2e-workspace",
+		order: 200,
+		async render() {
+			const current = await attach();
+			if (!current) return unavailable
+				? `Saved E2E workspace unavailable: ${unavailable}\nContinuity was not recreated. Call e2e_workspace init to start fresh.`
+				: "No E2E workspace exists. Call e2e_workspace init before writing evaluation output.";
+			return [
+				"E2E workspace is private temporary storage; /tmp retention is best effort only.",
+				`Root: ${current.root}`,
+				...(evaluation ? [
+					`Output directory: ${evaluation.outputDirectory}`,
+					`Evidence directory (tool-managed): ${evaluation.evidenceDirectory}`,
+					`Report (tool-managed): ${evaluation.reportPath}`,
+					"Use e2e_workspace evidence to retain selected proof and e2e_workspace report to finalize the evaluation.",
+				] : ["Call e2e_workspace init to begin this invocation's distinct evaluation."]),
+			].join("\n");
 		},
 	});
 

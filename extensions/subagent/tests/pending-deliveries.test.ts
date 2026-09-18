@@ -84,6 +84,30 @@ test("a rejected terminal batch remains available to a replacement binding", asy
 	assert.equal(registry.count(owner()), 0);
 });
 
+test("retry re-arms a rejected batch without changing owner or duplicating delivery", async () => {
+	const registry = new PendingSubagentDeliveryRegistry(0);
+	let attempts = 0;
+	let delivered!: () => void;
+	const delivery = new Promise<void>((resolve) => { delivered = resolve; });
+	registry.bindBatched(owner(), "batch", () => {
+		attempts++;
+		if (attempts === 1) return false;
+		delivered();
+		return true;
+	});
+	registry.track({ owner: owner(), agent: "generic", agentId: "agent" }, Promise.resolve(terminal()));
+	while (attempts === 0) await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(registry.count(owner()), 1);
+	assert.equal(registry.retry(owner({ activationId: "other" })), false);
+	assert.equal(registry.retry(owner()), true);
+	await delivery;
+	assert.equal(attempts, 2);
+	assert.equal(registry.count(owner()), 0);
+	registry.retry(owner());
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(attempts, 2);
+});
+
 test("discard removes an obligation before a replacement owner can observe settlement", async () => {
 	const registry = new PendingSubagentDeliveryRegistry();
 	let resolve!: (value: TerminalResult) => void;
