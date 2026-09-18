@@ -799,21 +799,42 @@ test("pre-batch process-global registry rebinds through legacy delivery after co
 	assert.match(f.sent[0].message.content, /legacy compacted report/);
 });
 
-test("compaction-delayed settlement resolves an explicit waiter as sole delivery", async () => {
+for (const settledBeforeResume of [false, true]) {
+	test(`post-compaction context releases wait without parent idle (already settled: ${settledBeforeResume})`, { timeout: 2_000 }, async () => {
+		const idle = deferred<void>();
+		const f = harness({ pendingDeliveries: new PendingSubagentDeliveryRegistry(0), waitForIdle: () => idle.promise });
+		await f.fire("session_start", { reason: "startup" });
+		await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Compacted dependency", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+		await f.fire("session_before_compact", { reason: "threshold" });
+		if (settledBeforeResume) f.services[0]!.finish("agent-1", "completed", "compacted dependency report");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(f.sent.length, 0);
+		await f.fire("session_compact", { reason: "threshold" });
+		await f.fire("context");
+		const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, undefined, f.ctx);
+		if (!settledBeforeResume) f.services[0]!.finish("agent-1", "completed", "compacted dependency report");
+		const settled = await waiting;
+		assert.match(settled.content[0].text, /compacted dependency report/);
+		assert.equal(f.sent.length, 0, "wait result remains sole model-visible delivery");
+		idle.resolve(undefined); // Real parent idle is possible only after wait resolves.
+	});
+}
+
+test("post-compaction context flushes automatic delivery before parent idle", async () => {
 	const idle = deferred<void>();
 	const f = harness({ pendingDeliveries: new PendingSubagentDeliveryRegistry(0), waitForIdle: () => idle.promise });
 	await f.fire("session_start", { reason: "startup" });
-	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Compacted dependency", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
-	const waiting = f.tools.get("wait").execute("wait", { event: "subagent_settled" }, undefined, undefined, f.ctx);
-	await f.fire("session_before_compact", { reason: "manual" });
-	f.services[0]!.finish("agent-1", "completed", "compacted dependency report");
+	await f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Compacted result", task: "Dependency", mode: "background" }, undefined, undefined, f.ctx);
+	await f.fire("session_before_compact", { reason: "threshold" });
+	f.services[0]!.finish("agent-1", "completed", "retained report");
 	await new Promise((resolve) => setTimeout(resolve, 10));
-	assert.equal(f.sent.length, 0);
-	await f.fire("session_compact", { reason: "manual" });
+	await f.fire("session_compact_failed", { reason: "threshold", aborted: true });
+	await f.fire("context");
+	await waitUntil(() => f.sent.length === 1, "resumed context did not release retained report");
 	idle.resolve(undefined);
-	const settled = await waiting;
-	assert.match(settled.content[0].text, /compacted dependency report/);
-	assert.equal(f.sent.length, 0, "wait result remains sole model-visible delivery");
+	await f.fire("context");
+	await f.fire("agent_settled");
+	assert.equal(f.sent.length, 1);
 });
 
 test("reload adopts a compaction-delayed result only for the same owner", async () => {

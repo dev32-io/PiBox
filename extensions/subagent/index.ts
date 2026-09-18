@@ -623,6 +623,14 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	};
 	pi.on("session_compact", finishCompaction);
 	pi.on("session_compact_failed", finishCompaction);
+	pi.on("context", () => {
+		const current = binding;
+		// Auto-compaction can resume the same run without ever becoming idle.
+		// Agent context runs after compaction hooks/cleanup, unlike session_compact.
+		if (!current?.active || !current.compacting || current.bridgeGeneration !== current.compactionGeneration) return;
+		current.compacting = false;
+		retryBackgroundDeliveries();
+	});
 	pi.on("agent_settled", retryBackgroundDeliveries);
 
 	pi.on("session_start", async (event, ctx) => {
