@@ -18,7 +18,7 @@ test("uses performance and token-conservative model tier profiles", () => {
 test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.match(DEFAULT_HARNESS_CONFIG.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.implementer?.description, "Feature implementation, refactoring, and bug fixes, including diagnosis needed to deliver the change");
-	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7", "mcp:playwright", "mcp:maestro"]);
 	const generalPurpose = DEFAULT_HARNESS_CONFIG.agents["general-purpose"];
 	assert.match(generalPurpose?.prompt ?? "", /agent-definitions\/general-purpose\.md$/);
 	assert.equal(generalPurpose?.description, "Mixed, research, or unclassified assignments delegated by the main session when no specialist fits");
@@ -27,6 +27,8 @@ test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.explorer?.tier, "low");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.investigator?.tier, "medium");
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.investigator?.tools, ["read", "grep", "find", "ls", "bash", "mcp:playwright", "mcp:maestro"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["repair-implementer"]?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7", "mcp:playwright", "mcp:maestro"]);
 	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "e2e_workspace", "mcp:playwright", "mcp:maestro"]);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tier, "low");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "medium");
