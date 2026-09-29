@@ -30,6 +30,18 @@ export function normalizeCodexUsage(payload: unknown): UsageWindow[] {
 	return normalizeWindows([body]);
 }
 
+function tokenAccountId(token: string): string | undefined {
+	try {
+		const parts = token.split(".");
+		if (parts.length !== 3) return undefined;
+		const payload = record(JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8")));
+		const id = record(payload?.["https://api.openai.com/auth"])?.chatgpt_account_id;
+		return typeof id === "string" && id.trim() ? id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function fetchCodexUsage(
 	auth: { apiKey: string; accountId?: string },
 	fetchImpl: typeof fetch = fetch,
@@ -38,7 +50,9 @@ export async function fetchCodexUsage(
 	if (!auth.apiKey) return [];
 	try {
 		const headers: Record<string, string> = { Authorization: `Bearer ${auth.apiKey}`, Accept: "application/json" };
-		if (auth.accountId) headers["ChatGPT-Account-Id"] = auth.accountId;
+		// Codex transport derives this from OAuth; model-registry headers may omit it.
+		const resolvedAccountId = auth.accountId || tokenAccountId(auth.apiKey);
+		if (resolvedAccountId) headers["ChatGPT-Account-Id"] = resolvedAccountId;
 		const response = await fetchImpl(USAGE_URL, { headers, ...(signal ? { signal } : {}) });
 		if (!response.ok) return [];
 		return normalizeCodexUsage(await response.json());
