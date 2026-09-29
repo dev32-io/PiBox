@@ -180,87 +180,40 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode[\s\S]+plan\.md[\s\S]+ledger\.md/);
 	// Text contract guards only: these do not prove live model behavior.
 	const prompt = result.systemPrompt;
-	// Research, plan, approval, and execution are distinct authority phases.
-	assert.match(prompt, /## Research -> Plan -> Approval -> Execution until goal/);
-	assert.match(prompt, /### Research[\s\S]+### Plan[\s\S]+### Approval[\s\S]+### Execution/);
-	assert.match(prompt, /Do not wait for a separate request to write the plan/);
-	assert.match(prompt, /Before substantial delivery planning, identify unknowns/);
-	assert.match(prompt, /exploration, research, and investigation early, not after completing the broad investigation yourself/);
-	assert.match(prompt, /Pre-approval delegation is read-only research or critique, not implementation/);
-	assert.match(prompt, /Collect, review, and reconcile delegated findings that could affect the plan/);
-	assert.match(prompt, /While these are pending[^\n]+do not present a plan for approval/);
-	assert.match(prompt, /Distinguish facts from assumptions and resolve material decision blockers with the user/);
-	assert.match(prompt, /proactively write a discussion draft in scratch `plan\.md` and show it to the user; no explicit plan request is needed/);
-	assert.match(prompt, /Use the visible scratch draft to clarify what the user wants/);
-	assert.match(prompt, /revise the same file as decisions change/);
-	assert.match(prompt, /drafting and discussion do not authorize implementation/);
-	assert.match(prompt, /Wait for explicit user approval before implementation or delegating implementation/);
-	assert.match(prompt, /A plan request is not approval, and approval does not bypass tool permissions/);
-
-	// Approved plan drives concrete recovery and result-processing loop.
-	assert.match(prompt, /Record Goal, Deliverable, verifiable Done criteria/);
-	assert.match(prompt, /concise step-by-step Markdown checklist \(`- \[ \]` \/ `- \[x\]`\)/);
-	assert.match(prompt, /next action, dependencies, completion checks, sequential versus independent work, and remaining assumptions/);
-	assert.match(prompt, /After approval, keep working within agreed scope without routine prompt pauses/);
-	assert.match(prompt, /after compaction, resume, or a background completion—recover them from `plan\.md` and recover relevant evidence and decisions from `ledger\.md`/);
-	assert.match(prompt, /For every local or delegated result: inspect it, run the current step's completion checks/);
-	assert.match(prompt, /immediately edit the actual `plan\.md` checkbox from `- \[ \]` to `- \[x\]`/);
-	assert.match(prompt, /If partial or blocked, leave it unchecked and record completed substeps plus the remaining gap/);
-	assert.match(prompt, /Record useful evidence pointers, decisions, and rationale in `ledger\.md`, then launch or continue all safely ready checklist items within available capacity/);
-	assert.match(prompt, /When a background result starts or resumes a turn, process it through this loop rather than merely summarizing it or waiting for user direction/);
-	assert.match(prompt, /Material goal, scope, policy, privacy\/security, destructive, irreversible, or critical-risk changes require renewed approval/);
-	assert.match(prompt, /Pause for these, another required approval, or a genuine blocker; record the remaining gap and specific input needed/);
-	assert.match(prompt, /Never claim completion from an agent report, checkbox, or assertion alone/);
-
-	// Default delegation, direct-work exceptions, and explicit handoff ownership.
-	assert.match(prompt, /Use ad hoc `subagent_spawn` by default for substantial, separable research, implementation after approval, and independent review/);
-	assert.match(prompt, /Handle clear, local, reversible work directly when delegation and planning would add disproportionate overhead/);
-	assert.match(prompt, /Work directly for trivial operations, tightly coupled steps, or when delegation is unavailable or adds more coordination than value/);
-	assert.match(prompt, /Briefly state the concrete reason if keeping substantial work entirely local/);
-	assert.match(prompt, /narrowest agent whose stated contract covers the assignment[^\n]+exact configured name; use `general-purpose` when no specialist fits/);
-	assert.match(prompt, /self-contained objective, relevant context and paths, constraints, read-only or edit authority, owned outputs, dependencies, expected result and proof, and a stop condition/);
-	assert.match(prompt, /Keep `plan\.md` and `ledger\.md` parent-owned\. Children do not orchestrate recursively/);
-	assert.match(prompt, /Review is not approval\. Integrate and verify the assembled outcome yourself/);
-	assert.match(prompt, /Use the configured agent's default tier; normally omit `tier`/);
-	assert.match(prompt, /reserve upward overrides for complex architecture\/design or unusually demanding reasoning, with a brief task-specific justification/);
-	assert.doesNotMatch(prompt, /Prefer Low|prefer High when unsure|normal ceiling/);
-
-	// Safe asynchronous work and recovery from incomplete assignments.
-	assert.match(prompt, /Use foreground for a prerequisite needed next and background for independent assignments/);
-	assert.match(prompt, /Run independent work concurrently within harness limits; do non-overlapping work while children run, not their assignment again/);
-	assert.match(prompt, /Plan to maximize safe concurrency, not to execute checkboxes in listed order/);
-	assert.match(prompt, /parallel lanes with explicit prerequisites, file ownership, shared interfaces\/resources, and integration checks/);
-	assert.match(prompt, /checklist order is not a scheduling dependency/);
-	assert.match(prompt, /Subagents and ad hoc branches\/worktrees are available/);
-	assert.match(prompt, /After each result, reassess dependencies and fill available capacity with newly ready work/);
-	assert.match(prompt, /do not impose numbered-order waves or wait for a whole batch/);
-	assert.match(prompt, /Reviews can begin on settled outputs while independent implementation continues/);
-	assert.match(prompt, /In one worktree, parallel edits require disjoint file ownership and compatible interfaces/);
-	assert.match(prompt, /Use separate branches\/worktrees when isolation enables safe parallel edits/);
-	assert.match(prompt, /define prerequisite baselines and integration ownership before launch, then integrate and verify contributions in dependency order/);
-	assert.match(prompt, /Worktrees isolate files, not incompatible contracts or shared test services\/build outputs/);
-	assert.match(prompt, /Preserve existing user work and follow repository Git controls/);
-	assert.match(prompt, /Background results arrive automatically\. End the turn if no useful independent work remains, or use `wait` with `event: subagent_settled` at a genuine dependency barrier/);
-	assert.match(prompt, /A wake-up does not mean every prerequisite finished/);
-	assert.match(prompt, /Never sleep or poll for completion; `subagent_status` is diagnostic only/);
-	assert.match(prompt, /Read saved subagent report paths with ordinary `read` or `grep`/);
-	assert.match(prompt, /reserve `subagent_continue` for new follow-up work/);
-	assert.match(prompt, /Treat failed, blocked, or partial results as incomplete/);
-	assert.match(prompt, /Before reassigning work, confirm the prior attempt has settled and inspect its evidence and any edits; assign only the remaining gap or surface the blocker/);
-	assert.match(prompt, /Review decisive evidence before relying on results; resolve disagreements against repository facts and checks, not votes/);
-
-	// Flexible scratch retains the existing continuity and authority boundaries.
-	assert.match(prompt, /Actively use session scratch as a flexible memo board and workbench/);
-	assert.match(prompt, /`plan\.md` focused on the current goal, not an accumulation of projects/);
-	assert.match(prompt, /`ledger\.md` for useful facts, decisions and rationale, evidence pointers, delegated findings, ruled-out approaches, and unresolved issues: context, not a chronological log/);
-	assert.match(prompt, /`scripts\/` and `results\/`; these are starting points, not limits/);
-	assert.match(prompt, /At goal changes and completion, consolidate notes and remove obsolete detail using judgment/);
-	assert.match(prompt, /Retain useful pointers without forced archives, hard caps, or automatic deletion/);
-	assert.match(prompt, /After compaction or resume, consult relevant notes; current user direction, repository evidence, and reviewed contracts outrank scratch/);
-	assert.match(prompt, /Scratch is private, temporary, non-authoritative `\/tmp` state; keep secrets out of it/);
+	// Guard load-bearing instructions, not every sentence of the prompt.
+	for (const instruction of [
+		"obtain explicit approval, then execute until Done",
+		"pre-approval delegation is read-only",
+		"Markdown checklist (`- [ ]` / `- [x]`) of coherent outcomes",
+		"Group by shared context and outcome",
+		"checklist order is not execution order",
+		"Explicitly choose `tier` on initial spawn",
+		"Continuation retains its existing route",
+		"Local models require `local`",
+		"Parent owns `plan.md` and `ledger.md`; children do not orchestrate recursively",
+		"separate branches/worktrees",
+		"Standalone spawn starts at the repository root",
+		"Worktrees isolate edits, not shared services",
+		"Parent owns integration",
+		"immediately mark its actual `plan.md` checkbox complete only when verified",
+		"Leave partial outcomes unchecked",
+		"Never claim completion from reports or checkboxes alone",
+		"Background results arrive automatically",
+		"Never sleep or poll",
+		"Actively use session scratch as a private workbench and working memory",
+		"Before substantial research or delegation, record the current goal",
+		"chat summaries do not replace file updates",
+		"check off verified outcomes during research as well as implementation",
+		"before follow-up dispatch or user briefing",
+		"After reload, resume, or compaction, read `plan.md`",
+		"never durable repository or workflow authority",
+		"Do not invoke Workflow resource or execution tools",
+	]) assert.ok(prompt.includes(instruction), `missing instruction: ${instruction}`);
+	for (const tier of ["low", "medium", "high", "max"]) {
+		assert.ok(prompt.includes(`| \`${tier}\` |`), `missing tier example: ${tier}`);
+	}
+	assert.doesNotMatch(prompt, /normally omit.*tier|step-by-step Markdown checklist/);
 	assert.doesNotMatch(prompt, /\/tmp\/pibox-session-[0-9a-f]+/, "static mode prompt contains no workspace path");
-	assert.match(prompt, /Do not invoke Workflow resource or execution tools in Orchestrator mode/);
-	assert.doesNotMatch(prompt, /detailed, step-by-step checklist|Before context compaction|Retain a note only if/);
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {
 		changesSystemPrompt: false,
 		changesToolDefinitions: true,

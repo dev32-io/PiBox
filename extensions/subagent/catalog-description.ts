@@ -2,7 +2,7 @@ import type { LoadedSubagentCatalog } from "./types.js";
 
 const SPAWN_DESCRIPTION = [
 	"Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress. Background is for independent work: it returns immediately, steers terminal results into ongoing work, and wakes an idle parent.",
-	"Use the configured agent's default tier; normally omit tier. Ordinary implementation, multi-file integration, debugging, and review do not need an upward override. Use a higher tier only for complex architecture/design or unusually demanding reasoning; briefly explain the task-specific need and why the default is insufficient. Failed attempts do not by themselves justify escalation. Max is a very rare exception; explain why High is insufficient and the expected benefit. Nuke profiles upgrade routed models, not task tiers.",
+	"Choose initial-spawn tier from assignment reasoning, not agent role, configured default, or prompt length: Low for bounded lookup/mechanical work; Medium for ordinary engineering; High for genuinely difficult ambiguity or interacting invariants; Max only exceptionally, with a reason High is insufficient. Failed attempts do not by themselves justify escalation. Nuke profiles upgrade routed models, not task tiers.",
 	"A configured agent model takes precedence over its default or requested tier; only an explicit model override replaces it. A local-llm model requires tier local, so up/down tier overrides do not apply while that model is selected. Existing strict explicit-model, fallback, and local-isolation semantics still apply.",
 ].join("\n\n");
 

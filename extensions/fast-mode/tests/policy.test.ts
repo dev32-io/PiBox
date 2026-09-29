@@ -39,7 +39,7 @@ test("applies subagent ceilings to capability tiers without treating local as or
 });
 
 test("fast eligibility is restricted to advertised first-party ChatGPT Codex routes", () => {
-	for (const id of ["gpt-5.4", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]) {
+	for (const id of ["gpt-5.4", "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
 		assert.equal(isChatGptFastEligible(model("openai-codex", "openai-codex-responses", id)), true, id);
 	}
 	assert.equal(isChatGptFastEligible(model("openai-codex", "openai-codex-responses", "gpt-5.3-codex-spark")), false);
@@ -56,6 +56,17 @@ test("injects priority service tier by copy only when effective and eligible", (
 	assert.equal(withFastServiceTier(payload, false, eligible), undefined);
 	assert.equal(withFastServiceTier(payload, true, model("anthropic", "anthropic-messages", "claude")), undefined);
 	assert.equal(withFastServiceTier("payload", true, eligible), undefined);
+});
+
+test("GPT-6 routes expose Fast status and request priority without widening provider eligibility", () => {
+	for (const id of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
+		const codex = model("openai-codex", "openai-codex-responses", id);
+		assert.equal(projectFastModeStatus({ main: true, subagents: "low" }, codex).mainEnabled, true);
+		assert.deepEqual(withFastServiceTier({ model: id }, true, codex), { model: id, service_tier: "priority" });
+		assert.equal(isChatGptFastEligible(model("proxy", codex.api, id)), false);
+		assert.equal(isChatGptFastEligible(model(codex.provider, "openai-responses", id)), false);
+	}
+	assert.equal(isChatGptFastEligible(model("openai-codex", "openai-codex-responses", "gpt-6-unknown")), false);
 });
 
 test("round-trips bounded footer status and rejects malformed values", () => {
