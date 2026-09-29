@@ -112,7 +112,8 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	assert.equal(first.state, "running");
 	assert.equal(second.detail, first.detail);
 	assert.equal((await fetch(first.detail!)).status, 200);
-	assert.deepEqual((await (await fetch(`${first.detail}/api/viewers`)).json()).viewers, ["story-board"]);
+	assert.deepEqual((await (await fetch(`${first.detail}/api/viewers`)).json()).viewers, ["story-board", "scratch"]);
+	assert.equal((await (await fetch(`${first.detail}/v/scratch/api/tree?path=`)).json()).kind, "unavailable");
 	const scratch = await createSessionScratchWorkspace("companion-session");
 	try {
 		branch = [{ type: "custom", customType: SESSION_SCRATCH_ENTRY_TYPE, data: { schemaVersion: 1, binding: scratch.binding } }];

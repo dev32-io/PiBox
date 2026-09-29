@@ -8,7 +8,6 @@ const SCRATCH_ROOT = "/tmp";
 const WORKSPACE_PREFIX = "pibox-session-";
 const WORKSPACE_ID = /^[0-9a-f]{32}$/;
 const MAX_CREATE_ATTEMPTS = 32;
-const MAX_META_BYTES = 16 * 1024;
 export const MAX_SCRATCH_NOTE_BYTES = 128 * 1024;
 const MAX_SESSION_ID_BYTES = 4 * 1024;
 const DIRECTORY_MODE = 0o700;
@@ -49,13 +48,6 @@ Keep currently useful facts, decisions and rationale, evidence pointers, approac
 
 `;
 
-interface WorkspaceMetadata {
-	schemaVersion: 1;
-	workspaceId: string;
-	sessionId: string;
-	createdAt: string;
-}
-
 export class WorkspaceValidationError extends Error {
 	readonly code = "INVALID_SESSION_SCRATCH_WORKSPACE";
 
@@ -69,7 +61,6 @@ function pathsFor(workspaceId: string): SessionScratchPaths {
 	const root = join(SCRATCH_ROOT, `${WORKSPACE_PREFIX}${workspaceId}`);
 	return {
 		root,
-		meta: join(root, "meta.json"),
 		plan: join(root, "plan.md"),
 		ledger: join(root, "ledger.md"),
 		scripts: join(root, "scripts"),
@@ -121,15 +112,6 @@ async function createInitialFile(path: string, content: string): Promise<void> {
 	}
 }
 
-function metadataFor(binding: SessionScratchBinding): WorkspaceMetadata {
-	return {
-		schemaVersion: 1,
-		workspaceId: binding.workspaceId,
-		sessionId: binding.sessionId,
-		createdAt: new Date().toISOString(),
-	};
-}
-
 /**
  * Lazily creates scratch storage when explicitly called. Calling this again for a
  * fork or new session creates a distinct opaque workspace.
@@ -152,8 +134,6 @@ export async function createSessionScratchWorkspace(sessionId: string): Promise<
 			await createDirectory(paths.results);
 			await createInitialFile(paths.plan, PLAN_TEMPLATE);
 			await createInitialFile(paths.ledger, LEDGER_TEMPLATE);
-			// Publish metadata last so it is also the initialization-ready marker.
-			await createInitialFile(paths.meta, `${JSON.stringify(metadataFor(binding), null, 2)}\n`);
 			return { binding, paths };
 		} catch (error) {
 			await rm(paths.root, { recursive: true, force: true }).catch(() => undefined);
@@ -164,7 +144,7 @@ export async function createSessionScratchWorkspace(sessionId: string): Promise<
 	throw new Error(`Could not allocate a session scratch workspace after ${MAX_CREATE_ATTEMPTS} attempts`);
 }
 
-async function openValidated(path: string, kind: "directory" | "file", mode: number) {
+async function openValidated(path: string, kind: "directory" | "file", mode?: number) {
 	let handle;
 	try {
 		handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW
@@ -176,47 +156,13 @@ async function openValidated(path: string, kind: "directory" | "file", mode: num
 	try {
 		const stats = await handle.stat();
 		const correctKind = kind === "directory" ? stats.isDirectory() : stats.isFile();
-		if (!correctKind || (stats.mode & 0o777) !== mode) {
+		if (!correctKind || (mode !== undefined && (stats.mode & 0o777) !== mode) || (kind === "directory" && stats.uid !== process.getuid?.())) {
 			throw new WorkspaceValidationError(`Scratch workspace contains an invalid ${kind}: ${path}`);
 		}
 		return handle;
 	} catch (error) {
 		await handle.close();
 		throw error;
-	}
-}
-
-async function readBoundedMetadata(path: string): Promise<WorkspaceMetadata> {
-	const handle = await openValidated(path, "file", FILE_MODE);
-	try {
-		const chunks: Buffer[] = [];
-		let total = 0;
-		while (total <= MAX_META_BYTES) {
-			const chunk = Buffer.allocUnsafe(Math.min(4096, MAX_META_BYTES + 1 - total));
-			const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
-			if (bytesRead === 0) break;
-			chunks.push(chunk.subarray(0, bytesRead));
-			total += bytesRead;
-		}
-		if (total > MAX_META_BYTES) throw new WorkspaceValidationError("Scratch workspace metadata is too large");
-
-		let value: unknown;
-		try {
-			value = JSON.parse(Buffer.concat(chunks, total).toString("utf8"));
-		} catch (error) {
-			throw new WorkspaceValidationError("Scratch workspace metadata is not valid JSON", { cause: error });
-		}
-		if (typeof value !== "object" || value === null || Array.isArray(value)) {
-			throw new WorkspaceValidationError("Scratch workspace metadata is invalid");
-		}
-		const metadata = value as Partial<WorkspaceMetadata>;
-		if (metadata.schemaVersion !== 1 || typeof metadata.workspaceId !== "string"
-			|| typeof metadata.sessionId !== "string" || typeof metadata.createdAt !== "string") {
-			throw new WorkspaceValidationError("Scratch workspace metadata is invalid");
-		}
-		return metadata as WorkspaceMetadata;
-	} finally {
-		await handle.close();
 	}
 }
 
@@ -236,20 +182,6 @@ async function validateWorkspace(binding: SessionScratchBinding): Promise<Sessio
 
 	const rootHandle = await openValidated(paths.root, "directory", DIRECTORY_MODE);
 	try {
-		const metadata = await readBoundedMetadata(paths.meta);
-		if (metadata.workspaceId !== binding.workspaceId || metadata.sessionId !== binding.sessionId) {
-			throw new WorkspaceValidationError("Scratch workspace binding does not match its metadata");
-		}
-
-		for (const path of [paths.plan, paths.ledger]) {
-			const handle = await openValidated(path, "file", FILE_MODE);
-			await handle.close();
-		}
-		for (const path of [paths.scripts, paths.results]) {
-			const handle = await openValidated(path, "directory", DIRECTORY_MODE);
-			await handle.close();
-		}
-
 		const [openedRoot, currentRoot] = await Promise.all([rootHandle.stat(), lstat(paths.root)]);
 		if (!currentRoot.isDirectory() || currentRoot.isSymbolicLink()
 			|| openedRoot.dev !== currentRoot.dev || openedRoot.ino !== currentRoot.ino) {
@@ -262,7 +194,7 @@ async function validateWorkspace(binding: SessionScratchBinding): Promise<Sessio
 	return { binding: { ...binding }, paths };
 }
 
-/** Restore an existing workspace only when both opaque id and owning Pi session id match. */
+/** Restore only a private root named by the current session binding. Caller must supply the active session binding. */
 export async function restoreSessionScratchWorkspace(binding: SessionScratchBinding): Promise<SessionScratchWorkspace> {
 	return validateWorkspace(binding);
 }
@@ -277,7 +209,7 @@ export async function readSessionScratchNotes(binding: SessionScratchBinding): P
 	const workspace = await validateWorkspace(binding);
 	const root = await openValidated(workspace.paths.root, "directory", DIRECTORY_MODE);
 	const readNote = async (path: string): Promise<SessionScratchNote> => {
-		const handle = await openValidated(path, "file", FILE_MODE);
+		const handle = await openValidated(path, "file");
 		try {
 			const [openedRoot, currentRoot] = await Promise.all([root.stat(), lstat(workspace.paths.root)]);
 			if (!currentRoot.isDirectory() || currentRoot.isSymbolicLink() || openedRoot.dev !== currentRoot.dev || openedRoot.ino !== currentRoot.ino) {
@@ -300,7 +232,7 @@ export async function readSessionScratchNotes(binding: SessionScratchBinding): P
 	} finally { await root.close(); }
 }
 
-/** Permanently remove a workspace after revalidating its complete layout and binding. */
+/** Permanently remove a workspace after validating its private root. */
 export async function purgeSessionScratchWorkspace(binding: SessionScratchBinding): Promise<void> {
 	const workspace = await validateWorkspace(binding);
 	await rm(workspace.paths.root, { recursive: true });

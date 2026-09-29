@@ -21,7 +21,8 @@ test("shell exposes accessible stable tabs and lazy viewer mount regions", async
 	assert.match(html, /id="tab-story-board"[\s\S]*role="tab"[\s\S]*aria-controls="panel-story-board"/);
 	assert.match(html, /id="tab-architecture"[\s\S]*role="tab"[\s\S]*aria-controls="panel-architecture"/);
 	assert.match(html, /id="tab-mockup"[\s\S]*role="tab"[\s\S]*aria-controls="panel-mockup"/);
-	assert.match(html, /id="tab-scratch"[\s\S]*role="tab"[\s\S]*aria-controls="panel-scratch"[\s\S]*hidden/);
+	assert.match(html, /id="tab-scratch"[^>]*role="tab"[^>]*aria-controls="panel-scratch"/);
+	assert.doesNotMatch(html.match(/<a id="tab-scratch"[^>]*>/)?.[0] ?? "", /hidden/, "Scratch stays visible without a bound workspace");
 	assert.match(html, /role="tabpanel"/);
 	assert.doesNotMatch(html, /<iframe[^>]+src=/, "viewer frames must not load before route selection");
 	assert.match(app, /routeViewer/);
@@ -35,8 +36,8 @@ test("shell exposes accessible stable tabs and lazy viewer mount regions", async
 	assert.match(app, /visibleViewerIds\(\)/, "keyboard navigation must omit hidden viewers");
 	assert.match(app, /REGISTRY_INTERVAL_MS = 5_000/);
 	assert.match(app, /visibilitychange/);
-	assert.match(app, /frame\.remove\(\)/, "removing Scratch must destroy its browsing context");
-	assert.match(app, /activeViewer === "scratch"[\s\S]*activate\("story-board"\)/, "removing active Scratch must fall back to Story Board");
+	assert.match(app, /id !== "scratch" && !registered\.has\(id\)/, "Scratch mounts without a workspace binding");
+	assert.doesNotMatch(app, /unmountScratch|tabs\.get\("scratch"\)\.hidden = !hasScratch/, "registry changes cannot hide Scratch");
 });
 
 test("home and deep viewer routes serve one shell while direct viewers remain selected", async () => {

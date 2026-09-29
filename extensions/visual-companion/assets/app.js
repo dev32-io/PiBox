@@ -49,7 +49,7 @@ function mount(id) {
   const panel = panels.get(id);
   const frame = panel.querySelector(".viewer-frame");
   if (frame.dataset.mounted) return;
-  if (!registered.has(id)) {
+  if (id !== "scratch" && !registered.has(id)) {
     setBoundary(id, `${tabs.get(id).textContent} is not available in this session.`, "error");
     return;
   }
@@ -83,42 +83,14 @@ function visibleViewerIds() {
   return viewerIds.filter((id) => !tabs.get(id).hidden);
 }
 
-function unmountScratch() {
-  const panel = panels.get("scratch");
-  const frame = panel.querySelector(".viewer-frame");
-  notifyActivity("scratch", false);
-  frame.remove();
-  const replacement = document.createElement("iframe");
-  replacement.className = "viewer-frame";
-  replacement.title = "Session Scratch";
-  replacement.dataset.viewer = "scratch";
-  replacement.hidden = true;
-  panel.append(replacement);
-  retainedRoutes.delete("scratch");
-  setBoundary("scratch", "Scratch is not available in this session.", "error");
-}
-
 function applyRegistry(viewers, { initial = false } = {}) {
-  const hadScratch = registered.has("scratch");
   registered = new Set(Array.isArray(viewers) ? viewers : []);
-  const hasScratch = registered.has("scratch");
-  const scratchHadFocus = document.activeElement === tabs.get("scratch") || document.activeElement === panels.get("scratch").querySelector(".viewer-frame");
-  tabs.get("scratch").hidden = !hasScratch;
 
-  if (hadScratch && !hasScratch) unmountScratch();
-  if (activeViewer === "scratch" && !hasScratch) {
-    activate("story-board");
-    history.replaceState({ viewer: "story-board" }, "", routeFor("story-board"));
-    if (scratchHadFocus) tabs.get("story-board").focus();
-    return;
-  }
   if (initial) {
-    const requested = routeViewer();
-    const selected = requested === "scratch" && !hasScratch ? "story-board" : requested;
+    const selected = routeViewer();
     rememberRoute(selected);
     activate(selected);
-    if (selected !== requested) history.replaceState({ viewer: selected }, "", routeFor(selected));
-  } else if (activeViewer && registered.has(activeViewer)) {
+  } else if (activeViewer && (activeViewer === "scratch" || registered.has(activeViewer))) {
     // Recover a previously unavailable viewer after registry refresh succeeds.
     mount(activeViewer);
   }
@@ -139,8 +111,7 @@ async function refreshRegistry(options = {}) {
     } catch (error) {
       if (error.name === "AbortError" || generation !== registryGeneration) return;
       if (options.initial) {
-        const requested = routeViewer();
-        const selected = requested === "scratch" ? "story-board" : requested;
+        const selected = routeViewer();
         rememberRoute(selected);
         activate(selected);
         setBoundary(selected, "Unable to load the viewer registry.", "error");

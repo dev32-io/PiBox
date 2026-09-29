@@ -2,40 +2,35 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Session Scratch</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'">
+  <title>Scratch explorer · PiBox</title>
   <link rel="stylesheet" href="/assets/design-tokens.css">
   <link rel="stylesheet" href="/assets/markdown.css">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
-  <header class="scratch-header">
-    <div>
-      <p class="eyebrow">Session Scratch</p>
-      <h1>Working notes</h1>
+  <div class="shell">
+    <div class="workspace">
+      <div class="activity-rail"><button type="button" id="files-toggle" aria-label="Files" aria-controls="scratch-sidebar" aria-expanded="true" title="Toggle files sidebar"><span class="rail-active"><span class="ui-icon icon-panel-left" aria-hidden="true"></span></span><span class="rail-caption">FILES</span></button></div>
+      <wa-split-panel id="split" primary="start">
+        <aside id="scratch-sidebar" slot="start" class="sidebar" aria-label="Scratch files">
+          <div class="side-heading"><span>EXPLORER</span><button type="button" class="icon-button" id="refresh" aria-label="Refresh workspace" title="Refresh workspace"><span class="ui-icon icon-refresh-cw" aria-hidden="true"></span></button></div>
+          <div class="side-section"><span>SESSION SCRATCH</span><span class="live-dot offline" title="Workspace status" aria-label="Workspace status"></span></div>
+          <div class="tree-scroll"><wa-tree id="file-tree" selection="leaf" aria-label="Scratch workspace files"></wa-tree><div class="tree-state" id="tree-state" hidden></div></div>
+          <div class="side-foot"><span class="ui-icon icon-lock" aria-hidden="true"></span> Private · temporary workspace</div>
+        </aside>
+        <main slot="end" class="editor" aria-label="Scratch document explorer">
+          <div class="editor-top"><span class="editor-label">OPEN EDITORS</span><span class="readonly-label"><span class="ui-icon icon-lock" aria-hidden="true"></span>READ ONLY</span></div>
+          <wa-tab-group id="tabs" aria-label="Open documents" activation="auto" active="plan.md"></wa-tab-group>
+          <div id="document-view"><div class="toolbar"><div id="crumb" class="breadcrumb" aria-label="Current document path"></div><div class="toolbar-actions"><button type="button" class="quiet-button" id="find-toggle" aria-label="Find in file" title="Find in file (Ctrl/Cmd+F)"><span class="ui-icon icon-search" aria-hidden="true"></span><span>Find</span></button><span class="toolbar-divider"></span><span id="content-kind">Markdown</span></div></div>
+          <div class="findbar" id="findbar" hidden role="search" aria-label="Find in current file"><label for="find-input">Find</label><input id="find-input" type="search" autocomplete="off" spellcheck="false" placeholder="Find in file"><span id="match-count" aria-live="polite">0 of 0</span><button type="button" id="case" class="icon-button case-button" aria-pressed="false" aria-label="Match case" title="Match case">Aa</button><button type="button" id="previous" class="icon-button" aria-label="Previous match" title="Previous match"><span class="ui-icon icon-arrow-up" aria-hidden="true"></span></button><button type="button" id="next" class="icon-button" aria-label="Next match" title="Next match"><span class="ui-icon icon-arrow-down" aria-hidden="true"></span></button><button type="button" id="close-find" class="icon-button" aria-label="Close find" title="Close find"><span class="ui-icon icon-x" aria-hidden="true"></span></button></div>
+          <div class="document-area" id="document-area"><div class="image-tools" id="image-tools" hidden><span id="image-details"></span><div><button type="button" id="fit" class="pill-button selected" aria-pressed="true">Fit</button><button type="button" id="actual" class="pill-button" aria-pressed="false">100%</button></div></div><div class="document-scroll" id="document-scroll"></div></div></div>
+          <footer class="statusbar"><span><span class="status-indicator offline"></span><span id="status" role="status" aria-live="polite">Loading workspace · read-only</span></span><span id="footer-type">Markdown</span></footer>
+        </main>
+      </wa-split-panel>
     </div>
-    <button id="refresh" type="button">Refresh</button>
-  </header>
-  <aside class="notice" aria-label="Scratch note status">
-    Private, temporary working context. These notes may be stale and are not an authoritative plan or record.
-  </aside>
-  <nav class="note-tabs" role="tablist" aria-label="Scratch notes">
-    <button id="tab-plan" type="button" role="tab" aria-selected="true" aria-controls="panel-plan" data-note="plan">Plan</button>
-    <button id="tab-ledger" type="button" role="tab" aria-selected="false" aria-controls="panel-ledger" data-note="ledger" tabindex="-1">Ledger</button>
-  </nav>
-  <main>
-    <div id="status" role="status" aria-live="polite"></div>
-    <section id="panel-plan" role="tabpanel" aria-labelledby="tab-plan">
-      <div class="note-state" hidden></div>
-      <article class="markdown" tabindex="0"></article>
-    </section>
-    <section id="panel-ledger" role="tabpanel" aria-labelledby="tab-ledger" hidden>
-      <div class="note-state" hidden></div>
-      <article class="markdown" tabindex="0"></article>
-    </section>
-  </main>
-  <script src="/assets/vendor/marked.js"></script>
-  <script src="/assets/vendor/dompurify.js"></script>
-  <script type="module" src="./app.js"></script>
+  </div>
+  <script src="/assets/vendor/marked.js"></script><script src="/assets/vendor/dompurify.js"></script><script type="module" src="./app.js"></script>
 </body>
 </html>

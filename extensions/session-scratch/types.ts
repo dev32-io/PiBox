@@ -7,7 +7,6 @@ export interface SessionScratchBinding {
 
 export interface SessionScratchPaths {
 	root: string;
-	meta: string;
 	plan: string;
 	ledger: string;
 	scripts: string;

@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { showInteractiveFooterDialog } from "./dialog.js";
 import { getInteractiveFooterItem, subscribeInteractiveFooter } from "./registry.js";
 
@@ -65,7 +65,7 @@ export function attachInteractiveFooter(ctx: ExtensionContext, surface: Interact
 	const render = () => surface.requestRender();
 	const unsubscribeRegistry = subscribeInteractiveFooter(render);
 	const unsubscribeInput = ctx.ui.onTerminalInput((data) => {
-		if (disposed) return undefined;
+		if (disposed || isKeyRelease(data)) return undefined;
 		if (dialogPhase === "overlay") return undefined;
 		if (dialogPhase === "resolving") {
 			if (!matchesKey(data, Key.escape)) return { consume: true };

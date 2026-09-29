@@ -8,28 +8,28 @@ import { renderMarkdown } from "../scratch/assets/markdown.js";
 
 const assets = resolve("extensions/visual-companion/scratch/assets");
 
-test("Scratch viewer is read-only, refreshable, and activity-aware", async () => {
+test("Scratch explorer uses local components and shared safe Markdown under read-only CSP", async () => {
 	const [html, app, css] = await Promise.all([
 		readFile(resolve(assets, "index.html"), "utf8"),
 		readFile(resolve(assets, "app.js"), "utf8"),
 		readFile(resolve(assets, "styles.css"), "utf8"),
 	]);
-	assert.match(html, /Private, temporary working context/);
-	assert.match(html, /not an authoritative plan or record/);
-	assert.match(html, /id="tab-plan"[^>]*role="tab"[^>]*aria-controls="panel-plan"/);
-	assert.match(html, /id="tab-ledger"[^>]*role="tab"[^>]*aria-controls="panel-ledger"/);
-	assert.match(html, /id="refresh"[^>]*>Refresh</);
-	assert.doesNotMatch(html, /textarea|contenteditable|type="file"/i);
-	assert.match(app, /fetch\("\/v\/scratch\/api\/notes", \{ cache: "no-store"/);
+	assert.match(html, /<wa-tree[^>]*selection="leaf"/);
+	assert.match(html, /<wa-tab-group/);
+	assert.match(html, /<wa-split-panel/);
+	assert.match(html, /id="files-toggle"[^>]*aria-controls="scratch-sidebar"[^>]*aria-expanded="true"/);
+	assert.match(html, /id="refresh"/);
+	assert.doesNotMatch(html, /class="topbar"|id="session-id"|id="collapse"|id="show-sidebar"/);
+	assert.match(html, /\/assets\/vendor\/marked\.js/);
+	assert.match(html, /\/assets\/vendor\/dompurify\.js/);
+	assert.match(app, /import '\.\/webawesome\.min\.js'/);
+	assert.match(app, /fetch\(url, \{ cache: 'no-store', signal \}\)/);
 	assert.match(app, /event\.origin !== location\.origin \|\| event\.source !== parent/);
-	assert.match(app, /event\.data\.active === true/);
-	assert.match(app, /scrollPositions/);
-	assert.match(app, /response\.status === 404[\s\S]*clearNotes/);
-	assert.doesNotMatch(app, /setInterval|localStorage|sessionStorage/);
-	assert.match(css, /\.markdown \{\s+grid-row: 2;\s+min-height: 0;\s+box-sizing: border-box;/, "notes stay in the bounded scrolling row when the notice is hidden");
-	assert.match(css, /@media \(max-width: 600px\)/);
+	assert.doesNotMatch(html, /textarea|contenteditable|type="file"|PROTOTYPE|fixture/i);
+	assert.doesNotMatch(app, /localStorage|sessionStorage|api\/notes/);
+	assert.match(css, /\.sidebar \{ height:100%/);
+	assert.match(css, /@media\(max-width:600px\)/);
 	assert.match(css, /@media \(forced-colors: active\)/);
-	assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test("Scratch Markdown is readable without allowing embedded or local resources", () => {

@@ -50,6 +50,22 @@ test("Alt+Down enters the footer only from an empty editor", () => {
 	controller.dispose();
 });
 
+test("Kitty arrow releases do not move footer selection; repeats and legacy keys still do", () => {
+	let terminalInput!: (data: string) => { consume?: boolean } | undefined;
+	const ctx = { mode: "tui", ui: { onTerminalInput(handler: typeof terminalInput) { terminalInput = handler; return () => {}; } } } as any;
+	const controller = attachInteractiveFooter(ctx, { rows: () => [["a", "b", "c", "d"]], requestRender() {} });
+	assert.equal(terminalInput("\x1b[1;3B")?.consume, true);
+	assert.equal(terminalInput("\x1b[1;1:1C")?.consume, true);
+	assert.equal(controller.selectedId, "b");
+	assert.equal(terminalInput("\x1b[1;1:3C"), undefined);
+	assert.equal(controller.selectedId, "b", "release must not move selection");
+	assert.equal(terminalInput("\x1b[1;1:2C")?.consume, true);
+	assert.equal(controller.selectedId, "c", "repeat still moves selection");
+	assert.equal(terminalInput("\x1b[C")?.consume, true);
+	assert.equal(controller.selectedId, "d", "legacy arrow still moves selection");
+	controller.dispose();
+});
+
 test("Escape exits footer mode and cancels pending dialog resolution", async () => {
 	resetInteractiveFooterRegistryForTests();
 	let resolveSpec!: (value: { title: string; rows: any[] }) => void;
@@ -117,8 +133,10 @@ test("terminal routing lets a focused footer overlay own Escape", async () => {
 	overlayComponent?.handleInput?.("\x1b[A");
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.equal(terminalInput("\x1b"), undefined, "Up on the first popup row does not close it");
-	overlayComponent?.handleInput?.("\x1b");
+	overlayComponent?.handleInput?.("\x1b[27;1:1u");
 	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(terminalInput("\x1b[27;1:3u"), undefined, "popup Escape release must not exit footer grid");
+	assert.equal(controller.active, true);
 	controller.dispose();
 	registration.unregister();
 	resetInteractiveFooterRegistryForTests();

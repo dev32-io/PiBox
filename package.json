@@ -30,7 +30,8 @@
     "test": "find extensions skills benchmarks -name '*.test.ts' -print0 | xargs -0 tsx --test",
     "verify": "npm run check && npm test",
     "eval:prompt": "tsx benchmarks/prompt-scenarios/cli.ts",
-    "eval:workflow": "tsx extensions/workflow-scenarios/run-deterministic.ts"
+    "eval:workflow": "tsx extensions/workflow-scenarios/run-deterministic.ts",
+    "build:scratch-vendor": "esbuild scripts/scratch-webawesome-entry.js --bundle --format=esm --minify --target=es2022 --outfile=extensions/visual-companion/scratch/assets/webawesome.min.js"
   },
   "pi": {
     "extensions": [
@@ -79,11 +80,13 @@
     "typebox": "*"
   },
   "devDependencies": {
+    "@awesome.me/webawesome": "3.14.0",
     "@earendil-works/pi-ai": "^0.85.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@earendil-works/pi-tui": "^0.85.1",
     "@types/jsdom": "^30.0.0",
     "@types/node": "^24.10.0",
+    "esbuild": "0.28.2",
     "jsdom": "^30.0.1",
     "tsx": "^4.21.0",
     "typebox": "^1.3.12",

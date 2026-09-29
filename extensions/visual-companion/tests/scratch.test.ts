@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { get } from "node:http";
 import test from "node:test";
 import { createSessionScratchWorkspace, MAX_SCRATCH_NOTE_BYTES, type SessionScratchBinding } from "../../session-scratch/workspace.js";
@@ -20,20 +20,20 @@ test("scratch discovery follows the active session branch without creating or in
 	const registry = async () => (await (await fetch(`${backend.url}/api/viewers`)).json()).viewers;
 	const notes = () => fetch(`${backend.url}/v/scratch/api/notes`);
 	try {
-		assert.deepEqual(await registry(), []);
+		assert.deepEqual(await registry(), ["scratch"]);
 		assert.equal((await notes()).status, 404);
 		branch = [entry(workspace.binding)];
 		assert.deepEqual(await registry(), ["scratch"]);
 		assert.equal((await notes()).status, 200);
 		sessionId = "fork";
-		assert.deepEqual(await registry(), [], "fork cannot browse its parent's mutable notes");
+		assert.deepEqual(await registry(), ["scratch"], "viewer stays visible in fork");
 		assert.equal((await notes()).status, 404);
 		sessionId = "owner";
 		branch.push(entry(null));
-		assert.deepEqual(await registry(), [], "purged binding immediately hides scratch");
+		assert.deepEqual(await registry(), ["scratch"], "viewer stays visible after purge");
 		branch = [entry(workspace.binding)];
 		await rm(workspace.paths.root, { recursive: true });
-		assert.deepEqual(await registry(), [], "missing /tmp workspace is not recreated");
+		assert.deepEqual(await registry(), ["scratch"], "missing /tmp workspace is not recreated");
 		assert.equal((await notes()).status, 404);
 	} finally {
 		await backend.close();
@@ -47,6 +47,7 @@ test("scratch serves only bounded read-only notes, rejects foreign origins and a
 	const url = `${backend.url}/v/scratch/api/notes`;
 	try {
 		await writeFile(workspace.paths.plan, "# Current\n- [ ] Next action\n");
+		await chmod(workspace.paths.plan, 0o644);
 		await writeFile(workspace.paths.ledger, "x".repeat(MAX_SCRATCH_NOTE_BYTES + 10));
 		const response = await fetch(url);
 		assert.equal(response.status, 200);
@@ -74,7 +75,7 @@ test("scratch serves only bounded read-only notes, rejects foreign origins and a
 		assert.equal((await fetch(`${backend.url}/scratch`)).status, 200);
 		const page = await fetch(`${backend.url}/v/scratch/`);
 		assert.equal(page.status, 200);
-		assert.match(page.headers.get("content-security-policy") ?? "", /img-src 'none'/);
+		assert.match(page.headers.get("content-security-policy") ?? "", /img-src 'self'/);
 	} finally {
 		await backend.close();
 		await rm(workspace.paths.root, { recursive: true, force: true });
@@ -86,8 +87,8 @@ test("scratch rejects invalid layouts and symlinked notes without disclosing pat
 	const backend = await createVisualCompanionBackend({ viewers: [createScratchViewer(() => workspace.binding)] });
 	try {
 		await rm(workspace.paths.plan);
-		await symlink(workspace.paths.meta, workspace.paths.plan);
-		assert.deepEqual((await (await fetch(`${backend.url}/api/viewers`)).json()).viewers, []);
+		await symlink(`${workspace.paths.root}/meta.json`, workspace.paths.plan);
+		assert.deepEqual((await (await fetch(`${backend.url}/api/viewers`)).json()).viewers, ["scratch"]);
 		const response = await fetch(`${backend.url}/v/scratch/api/notes`);
 		assert.equal(response.status, 404);
 		assert.deepEqual(await response.json(), { error: "Session scratch unavailable." });

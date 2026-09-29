@@ -31,7 +31,7 @@ Modes are session-branch-local and select authority, not permission: Workflow st
 | **Subagents** | Markdown-backed agent catalog, titled foreground/background `subagent_spawn`, explicit routing overrides, continuation, temporary report files with ordinary read/search, live progress, and event-aware `wait` without shell polling. |
 | **Models and speed** | Capacity-aware fallback across managed-agent routes, tier profiles, ChatGPT Fast mode for the main agent and selected child tiers, Codex usage meters, and local LLM or Ollama Cloud support. |
 | **Managed workflow** | Reviewed stories and plans, sequential or concurrent stages, isolated Git worktrees, checks, integration, bounded repair, whole-branch review, and final E2E. |
-| **Context and control** | Enforced repository permissions, path-scoped rules, private session scratch, curated memory, and evidence-backed distillation without silent writes. |
+| **Context and control** | Enforced repository permissions, path-scoped rules, private session scratch with a read-only Visual Companion file explorer, curated memory, and evidence-backed distillation without silent writes. |
 | **Visual and local tools** | Designer authority, live architecture diagrams, browser mockups, a reactive workflow board, lazy local services, and optional sound feedback. |
 
 ## Quick start
@@ -80,7 +80,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 |---|---|
 | `Alt+Down` from an empty editor | Enter the interactive footer; arrows navigate, `Enter` confirms, and `Esc` closes. |
 | `/mode <agent\|orchestrator\|workflow\|designer>` | Change work mode directly. |
-| `/scratch` | Inspect, reset, or purge private session scratch. |
+| `/scratch` | Inspect, reset, or purge private session scratch. Open Visual Companion’s **Scratch** tab to browse current session’s workspace without creating it; see [scratch guide](docs/work-modes.md#session-scratch). |
 | `/keep-awake on\|off\|status` | Control [quiet, enabled-by-default macOS keep-awake](extensions/keep-awake/README.md) while agents work; other platforms are a no-op. |
 | `Shift+Tab` or `/permissions` | Switch between enforced and bypass permission modes. |
 | `/tier-profile` | Change managed-agent model routing. |
@@ -109,7 +109,7 @@ npm test
 npm run eval:workflow
 ```
 
-CI runs these checks for pushes and pull requests to `develop`, the serving branch. Generated benchmark data stays under ignored `.benchmark/` paths.
+CI runs these checks for pushes and pull requests to `develop`, the serving branch. Generated benchmark data stays under ignored `.benchmark/` paths. Scratch explorer ships a checked-in, locally served Web Awesome bundle; after changing its pinned build inputs or `scripts/scratch-webawesome-entry.js`, run `npm run build:scratch-vendor` and commit regenerated `extensions/visual-companion/scratch/assets/webawesome.min.js`. See [vendor notices](extensions/visual-companion/scratch/licenses/README.md).
 
 ## License
 
