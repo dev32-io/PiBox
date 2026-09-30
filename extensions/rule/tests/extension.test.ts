@@ -72,7 +72,50 @@ test("direct rule reads are not duplicated in the tool result", async () => {
 	await h.handlers.get("session_start")?.({}, h.ctx);
 	const path = join(cwd, ".claude", "rules", "typescript.md");
 	await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "rule-read", input: { path } }, h.ctx);
-	const result = await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "rule-read", content: [{ type: "text", text: "rule body" }] }, h.ctx);
+	const result = await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "rule-read", content: [{ type: "text", text: "---\npaths: ['src/**/*.ts']\n---\n# TypeScript\n\nUse strict types.\n" }] }, h.ctx);
 	assert.equal(result, undefined);
 	assert.deepEqual(h.entries[0].data.labels, []);
+});
+
+test("partial direct reads deliver complete bodies before reservation and loaded deduplication", async () => {
+	for (const input of [{ offset: 1, limit: 1 }, { offset: 5, limit: 1 }, {}]) {
+		const cwd = fixture();
+		const h = harness(cwd);
+		await h.handlers.get("session_start")?.({}, h.ctx);
+		const path = join(cwd, ".claude", "rules", "typescript.md");
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "partial", input: { path, ...input } }, h.ctx);
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "concurrent", input: { path: "src/app.ts" } }, h.ctx);
+		assert.equal(await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "concurrent", content: [{ type: "text", text: "source" }] }, h.ctx), undefined);
+		const details = { truncation: { truncated: true } };
+		const result = await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "partial", content: [{ type: "text", text: "---" }], details }, h.ctx);
+		assert.equal(result.content[0].text, "---");
+		assert.match(result.content[1].text, /# TypeScript\n\nUse strict types\./);
+		assert.deepEqual(result.details.truncation, details.truncation);
+		assert.deepEqual(h.entries[0].data.labels, ["typescript"]);
+		assert.deepEqual(result.details.piboxRules.ids, h.entries[0].data.ids);
+
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "later", input: { path: "src/again.ts" } }, h.ctx);
+		assert.equal(await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "later", content: [{ type: "text", text: "source" }] }, h.ctx), undefined);
+		await h.handlers.get("session_compact")?.({}, h.ctx);
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "restored", input: { path: "src/again.ts" } }, h.ctx);
+		assert.equal(await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "restored", content: [{ type: "text", text: "source" }] }, h.ctx), undefined);
+		h.entries.length = 0;
+		await h.handlers.get("session_compact")?.({}, h.ctx);
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "compacted", input: { path: "src/again.ts" } }, h.ctx);
+		const compacted = await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "compacted", content: [{ type: "text", text: "source" }] }, h.ctx);
+		assert.match(compacted.content[1].text, /Use strict types/);
+	}
+});
+
+test("failed partial direct reads release reservations without recording delivery", async () => {
+	const cwd = fixture();
+	const h = harness(cwd);
+	await h.handlers.get("session_start")?.({}, h.ctx);
+	const path = join(cwd, ".claude", "rules", "typescript.md");
+	await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "failed", input: { path, offset: 1, limit: 1 } }, h.ctx);
+	assert.equal(await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "failed", content: [{ type: "text", text: "missing" }], isError: true }, h.ctx), undefined);
+	assert.equal(h.entries.length, 0);
+	await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "retry", input: { path: "src/app.ts" } }, h.ctx);
+	const result = await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "retry", content: [{ type: "text", text: "source" }] }, h.ctx);
+	assert.match(result.content[1].text, /Use strict types/);
 });

@@ -91,7 +91,9 @@ export default function rulesExtension(pi: ExtensionAPI): void {
 		for (const rule of activation.rules) reserved.delete(rule.id);
 		if (event.isError) return;
 		for (const rule of activation.rules) loaded.add(rule.id);
-		const injected = activation.rules.filter((rule) => !activation.directIds.has(rule.id));
+		// A direct read may contain only frontmatter, a line range, or truncated text.
+		const injected = activation.rules.filter((rule) => !activation.directIds.has(rule.id)
+			|| !event.content.some((block) => block.type === "text" && block.text.includes(rule.content)));
 		const labels = injected.map((rule) => rule.label);
 		pi.appendEntry(ENTRY_TYPE, {
 			ids: activation.rules.map((rule) => rule.id),

@@ -8,6 +8,10 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { parse } from "yaml";
 import type { RuntimeOwner } from "../../subagent/api.js";
+import { getActiveFastModePolicy, setActiveFastModePolicy } from "../../fast-mode/runtime.js";
+import { ProviderCooldowns } from "../../provider-fallback/index.js";
+import { WorkflowSubagentLauncher } from "../../workflow-runtime/subagent-launcher.js";
+import { FakeSubagentService } from "../../workflow-runtime/tests/fixtures/fake-subagent-service.js";
 import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { emptyWorkflowMetrics, StoryRuntimeStore } from "../story-runtime-store.js";
@@ -1533,6 +1537,36 @@ test("E2E workspace intake pauses missing and nonzero output while ignored priva
 			if (scenario === "nonzero") assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "evidence", "uncited.json"), "utf8"), "{}\n");
 		});
 	}
+});
+
+test("production adapter preserves tier Fast preference from Anthropic primary to Codex fallback", async (t) => {
+	const previousPolicy = getActiveFastModePolicy();
+	t.after(() => setActiveFastModePolicy(previousPolicy));
+	for (const limit of ["medium", "low", "off"] as const) await t.test(limit, async (t) => {
+		setActiveFastModePolicy({ main: false, subagents: limit });
+		const f = await fixture(t, {});
+		f.runtime.config.modelTierListProfiles.profiles[f.runtime.config.modelTierProfile].medium = ["anthropic/claude-sonnet-4-5#off", "openai-codex/gpt-5.4#off"];
+		f.runtime.config.limits.repairRounds = 0;
+		f.ctx.scopedModels = [
+			{ model: { provider: "anthropic", id: "claude-sonnet-4-5", api: "anthropic-messages", reasoning: false } },
+			{ model: { provider: "openai-codex", id: "gpt-5.4", api: "openai-codex-responses", reasoning: false } },
+		];
+		const service = new FakeSubagentService((request) => ({
+			status: "failed", reason: "failure", exitCode: 1, text: "",
+			// End at the child boundary without creating a contribution or scheduling repairs.
+			stderr: request.kind === "launch" && request.spec.provider === "anthropic" ? "HTTP 429" : "Offline fixture finished",
+		}), f.runtime.launcher.service.owner);
+		f.runtime.launcher = new WorkflowSubagentLauncher(service, [], new ProviderCooldowns());
+		const adapter = f.create();
+		await start(adapter, f.ctx);
+		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime.status, "attention"));
+		assert.deepEqual(service.requests.map((request) => request.kind === "launch" ? [request.spec.provider, request.spec.model, request.spec.fast] : "unexpected continuation"), [
+			["anthropic", "claude-sonnet-4-5", false],
+			["openai-codex", "gpt-5.4", limit === "medium"],
+		]);
+		assert.deepEqual(service.inspect(service.owner).map((agent) => agent.fast), [false, limit === "medium"]);
+		assert.deepEqual(getActiveFastModePolicy(), { main: false, subagents: limit }, "route attempts preserve user preference");
+	});
 });
 
 test("production launch honors trusted custom agent prompt body before managed protocol", async (t) => {

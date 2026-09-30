@@ -20,7 +20,6 @@ import { STANDALONE_CHILD_EXTENSION_PATHS } from "../subagent/child-extensions.j
 import { getSubagentProcessInstanceId } from "../subagent/process-instance.js";
 import { resolveSubagentServiceForConsumer } from "../subagent/registry.js";
 import { isSubagentRuntime } from "../subagent/tool-policy.js";
-import { authorizeMcpProxyCall, configuredMcpServerAllowlist } from "../subagent/mcp-capabilities.js";
 import { FAST_MODE_POLICY_EVENT, normalizeFastModePolicy } from "../fast-mode/policy.js";
 import { resetActiveFastModePolicy, setActiveFastModePolicy } from "../fast-mode/runtime.js";
 import { MODEL_TIER_PROFILE_EVENT, normalizeModelTierProfilePolicy } from "../model-tier-list-profiles/policy.js";
@@ -135,7 +134,6 @@ export default function workflow(pi: ExtensionAPI, dependencies: {
 	pi.events.on(FAST_MODE_POLICY_EVENT, (value: unknown) => { const policy = normalizeFastModePolicy(value); if (policy) setActiveFastModePolicy(policy); });
 	let modelTierProfile: string | undefined;
 	pi.events.on(MODEL_TIER_PROFILE_EVENT, (value: unknown) => { const policy = normalizeModelTierProfilePolicy(value); if (policy) modelTierProfile = policy.profile; });
-	pi.on("tool_call", (event) => { if (event.toolName !== "mcp") return; const allowed = configuredMcpServerAllowlist(); if (allowed) return authorizeMcpProxyCall(event.input as Record<string, unknown>, allowed); });
 
 	if (isSubagentRuntime(process.env)) {
 		registerWorkerCapabilities(pi);

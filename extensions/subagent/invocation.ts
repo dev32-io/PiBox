@@ -42,6 +42,8 @@ export interface PiInvocationResolverOptions {
 
 export const LIFETIME_WRAPPER_PATH = fileURLToPath(new URL("./lifetime-wrapper.mjs", import.meta.url));
 export const REPORT_BRIDGE_EXTENSION_PATH = fileURLToPath(new URL("./report-bridge.ts", import.meta.url));
+/** Same entry point as package discovery, so Pi deduplicates mandatory guards. */
+export const PERMISSIONS_EXTENSION_PATH = fileURLToPath(new URL("../permissions/index.ts", import.meta.url));
 /** Consumed by the standalone fast-mode extension when explicitly loaded. */
 export const SUBAGENT_FAST_ENV = "PIBOX_FAST_CHILD_ENABLED";
 /** Trusted configured child identity; request environment cannot override it. */
@@ -89,7 +91,7 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 		const args = [
 			...pi.args,
 			"--extension", REPORT_BRIDGE_EXTENSION_PATH,
-			...request.extensionPaths.flatMap((path) => ["--extension", path]),
+			...[...new Set([PERMISSIONS_EXTENSION_PATH, ...request.extensionPaths])].flatMap((path) => ["--extension", path]),
 			"--mode", "json", "-p",
 			"--session", request.transcriptPath,
 			"--name", request.agent,

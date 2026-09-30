@@ -466,10 +466,11 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 		const content = await run.promise;
 		if (!content) return;
 		const messages = event.messages.filter((message: any) => !(message?.role === "custom" && message?.customType === "pibox-memory"));
-		// Compaction may retain no user message; keep advisory memory before work/results.
+		// Keep the first real user text stable; never split assistant/tool-result pairs.
+		// Compaction may retain no user message; then precede work/results.
 		let insertion = 0;
 		for (let index = messages.length - 1; index >= 0; index--) {
-			if ((messages[index] as any)?.role === "user") { insertion = index; break; }
+			if ((messages[index] as any)?.role === "user") { insertion = index + 1; break; }
 		}
 		messages.splice(insertion, 0, {
 			role: "custom",
@@ -477,7 +478,7 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 			content,
 			display: false,
 			details: { retrieval: recallDiagnostics },
-			timestamp: Date.now(),
+			timestamp: 0,
 		});
 		return { messages };
 	});

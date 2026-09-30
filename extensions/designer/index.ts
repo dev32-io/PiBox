@@ -3,6 +3,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatSkillsForPrompt, type BeforeAgentStartEvent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { currentWorkMode } from "../work-mode/runtime.js";
+import { registerSystemPromptContribution } from "../core/system-prompt.js";
 import { isSubagentRuntime } from "../core/runtime-role.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -74,9 +75,11 @@ export default function designerExtension(pi: ExtensionAPI): void {
 
 	const ensureSnapshot = (cwd: string) => {
 		if (snapshotCwd === cwd && prompt !== undefined) return;
+		const nextPrompt = readFileSync(PROMPT_PATH, "utf8").trim();
+		const nextAuthority = loadClosestDesignAuthority(cwd);
+		prompt = nextPrompt;
+		authority = nextAuthority;
 		snapshotCwd = cwd;
-		prompt = readFileSync(PROMPT_PATH, "utf8").trim();
-		authority = loadClosestDesignAuthority(cwd);
 	};
 
 	pi.on("resources_discover", () => ({ skillPaths: [DESIGNER_HANDOFF_SKILL_PATH] }));
@@ -85,14 +88,20 @@ export default function designerExtension(pi: ExtensionAPI): void {
 		ctx.ui.notify("The designer-handoff skill is available only in PiBox Designer mode. Switch modes, then retry.", "warning");
 		return { action: "handled" };
 	});
-	pi.on("before_agent_start", (event, ctx) => {
-		if (currentWorkMode() !== "designer") return { systemPrompt: hideDesignerHandoffSkill(event) };
-		ensureDesignerCapability(pi);
-		ensureSnapshot(ctx.cwd);
-		const additions = [prompt!];
-		if (authority) additions.push(renderAuthority(authority, ctx.cwd));
-		return { systemPrompt: `${hideDesignerSkills(event)}\n\n${additions.join("\n\n")}` };
+	// Resolve required authority at the provider boundary: Pi swallows before_agent_start throws.
+	registerSystemPromptContribution(pi, {
+		id: "designer",
+		order: 150,
+		render(ctx) {
+			if (currentWorkMode() !== "designer") return undefined;
+			ensureDesignerCapability(pi);
+			ensureSnapshot(ctx.cwd);
+			return [prompt!, ...(authority ? [renderAuthority(authority, ctx.cwd)] : [])].join("\n\n");
+		},
 	});
+	pi.on("before_agent_start", (event) => ({
+		systemPrompt: currentWorkMode() === "designer" ? hideDesignerSkills(event) : hideDesignerHandoffSkill(event),
+	}));
 	pi.on("session_shutdown", () => {
 		prompt = undefined;
 		authority = undefined;

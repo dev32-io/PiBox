@@ -102,12 +102,13 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	assert.equal(currentWorkMode(), "agent", "opening and previewing do not mutate mode");
 	const warning = dialog.notice?.("workflow");
 	assert.equal(warning?.tone, "warning");
+	assert.match(warning?.text ?? "", /Each mode has distinct system authority; scratch presence or state/);
 	assert.match(warning?.text ?? "", /may cause a large prompt-cache miss[\s\S]+context is approximately 42k tokens[\s\S]+logical conversation is preserved/i);
 	await dialog.confirm("workflow", new AbortController().signal);
 	assert.equal(currentWorkMode(), "workflow");
 	assert.deepEqual(testHarness.active(), ["read", "subagent_spawn", "unrelated", ...WORKFLOW_TOOL_NAMES]);
 	const workflowPrompt = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
-	assert.equal(workflowPrompt.systemPrompt, "base", "Workflow keeps base system authority unchanged");
+	assert.match(workflowPrompt.systemPrompt, /\[PiBox mode: Workflow\]/);
 
 	await handlers.get("before_provider_request")?.({}, ctx);
 	assert.equal(testHarness.appended.at(-1)?.data.workflowToolsExposed, true);
@@ -115,8 +116,9 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	assert.equal(currentWorkMode(), "agent");
 	assert.ok(WORKFLOW_TOOL_NAMES.every((name) => testHarness.active().includes(name)), "exposed schemas remain resident");
 	const agentPrompt = await handlers.get("before_agent_start")?.({ systemPrompt: workflowPrompt.systemPrompt }, ctx) as { systemPrompt: string };
-	assert.equal(agentPrompt.systemPrompt, workflowPrompt.systemPrompt, "Agent and Workflow share identical system instructions");
-	assert.equal(modeTransitionImpact({ schemaVersion: 1, mode: "workflow", providerMode: "workflow", workflowToolsExposed: true }, "agent").changesSystemPrompt, false);
+	assert.match(agentPrompt.systemPrompt, /\[PiBox mode: Agent\]/);
+	assert.doesNotMatch(agentPrompt.systemPrompt, /PiBox mode: Workflow/);
+	assert.equal(modeTransitionImpact({ schemaVersion: 1, mode: "workflow", providerMode: "workflow", workflowToolsExposed: true }, "agent").changesSystemPrompt, true);
 	assert.deepEqual(await handlers.get("tool_call")?.({ toolName: "workflow_status" }, ctx), {
 		block: true,
 		reason: "PiBox Workflow mode is required. Select the Workflow icon in the interactive footer, then retry.",
@@ -127,10 +129,10 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	assert.equal(markers.length, 1);
 	assert.match(markers[0].content, /^pibox-request-/);
 	assert.doesNotMatch(markers[0].content, /mode: Agent/);
-	assert.match(context.messages.find((message) => message.customType === "pibox-work-mode-context").content, /mode: Agent/);
+	assert.equal(context.messages.some((message) => message.customType === "pibox-work-mode-context"), false);
 	const completion = { role: "custom", customType: "pibox-subagent-result", content: "completed" };
 	const noUser = await handlers.get("context")?.({ messages: [{ role: "compactionSummary", summary: "Prior work" }, completion] }, ctx);
-	assert.equal(noUser.messages[0].customType, "pibox-work-mode-context");
+	assert.equal(noUser.messages[0].role, "compactionSummary");
 	assert.equal(noUser.messages.filter((message: any) => message.customType !== "pibox-system-prompt-request").at(-1), completion);
 	await handlers.get("session_shutdown")?.({}, ctx);
 	resetInteractiveFooterRegistryForTests();
@@ -144,7 +146,7 @@ test("new defaults preserve explicit Agent choices and startup overrides", async
 		await restored.handlers.get("session_start")?.({ reason }, restored.ctx);
 		assert.equal(currentWorkMode(), "agent", reason);
 		const prompt = await restored.handlers.get("before_agent_start")?.({ systemPrompt: "base" }, restored.ctx) as { systemPrompt: string };
-		assert.equal(prompt.systemPrompt, "base");
+		assert.match(prompt.systemPrompt, /\[PiBox mode: Agent\]/);
 		await restored.handlers.get("session_shutdown")?.({}, restored.ctx);
 	}
 	const explicit = harness([], { "work-mode": "agent" });
@@ -218,7 +220,7 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.doesNotMatch(prompt, /normally omit.*tier|step-by-step Markdown checklist/);
 	assert.doesNotMatch(prompt, /\/tmp\/pibox-session-[0-9a-f]+/, "static mode prompt contains no workspace path");
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {
-		changesSystemPrompt: false,
+		changesSystemPrompt: true,
 		changesToolDefinitions: true,
 		mayMissPromptCache: true,
 	});
@@ -247,4 +249,36 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	assert.equal(unavailable.appended.at(-1)?.data.mode, "agent");
 	await unavailable.handlers.get("session_shutdown")?.({}, unavailable.ctx);
 	resetInteractiveFooterRegistryForTests();
+});
+
+test("every mode has one stable system declaration and no synthetic user advisory", async () => {
+	const { handlers, commands, ctx } = harness();
+	ctx.model = { api: "openai-completions" };
+	await handlers.get("session_start")?.({ reason: "startup" }, ctx);
+	try {
+		const systems = new Set<string>();
+		for (const mode of ["agent", "workflow", "designer", "orchestrator", "agent"]) {
+			await commands.get("mode")?.(mode, ctx);
+			const bodies = [];
+			for (let turn = 0; turn < 2; turn++) {
+				const { systemPrompt } = await handlers.get("before_agent_start")?.({ systemPrompt: "BASE" }, ctx);
+				const original = [{ role: "user", content: "First real request" }];
+				if (turn) original.push({ role: "assistant", content: "done" }, { role: "user", content: "Second request" });
+				const { messages } = await handlers.get("context")?.({ messages: original }, ctx);
+				const body = await handlers.get("before_provider_request")?.({ payload: { messages: [
+					{ role: "system", content: systemPrompt },
+					...messages.map((message: any) => ({ role: message.role === "custom" ? "user" : message.role, content: message.content })),
+				] } }, ctx);
+				assert.deepEqual(body.messages.slice(1), original);
+				assert.equal(body.messages[0].content.match(/\[PiBox mode:/g)?.length, 1);
+				bodies.push(body.messages[0].content);
+			}
+			assert.equal(bodies[0], bodies[1]);
+			systems.add(bodies[0]);
+		}
+		assert.equal(systems.size, 4, "returning to Agent restores exactly the same authority");
+	} finally {
+		await handlers.get("session_shutdown")?.({}, ctx);
+		resetInteractiveFooterRegistryForTests();
+	}
 });

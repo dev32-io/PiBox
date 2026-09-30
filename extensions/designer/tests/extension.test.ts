@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { formatSkillsForPrompt, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { ExtensionRunner, formatSkillsForPrompt, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { installWorkModeRuntime } from "../../work-mode/runtime.js";
 import type { PiBoxWorkMode } from "../../work-mode/policy.js";
 import designerExtension, { loadClosestDesignAuthority } from "../index.js";
@@ -76,7 +76,10 @@ test("designer authority composes lazily only while Designer mode is active", as
 		getAllTools() { return [{ name: "read" }, { name: "subagent_spawn" }]; },
 		getActiveTools() { return activeTools; },
 		setActiveTools(tools: string[]) { activeTools = tools; },
-		on(name: string, handler: (...args: any[]) => unknown) { handlers.set(name, handler); },
+		on(name: string, handler: (...args: any[]) => unknown) {
+			const previous = handlers.get(name);
+			handlers.set(name, async (...args) => { await previous?.(...args); return handler(...args); });
+		},
 	} as unknown as ExtensionAPI;
 	const priorRole = process.env.PIBOX_RUNTIME_ROLE;
 	delete process.env.PIBOX_RUNTIME_ROLE;
@@ -85,8 +88,19 @@ test("designer authority composes lazily only while Designer mode is active", as
 		else process.env.PIBOX_RUNTIME_ROLE = priorRole;
 	}
 	const notices: string[] = [];
-	const ctx = { cwd: root, hasUI: false, ui: { notify(message: string) { notices.push(message); } } } as any;
+	const ctx = { sessionManager: { getSessionId: () => "designer-test" }, model: { api: "openai-completions" }, cwd: root, hasUI: false, ui: { notify(message: string) { notices.push(message); } } } as any;
+	const payload = async () => {
+		const context = await handlers.get("context")?.({ messages: [{ role: "user", content: "task" }] }, ctx) as any;
+		return ExtensionRunner.prototype.emitBeforeProviderRequest.call({
+			extensions: [{ path: "designer", handlers: new Map([...handlers].map(([name, handler]) => [name, [handler]])) }],
+			createContext: () => ctx, emitError() {},
+		} as any, { messages: [
+			{ role: "system", content: "BASE" },
+			...context.messages.map((message: any) => ({ role: "user", content: message.content })),
+		] }) as any;
+	};
 	try {
+		await handlers.get("session_start")?.({}, ctx);
 		const resources = await handlers.get("resources_discover")?.({}, ctx) as { skillPaths?: string[] };
 		assert.equal(resources.skillPaths?.length, 1, "the load-once resource is always discoverable");
 		assert.match(resources.skillPaths?.[0] ?? "", /skills\/designer-handoff\/SKILL\.md$/);
@@ -114,22 +128,55 @@ test("designer authority composes lazily only while Designer mode is active", as
 		assert.doesNotMatch(result.systemPrompt, /<name>(product-discussion|shape-story|plan-delivery|workflow-run)<\/name>/);
 		assert.match(result.systemPrompt, /<name>architecture-visualizer<\/name>/);
 		assert.match(result.systemPrompt, /<name>designer-handoff<\/name>/);
-		assert.match(result.systemPrompt, /# Visual Designer[\s\S]+# Repository Design Authority[\s\S]+Use the repository palette\./);
+		assert.match((await payload()).messages[0].content, /# Visual Designer[\s\S]+# Repository Design Authority[\s\S]+Use the repository palette\./);
 		activeTools = ["read"];
-		await assert.rejects(async () => handlers.get("before_agent_start")?.(event, ctx), /active subagent_spawn tool/);
+		// Actual host dispatch catches hook errors and continues: test the provider boundary, not a direct throw.
+		const errors: unknown[] = [];
+		const runner = {
+			extensions: [{ path: "designer", handlers: new Map([...handlers].map(([name, handler]) => [name, [handler]])) }],
+			createContext: () => ctx, assertActive() {}, emitError(error: unknown) { errors.push(error); },
+		};
+		await ExtensionRunner.prototype.emitBeforeAgentStart.call(runner as any, "task", undefined, "BASE", { customPrompt: "BASE", cwd: root });
+		const failed = await payload();
+		assert.match(failed.__pibox_system_prompt_error, /active subagent_spawn tool/);
+		assert.equal(failed.messages, undefined, "no unauthorized conversation survives failure");
+		assert.deepEqual(errors, []);
 		activeTools = ["read", "subagent_spawn"];
 
 		await writeFile(join(root, "DESIGN.md"), "Changed after first designer turn.");
-		const later = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
-		assert.match(later.systemPrompt, /Use the repository palette\./, "authority is snapshotted lazily once");
-		assert.doesNotMatch(later.systemPrompt, /Changed after first designer turn/);
+		const later = (await payload()).messages[0].content;
+		assert.match(later, /Use the repository palette\./, "authority is snapshotted lazily once");
+		assert.doesNotMatch(later, /Changed after first designer turn/);
 
 		mode = "agent";
 		const returned = await handlers.get("before_agent_start")?.(event, ctx) as { systemPrompt: string };
 		assert.doesNotMatch(returned.systemPrompt, /# Visual Designer|Repository Design Authority|<name>designer-handoff<\/name>/);
+		assert.doesNotMatch((await payload()).messages[0].content, /# Visual Designer|Repository Design Authority/);
+
+		// A failed DESIGN.md read must not cache a partial snapshot, even on retry.
+		mode = "designer";
+		ctx.cwd = join(root, "broken");
+		await mkdir(join(ctx.cwd, "DESIGN.md"), { recursive: true });
+		for (let attempt = 0; attempt < 2; attempt++) {
+			assert.match((await payload()).__pibox_system_prompt_error, /EISDIR/);
+		}
+		await rm(join(ctx.cwd, "DESIGN.md"), { recursive: true });
+		await writeFile(join(ctx.cwd, "DESIGN.md"), "Recovered authority");
+		assert.match((await payload()).messages[0].content, /Recovered authority/);
 	} finally {
 		await handlers.get("session_shutdown")?.({}, ctx);
 		uninstallMode();
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("child sessions register no Designer controls or authority", () => {
+	const previous = process.env.PIBOX_RUNTIME_ROLE;
+	process.env.PIBOX_RUNTIME_ROLE = "subagent";
+	try {
+		designerExtension({ on() { assert.fail("child must not register Designer hooks"); } } as unknown as ExtensionAPI);
+	} finally {
+		if (previous === undefined) delete process.env.PIBOX_RUNTIME_ROLE;
+		else process.env.PIBOX_RUNTIME_ROLE = previous;
 	}
 });

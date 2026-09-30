@@ -53,7 +53,8 @@ import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit, type 
 import { resolveHarnessModel } from "./model-resolver.js";
 import { DEFAULT_SUBAGENT_TOOLS, resolveToolSelectors } from "./tool-groups.js";
 import { mcpLaunchEnvironment } from "../subagent/mcp-capabilities.js";
-import { isSubagentFastActive } from "../fast-mode/runtime.js";
+import { getActiveFastModePolicy } from "../fast-mode/runtime.js";
+import { subagentFastEnabled } from "../fast-mode/policy.js";
 import type {
 	AuthoredTaskDocument,
 	HarnessConfig,
@@ -837,7 +838,7 @@ async function launchAgent(context: StoryWorkflowActionContext, role: string, st
 		effort: route.effort,
 		providerCandidates: route.candidates,
 		tools,
-		fast: isSubagentFastActive(tier, { provider: route.model.provider, model: route.model.id }),
+		fast: subagentFastEnabled(getActiveFastModePolicy().subagents, tier),
 		...(context.action.taskId ? { taskId: context.action.taskId } : {}),
 		env: mcpLaunchEnvironment(selectors),
 		signal: context.signal,

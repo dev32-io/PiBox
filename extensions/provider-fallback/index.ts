@@ -101,9 +101,29 @@ export function observeProviderResponse(
 
 /** Observe main-session provider limits so later subagent routes can skip a known-limited provider. */
 export default function providerFallback(pi: ExtensionAPI): void {
-	pi.on("session_start", () => defaultProviderCooldowns.clearAll());
+	let response: { provider: string; headers: Record<string, string> } | undefined;
+	let pending: { provider: string; cooldownMs: number | undefined } | undefined;
+	pi.on("session_start", () => { defaultProviderCooldowns.clearAll(); response = undefined; pending = undefined; });
+	pi.on("agent_start", () => { response = undefined; pending = undefined; });
+	pi.on("before_provider_request", () => { response = undefined; });
 	pi.on("after_provider_response", (event, ctx) => {
-		const provider = ctx.model?.provider;
-		if (provider) observeProviderResponse(provider, event);
+		response = event.status === 429 && ctx.model ? { provider: ctx.model.provider, headers: event.headers } : undefined;
+	});
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		pending = undefined;
+		if (event.message.stopReason !== "error") return;
+		const failure = classifyProviderFailure({ exitCode: 1, events: [event] });
+		if (failure.kind === "rate_limit" || response?.provider === event.message.provider) pending = { provider: event.message.provider, cooldownMs: failure.cooldownMs };
+	});
+	// agent_end/message_end can precede a successful automatic retry. Only the
+	// settled failure poisons later routes; HTTP and terminal evidence count once.
+	pi.on("agent_settled", () => {
+		if (pending) {
+			if (response?.provider === pending.provider) observeProviderResponse(pending.provider, { status: 429, headers: response.headers });
+			else defaultProviderCooldowns.mark(pending.provider, pending.cooldownMs);
+		}
+		pending = undefined;
+		response = undefined;
 	});
 }

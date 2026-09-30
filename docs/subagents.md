@@ -86,6 +86,8 @@ Workspace capability owns its files; workflow is only a reader and never copies 
 
 ## Transport and completion
 
+Every child explicitly loads PiBox's permissions extension, including standalone, workflow, and E2E agents launched without globally installed PiBox. The canonical extension path is deduplicated with normal package discovery. Children inherit the parent's enforced/bypass permission mode; declared MCP-server restrictions remain enforced in either mode, and restricted agents cannot install or replace MCP servers. This adds no recursive orchestration controls.
+
 Agent descriptions and assignment text are not rejected because of arbitrary character counts. Full prompt content uses file-backed input rather than a potentially oversized process argument; display previews remain independent of the content delivered to the child.
 
 A child-only extension sends bounded progress and lifecycle records over a dedicated event channel. Native Pi JSON output is drained without accumulating cumulative `agent_end` or tool payloads. Large reports travel through the report file, not one size-limited JSON record. This boundary is shared by standalone and workflow children; deterministic workflow consumers still receive complete final text rather than a preview.

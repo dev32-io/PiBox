@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { registerWorkerCapabilities } from "../worker-capabilities.js";
 import { readLedgerSubmission } from "../ledger-submission.js";
 import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../../subagent/tool-policy.js";
@@ -75,5 +76,34 @@ test("direct forged invocation is denied and conflicting second call is explicit
 		await tool.execute("call", { action: "append", entry: "first" }, undefined, undefined, {});
 		await assert.rejects(tool.execute("call", { action: "append", entry: "second" }, undefined, undefined, {}), /conflicting submission/);
 		await assert.rejects(tool.execute("call", { action: "replace", entry: "first" }, undefined, undefined, {}), /append/);
+	});
+});
+
+test("real Anthropic declaration retains task clarification read and literal-search fields", async () => {
+	await withEnvironment({ ...managed, PIBOX_WORKFLOW_TASK_ID: "task", PIBOX_WORKFLOW_ACTION: "task-launch" }, async () => {
+		const f = host(); registerWorkerCapabilities(f.pi);
+		const tool = f.tools.get("task_clarify");
+		let payload: any;
+		const response = await streamAnthropic({
+			id: "claude-sonnet-4-5", name: "Offline", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://offline.invalid",
+			reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
+		}, {
+			messages: [{ role: "user", content: "Offline schema capture", timestamp: 0 }],
+			tools: [{ name: tool.name, description: tool.description, parameters: tool.parameters }],
+		}, {
+			// No SDK client: stop at serialized payload, before any network operation.
+			client: {} as never,
+			onPayload(value) { payload = value; throw new Error("OFFLINE_CAPTURE_STOP"); },
+		}).result();
+		assert.match(response.errorMessage ?? "", /OFFLINE_CAPTURE_STOP/);
+		const schema = payload.tools.find((item: any) => item.name === "task_clarify").input_schema;
+		assert.equal(schema.type, "object");
+		assert.deepEqual(schema.required, ["section"]);
+		assert.deepEqual(schema.properties, tool.parameters.properties);
+		assert.deepEqual(Object.keys(schema.properties).sort(), ["contextLines", "findText", "lineCount", "maxMatches", "section", "startLine"]);
+		assert.equal(schema.properties.lineCount.maximum, 200);
+		assert.equal(schema.properties.findText.maxLength, 256);
+		assert.equal(schema.properties.contextLines.maximum, 12);
+		assert.equal(schema.properties.maxMatches.maximum, 8);
 	});
 });

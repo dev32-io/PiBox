@@ -39,21 +39,14 @@ export interface ModeTransitionImpact {
 	mayMissPromptCache: boolean;
 }
 
-function promptFamily(mode: PiBoxWorkMode): "base" | "orchestrator" | "designer" {
-	if (mode === "orchestrator") return "orchestrator";
-	if (mode === "designer") return "designer";
-	return "base";
-}
-
-function modeSystemPrompt(mode: PiBoxWorkMode): string | undefined {
-	return mode === "orchestrator"
-		? `[PiBox mode: Orchestrator] Continue approved work with ordinary tools and ad hoc subagents; no Workflow tools are needed.\n\n${ORCHESTRATOR_PROMPT}`
-		: undefined;
+function modeSystemPrompt(mode: PiBoxWorkMode): string {
+	const declaration = `[PiBox mode: ${workModeLabel(mode)}] ${MODE_DESCRIPTIONS[mode]}`;
+	return mode === "orchestrator" ? `${declaration}\n\n${ORCHESTRATOR_PROMPT}` : declaration;
 }
 
 export function modeTransitionImpact(state: WorkModeEntry, target: PiBoxWorkMode): ModeTransitionImpact {
 	if (!state.providerMode) return { changesSystemPrompt: false, changesToolDefinitions: false, mayMissPromptCache: false };
-	const changesSystemPrompt = promptFamily(state.providerMode) !== promptFamily(target);
+	const changesSystemPrompt = state.providerMode !== target;
 	const changesToolDefinitions = !state.workflowToolsExposed && target === "workflow";
 	return { changesSystemPrompt, changesToolDefinitions, mayMissPromptCache: changesSystemPrompt || changesToolDefinitions };
 }
@@ -68,7 +61,7 @@ function formatTokens(value: number): string {
 function cacheWarning(ctx: ExtensionContext): string {
 	const usage = ctx.getContextUsage();
 	const estimate = usage?.tokens === null || usage?.tokens === undefined ? "Current context size is unavailable." : `Current context is approximately ${formatTokens(usage.tokens)} tokens.`;
-	return `This switch may cause a large prompt-cache miss on the next model request. ${estimate} The logical conversation is preserved.`;
+	return `This switch may cause a large prompt-cache miss on the next model request. ${estimate} Each mode has distinct system authority; scratch presence or state can also change the system payload. The logical conversation is preserved.`;
 }
 
 function sameTools(left: readonly string[], right: readonly string[]): boolean {
@@ -223,19 +216,7 @@ export default function workModeExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("before_agent_start", (event) => {
 		const text = modeSystemPrompt(state.mode);
-		return { systemPrompt: replaceSystemPromptContributions(event.systemPrompt, text ? [{ id: "work-mode", text }] : []) };
-	});
-	pi.on("context", (event) => {
-		const messages = event.messages.filter((message: any) => !(message?.role === "custom" && message?.customType === "pibox-work-mode-context"));
-		if (state.mode === "orchestrator") return { messages };
-		// Agent and Workflow share system authority; keep their status advisory outside it.
-		const content = state.mode === "workflow"
-			? "[PiBox mode: Workflow] Workflow tools are authorized. Follow phase-specific PiBox skills and preserve every review and execution gate."
-			: `[PiBox mode: ${workModeLabel(state.mode)}] Workflow resource and execution tools are not authorized in this mode.`;
-		let insertion = 0;
-		for (let index = messages.length - 1; index >= 0; index--) if ((messages[index] as any)?.role === "user") { insertion = index; break; }
-		messages.splice(insertion, 0, { role: "custom", customType: "pibox-work-mode-context", content, display: false, timestamp: 0 });
-		return { messages };
+		return { systemPrompt: replaceSystemPromptContributions(event.systemPrompt, [{ id: "work-mode", text }]) };
 	});
 	pi.on("agent_start", () => { mainAgentActive = true; registration?.changed(); });
 	pi.on("agent_settled", () => { mainAgentActive = false; registration?.changed(); });

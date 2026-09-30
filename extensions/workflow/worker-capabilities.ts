@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { Check } from "typebox/value";
 import { describeHarnessError, HarnessError } from "./errors.js";
 import { discoverRepository } from "./repository.js";
 import { WorkItemStore } from "./work-items.js";
@@ -28,6 +29,14 @@ const searchRequestSchema = Type.Object({
 	contextLines: Type.Optional(Type.Integer({ minimum: 0, maximum: MAX_CONTEXT_LINES })),
 	maxMatches: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_MATCHES })),
 }, { additionalProperties: false });
+const clarificationRequestSchema = Type.Union([readRequestSchema, searchRequestSchema]);
+// Anthropic transports retain only root properties/required, so expose both branches
+// as object properties and enforce their exclusive shapes locally as well.
+const clarificationSchema = Type.Object({
+	...readRequestSchema.properties,
+	...searchRequestSchema.properties,
+	findText: Type.Optional(searchRequestSchema.properties.findText),
+}, { additionalProperties: false, anyOf: clarificationRequestSchema.anyOf });
 export type TaskClarificationRequest =
 	| { section: "spec" | "design"; startLine?: number; lineCount?: number }
 	| { section: "spec" | "design"; findText: string; contextLines?: number; maxMatches?: number };
@@ -101,6 +110,7 @@ function searchLines(section: "spec" | "design", value: string, request: Extract
 
 export async function readTaskClarification(store: WorkItemStore, storyId: string, request: TaskClarificationRequest): Promise<string> {
 	if (request.section !== "spec" && request.section !== "design") throw new HarnessError("INVALID_ARTIFACT", "task_clarify accepts only the story spec or design field");
+	if (!Check(clarificationRequestSchema, request)) throw new HarnessError("INVALID_ARTIFACT", "task_clarify requires either bounded read fields or literal-search fields, not both");
 	const value = (await store.readStory(storyId))[request.section];
 	return "findText" in request ? searchLines(request.section, value, request) : readLines(request.section, value, request);
 }
@@ -152,8 +162,8 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 	if (isTargetTaskProcess()) pi.registerTool({
 		name: "task_clarify",
 		label: "Task Clarification",
-		description: "Exceptionally search or read a bounded line range from the free-form story spec or design when the assigned task and repository leave a concrete ambiguity. Search uses a case-insensitive literal and returns bounded matching passages. This tool cannot list or mutate resources.",
-		parameters: Type.Union([readRequestSchema, searchRequestSchema]),
+		description: "Exceptionally search or read a bounded line range from the free-form story spec or design when the assigned task and repository leave a concrete ambiguity. Search uses a case-insensitive literal and returns bounded matching passages. Use findText with contextLines/maxMatches for search, or startLine/lineCount for read; do not mix these fields. This tool cannot list or mutate resources.",
+		parameters: clarificationSchema,
 		async execute(_id, params, _signal, _update, ctx) {
 			try { const target = await targetTaskStore(ctx); return result(await readTaskClarification(target.store, target.storyId, params)); }
 			catch (error) { throw new Error(describeHarnessError(error)); }

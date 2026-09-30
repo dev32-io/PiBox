@@ -27,6 +27,7 @@ export function configuredMcpServerAllowlist(env: NodeJS.ProcessEnv = process.en
 
 export function authorizeMcpProxyCall(input: Record<string, unknown>, allowedServers: readonly string[]): { block: true; reason: string } | undefined {
 	if (allowedServers.length === 0) return { block: true, reason: "This agent was not granted an MCP server." };
+	if (input.action === "install") return { block: true, reason: "Restricted agents cannot install or replace MCP servers." };
 	if (input.action === "ui-messages") return { block: true, reason: "Restricted agents cannot read cross-server MCP UI messages." };
 	if (typeof input.describe === "string") return { block: true, reason: "Use an MCP search scoped with `server` and `includeSchemas` instead of an unscoped describe call." };
 

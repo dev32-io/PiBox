@@ -18,6 +18,7 @@ import {
 	type SubagentDisplayEvent,
 	type SubagentInvocationRequest,
 } from "../index.js";
+import { PERMISSIONS_EXTENSION_PATH } from "../invocation.js";
 import { normalizeSubagentTitle } from "../presentation.js";
 
 const FAKE_CHILD = resolve("extensions/subagent/tests/support/fake-child.mjs");
@@ -850,7 +851,7 @@ test("production Pi resolver uses JSON print mode, a private prompt file, and th
 		agentId: "agent", attemptId: "attempt", agent: "reviewer", cwd: "/work",
 		stableSystemContext: "stable", attemptUserPrompt: "dynamic", transcriptPath, continuation: false,
 		provider: "provider", model: "model", effort: "max", tools: ["read", "grep"],
-		extensionPaths: ["/ext/one.ts", "/ext/two.ts"], skillPaths: ["/skill/one"], fast: true,
+		extensionPaths: ["/ext/one.ts", PERMISSIONS_EXTENSION_PATH, "/ext/two.ts"], skillPaths: ["/skill/one"], fast: true,
 		env: { BASE_ENV: "base" }, workflowCredentials: { WORKFLOW_TOKEN: "token" },
 		workflowMetadata: { WORKFLOW_REF: "item" }, attemptMetadata: { ATTEMPT_REF: "attempt" },
 	});
@@ -858,6 +859,7 @@ test("production Pi resolver uses JSON print mode, a private prompt file, and th
 	assert.deepEqual(invocation.args, [
 		LIFETIME_WRAPPER_PATH, "--", "pi-test", "--base",
 		"--extension", REPORT_BRIDGE_EXTENSION_PATH,
+		"--extension", PERMISSIONS_EXTENSION_PATH,
 		"--extension", "/ext/one.ts", "--extension", "/ext/two.ts",
 		"--mode", "json", "-p", "--session", transcriptPath, "--name", "reviewer",
 		"--provider", "provider", "--model", "model", "--thinking", "max", "--tools", "read,grep",

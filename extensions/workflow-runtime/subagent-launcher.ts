@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isChatGptFastRoute } from "../fast-mode/policy.js";
 import type { ProviderRoute } from "../provider-fallback/index.js";
 import { classifyProviderFailure, defaultProviderCooldowns, isFallbackEligible, type ProviderCooldowns } from "../provider-fallback/index.js";
 import type { LogicalAgentSnapshot, SubagentService, TerminalResult } from "../subagent/api.js";
@@ -30,6 +31,7 @@ export interface WorkflowSubagentLaunchInput {
 	tools: string[];
 	extensionPaths?: string[];
 	skillPaths?: string[];
+	/** Tier-enabled user preference; each attempted route determines effective Fast. */
 	fast?: boolean;
 	taskId?: string;
 	env?: Record<string, string>;
@@ -53,8 +55,8 @@ export interface WorkflowSubagentResult {
 }
 
 function sameRoute(left: ProviderRoute, right: ProviderRoute): boolean { return left.provider === right.provider && left.model === right.model && left.effort === right.effort; }
-function configurationKey(input: WorkflowSubagentLaunchInput, route: ProviderRoute): string {
-	return createHash("sha256").update(JSON.stringify({ role: input.role, tier: input.tier, cwd: input.cwd, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: input.extensionPaths ?? [], skillPaths: input.skillPaths ?? [], fast: Boolean(input.fast), stableSystemContext: input.stableSystemContext })).digest("hex");
+function configurationKey(input: WorkflowSubagentLaunchInput, route: ProviderRoute, fast: boolean): string {
+	return createHash("sha256").update(JSON.stringify({ role: input.role, tier: input.tier, cwd: input.cwd, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: input.extensionPaths ?? [], skillPaths: input.skillPaths ?? [], fast, stableSystemContext: input.stableSystemContext })).digest("hex");
 }
 function splitCredentials(env: Readonly<Record<string, string>>): { environment: Record<string, string>; credentials: Record<string, string> } {
 	const environment: Record<string, string> = {}; const credentials: Record<string, string> = {};
@@ -117,7 +119,8 @@ export class WorkflowSubagentLauncher {
 
 		for (const [routeIndex, route] of routes.entries()) {
 			if (!this.cooldowns.available(route.provider)) continue;
-			const continuationKey = configurationKey(input, route);
+			const fast = Boolean(input.fast) && isChatGptFastRoute(route.provider, route.model);
+			const continuationKey = configurationKey(input, route, fast);
 			const candidates = this.snapshots(input.storyId, input.slotId);
 			const exact = candidates.find((agent) => agent.attemptMetadata?.[TOKEN] === input.attemptToken && agent.provider === route.provider && agent.model === route.model && agent.effort === route.effort && agent.continuationKey === continuationKey);
 			let handle;
@@ -144,7 +147,7 @@ export class WorkflowSubagentLauncher {
 				const beforeSpawn = input.beforeSpawn || input.signal ? { beforeSpawn: assertSpawnAllowed } : {};
 				const started = reusable
 					? await this.service.continue({ owner: this.service.owner, handle: reusable.handle, attemptUserPrompt: input.attemptUserPrompt, attemptMetadata, env: environment, workflowCredentials: credentials, ...beforeSpawn })
-					: await this.service.launch({ owner: this.service.owner, agent: input.role, cwd: input.cwd, stableSystemContext: [input.stableSystemContext, input.initialSystemSupplement].filter(Boolean).join("\n\n"), attemptUserPrompt: input.attemptUserPrompt, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: [...(input.extensionPaths ?? this.extensionPaths)], skillPaths: input.skillPaths ?? [], fast: Boolean(input.fast), continuationKey, env: environment, workflowCredentials: credentials, workflowMetadata, attemptMetadata, ...beforeSpawn });
+					: await this.service.launch({ owner: this.service.owner, agent: input.role, cwd: input.cwd, stableSystemContext: [input.stableSystemContext, input.initialSystemSupplement].filter(Boolean).join("\n\n"), attemptUserPrompt: input.attemptUserPrompt, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: [...(input.extensionPaths ?? this.extensionPaths)], skillPaths: input.skillPaths ?? [], fast, continuationKey, env: environment, workflowCredentials: credentials, workflowMetadata, attemptMetadata, ...beforeSpawn });
 				handle = started.handle;
 				terminalPromise = started.result;
 			}

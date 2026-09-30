@@ -10,7 +10,7 @@ Work moves through free-form discussion → collaborative shaping of a structure
 
 The main session has four exclusive branch-local modes. Agent is the direct-work mode with optional private session scratch. Orchestrator is the default and adds plan discussion and approval before substantial execution, deliberate delegation, and encouraged use of flexible session scratch. Workflow alone authorizes workflow resource and execution tools, without weakening story review, planning, explicit start/resume, permission, Git, review, repair, or E2E gates. Designer adds `prompt/designer.md`, the closest lazily snapshotted `DESIGN.md`, and designer-handoff authority. Children receive none of the main-session mode controls.
 
-Agent and Workflow keep a stable base prompt and skill catalog. Workflow tool schemas may be removed until first provider exposure; after exposure they remain resident but are mechanically blocked outside Workflow. Orchestrator and Designer intentionally change system authority, so transitions may cause a large prompt-cache miss while preserving logical conversation context. Restore mode from the active session-tree branch; new sessions and legacy sessions without a saved mode default to Orchestrator. Session scratch is opaque, private, best-effort `/tmp` state and never workflow or repository authority.
+Every main mode declares its current authority in system instructions, never a synthetic user message. Agent and Workflow share the base prompt and skill catalog, but their mode declarations differ. Workflow tool schemas may be removed until first provider exposure; after exposure they remain resident but are mechanically blocked outside Workflow. Mode transitions change system instructions and may cause a large prompt-cache miss while preserving logical conversation context. Restore mode from the active session-tree branch; new sessions and legacy sessions without a saved mode default to Orchestrator. Session scratch is opaque, private, best-effort `/tmp` state and never workflow or repository authority.
 
 ## Context and Agent Model
 
@@ -30,7 +30,7 @@ Each story keeps related resources together under `agent-artifacts/<story>/`: co
 
 Path-scoped repository instructions live under `.claude/rules/` or `.pi/rules/` with Claude-compatible `paths:` frontmatter. Keep unconditional rules small; scoped bodies load after a matching file read.
 
-Repository tool permissions live at `.pi/permissions.yaml`. Enforced mode applies allow/ask/deny; bypass skips only that gate. `Shift+Tab` toggles the visible session-scoped mode. Every child inherits its parent's mode. `workflow_start` and any resume that would launch children outside bypass use the extension-owned confirmation; Critical risk acceptance always has a separate explicit confirmation even in bypass. Cancellation launches nothing and mutates neither execution nor permission state.
+Repository tool permissions live at `.pi/permissions.yaml`. Enforced mode applies allow/ask/deny; bypass skips only that gate. `Shift+Tab` toggles the visible session-scoped mode. Every child inherits its parent's permission mode and explicitly loads permission and declared MCP-server guards; MCP scope stays enforced in bypass. `workflow_start` and any resume that would launch children outside bypass use the extension-owned confirmation; Critical risk acceptance always has a separate explicit confirmation even in bypass. Cancellation launches nothing and mutates neither execution nor permission state.
 
 ## Development and Evaluation
 

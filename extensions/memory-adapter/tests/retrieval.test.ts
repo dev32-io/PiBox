@@ -4,9 +4,11 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { stream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import memoryAdapter from "../index.js";
 
-test("retrieves once per run and injects memory ephemerally before the current user message", async (t) => {
+test("retrieves once per run and injects memory ephemerally after the current user message", async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-memory-retrieval-"));
 	await mkdir(join(root, ".git"));
 	await writeFile(join(root, "audio.ts"), "export const queue = [];\n");
@@ -58,7 +60,9 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	let tool: any;
 	const bus = new Map<string, (value: unknown) => void>();
 	const pi = {
-		registerTool(definition: any) { tool = definition; }, registerCommand() {}, sendUserMessage() {}, sendMessage() {},
+		registerTool(definition: any) { tool = definition; }, registerCommand() {},
+		sendUserMessage() { assert.fail("automatic recall must not persist user messages"); },
+		sendMessage() { assert.fail("automatic recall must not persist custom messages"); },
 		events: { on(name: string, handler: (value: unknown) => void) { bus.set(name, handler); }, emit(name: string, value: unknown) { bus.get(name)?.(value); } },
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		async exec(_command: string, args: string[]) {
@@ -85,13 +89,54 @@ test("retrieves once per run and injects memory ephemerally before the current u
 	const first = await handlers.get("context")?.({ messages: original }, ctx);
 	assert.equal(original.length, 3, "the session-derived context must remain unchanged");
 	assert.equal(first.messages.length, 4);
-	assert.equal(first.messages[2]?.customType, "pibox-memory");
-	assert.match(first.messages[2]?.content ?? "", /audio-contract.*score=0\.740/);
-	assert.match(first.messages[2]?.content ?? "", /clear the local queue/);
-	assert.doesNotMatch(first.messages[2]?.content ?? "", /Claim backed only by an untracked|Unverified but similar|Generic unrelated fact/);
+	assert.equal(first.messages[3]?.customType, "pibox-memory");
+	assert.match(first.messages[3]?.content ?? "", /audio-contract.*score=0\.740/);
+	assert.match(first.messages[3]?.content ?? "", /clear the local queue/);
+	assert.doesNotMatch(first.messages[3]?.content ?? "", /Claim backed only by an untracked|Unverified but similar|Generic unrelated fact/);
 	assert.match(query, /Earlier audio investigation[\s\S]*Fix interrupted assistant playback/);
-	await handlers.get("context")?.({ messages: original }, ctx);
+	assert.deepEqual(await handlers.get("context")?.({ messages: original }, ctx), first, "repeated request context is stable");
 	assert.equal(searches, 1, "tool-loop model calls reuse the run-scoped retrieval");
+	const user = { role: "user", content: "First real request", timestamp: 0 };
+	const assistant = {
+		role: "assistant", content: [
+			{ type: "thinking", thinking: "reasoning", thinkingSignature: "opaque-signature" },
+			{ type: "toolCall", id: "read_1", name: "read", arguments: {} },
+		], api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5", stopReason: "toolUse", timestamp: 1,
+		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+	};
+	const toolResult = { role: "toolResult", toolCallId: "read_1", toolName: "read", content: [{ type: "text", text: "result" }], isError: false, timestamp: 2 };
+	const history = [user, assistant, toolResult];
+	const savedHistory = JSON.stringify(history);
+	const capture = async (messages: any[]) => {
+		const context = await handlers.get("context")?.({ messages }, ctx);
+		let payload: any;
+		await stream({
+			id: "claude-sonnet-4-5", name: "Claude", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://api.anthropic.com",
+			reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
+		}, { systemPrompt: "BASE", messages: convertToLlm(context.messages) }, {
+			client: {} as never,
+			onPayload(body) { payload = structuredClone(body); throw new Error("offline capture"); },
+		}).result();
+		assert.ok(payload);
+		return payload;
+	};
+	const firstTurn = await capture([user]);
+	const followup = await capture(history);
+	assert.deepEqual(await capture(history), followup, "tool-loop serialization stays byte-stable");
+	await handlers.get("agent_settled")?.({}, ctx);
+	await handlers.get("before_agent_start")?.({ prompt: "Second request" }, ctx);
+	const secondTurn = await capture([...history, { role: "user", content: "Second request", timestamp: 3 }]);
+	for (const body of [firstTurn, followup, secondTurn]) {
+		// OAuth derives its leading header from this exact first wire text block.
+		const content = body.messages.find((message: any) => message.role === "user").content;
+		assert.equal(typeof content === "string" ? content : content.find((block: any) => block.type === "text").text, user.content);
+		assert.deepEqual(body.system, firstTurn.system, "memory remains outside system authority");
+	}
+	const signedIndex = followup.messages.findIndex((message: any) => message.role === "assistant");
+	assert.deepEqual(followup.messages[signedIndex].content[0], { type: "thinking", thinking: "reasoning", signature: "opaque-signature" });
+	assert.equal(followup.messages[signedIndex + 1].content[0].type, "tool_result");
+	assert.equal(JSON.stringify(history), savedHistory, "signed source history is untouched");
+
 	const compacted = [
 		{ role: "compactionSummary", summary: "Approved work remains" },
 		{ role: "assistant", content: [{ type: "toolCall", id: "read-report", name: "read", arguments: {} }] },

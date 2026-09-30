@@ -134,3 +134,21 @@ test("headless spawned sessions inherit the parent process permission mode", asy
 	assert.equal(await h.handlers.get("tool_call")?.({ toolName: "bash", input: { command: "sudo reboot" } }, h.ctx), undefined);
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });
+
+test("MCP declared-server authorization survives bypass and scopes calls before policy evaluation", async (t) => {
+	const previous = process.env.PIBOX_ALLOWED_MCP_SERVERS;
+	process.env.PIBOX_ALLOWED_MCP_SERVERS = "playwright";
+	t.after(() => { if (previous === undefined) delete process.env.PIBOX_ALLOWED_MCP_SERVERS; else process.env.PIBOX_ALLOWED_MCP_SERVERS = previous; });
+	const h = await harness(t);
+	await h.handlers.get("session_start")?.({}, h.ctx);
+	for (const mode of ["enforce", "bypass"]) {
+		await h.commands.get("permissions").handler(mode, h.ctx);
+		for (const input of [{ server: "other", tool: "test" }, { connect: "other" }, { instructions: "other" }, { action: "install", server: "playwright", url: "https://other.invalid/mcp" }, { action: "ui-messages" }, { describe: "other_tool" }]) {
+			assert.equal((await h.handlers.get("tool_call")?.({ toolName: "mcp", input }, h.ctx))?.block, true);
+		}
+		const input: Record<string, unknown> = { search: "browser" };
+		assert.equal(await h.handlers.get("tool_call")?.({ toolName: "mcp", input }, h.ctx), undefined);
+		assert.equal(input.server, "playwright");
+	}
+	await h.handlers.get("session_shutdown")?.({}, h.ctx);
+});

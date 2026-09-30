@@ -98,6 +98,21 @@ test("task clarification provides bounded story ranges and literal search", asyn
 	assert.equal(Check(schema, { action: "read", ref: "artifact:spec" }), false);
 
 	const { store, story } = await fixture(t);
+	for (const fields of [
+		{ findText: "literal", startLine: 1 }, { findText: "literal", lineCount: 1 },
+		{ contextLines: 1 }, { maxMatches: 1 }, { findText: "" },
+		{ startLine: 0 }, { startLine: 1.5 }, { lineCount: 0 }, { lineCount: 201 },
+		{ findText: "x".repeat(257) }, { findText: "literal", contextLines: -1 },
+		{ findText: "literal", contextLines: 13 }, { findText: "literal", maxMatches: 0 },
+		{ findText: "literal", maxMatches: 9 }, { action: "read" }, { path: "private.md" },
+	]) {
+		const invalid = { section: "spec" as const, ...fields };
+		assert.equal(Check(schema, invalid), false, JSON.stringify(invalid));
+		await assert.rejects(readTaskClarification(store, story.id, invalid), /bounded read fields or literal-search fields/);
+	}
+	for (const findText of ["   ", "two\nlines", "two\rlines"]) {
+		await assert.rejects(readTaskClarification(store, story.id, { section: "spec", findText }), /non-whitespace literal|single-line literal/);
+	}
 	const firstPage = await readTaskClarification(store, story.id, { section: "spec" });
 	assert.match(firstPage, /section: spec[\s\S]+lines: 1-5 of 5[\s\S]+# Spec[\s\S]+Keep exact indentation/);
 	const range = await readTaskClarification(store, story.id, { section: "design", startLine: 3, lineCount: 1 });

@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { evaluateToolCall, loadPermissionPolicy } from "./policy.js";
+import { authorizeMcpProxyCall, configuredMcpServerAllowlist } from "../subagent/mcp-capabilities.js";
 import { renderPermissionMode } from "./display.js";
 import { installPermissionRuntime } from "./runtime.js";
 import type { LoadedPermissionPolicy, PermissionMode } from "./types.js";
@@ -134,6 +135,13 @@ export default function permissions(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
+		// Declared MCP capabilities are an authorization boundary, not a
+		// repository permission preference. Bypass must never broaden them.
+		if (event.toolName === "mcp") {
+			const allowed = configuredMcpServerAllowlist();
+			const denied = allowed && authorizeMcpProxyCall(event.input as Record<string, unknown>, allowed);
+			if (denied) return denied;
+		}
 		if (mode === "bypass") return;
 		const activePolicy = policy ?? loadPermissionPolicy(ctx.cwd);
 		const evaluation = evaluateToolCall(activePolicy, event.toolName, (event.input ?? {}) as Record<string, unknown>, ctx.cwd);

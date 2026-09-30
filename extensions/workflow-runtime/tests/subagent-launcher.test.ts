@@ -172,3 +172,23 @@ test("provider fallback uses a fresh incompatible service transcript without dir
 	assert.deepEqual(service.requests.map((request) => request.kind === "launch" ? request.spec.provider : "continued"), ["limited", "healthy"]);
 	assert.equal(new Set(service.requests.map((request) => request.agentId)).size, 2);
 });
+
+test("fallback computes effective Fast per route in both directions and continues by effective identity", async () => {
+	const codex = { provider: "openai-codex", model: "gpt-5.4", effort: "high" };
+	const anthropic = { provider: "anthropic", model: "claude-sonnet-4-5", effort: "high" };
+	for (const [primary, fallback] of [[codex, anthropic], [anthropic, codex]] as const) {
+		const cooldowns = new ProviderCooldowns();
+		const service = new FakeSubagentService((request) => request.kind === "launch" && request.spec.provider === primary.provider
+			? { status: "failed", reason: "failure", exitCode: 1, stderr: "HTTP 429", text: "" }
+			: { status: "completed", reason: "completed", exitCode: 0, text: "fallback" });
+		const launcher = new WorkflowSubagentLauncher(service, [], cooldowns);
+		const input = { ...common, ...primary, fast: true, providerCandidates: [primary, fallback] };
+		await launcher.launch(input);
+		assert.deepEqual(service.inspect(fakeOwner).map((agent) => [agent.provider, agent.fast]), [[primary.provider, primary === codex], [fallback.provider, fallback === codex]]);
+		await launcher.launch({ ...input, attemptToken: "next" });
+		assert.equal(service.requests.at(-1)?.kind, "continue");
+		await launcher.launch({ ...input, attemptToken: "fast-off", fast: false });
+		assert.equal(service.requests.at(-1)?.kind, fallback === codex ? "launch" : "continue", "only an effective Fast change breaks continuation");
+		assert.equal(service.inspect(fakeOwner).at(-1)?.fast, false);
+	}
+});
