@@ -52,7 +52,6 @@ import { normalizeChecks, normalizeVerificationChecks, verificationCommand, type
 import { assertCleanRepository, atomicWriteFile, isGitPathIgnored, runGit, type RepositoryIdentity } from "./repository.js";
 import { resolveHarnessModel } from "./model-resolver.js";
 import { DEFAULT_SUBAGENT_TOOLS, resolveToolSelectors } from "./tool-groups.js";
-import { mcpLaunchEnvironment } from "../subagent/mcp-capabilities.js";
 import { getActiveFastModePolicy } from "../fast-mode/runtime.js";
 import { subagentFastEnabled } from "../fast-mode/policy.js";
 import type {
@@ -840,7 +839,6 @@ async function launchAgent(context: StoryWorkflowActionContext, role: string, st
 		tools,
 		fast: subagentFastEnabled(getActiveFastModePolicy().subagents, tier),
 		...(context.action.taskId ? { taskId: context.action.taskId } : {}),
-		env: mcpLaunchEnvironment(selectors),
 		signal: context.signal,
 	});
 	return { text: launched.text, exitCode: launched.exitCode, stderr: launched.stderr, ...(launched.reportPath ? { reportPath: launched.reportPath } : {}), terminalReason: launched.terminalReason };

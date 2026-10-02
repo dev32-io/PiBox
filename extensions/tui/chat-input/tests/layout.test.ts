@@ -24,10 +24,29 @@ test("frames body while leaving autocomplete outside", () => {
 		paintPrefix: identity,
 	});
 	assert.ok(rendered);
-	assert.equal(rendered[0], "┌────────────────┐");
-	assert.match(rendered[1] ?? "", /^│ ❯ hello/);
+	assert.equal(rendered[0], "─".repeat(18));
+	assert.match(rendered[1] ?? "", /^ ❯ hello/);
+	assert.equal(rendered[2], "─".repeat(18));
 	assert.equal(rendered.at(-1), " completion");
-	for (const line of rendered) assert.ok(visibleWidth(line) <= 18);
+	for (const line of rendered) {
+		assert.ok(visibleWidth(line) <= 18);
+		assert.doesNotMatch(line, /[│┌┐└┘]/);
+	}
+});
+
+test("borders carry scroll labels at full width", () => {
+	const rendered = frameEditorLines(["── ↑ 12 more", "body", "── ↓ 3 more ──"], {
+		width: 20,
+		contentWidth: 14,
+		paddingX: 0,
+		prefix: "❯",
+		paintBorder: identity,
+		paintPrefix: identity,
+	});
+	assert.ok(rendered);
+	assert.equal(rendered[0], "── ↑ 12 more ───────");
+	assert.equal(rendered[2], "── ↓ 3 more ────────");
+	for (const line of rendered) assert.ok(visibleWidth(line) <= 20);
 });
 
 test("editor does not inject a transcript action or mutate TUI input listeners", async () => {

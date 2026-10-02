@@ -21,12 +21,7 @@ export function validateSubagentToolSelectors(selectors: readonly string[]): voi
 /** Resolve generic selectors without knowledge of workflow-owned tool groups. */
 export function resolveSubagentToolSelectors(selectors: readonly string[]): string[] {
 	validateSubagentToolSelectors(selectors);
-	const resolved: string[] = [];
-	for (const selector of selectors) {
-		const tools = parseMcpToolSelector(selector) ? ["mcp"] : [selector];
-		for (const tool of tools) if (!resolved.includes(tool)) resolved.push(tool);
-	}
-	return resolved;
+	return [...new Set(selectors)];
 }
 
 export function usesAllTools(selectors: readonly string[]): boolean {

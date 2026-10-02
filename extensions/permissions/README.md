@@ -27,7 +27,7 @@ permissions:
     - Write(~/.ssh/**)
 ```
 
-Supported rule subjects are `Read`, `Write`, `Edit`, `Ls`, `Find`, `Grep`, `Bash`, `Mcp`, and `Tool`. `*` and `?` wildcards match tool targets. `${workspace}`, `${repository}`, `${home}`, `${tmp}`, and a leading `~` expand in patterns. Restrictive matches win: `deny` over `ask` over `allow`. A missing policy preserves Pi's normal permissive behavior; an invalid policy fails closed.
+Supported rule subjects are `Read`, `Write`, `Edit`, `Ls`, `Find`, `Grep`, `Bash`, `Mcp`, and `Tool`. Native MCP rules use `Mcp(server/originalTool)` through PiBox's native identity integration; sanitized or shortened runtime names are not reverse-parsed. Missing identity fails closed in enforced mode. Shared resource helpers use their helper name as the tool target and include an explicit `server` argument when supplied. `*` and `?` wildcards match tool targets. `${workspace}`, `${repository}`, `${home}`, `${tmp}`, and a leading `~` expand in patterns. Restrictive matches win: `deny` over `ask` over `allow`. A missing policy preserves Pi's normal permissive behavior; an invalid policy fails closed.
 
 Simple shell chains joined by `&&`, `||`, `;`, or `|` are evaluated command by command. This parser and the policy itself are not containment boundaries. Opaque scripts can perform effects that are not visible in their command line.
 
@@ -36,7 +36,7 @@ The policy file is protected from direct `write`, `edit`, and statically visible
 ## Modes
 
 - **Enforced** evaluates the repository tool permission policy. Interactive `ask` decisions open a confirmation; headless asks are denied.
-- **Bypass** permits every tool call without evaluating the repository tool permission policy.
+- **Bypass** skips the repository tool permission policy, not agent capability bounds. MCP-off children still have no MCP tools or resources, and worker/workflow role restrictions remain active.
 
 Use `Shift+Tab` or `/permissions enforce|bypass`. The mode is session-scoped, survives reload/resume through session history, and is inherited by every spawned PiBox child. New interactive sessions begin enforced. The footer renders the current mode before reasoning effort.
 

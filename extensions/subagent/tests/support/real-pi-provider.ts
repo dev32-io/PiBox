@@ -5,7 +5,8 @@ import {
 	type AssistantMessage,
 	type AssistantMessageEventStream,
 	createAssistantMessageEventStream,
-	type Context,
+	getCurrentSystemPrompt,
+	type TranscriptContext,
 	type Model,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
@@ -36,7 +37,7 @@ function message(model: Model<Api>): AssistantMessage {
 	};
 }
 
-function streamFixture(model: Model<Api>, context: Context, _options?: SimpleStreamOptions): AssistantMessageEventStream {
+function streamFixture(model: Model<Api>, context: TranscriptContext, _options?: SimpleStreamOptions): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
 	queueMicrotask(() => {
 		const output = message(model);
@@ -50,7 +51,7 @@ function streamFixture(model: Model<Api>, context: Context, _options?: SimpleStr
 			appendFileSync(process.env.PIBOX_REAL_PI_TOOL_MARKER, `${JSON.stringify({
 				promptBytes: Buffer.byteLength(prompt),
 				promptSha256: createHash("sha256").update(prompt).digest("hex"),
-				stableContextPresent: context.systemPrompt?.includes("Stable context survives file transport: π🙂") === true,
+				stableContextPresent: getCurrentSystemPrompt(context.messages)?.includes("Stable context survives file transport: π🙂") === true,
 			})}\n`);
 		}
 		if (!toolAlreadyRan) {

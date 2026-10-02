@@ -135,20 +135,21 @@ test("headless spawned sessions inherit the parent process permission mode", asy
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });
 
-test("MCP declared-server authorization survives bypass and scopes calls before policy evaluation", async (t) => {
-	const previous = process.env.PIBOX_ALLOWED_MCP_SERVERS;
-	process.env.PIBOX_ALLOWED_MCP_SERVERS = "playwright";
-	t.after(() => { if (previous === undefined) delete process.env.PIBOX_ALLOWED_MCP_SERVERS; else process.env.PIBOX_ALLOWED_MCP_SERVERS = previous; });
+test("binary MCP bounds survive bypass; granted legacy gateway has no server restriction", async (t) => {
+	const previous = process.env.PIBOX_MCP_ENABLED;
+	t.after(() => { if (previous === undefined) delete process.env.PIBOX_MCP_ENABLED; else process.env.PIBOX_MCP_ENABLED = previous; });
 	const h = await harness(t);
 	await h.handlers.get("session_start")?.({}, h.ctx);
 	for (const mode of ["enforce", "bypass"]) {
 		await h.commands.get("permissions").handler(mode, h.ctx);
-		for (const input of [{ server: "other", tool: "test" }, { connect: "other" }, { instructions: "other" }, { action: "install", server: "playwright", url: "https://other.invalid/mcp" }, { action: "ui-messages" }, { describe: "other_tool" }]) {
-			assert.equal((await h.handlers.get("tool_call")?.({ toolName: "mcp", input }, h.ctx))?.block, true);
+		process.env.PIBOX_MCP_ENABLED = "0";
+		for (const toolName of ["mcp", "mcp__other__echo", "list_mcp_resources", "read_mcp_resource"]) {
+			assert.equal((await h.handlers.get("tool_call")?.({ toolName, input: {} }, h.ctx))?.block, true);
 		}
-		const input: Record<string, unknown> = { search: "browser" };
+		process.env.PIBOX_MCP_ENABLED = "1";
+		const input = { search: "browser", server: "any-server" };
 		assert.equal(await h.handlers.get("tool_call")?.({ toolName: "mcp", input }, h.ctx), undefined);
-		assert.equal(input.server, "playwright");
+		assert.equal(input.server, "any-server");
 	}
 	await h.handlers.get("session_shutdown")?.({}, h.ctx);
 });

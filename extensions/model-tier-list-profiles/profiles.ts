@@ -21,7 +21,7 @@ export type {
 	TierModelRouteConfig,
 } from "../subagent/types.js";
 
-export const DEFAULT_MODEL_TIER_PROFILE = "performance";
+export const DEFAULT_MODEL_TIER_PROFILE = "codex";
 export const CAPABILITY_TIERS: CapabilityTier[] = ["low", "medium", "high", "max"];
 export const MODEL_TIERS: ModelTier[] = [...CAPABILITY_TIERS, "local"];
 const EFFORTS = new Set<HarnessEffort>(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -29,34 +29,16 @@ const PROFILE_KEYS = new Set(["defaultProfile", "profiles"]);
 const ROUTE_KEYS = new Set(["provider", "model", "effort"]);
 const LOCAL_PROVIDER_ID = "local-llm";
 
-const COMMON_LOCAL = ["local-llm/meta/muse-glimmer#high"];
-const COMMON_MAX = ["openai-codex/gpt-5.6-sol#max", "ollama-cloud/deepseek-v4-pro#max"];
-const COMMON_HIGH = ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro:0813#high"];
-const COMMON_LOW = ["openai-codex/gpt-5.6-luna#high", "ollama-cloud/deepseek-v4-flash#low"];
-
+/** Shipped routing used only when global settings has no modelTierListProfiles. */
 export const DEFAULT_MODEL_TIER_LIST_PROFILES: ModelTierListProfilesConfig = Object.freeze({
 	defaultProfile: DEFAULT_MODEL_TIER_PROFILE,
 	profiles: {
-		nuke: {
-			max: ["openai-codex/gpt-6-astra#max", ...COMMON_MAX],
-			high: ["openai-codex/gpt-6-astra#high", ...COMMON_HIGH],
-			medium: ["openai-codex/gpt-6-astra#medium", "openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
-			low: [...COMMON_LOW],
-			local: [...COMMON_LOCAL],
-		},
-		performance: {
-			max: [...COMMON_MAX],
-			high: [...COMMON_HIGH],
-			medium: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
-			low: [...COMMON_LOW],
-			local: [...COMMON_LOCAL],
-		},
-		"token-conservative": {
-			max: [...COMMON_MAX],
-			high: [...COMMON_HIGH],
-			medium: ["openai-codex/gpt-5.6-luna#max", "ollama-cloud/deepseek-v4-flash#max"],
-			low: [...COMMON_LOW],
-			local: [...COMMON_LOCAL],
+		codex: {
+			low: ["openai-codex/gpt-6-luna#xhigh"],
+			medium: ["openai-codex/gpt-6.1-sol#high"],
+			high: ["openai-codex/gpt-6-astra#low"],
+			max: ["openai-codex/gpt-6-astra#medium"],
+			local: ["local-llm/qwen-3.8-27b#xhigh"],
 		},
 	},
 });
@@ -195,12 +177,12 @@ export interface LoadedGlobalModelTierListProfiles {
 function profilesFromGlobalSettings(settings: unknown, path: string, present: boolean): LoadedGlobalModelTierListProfiles {
 	if (!isRecord(settings)) throw new Error(`${path}: settings must contain a JSON object`);
 	if (settings.modelTierListProfiles === undefined) return { config: structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES), path, present };
-	const merged = mergeModelTierProfileValues(DEFAULT_MODEL_TIER_LIST_PROFILES, settings.modelTierListProfiles);
-	try { return { config: validateModelTierListProfiles(merged), path, present }; }
+	// Existing configuration is authoritative: shipped defaults are never injected into it.
+	try { return { config: validateModelTierListProfiles(settings.modelTierListProfiles), path, present }; }
 	catch (error) { throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`); }
 }
 
-/** Read only the official global settings source; project settings are intentionally excluded. */
+/** Read only the official global settings source; project settings are intentionally excluded. Existing configuration is authoritative, and shipped defaults apply only when the key is absent. */
 export function loadGlobalModelTierListProfiles(options: ModelTierProfileSourceOptions = {}): LoadedGlobalModelTierListProfiles {
 	const path = resolveModelTierSettingsPath(options);
 	if (options.home === undefined && options.readFile === undefined && options.exists === undefined) {

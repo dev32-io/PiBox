@@ -17,10 +17,12 @@ function fixture() {
 function harness(cwd: string) {
 	const handlers = new Map<string, (...args: any[]) => any>();
 	const entries: any[] = [];
+	const messages: any[] = [];
 	let renderer: ((entry: any, options: any, theme: any) => any) | undefined;
 	const pi = {
 		on(name: string, handler: (...args: any[]) => any) { handlers.set(name, handler); },
 		appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data }); },
+		sendMessage(message: any, options: any) { messages.push({ message, options }); },
 		registerEntryRenderer(_type: string, value: typeof renderer) { renderer = value; },
 	};
 	const ctx = {
@@ -30,7 +32,7 @@ function harness(cwd: string) {
 		sessionManager: { buildContextEntries: () => entries },
 	};
 	rulesExtension(pi as any);
-	return { handlers, entries, ctx, renderer: () => renderer };
+	return { handlers, entries, messages, ctx, renderer: () => renderer };
 }
 
 test("injects unconditional rules at agent start and scoped rules after matching reads", async () => {
@@ -118,4 +120,34 @@ test("failed partial direct reads release reservations without recording deliver
 	await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "retry", input: { path: "src/app.ts" } }, h.ctx);
 	const result = await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "retry", content: [{ type: "text", text: "source" }] }, h.ctx);
 	assert.match(result.content[1].text, /Use strict types/);
+});
+
+test("nested reads independently deliver complete rules, including full rule-file reads, once", async () => {
+	for (const directRule of [false, true]) {
+		const h = harness(fixture());
+		await h.handlers.get("session_start")?.({}, h.ctx);
+		const path = directRule ? ".claude/rules/typescript.md" : "src/app.ts";
+		const content = [{ type: "text", text: directRule ? "# TypeScript\n\nUse strict types." : "source" }];
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "script/1", parentToolCallId: "script", input: { path } }, h.ctx);
+		assert.equal(await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "script/1", parentToolCallId: "script", content }, h.ctx), undefined);
+		assert.equal(h.messages.length, 1);
+		assert.match(h.messages[0].message.content, /# TypeScript\n\nUse strict types\./);
+		assert.equal(h.messages[0].message.display, false);
+		assert.deepEqual(h.messages[0].options, { triggerTurn: false });
+		await h.handlers.get("session_compact")?.({}, h.ctx);
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "script/2", parentToolCallId: "script", input: { path } }, h.ctx);
+		assert.equal(await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "script/2", parentToolCallId: "script", content }, h.ctx), undefined);
+		assert.equal(h.messages.length, 1);
+	}
+});
+
+test("failed nested reads release reservations without context messages or loaded markers", async () => {
+	const h = harness(fixture());
+	await h.handlers.get("session_start")?.({}, h.ctx);
+	for (const isError of [true, false]) {
+		await h.handlers.get("tool_call")?.({ toolName: "read", toolCallId: "script/1", parentToolCallId: "script", input: { path: "src/app.ts" } }, h.ctx);
+		await h.handlers.get("tool_result")?.({ toolName: "read", toolCallId: "script/1", parentToolCallId: "script", content: [{ type: "text", text: "source" }], isError }, h.ctx);
+		assert.equal(h.messages.length, isError ? 0 : 1);
+		assert.equal(h.entries.length, isError ? 0 : 1);
+	}
 });

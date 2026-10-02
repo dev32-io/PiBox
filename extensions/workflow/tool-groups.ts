@@ -17,7 +17,5 @@ export function validateToolSelectors(selectors: readonly string[]): void {
 
 export function resolveToolSelectors(selectors: readonly string[]): string[] {
 	validateToolSelectors(selectors);
-	const resolved: string[] = [];
-	for (const selector of selectors) for (const tool of resolveSubagentToolSelectors([selector])) if (!resolved.includes(tool)) resolved.push(tool);
-	return resolved;
+	return resolveSubagentToolSelectors(selectors);
 }

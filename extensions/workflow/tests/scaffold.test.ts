@@ -87,9 +87,9 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.equal(await git(root, "status", "--porcelain"), "");
 	const loaded = loadHarnessConfig(root, { home: join(root, "unused-home") });
 	assert.equal(loaded.config.schemaVersion, 2);
-	assert.equal(loaded.config.modelTierProfile, "performance");
-	assert.equal(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium[0], "openai-codex/gpt-5.6-sol#medium");
-	assert.equal(loaded.config.modelTierListProfiles.profiles["token-conservative"]?.medium[0], "openai-codex/gpt-5.6-luna#max");
+	assert.equal(loaded.config.modelTierProfile, "codex");
+	assert.equal(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium[0], "openai-codex/gpt-6.1-sol#high");
+	assert.deepEqual(Object.keys(loaded.config.modelTierListProfiles.profiles), ["codex"]);
 	assert.equal(loaded.config.agents.implementer?.tier, "medium");
 	assert.equal(loaded.config.agents["code-reviewer"]?.tier, "medium");
 	assert.equal(loaded.config.limits.repairRounds, 8, "economy changes concurrency, not the bounded review/fix opportunity count");
@@ -117,12 +117,20 @@ test("new repository policy inherits later global tier edits without regeneratio
 	for (const route of ["example/first#high", "example/second#medium"]) {
 		await writeFile(join(settingsDirectory, "settings.json"), JSON.stringify({
 			modelTierListProfiles: {
-				defaultProfile: "token-conservative",
-				profiles: { "token-conservative": { medium: [route] } },
+				defaultProfile: "custom",
+				profiles: {
+					custom: {
+						low: ["example/low#off"],
+						medium: [route],
+						high: ["example/high#off"],
+						max: ["example/max#off"],
+						local: ["local-llm/example#off"],
+					},
+				},
 			},
 		}));
 		const { config } = loadHarnessConfig(root, { home });
-		assert.equal(config.modelTierProfile, "token-conservative");
+		assert.equal(config.modelTierProfile, "custom");
 		assert.deepEqual(activeModelTierLists(config.modelTierListProfiles, config.modelTierProfile).tiers.medium, [route]);
 	}
 	assert.equal(await git(root, "status", "--porcelain"), "");

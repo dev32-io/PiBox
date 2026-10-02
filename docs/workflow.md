@@ -182,17 +182,17 @@ On the first explicit workflow demand in a later activation, before status, star
 
 ## Configuration
 
-Tier profiles map semantic tiers to ordered concrete routes. Plans choose a tier; configuration chooses provider/model/effort. User defaults live in `~/.pi/agent/settings.json` under `modelTierListProfiles` (`PI_CODING_AGENT_DIR` overrides the directory). The tier-profile extension populates missing defaults on session startup; read-only workflow configuration loading never writes that file.
+Tier profiles map semantic tiers to ordered concrete routes. Plans choose a tier; configuration chooses provider/model/effort. User defaults live in `~/.pi/agent/settings.json` under `modelTierListProfiles` (`PI_CODING_AGENT_DIR` overrides the directory). The tier-profile extension seeds the shipped `codex` profile only when that key is absent; existing configuration is authoritative, so shipped defaults are never merged into or rewritten over it. Read-only workflow configuration loading never writes that file.
 
-New repository scaffolds inherit those defaults. Define only intentional overrides in trusted repositories' `.pi/harness.yaml`: each same-name profile/tier route array replaces the global array, while omitted lists inherit. Explicit session profile selection wins over a repository `defaultProfile`, which wins over the global default. For example, override only `performance.medium` while configuring workflow limits:
+New repository scaffolds inherit those defaults. Define only intentional overrides in trusted repositories' `.pi/harness.yaml`: each same-name profile/tier route array replaces the global array, while omitted lists inherit. Explicit session profile selection wins over a repository `defaultProfile`, which wins over the global default. For example, override only `codex.medium` while configuring workflow limits:
 
 ```yaml
 schemaVersion: 2
 
 modelTierListProfiles:
   profiles:
-    performance:
-      medium: [openai-codex/gpt-5.6-sol#high]
+    codex:
+      medium: [openai-codex/gpt-6.1-sol#high]
 
 limits:
   maxConcurrency: 4
@@ -203,7 +203,7 @@ limits:
 
 Global `~/.pi/agent/harness/config.yaml` still supplies unrelated harness policy, but no longer supplies tier definitions. Move existing global tier customizations into `settings.json`; see [tier settings and migration](../extensions/model-tier-list-profiles/README.md). Project `.pi/settings.json` is not a tier-policy source.
 
-Agent-definition Markdown frontmatter is the sole base tool allowlist. Optional `mcp:<server>` selectors use the independently configured `pi-mcp-adapter`; absent servers degrade gracefully.
+Agent-definition Markdown frontmatter is the sole base tool allowlist. The `mcp` selector grants all configured native MCP tools and resources; omission grants none, and `*` includes MCP. Exposure (`codemode` by default) controls presentation only and cannot reveal excluded tools. Per-server `mcp:<server>` selectors are rejected; replace them with `mcp` to opt into all configured servers. See [native MCP configuration](subagents.md#native-mcp) before removing `pi-mcp-adapter`.
 
 ## Completion and safety
 

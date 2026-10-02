@@ -6,7 +6,7 @@ import test from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { loadSubagentCatalog, DEFAULT_SUBAGENT_CATALOG_CONFIG } from "../catalog.js";
 import { activeModelTierLists } from "../../model-tier-list-profiles/profiles.js";
-import { mcpLaunchEnvironment, PIBOX_ALLOWED_MCP_SERVERS_ENV } from "../mcp-capabilities.js";
+import { mcpLaunchEnvironment, PIBOX_MCP_ENABLED_ENV } from "../mcp-capabilities.js";
 import { resolveSubagentModel } from "../model-resolver.js";
 import {
 	ALL_TOOLS_SELECTOR,
@@ -103,7 +103,18 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 		mkdirSync(join(home, ".pi", "agent", "harness"), { recursive: true });
 		mkdirSync(join(root, ".pi", "agents"), { recursive: true });
 		writeFileSync(join(home, ".pi", "agent", "settings.json"), JSON.stringify({
-			modelTierListProfiles: { profiles: { performance: { medium: ["policy/medium#off"] } } },
+			modelTierListProfiles: {
+				defaultProfile: "policy",
+				profiles: {
+					policy: {
+						low: ["policy/low#off"],
+						medium: ["policy/medium#off"],
+						high: ["policy/high#off"],
+						max: ["policy/max#off"],
+						local: ["local-llm/policy#off"],
+					},
+				},
+			},
 		}));
 		writeFileSync(join(home, ".pi", "agent", "harness", "config.yaml"), [
 			"schemaVersion: 2",
@@ -126,7 +137,7 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 			"",
 		].join("\n"));
 		const trustedDescription = `Trusted repository helper ${"with complete selection context ".repeat(20)}`.trim();
-		writeFileSync(join(root, ".pi", "agents", "trusted.md"), `---\nname: trusted\ndescription: ${trustedDescription}\ntools: read, mcp:context7\ntier: high\n---\n\nComplete the assignment.\n`);
+		writeFileSync(join(root, ".pi", "agents", "trusted.md"), `---\nname: trusted\ndescription: ${trustedDescription}\ntools: read, mcp\ntier: high\n---\n\nComplete the assignment.\n`);
 
 		const loaded = loadSubagentCatalog(root, { home });
 		assert.match(loaded.config.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
@@ -134,7 +145,7 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 		assert.equal(loaded.config.agents.explorer?.model, "policy/medium");
 		assert.equal(loaded.config.agents.custom?.tier, "low");
 		assert.deepEqual(loaded.config.agents.explorer?.tools, ["read", "grep", "find", "ls", "bash"], "harness files cannot replace frontmatter tools");
-		assert.deepEqual(loaded.config.agents.trusted?.tools, ["read", "mcp:context7"]);
+		assert.deepEqual(loaded.config.agents.trusted?.tools, ["read", "mcp"]);
 		assert.equal(loaded.config.agents.trusted?.description, trustedDescription, "descriptions are not rejected or shortened for presentation");
 		assert.equal(loaded.sources.length, 5);
 		assert.equal(loaded.diagnostics.some((diagnostic) => diagnostic.level === "warning" && /settings\.json/.test(diagnostic.message)), true);
@@ -157,7 +168,7 @@ test("loads standalone built-in, harness routing, and trusted project agent poli
 test("standalone generic tool policy preserves wildcard, MCP, and recursive-control semantics", () => {
 	assert.ok(DEFAULT_SUBAGENT_TOOLS.includes("read"));
 	assert.ok(RECURSIVE_SUBAGENT_CONTROL_EXCLUSIONS.includes("subagent_spawn"));
-	assert.deepEqual(resolveSubagentToolSelectors([ALL_TOOLS_SELECTOR, "read", "mcp:playwright", "mcp:context7"]), [ALL_TOOLS_SELECTOR, "read", "mcp"]);
-	assert.deepEqual(mcpLaunchEnvironment(["read", "mcp:playwright"]), { [PIBOX_ALLOWED_MCP_SERVERS_ENV]: "playwright" });
-	assert.deepEqual(mcpLaunchEnvironment([ALL_TOOLS_SELECTOR, "mcp:playwright"]), {});
+	assert.deepEqual(resolveSubagentToolSelectors([ALL_TOOLS_SELECTOR, "read", "mcp"]), [ALL_TOOLS_SELECTOR, "read", "mcp"]);
+	assert.deepEqual(mcpLaunchEnvironment(["read", "mcp"]), { [PIBOX_MCP_ENABLED_ENV]: "1" });
+	assert.deepEqual(mcpLaunchEnvironment([ALL_TOOLS_SELECTOR, "mcp"]), { [PIBOX_MCP_ENABLED_ENV]: "1" });
 });

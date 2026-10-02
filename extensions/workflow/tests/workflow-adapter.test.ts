@@ -16,7 +16,7 @@ import { WorkflowRunner } from "../../workflow-runtime/runner.js";
 import { DEFAULT_HARNESS_CONFIG } from "../config.js";
 import { emptyWorkflowMetrics, StoryRuntimeStore } from "../story-runtime-store.js";
 import { checkFailureSummary, createHarnessWorkflowAdapter, reconcileHarnessActivation, reconcileWorkflowClockForActiveActions, runShell, selectWorkflowClockForActiveActions, workflowMetricCategoryForAction, type StoryWorkflowActionExecutor, type StoryWorkflowActionResult } from "../workflow-adapter.js";
-import type { AuthoredTaskDocument, StoryDocument, StoryPlanDocument } from "../types.js";
+import type { AuthoredTaskDocument, HarnessConfig, StoryDocument, StoryPlanDocument } from "../types.js";
 import { renderDesign, renderE2e, renderSpec } from "../authored-markdown.js";
 import { writeLedgerSubmission } from "../ledger-submission.js";
 import { createE2eEvaluation, createE2eWorkspace, readE2eWorkspaceReport, retainE2eEvidence, submitE2eWorkspaceReport, type E2eEvaluation, type E2eReportInput, type E2eWorkspaceReportResult } from "../../e2e-workspace/workspace.js";
@@ -55,6 +55,19 @@ function task(id: string, checks: AuthoredTaskDocument["checks"] = []): Authored
 	};
 }
 
+/** Fake provider models in this suite are Sol/Luna, so fixture tiers keep routing local to them. */
+function fixtureConfig(): HarnessConfig {
+	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	config.modelTierListProfiles.profiles[config.modelTierProfile] = {
+		low: ["openai-codex/gpt-5.6-luna#high", "ollama-cloud/deepseek-v4-flash#low"],
+		medium: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
+		high: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro:0813#high"],
+		max: ["openai-codex/gpt-5.6-sol#max", "ollama-cloud/deepseek-v4-pro#max"],
+		local: ["local-llm/meta/muse-glimmer#high"],
+	};
+	return config;
+}
+
 async function fixture(t: test.TestContext, options: FixtureOptions) {
 	const root = await mkdtemp(join(tmpdir(), "pibox-story-adapter-"));
 	t.after(() => rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }));
@@ -85,7 +98,7 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 			async stopStory() { return 0; }, async releaseStory() { return 0; },
 		},
 		mutex: { async run<T>(_owner: string, operation: () => Promise<T>): Promise<T> { return operation(); } },
-		config: { ...structuredClone(DEFAULT_HARNESS_CONFIG), limits: { ...DEFAULT_HARNESS_CONFIG.limits, repairRounds: 2, maxConcurrency: 4, maxActiveSubagentsPerSession: 16 } },
+		config: { ...fixtureConfig(), limits: { ...DEFAULT_HARNESS_CONFIG.limits, repairRounds: 2, maxConcurrency: 4, maxActiveSubagentsPerSession: 16 } },
 	};
 	const ctx = { sessionManager: { getSessionId: () => owner.sessionId } } as any;
 	const create = () => createHarnessWorkflowAdapter({ runtimeFor: async () => runtime, ...(options.execute ? { executeAction: options.execute } : {}), now: options.now ?? (() => { let tick = 0; return () => new Date(1_700_000_000_000 + tick++); })() });
@@ -126,7 +139,7 @@ async function submitE2eFixture(input: any, submission: E2eReportInput | E2eFixt
 }
 
 function useProductionExecutor(f: Awaited<ReturnType<typeof fixture>>, launch: (input: any) => Promise<FixtureTerminal>): void {
-	f.runtime.config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	f.runtime.config = fixtureConfig();
 	f.runtime.launcher.launch = async (input: any) => {
 		let terminal = await launch(input);
 		if (input.action === "e2e" && !terminal.reportPath && (terminal.exitCode ?? 0) === 0) {
@@ -434,7 +447,7 @@ test("stop fences late Repair settlement from reopening or crediting clock", asy
 test("preflight is side-effect-free and never executes verification bootstrap before cancellation", async (t) => {
 	const markerName = "bootstrap-ran";
 	const f = await fixture(t, { tasks: [task("task-a", [{ id: "unit", command: "true", profile: "project" }])] });
-	f.runtime.config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	f.runtime.config = fixtureConfig();
 	f.runtime.config.verification = { defaultProfile: "project", profiles: { project: { shell: "/bin/sh", bootstrap: `printf ran > ${markerName}`, requiredEnvironment: [] } } };
 	const adapter = f.create();
 	assert.deepEqual(await adapter.preflightWorkflow!("work-item:example", f.ctx), { ok: true });

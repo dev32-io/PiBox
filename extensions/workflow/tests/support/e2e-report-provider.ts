@@ -1,7 +1,7 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
-import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Context, type Model } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, getCurrentTools, type Api, type AssistantMessage, type JsonObject, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readE2eWorkspaceHandoff } from "../../../e2e-workspace/workspace.js";
 
@@ -12,7 +12,7 @@ function message(model: Model<Api>): AssistantMessage {
 		usage: { input: 3, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 8, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 		stopReason: "pending", timestamp: Date.now() };
 }
-function textOf(result: Extract<Context["messages"][number], { role: "toolResult" }>): string {
+function textOf(result: Extract<TranscriptContext["messages"][number], { role: "toolResult" }>): string {
 	return result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 }
 
@@ -35,7 +35,7 @@ export default function e2eReportProvider(pi: ExtensionAPI): void {
 		name: "Offline E2E workspace fixture", baseUrl: "http://127.0.0.1.invalid", apiKey: "fixture-key", api: "pibox-e2e-report-test-api" as Api,
 		models: [{ id: "fixture-model", name: "E2E workspace fixture", reasoning: false, input: ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16_000_000, maxTokens: 4_000_000 }],
-		streamSimple(model: Model<Api>, context: Context) {
+		streamSimple(model: Model<Api>, context: TranscriptContext) {
 			const stream = createAssistantMessageEventStream();
 			queueMicrotask(async () => {
 				const output = message(model);
@@ -59,15 +59,16 @@ export default function e2eReportProvider(pi: ExtensionAPI): void {
 						gateReleased = true;
 					}
 					const lastUser = context.messages.length - 1 - [...context.messages].reverse().findIndex((entry) => entry.role === "user");
-					const results = context.messages.slice(lastUser + 1).filter((entry): entry is Extract<Context["messages"][number], { role: "toolResult" }> => entry.role === "toolResult" && entry.toolName === TOOL);
-					if (!context.tools?.some((tool) => tool.name === TOOL)) throw new Error("E2E workspace tool was not advertised to the real Pi model");
-					if (context.tools.some((tool) => tool.name === "workflow_e2e_report")) throw new Error("Obsolete workflow report tool is still advertised");
+					const results = context.messages.slice(lastUser + 1).filter((entry): entry is Extract<TranscriptContext["messages"][number], { role: "toolResult" }> => entry.role === "toolResult" && entry.toolName === TOOL);
+					const tools = getCurrentTools(context.messages);
+					if (!tools.some((tool) => tool.name === TOOL)) throw new Error("E2E workspace tool was not advertised to the real Pi model");
+					if (tools.some((tool) => tool.name === "workflow_e2e_report")) throw new Error("Obsolete workflow report tool is still advertised");
 					const index = results.length;
 					for (const [position, result] of results.entries()) {
 						if (position === 3 ? !result.isError : result.isError) throw new Error(`Unexpected workspace result at step ${position}: ${textOf(result)}`);
 					}
 					if (index < 5) {
-						let args: Record<string, unknown>;
+						let args: JsonObject;
 						if (index === 0) args = { action: "init" };
 						else if (index === 1 || index === 2) {
 							const directory = textOf(results[0]!).match(/Output directory: ([^\r\n]+)/)?.[1];

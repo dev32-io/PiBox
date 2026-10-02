@@ -92,7 +92,7 @@ export default function rulesExtension(pi: ExtensionAPI): void {
 		if (event.isError) return;
 		for (const rule of activation.rules) loaded.add(rule.id);
 		// A direct read may contain only frontmatter, a line range, or truncated text.
-		const injected = activation.rules.filter((rule) => !activation.directIds.has(rule.id)
+		const injected = activation.rules.filter((rule) => event.parentToolCallId || !activation.directIds.has(rule.id)
 			|| !event.content.some((block) => block.type === "text" && block.text.includes(rule.content)));
 		const labels = injected.map((rule) => rule.label);
 		pi.appendEntry(ENTRY_TYPE, {
@@ -103,6 +103,11 @@ export default function rulesExtension(pi: ExtensionAPI): void {
 		} satisfies LoadedRulesEntry);
 		if (injected.length === 0) return;
 		const block = renderRules(injected, `Rules loaded for ${displayPath(activation.target, discovery.projectRoot)}`);
+		if (event.parentToolCallId) {
+			// Nested results are script-local; filtered output must not discard instructions.
+			pi.sendMessage({ customType: "pibox-scoped-rules", content: block, display: false }, { triggerTurn: false });
+			return;
+		}
 		const details = typeof event.details === "object" && event.details !== null && !Array.isArray(event.details)
 			? { ...event.details, piboxRules: { ids: injected.map((rule) => rule.id), target: activation.target } }
 			: { piboxRules: { ids: injected.map((rule) => rule.id), target: activation.target } };

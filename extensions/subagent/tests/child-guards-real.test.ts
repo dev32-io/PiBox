@@ -11,7 +11,7 @@ import { SUBAGENT_CONTROL_TOOLS } from "../tool-policy.js";
 
 const provider = resolve("extensions/subagent/tests/support/guard-provider.ts");
 
-test("explicit child launch guards enforce policy and MCP scope without global rediscovery, and deduplicate with it", { timeout: 120_000 }, async (t) => {
+test("explicit child launch guards enforce policy and binary MCP grant without global rediscovery, and deduplicate with it", { timeout: 120_000 }, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "pibox-child-guards-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const owner = { sessionId: "guards", activationId: "guards", processInstanceId: "guards" };
@@ -40,14 +40,14 @@ test("explicit child launch guards enforce policy and MCP scope without global r
 					return invocation;
 				} });
 				try {
-					const started = await manager.launch({ owner, agent, cwd, stableSystemContext: "Offline guard fixture", attemptUserPrompt: "Run guard checks", provider: "pibox-guard-test", model: "fixture", effort: "off", tools: ["bash", "mcp"], extensionPaths: [...paths, provider], skillPaths: [], fast: false, env: { PIBOX_ALLOWED_MCP_SERVERS: "playwright" } });
+					const started = await manager.launch({ owner, agent, cwd, stableSystemContext: "Offline guard fixture", attemptUserPrompt: "Run guard checks", provider: "pibox-guard-test", model: "fixture", effort: "off", tools: ["bash", "mcp"], extensionPaths: [...paths, provider], skillPaths: [], fast: false, env: { PIBOX_MCP_ENABLED: "1" } });
 					const result = await started.result;
 					assert.equal(result.status, "completed", `${rediscover}/${kind}/${mode}: ${result.stderr}`);
 					const report = JSON.parse(result.text);
 					assert.equal(report.permissionCommands, 1, "package rediscovery must not duplicate permissions factory");
 					assert.ok(SUBAGENT_CONTROL_TOOLS.every((tool) => !report.tools.includes(tool)));
-					assert.deepEqual(report.results.map((entry: { error: boolean }) => entry.error), [false, mode === "enforce", mode === "enforce", false, true, true]);
-					assert.match(JSON.stringify(report.results[3]), /playwright/);
+					assert.deepEqual(report.results.map((entry: { error: boolean }) => entry.error), [false, mode === "enforce", mode === "enforce", false, false, false]);
+					assert.match(JSON.stringify(report.results[4]), /other/);
 					assert.equal(await readFile(join(cwd, "allowed.txt"), "utf8"), "allowed\n");
 					for (const file of ["denied.txt", "asked.txt"]) {
 						if (mode === "enforce") await assert.rejects(access(join(cwd, file)), /ENOENT/);

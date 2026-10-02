@@ -17,6 +17,7 @@ export const WORK_MODE_EVENT = "pibox:work-mode";
 export interface WorkModeEntry {
 	schemaVersion: 1;
 	mode: PiBoxWorkMode;
+	/** Latest provider loadout; legacy sticky values are accepted but never control visibility. */
 	workflowToolsExposed: boolean;
 	/** Mode used for the latest provider request; absent before the first request. */
 	providerMode?: PiBoxWorkMode;

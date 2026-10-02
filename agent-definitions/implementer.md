@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Feature implementation, refactoring, and bug fixes, including diagnosis needed to deliver the change
-tools: [read, grep, find, bash, edit, write, mcp:context7, mcp:playwright, mcp:maestro]
+tools: [read, grep, find, bash, edit, write, mcp]
 tier: medium
 ---
 

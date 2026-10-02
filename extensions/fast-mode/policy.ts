@@ -36,20 +36,6 @@ const TIER_RANK: Record<Exclude<FastCapabilityTier, "local">, number> = {
 	max: 3,
 };
 
-// https://developers.openai.com/codex/speed lists supported Fast models.
-// Pi's Model metadata has no Fast capability flag; keep eligibility explicit
-// so generic providers and unadvertised variants never receive service_tier.
-const CHATGPT_FAST_MODELS = new Set([
-	"gpt-5.4",
-	"gpt-5.5",
-	"gpt-5.6-luna",
-	"gpt-5.6-sol",
-	"gpt-5.6-terra",
-	"gpt-6-astra",
-	"gpt-6-sol",
-	"gpt-6-luna",
-]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -79,7 +65,7 @@ export function subagentFastEnabled(limit: SubagentFastLimit, tier: unknown): bo
 }
 
 export function isChatGptFastRoute(provider: string | undefined, model: string | undefined, api = "openai-codex-responses"): boolean {
-	return provider === "openai-codex" && api === "openai-codex-responses" && Boolean(model && CHATGPT_FAST_MODELS.has(model));
+	return provider === "openai-codex" && api === "openai-codex-responses" && Boolean(model);
 }
 
 export function isChatGptFastEligible(model: Model<any> | undefined): boolean {

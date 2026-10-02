@@ -3,11 +3,11 @@ import {
 	openAICompletionsApi,
 	type Api,
 	type ApiKeyCredential,
-	type Context,
 	type Model,
 	type SimpleStreamOptions,
 	type ThinkingLevelMap,
 	type StreamOptions,
+	type TranscriptContext,
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { discoverOpenAIModels, normalizeBaseUrl } from "../shared/openai-compatible.js";
@@ -47,13 +47,13 @@ function strictToolSchemaCompatibleApi() {
 	): Promise<unknown> => normalizeStrictToolSchemas((await onPayload?.(payload, model)) ?? payload);
 
 	return {
-		stream(model: Model<"openai-completions">, context: Context, options?: StreamOptions) {
+		stream(model: Model<"openai-completions">, context: TranscriptContext, options?: StreamOptions) {
 			return api.stream(model, context, {
 				...options,
 				onPayload: (payload, payloadModel) => withNormalizedPayload(payload, payloadModel, options?.onPayload),
 			});
 		},
-		streamSimple(model: Model<"openai-completions">, context: Context, options?: SimpleStreamOptions) {
+		streamSimple(model: Model<"openai-completions">, context: TranscriptContext, options?: SimpleStreamOptions) {
 			return api.streamSimple(model, context, {
 				...options,
 				onPayload: (payload, payloadModel) => withNormalizedPayload(payload, payloadModel, options?.onPayload),

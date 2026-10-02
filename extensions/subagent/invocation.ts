@@ -2,6 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ALL_TOOLS_SUBAGENT_ENV, PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE, SUBAGENT_CONTROL_TOOLS, usesAllTools } from "./tool-policy.js";
+import { nativeMcpExtensionPaths } from "./native-mcp.js";
+import { isMcpTool, mcpLaunchEnvironment, PIBOX_MCP_ENABLED_ENV } from "./mcp-capabilities.js";
 import { SUBAGENT_EVENT_FD, SUBAGENT_EVENT_FD_ENV, SUBAGENT_PROMPT_PATH_ENV, SUBAGENT_PROMPT_TOKEN } from "./report-bridge.js";
 
 export interface SubagentInvocationRequest {
@@ -84,14 +86,17 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 			await writeFile(stableSystemContextPath, request.stableSystemContext, { encoding: "utf8", mode: 0o600 });
 		}
 		await writeFile(userPromptPath, request.attemptUserPrompt, { encoding: "utf8", mode: 0o600 });
-		const allTools = usesAllTools(request.tools);
+		const mcpEnvironment = { ...mcpLaunchEnvironment(request.tools), ...request.env };
+		if (usesAllTools(request.tools)) mcpEnvironment[PIBOX_MCP_ENABLED_ENV] = "1";
+		const tools = mcpEnvironment[PIBOX_MCP_ENABLED_ENV] === "0" ? request.tools.filter((name) => !isMcpTool({ name })) : request.tools;
+		const allTools = usesAllTools(tools);
 		const toolArgs = allTools
 			? ["--exclude-tools", SUBAGENT_CONTROL_TOOLS.join(",")]
-			: request.tools.length > 0 ? ["--tools", request.tools.join(",")] : ["--no-tools"];
+			: tools.length > 0 ? ["--tools", tools.join(",")] : ["--no-tools"];
 		const args = [
 			...pi.args,
 			"--extension", REPORT_BRIDGE_EXTENSION_PATH,
-			...[...new Set([PERMISSIONS_EXTENSION_PATH, ...request.extensionPaths])].flatMap((path) => ["--extension", path]),
+			...[...new Set([PERMISSIONS_EXTENSION_PATH, ...nativeMcpExtensionPaths(), ...request.extensionPaths])].flatMap((path) => ["--extension", path]),
 			"--mode", "json", "-p",
 			"--session", request.transcriptPath,
 			"--name", request.agent,
@@ -105,11 +110,11 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 		];
 		const env = {
 			...pi.env,
-			...request.env,
+			...mcpEnvironment,
 			...request.attemptMetadata,
 			...request.workflowMetadata,
 			...request.workflowCredentials,
-			...(allTools ? { [ALL_TOOLS_SUBAGENT_ENV]: "1" } : {}),
+			[ALL_TOOLS_SUBAGENT_ENV]: allTools ? "1" : "0",
 			[PIBOX_RUNTIME_ROLE_ENV]: PIBOX_SUBAGENT_RUNTIME_ROLE,
 			[PIBOX_SUBAGENT_AGENT_ENV]: request.agent,
 			[SUBAGENT_FAST_ENV]: request.fast ? "1" : "0",

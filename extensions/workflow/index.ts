@@ -56,12 +56,12 @@ function requireTrusted(ctx: ExtensionContext): void {
 	if (!ctx.isProjectTrusted()) throw new HarnessError("CAPABILITY_DENIED", "Workflow mutations require a trusted repository");
 }
 
-async function createRuntime(ctx: Pick<ExtensionContext, "sessionManager" | "isProjectTrusted">, identity: RepositoryIdentity, config: HarnessRuntime["config"]): Promise<HarnessRuntime> {
+async function createRuntime(ctx: Pick<ExtensionContext, "sessionManager" | "isProjectTrusted">, identity: RepositoryIdentity, config: HarnessRuntime["config"], toolRegistry?: ExtensionAPI["getAllTools"]): Promise<HarnessRuntime> {
 	const sessionId = ctx.sessionManager.getSessionId();
 	const capability = resolveSubagentServiceForConsumer({ sessionId, processInstanceId: getSubagentProcessInstanceId() });
 	if (!capability) throw new HarnessError("CAPABILITY_DENIED", "The standalone SubagentService is unavailable for this workflow activation");
 	const canonical = new CanonicalMutationCoordinator(identity.root, identity.commonDir ?? join(identity.root, ".git"));
-	return { identity, config, workItems: new WorkItemStore(identity.root, canonical), launcher: new WorkflowSubagentLauncher(capability.service, [...WORKFLOW_CHILD_EXTENSION_PATHS]), mutex: canonical.mutex };
+	return { identity, config, workItems: new WorkItemStore(identity.root, canonical), launcher: new WorkflowSubagentLauncher(capability.service, [...WORKFLOW_CHILD_EXTENSION_PATHS], undefined, toolRegistry), mutex: canonical.mutex };
 }
 
 export function createFirstDemandReconciler(recover: (runtime: HarnessRuntime) => Promise<unknown> = reconcileHarnessActivation): {
@@ -144,7 +144,7 @@ export default function workflow(pi: ExtensionAPI, dependencies: {
 	const loadConfig = dependencies.loadConfig ?? loadHarnessConfig;
 	const runtimeResolver = createDemandRuntimeResolver({
 		discover: dependencies.discover ?? discoverRepository,
-		create: async (ctx, identity) => (dependencies.create ?? createRuntime)(ctx, identity, loadConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}), includeProject: ctx.isProjectTrusted() }).config),
+		create: async (ctx, identity) => (dependencies.create ?? createRuntime)(ctx, identity, loadConfig(identity.root, { ...(modelTierProfile ? { modelTierProfile } : {}), includeProject: ctx.isProjectTrusted() }).config, () => pi.getAllTools()),
 		reconcile: dependencies.reconcile ?? (async (current) => { const controls = await reconcileHarnessActivation(current); await requestWorkflowRunnerRestore(controls); }),
 	});
 	const runtimeFor = async (ctx: ExtensionContext): Promise<HarnessRuntime> => {

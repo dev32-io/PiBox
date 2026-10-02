@@ -136,7 +136,7 @@ test("designer authority composes lazily only while Designer mode is active", as
 			extensions: [{ path: "designer", handlers: new Map([...handlers].map(([name, handler]) => [name, [handler]])) }],
 			createContext: () => ctx, assertActive() {}, emitError(error: unknown) { errors.push(error); },
 		};
-		await ExtensionRunner.prototype.emitBeforeAgentStart.call(runner as any, "task", undefined, "BASE", { customPrompt: "BASE", cwd: root });
+		await ExtensionRunner.prototype.emitBeforeAgentStart.call(runner as any, "task", undefined, { customPrompt: "BASE", cwd: root });
 		const failed = await payload();
 		assert.match(failed.__pibox_system_prompt_error, /active subagent_spawn tool/);
 		assert.equal(failed.messages, undefined, "no unauthorized conversation survives failure");

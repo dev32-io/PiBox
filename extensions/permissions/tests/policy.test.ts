@@ -61,3 +61,12 @@ test("invalid policy fails closed", async (t) => {
 	assert.ok(policy.issues.length >= 2);
 	assert.equal(evaluateToolCall(policy, "read", { path: "README.md" }, root).decision, "deny");
 });
+
+test("native policy uses captured original identity, never reverses mangled names", async (t) => {
+	const root = await fixture(t, `version: 1\ndefault: allow\npermissions:\n  deny:\n    - Mcp(server/a.b)\n    - Mcp(server/read_mcp_resource)\n`);
+	const policy = loadPermissionPolicy(root);
+	assert.equal(evaluateToolCall(policy, "mcp__server__a_b", {}, root, { server: "server", tool: "a.b" }).decision, "deny");
+	assert.equal(evaluateToolCall(policy, "mcp__server__a_b_hash", {}, root, { server: "server", tool: "a_b" }).decision, "allow");
+	assert.equal(evaluateToolCall(policy, "mcp__server__unknown", {}, root).decision, "deny");
+	assert.equal(evaluateToolCall(policy, "read_mcp_resource", { server: "server", uri: "fixture://secret" }, root).decision, "deny");
+});

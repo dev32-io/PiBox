@@ -312,7 +312,7 @@ function registerStyledTools(pi: ExtensionAPI): void {
 				if (name !== "write") return tool.execute(toolCallId, params, signal, onUpdate, ctx);
 				let previous: string | undefined;
 				try {
-					previous = await readFile(resolve(cwd, params.path), "utf8");
+					previous = await readFile(resolve(ctx?.cwd ?? cwd, params.path), "utf8");
 				} catch {
 					// A missing or unreadable target is classified as a create. The wrapped
 					// write tool remains responsible for reporting actual write failures.

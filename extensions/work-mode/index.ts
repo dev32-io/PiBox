@@ -47,7 +47,7 @@ function modeSystemPrompt(mode: PiBoxWorkMode): string {
 export function modeTransitionImpact(state: WorkModeEntry, target: PiBoxWorkMode): ModeTransitionImpact {
 	if (!state.providerMode) return { changesSystemPrompt: false, changesToolDefinitions: false, mayMissPromptCache: false };
 	const changesSystemPrompt = state.providerMode !== target;
-	const changesToolDefinitions = !state.workflowToolsExposed && target === "workflow";
+	const changesToolDefinitions = (state.providerMode === "workflow") !== (target === "workflow");
 	return { changesSystemPrompt, changesToolDefinitions, mayMissPromptCache: changesSystemPrompt || changesToolDefinitions };
 }
 
@@ -107,7 +107,7 @@ export default function workModeExtension(pi: ExtensionAPI): void {
 	const applyToolExposure = () => {
 		const current = pi.getActiveTools();
 		const withoutWorkflow = current.filter((name) => !WORKFLOW_TOOL_NAME_SET.has(name));
-		const shouldExpose = state.workflowToolsExposed || state.mode === "workflow";
+		const shouldExpose = state.mode === "workflow";
 		const next = shouldExpose
 			? [...withoutWorkflow, ...WORKFLOW_TOOL_NAMES.filter((name) => eligibleWorkflowTools.includes(name) && !withoutWorkflow.includes(name))]
 			: withoutWorkflow;
@@ -181,7 +181,6 @@ export default function workModeExtension(pi: ExtensionAPI): void {
 		eligibleWorkflowTools = WORKFLOW_TOOL_NAMES.filter((name) => pi.getActiveTools().includes(name));
 		state = restoreWorkMode(ctx);
 		if (!state.providerMode && branchHasProviderHistory(ctx)) state = { ...state, providerMode: "agent" };
-		if (state.providerMode === "workflow" && !state.workflowToolsExposed) state = { ...state, workflowToolsExposed: true };
 		const startupOverride = event.reason === "startup" ? requestedStartupMode(pi) : undefined;
 		if (startupOverride) state = { ...state, mode: startupOverride };
 		const correctedUnavailableDesigner = fallbackUnavailableDesigner(ctx);
@@ -208,7 +207,7 @@ export default function workModeExtension(pi: ExtensionAPI): void {
 		publish(correctedUnavailableDesigner);
 	});
 	pi.on("before_provider_request", () => {
-		const workflowToolsExposed = state.workflowToolsExposed || state.mode === "workflow";
+		const workflowToolsExposed = state.mode === "workflow";
 		if (state.providerMode === state.mode && state.workflowToolsExposed === workflowToolsExposed) return;
 		state = { ...state, providerMode: state.mode, workflowToolsExposed };
 		applyToolExposure();

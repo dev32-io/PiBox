@@ -4,47 +4,30 @@ PiBox separates the main orchestrator from managed task capability tiers. Choose
 
 ## Recommended Tier Profiles
 
-Profiles choose models and effort; capability tiers describe the assignment. `performance` remains the default, using Sol for medium and above. `token-conservative` routes common medium work to Luna Max to preserve subscription capacity. The opt-in `nuke` profile spends more on model quality: ordinary medium work uses Astra medium, while routine low-tier work stays on Luna. Selecting Nuke does not justify increasing task tiers.
+Profiles choose models and effort; capability tiers describe the assignment. PiBox ships one `codex` profile and uses it as the default:
 
-| Capability tier | Token-conservative | Performance (default) | Nuke (opt-in) |
-|---|---|---|---|
-| Low | Luna high | Luna high | Luna high |
-| Medium | Luna max | Sol medium | Astra medium |
-| High | Sol high | Sol high | Astra high |
-| Max | Sol max | Sol max | Astra max |
-| Local | Local routes only | Local routes only | Local routes only |
+| Capability tier | Codex route |
+|---|---|
+| Low | `openai-codex/gpt-6-luna#xhigh` |
+| Medium | `openai-codex/gpt-6.1-sol#high` |
+| High | `openai-codex/gpt-6-astra#low` |
+| Max | `openai-codex/gpt-6-astra#medium` |
+| Local | `local-llm/qwen-3.8-27b#xhigh` |
 
-Switch the current Pi session with `/tier-profile nuke`, or use `/tier-profile` to choose. Existing running agents and planned capability tiers do not change.
+Switch the current Pi session with `/tier-profile codex`, or use `/tier-profile` to choose among configured profiles. Existing running agents and planned capability tiers do not change.
 
-User defaults live under `modelTierListProfiles` in **`~/.pi/agent/settings.json`** (or the directory selected by `PI_CODING_AGENT_DIR`). The tier extension populates missing defaults at session startup without replacing existing customizations. Edit that JSON object to customize `defaultProfile` and named `profiles` globally. Trusted repositories may override individual same-name profile/tier lists in `.pi/harness.yaml`; an override replaces the whole route array, while omitted lists inherit global settings. New scaffolds omit tier overrides. Explicit session selection wins over the repository default, which wins over the global default. See [configuration details and legacy migration](../extensions/model-tier-list-profiles/README.md).
+User defaults live under `modelTierListProfiles` in **`~/.pi/agent/settings.json`** (or the directory selected by `PI_CODING_AGENT_DIR`). The tier extension seeds the shipped `codex` profile only when that key is absent; an existing value is authoritative and is never merged with shipped defaults or rewritten, so user-defined profiles stay intact. Edit that JSON object to customize `defaultProfile` and named `profiles` globally. Trusted repositories may still override individual same-name profile/tier lists in `.pi/harness.yaml`; an override replaces the whole route array, while omitted lists inherit the global profile. New scaffolds omit tier overrides. Explicit session selection wins over the repository default, which wins over the global default. See [configuration details and legacy migration](../extensions/model-tier-list-profiles/README.md).
 
-The following optional repository override example shows primary routes only; copying it replaces the corresponding fallback arrays. Built-in Nuke medium/high/max lists fall back to matching-effort Sol and then the existing tier's DeepSeek route.
+The following optional repository override example shows primary routes only; copying it replaces the corresponding fallback arrays. Define additional complete profiles under `profiles` when a cheaper or higher-quality mix is useful.
 
 ```yaml
 modelTierListProfiles:
-  defaultProfile: performance
   profiles:
-    nuke:
-      max: [openai-codex/gpt-6-astra#max]
-      high: [openai-codex/gpt-6-astra#high]
-      medium: [openai-codex/gpt-6-astra#medium]
-      low: [openai-codex/gpt-5.6-luna#high]
-      local: [local-llm/meta/muse-glimmer#high]
-    performance:
-      max: [openai-codex/gpt-5.6-sol#max]
-      high: [openai-codex/gpt-5.6-sol#high]
-      medium: [openai-codex/gpt-5.6-sol#medium]
-      low: [openai-codex/gpt-5.6-luna#high]
-      local: [local-llm/meta/muse-glimmer#high]
-    token-conservative:
-      max: [openai-codex/gpt-5.6-sol#max]
-      high: [openai-codex/gpt-5.6-sol#high]
-      medium: [openai-codex/gpt-5.6-luna#max]
-      low: [openai-codex/gpt-5.6-luna#high]
-      local: [local-llm/meta/muse-glimmer#high]
+    codex:
+      medium: [openai-codex/gpt-6.1-sol#high]
 ```
 
-Each tier list contains availability fallbacks, not quality escalation after weak output. Additional complete profiles may be declared under `profiles`; every resulting profile supplies max, high, medium, low, and provider-isolated local lists. Partial overrides of existing profiles inherit their omitted lists.
+Each tier list contains availability fallbacks, not quality escalation after weak output. Additional complete profiles may be declared under `profiles`; every resulting profile supplies max, high, medium, low, and provider-isolated local lists. Partial repository overrides of existing profiles inherit their omitted lists.
 
 Standalone `subagent_spawn` also uses these profiles. An effort-only override changes the primary route's effort without changing fallback efforts. Explicit model requests are strict unless `allowFallback: true` is supplied; standalone fallback happens before launch, not after a runtime provider failure. See [standalone subagents](subagents.md) for exact routing, title, continuation and report-reading semantics.
 
@@ -53,7 +36,7 @@ Standalone `subagent_spawn` also uses these profiles. An effort-only override ch
 Choose the smallest sufficient tier for the assignment, not a fixed tier for the agent's role. Standalone agent-definition tiers are overridable defaults: callers may downshift or upshift. A definition with a pinned `model` retains explicit-model precedence; `tier` alone does not replace that model. Workflow task creation separately defaults to medium when no task tier is supplied; this profile change does not alter that contract.
 
 - **Low:** bounded repository scans, extraction, focused research, routine verification, and mechanical low-risk changes.
-- **Medium:** ordinary coherent implementation, review, and investigation. This is the usual working tier, including Astra medium under Nuke.
+- **Medium:** ordinary coherent implementation, review, and investigation. This is the usual working tier; the shipped default routes it to `openai-codex/gpt-6.1-sol#high`.
 - **High:** difficult, tightly coupled reasoning where medium is insufficient and safe decomposition would lose necessary context. High is the normal ceiling for hard work.
 - **Max:** a **very rare exception**, only for a specific reasoning bottleneck where High is demonstrably insufficient, or there is a concrete task-specific reason to expect it will be, and better context, tools, or safe decomposition will not solve it. Explain **why High is insufficient** and **what Max should improve**. A failed High attempt is not required when the evidence already supports that choice. When uncertain about Max, choose High.
 
@@ -90,7 +73,7 @@ An alternative is to retain GLM-5.2 as the main product and technical orchestrat
 2. Use model strength for irreducible complexity, not to compensate for vague tickets or artificial task splitting.
 3. Prefer GLM-5.2 where product, architecture, and security exploration matter most.
 4. Prefer Sol for unattended workflow control and recovery until alternatives pass PiBox behavioral evaluations.
-5. Keep `performance` for the normal Sol-based balance, use `token-conservative` when subscription capacity dominates, and explicitly select `nuke` when higher model quality warrants the spend. Astra medium is a starting policy, not a proven optimum for every PiBox assignment. Select a new-session default with `modelTierListProfiles.defaultProfile` in global `settings.json`, unless the repository explicitly overrides that default.
+5. Keep the shipped `codex` routing unless observed task success, retries, latency, or quota consumption justify a different profile. Additional profiles are user-defined in global `settings.json`; select a new-session default with `modelTierListProfiles.defaultProfile`, unless the repository explicitly overrides that default. Treat every alternative as a hypothesis to validate, not a proven optimum for every PiBox assignment.
 6. Treat vendor benchmarks as directional. PiBox workflow evaluations and observed tool discipline are authoritative for routing decisions.
 
 ## Research basis

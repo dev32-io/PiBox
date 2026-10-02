@@ -26,7 +26,8 @@ import { formatStandaloneE2eReceipt, readStandaloneE2eReceipt } from "./e2e-rece
 import { DEFAULT_REPORT_CHARACTERS, MAX_REPORT_CHARACTERS, readReportPage, readTerminalReport, terminalReportText } from "./report.js";
 import { STANDALONE_CHILD_EXTENSION_PATHS } from "./child-extensions.js";
 import { assemblePromptContext } from "./prompt-context.js";
-import { mcpLaunchEnvironment } from "./mcp-capabilities.js";
+import { mcpEnabled, mcpLaunchEnvironment, resolveMcpTools, type CapabilityTool } from "./mcp-capabilities.js";
+import { awaitNativeMcpReady } from "./native-mcp.js";
 import { normalizeExplicitModelOverride, resolveSubagentModel } from "./model-resolver.js";
 import { SubagentProcessManager } from "./process-manager.js";
 import {
@@ -362,7 +363,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const current = requireBinding();
 			if (ctx.sessionManager.getSessionId() !== current.owner.sessionId) throw new Error("Subagent launch context belongs to a replacement session");
-			const resolved = await resolveLaunch(current, params, fastModePolicy, ctx, signal);
+			const resolved = await resolveLaunch(current, params, fastModePolicy, ctx, signal, () => pi.getAllTools());
 			const launched = await current.service.launch(resolved.spec);
 			const agentId = launched.handle.agentId;
 			const mode = params.mode ?? "foreground";
@@ -720,6 +721,7 @@ async function resolveLaunch(
 	fastModePolicy: FastModePolicy,
 	ctx: ExtensionContext,
 	signal?: AbortSignal,
+	registry: () => readonly CapabilityTool[] = () => [],
 ): Promise<{ tier: ModelTier; spec: Parameters<SubagentService["launch"]>[0] }> {
 	const title = normalizeSubagentTitle(params.title);
 	if (!title) throw new Error("Subagent title is required and must contain visible text");
@@ -786,6 +788,7 @@ async function resolveLaunch(
 	const promptContext = assemblePromptContext({ stableSystemParts: [prompt], attemptUserPrompt: params.task }, {});
 	const skillPaths = (agent.skills ?? []).map((skill) => resolveConfiguredPath(binding.repositoryRoot, skill)).filter((path): path is string => Boolean(path));
 	const fast = subagentFastEnabled(fastModePolicy.subagents, tier) && isChatGptFastRoute(resolution.model.provider, resolution.model.id, resolution.model.api);
+	if (mcpEnabled(selectors)) await awaitNativeMcpReady(signal);
 	return {
 		tier,
 		spec: {
@@ -798,7 +801,7 @@ async function resolveLaunch(
 			provider: resolution.model.provider,
 			model: resolution.model.id,
 			effort: resolution.effort,
-			tools: resolveSubagentToolSelectors(selectors),
+			tools: resolveMcpTools(resolveSubagentToolSelectors(selectors), registry()),
 			extensionPaths: [...STANDALONE_CHILD_EXTENSION_PATHS],
 			skillPaths,
 			fast,

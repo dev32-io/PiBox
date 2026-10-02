@@ -39,7 +39,7 @@ Use strict types at public boundaries.
 
 Patterns are matched against repository-relative paths and support Node's glob syntax, including `**` and brace alternatives. Invalid rules are skipped with a warning rather than treated as unconditional.
 
-PiBox follows Claude Code's read-triggered behavior: it does not block or replay a first edit merely because the path would have activated a rule. Newly applicable bodies are attached to the matching read result for the next model inference and deduplicated until compaction. Reading a scoped rule directly marks it loaded without duplicating its body only when the result contains the complete discovered body. Partial or truncated direct reads receive the full discovered body before deduplication suppresses later delivery.
+PiBox follows Claude Code's read-triggered behavior: it does not block or replay a first edit merely because the path would have activated a rule. Newly applicable bodies are attached to the matching read result for the next model inference and deduplicated until compaction. Reading a scoped rule directly marks it loaded without duplicating its body only when the result contains the complete discovered body. Partial or truncated direct reads receive the full discovered body before deduplication suppresses later delivery. Successful nested reads (including reads of rule files) instead send complete activated bodies through an independent model-context message, without triggering another turn, so scripts cannot lose instructions by filtering their output. Failed reads neither deliver nor mark rules loaded.
 
 ## Transcript display
 

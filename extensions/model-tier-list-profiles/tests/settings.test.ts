@@ -5,59 +5,73 @@ import { join } from "node:path";
 import test from "node:test";
 import { Worker } from "node:worker_threads";
 import { initializeModelTierListProfilesSettings } from "../settings.js";
-import { DEFAULT_MODEL_TIER_LIST_PROFILES, loadGlobalModelTierListProfiles } from "../profiles.js";
+import { DEFAULT_MODEL_TIER_LIST_PROFILES, loadGlobalModelTierListProfiles, type ModelTierListProfilesConfig } from "../profiles.js";
 
 function temporaryAgentDir(): { root: string; agentDir: string; cleanup: () => void } {
 	const root = mkdtempSync(join(tmpdir(), "pibox-tier-settings-"));
 	return { root, agentDir: join(root, "agent"), cleanup: () => rmSync(root, { recursive: true, force: true }) };
 }
 
-test("initializes a missing official global settings file with visible editable defaults", async () => {
+test("seeds a missing official global settings file with only the codex profile", async () => {
 	const fixture = temporaryAgentDir();
 	try {
 		const result = await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
 		assert.equal(result.changed, true);
 		assert.equal(result.path, join(fixture.agentDir, "settings.json"));
+		assert.deepEqual(result.config, DEFAULT_MODEL_TIER_LIST_PROFILES);
 		const settings = JSON.parse(readFileSync(result.path, "utf8"));
 		assert.deepEqual(settings, { modelTierListProfiles: DEFAULT_MODEL_TIER_LIST_PROFILES });
+		assert.deepEqual(Object.keys(settings.modelTierListProfiles.profiles), ["codex"]);
 		assert.equal("agents" in settings, false, "repository or harness policy is never copied into global settings");
 	} finally { fixture.cleanup(); }
 });
 
-test("fills missing built-in defaults while preserving custom settings, routes, profiles, and idempotence", async () => {
+test("seeds only codex into an existing settings file that lacks tier profiles", async () => {
 	const fixture = temporaryAgentDir();
 	try {
 		const path = join(fixture.agentDir, "settings.json");
 		await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
-		const customProfile = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES.profiles.performance!);
-		customProfile.medium = ["custom/model#high"];
-		writeFileSync(path, `${JSON.stringify({
-			theme: "custom-theme",
-			unrelated: { keep: [1, 2, 3] },
-			modelTierListProfiles: {
-				defaultProfile: "custom",
-				profiles: {
-					performance: { medium: ["user/performance#low"] },
-					custom: customProfile,
-				},
-			},
-		}, null, 2)}\n`);
-
-		const first = await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
-		assert.equal(first.changed, true);
+		writeFileSync(path, `${JSON.stringify({ theme: "custom-theme", unrelated: { keep: [1, 2, 3] } }, null, 2)}\n`);
+		const result = await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
+		assert.equal(result.changed, true);
 		const settings = JSON.parse(readFileSync(path, "utf8"));
 		assert.equal(settings.theme, "custom-theme");
 		assert.deepEqual(settings.unrelated, { keep: [1, 2, 3] });
-		assert.equal(settings.modelTierListProfiles.defaultProfile, "custom");
-		assert.deepEqual(settings.modelTierListProfiles.profiles.performance.medium, ["user/performance#low"]);
-		assert.deepEqual(settings.modelTierListProfiles.profiles.performance.low, DEFAULT_MODEL_TIER_LIST_PROFILES.profiles.performance!.low);
-		assert.deepEqual(settings.modelTierListProfiles.profiles.custom, customProfile);
-		assert.ok(settings.modelTierListProfiles.profiles.nuke);
+		assert.deepEqual(settings.modelTierListProfiles, DEFAULT_MODEL_TIER_LIST_PROFILES);
+		assert.deepEqual(Object.keys(settings.modelTierListProfiles.profiles), ["codex"]);
+	} finally { fixture.cleanup(); }
+});
 
-		const before = readFileSync(path, "utf8");
+test("keeps existing tier configuration byte-for-byte and never injects shipped profiles", async () => {
+	const fixture = temporaryAgentDir();
+	try {
+		const path = join(fixture.agentDir, "settings.json");
+		await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
+		const customProfile = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES.profiles.codex!);
+		customProfile.medium = ["custom/model#high"];
+		const existing: ModelTierListProfilesConfig = {
+			defaultProfile: "custom",
+			profiles: {
+				custom: customProfile,
+				"custom-cheap": { ...structuredClone(customProfile), medium: ["custom/cheap#low"] },
+			},
+		};
+		const raw = `${JSON.stringify({
+			theme: "custom-theme",
+			unrelated: { keep: [1, 2, 3] },
+			modelTierListProfiles: existing,
+		}, null, 2)}\n`;
+		writeFileSync(path, raw);
+
+		const first = await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
+		assert.equal(first.changed, false, "existing tier configuration is never rewritten");
+		assert.deepEqual(first.config, existing, "the loaded configuration is not merged with shipped defaults");
+		assert.equal(readFileSync(path, "utf8"), raw);
+		assert.equal(first.config.profiles.codex, undefined, "the shipped codex profile is not injected");
+
 		const second = await initializeModelTierListProfilesSettings({ agentDir: fixture.agentDir });
 		assert.equal(second.changed, false);
-		assert.equal(readFileSync(path, "utf8"), before);
+		assert.equal(readFileSync(path, "utf8"), raw);
 	} finally { fixture.cleanup(); }
 });
 
@@ -100,6 +114,16 @@ test("production global reads are lock-coordinated, fail closed on malformed JSO
 		assert.throws(() => loadGlobalModelTierListProfiles({ agentDir: fixture.agentDir }), /settings\.json\.lock|already being held|ELOCKED/i);
 		assert.equal(existsSync(lockPath), true);
 		rmdirSync(lockPath);
+
+		const customOnly: ModelTierListProfilesConfig = {
+			defaultProfile: "custom",
+			profiles: { custom: structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES.profiles.codex!) },
+		};
+		writeFileSync(path, JSON.stringify({ modelTierListProfiles: customOnly }));
+		const loaded = loadGlobalModelTierListProfiles({ agentDir: fixture.agentDir });
+		assert.equal(loaded.present, true);
+		assert.deepEqual(loaded.config, customOnly);
+		assert.equal(loaded.config.profiles.codex, undefined, "shipped profiles are never injected into existing configuration");
 	} finally { fixture.cleanup(); }
 });
 

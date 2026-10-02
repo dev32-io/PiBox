@@ -3,7 +3,6 @@ import { chmod, mkdir, open, readFile, rename, rmdir, stat, unlink } from "node:
 import { basename, dirname, join } from "node:path";
 import {
 	DEFAULT_MODEL_TIER_LIST_PROFILES,
-	mergeModelTierProfileValues,
 	resolveModelTierSettingsPath,
 	validateModelTierListProfiles,
 	type ModelTierListProfilesConfig,
@@ -34,11 +33,9 @@ function parseSettings(raw: string, path: string): UnknownRecord {
 	return parsed;
 }
 
-function mergedSettingsProfiles(settings: UnknownRecord, path: string): ModelTierListProfilesConfig {
-	if (settings.modelTierListProfiles === undefined) return structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
-	if (!isRecord(settings.modelTierListProfiles)) throw new Error(`${path}: modelTierListProfiles must be a mapping`);
+function existingSettingsProfiles(settings: UnknownRecord, path: string): ModelTierListProfilesConfig {
 	try {
-		return validateModelTierListProfiles(mergeModelTierProfileValues(DEFAULT_MODEL_TIER_LIST_PROFILES, settings.modelTierListProfiles));
+		return validateModelTierListProfiles(settings.modelTierListProfiles);
 	} catch (error) {
 		throw new Error(`${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
@@ -91,10 +88,13 @@ async function atomicWrite(path: string, content: string, mode: number): Promise
 }
 
 /**
- * Materialize editable built-in tier defaults in Pi's official global settings.
- * This helper never reads repository policy and refuses to rewrite malformed or
- * invalid settings. The native-compatible settings.json.lock directory and a
- * same-directory atomic rename prevent partial files and coordinate writers.
+ * Seed Pi's official global settings with the shipped tier profile only when
+ * `modelTierListProfiles` is absent. Existing tier configuration is validated
+ * and treated as authoritative: it is never merged with shipped defaults or
+ * rewritten, and invalid configuration fails before any write. This helper
+ * never reads repository policy. The native-compatible settings.json.lock
+ * directory and a same-directory atomic rename prevent partial files and
+ * coordinate writers.
  */
 export async function initializeModelTierListProfilesSettings(
 	options: InitializeModelTierListProfilesOptions = {},
@@ -106,15 +106,8 @@ export async function initializeModelTierListProfilesSettings(
 	try {
 		const raw = await readCurrent(path);
 		const settings = raw === undefined ? {} : parseSettings(raw, path);
-		const config = mergedSettingsProfiles(settings, path);
-		if (settings.modelTierListProfiles !== undefined) {
-			try {
-				const existing = validateModelTierListProfiles(settings.modelTierListProfiles);
-				if (JSON.stringify(existing) === JSON.stringify(config)) return { changed: false, path, config };
-			} catch {
-				// A partial built-in override may become complete through inheritance.
-			}
-		}
+		if (settings.modelTierListProfiles !== undefined) return { changed: false, path, config: existingSettingsProfiles(settings, path) };
+		const config = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
 		const next = `${JSON.stringify({ ...settings, modelTierListProfiles: config }, null, 2)}\n`;
 		const mode = raw === undefined ? 0o600 : (await stat(path)).mode & 0o777;
 		await atomicWrite(path, next, mode);

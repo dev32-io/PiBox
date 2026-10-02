@@ -16,19 +16,10 @@ export function isEditorRail(value: string): boolean {
 	return plain.length > 0 && (plain.replace(/─/g, "").length === 0 || (plain.startsWith("─") && SCROLL_PATTERN.test(plain)));
 }
 
-function borderLine(
-	width: number,
-	position: "top" | "bottom",
-	label: string | undefined,
-	paint: (value: string) => string,
-): string {
-	if (width < 2) return paint("─".repeat(Math.max(0, width)));
-	const left = position === "top" ? "┌" : "└";
-	const right = position === "top" ? "┐" : "┘";
-	const inner = width - 2;
-	const decoration = label ? truncateToWidth(`── ${label} `, inner, "") : "";
-	const fill = "─".repeat(Math.max(0, inner - visibleWidth(decoration)));
-	return paint(`${left}${decoration}${fill}${right}`);
+function borderLine(width: number, label: string | undefined, paint: (value: string) => string): string {
+	const decoration = label ? truncateToWidth(`── ${label} `, width, "") : "";
+	const fill = "─".repeat(Math.max(0, width - visibleWidth(decoration)));
+	return paint(`${decoration}${fill}`);
 }
 
 export interface BoxRenderOptions {
@@ -52,8 +43,8 @@ export function frameEditorLines(stock: string[], options: BoxRenderOptions): st
 	}
 	if (firstRail < 0 || lastRail <= firstRail) return undefined;
 
-	const top = borderLine(options.width, "top", scrollLabel(stock[firstRail] ?? ""), options.paintBorder);
-	const bottom = borderLine(options.width, "bottom", scrollLabel(stock[lastRail] ?? ""), options.paintBorder);
+	const top = borderLine(options.width, scrollLabel(stock[firstRail] ?? ""), options.paintBorder);
+	const bottom = borderLine(options.width, scrollLabel(stock[lastRail] ?? ""), options.paintBorder);
 	const horizontalPadding = " ".repeat(options.paddingX);
 	const prefixWidth = visibleWidth(options.prefix);
 	const blankPrefix = " ".repeat(prefixWidth);
@@ -63,16 +54,7 @@ export function frameEditorLines(stock: string[], options: BoxRenderOptions): st
 		const source = truncateToWidth(stock[index] ?? "", options.contentWidth, "");
 		const fill = " ".repeat(Math.max(0, options.contentWidth - visibleWidth(source)));
 		const prompt = index === firstRail + 1 ? options.paintPrefix(options.prefix) : blankPrefix;
-		body.push(
-			options.paintBorder("│") +
-				horizontalPadding +
-				prompt +
-				" " +
-				source +
-				fill +
-				horizontalPadding +
-				options.paintBorder("│"),
-		);
+		body.push(horizontalPadding + prompt + " " + source + fill + horizontalPadding);
 	}
 
 	// Native autocomplete and hint rows occur after the lower editor rail.

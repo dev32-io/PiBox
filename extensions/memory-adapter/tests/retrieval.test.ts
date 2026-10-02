@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { stream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import memoryAdapter from "../index.js";
 
@@ -113,7 +114,7 @@ test("retrieves once per run and injects memory ephemerally after the current us
 		await stream({
 			id: "claude-sonnet-4-5", name: "Claude", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://api.anthropic.com",
 			reasoning: true, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192,
-		}, { systemPrompt: "BASE", messages: convertToLlm(context.messages) }, {
+		}, normalizeContext({ systemPrompt: "BASE", messages: convertToLlm(context.messages) }), {
 			client: {} as never,
 			onPayload(body) { payload = structuredClone(body); throw new Error("offline capture"); },
 		}).result();

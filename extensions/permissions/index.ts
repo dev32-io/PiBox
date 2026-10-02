@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { evaluateToolCall, loadPermissionPolicy } from "./policy.js";
-import { authorizeMcpProxyCall, configuredMcpServerAllowlist } from "../subagent/mcp-capabilities.js";
+import { isMcpTool, PIBOX_MCP_ENABLED_ENV } from "../subagent/mcp-capabilities.js";
+import { nativeMcpIdentity } from "../subagent/native-mcp.js";
 import { renderPermissionMode } from "./display.js";
 import { installPermissionRuntime } from "./runtime.js";
 import type { LoadedPermissionPolicy, PermissionMode } from "./types.js";
@@ -135,16 +136,13 @@ export default function permissions(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		// Declared MCP capabilities are an authorization boundary, not a
-		// repository permission preference. Bypass must never broaden them.
-		if (event.toolName === "mcp") {
-			const allowed = configuredMcpServerAllowlist();
-			const denied = allowed && authorizeMcpProxyCall(event.input as Record<string, unknown>, allowed);
-			if (denied) return denied;
+		// Capability bounds survive bypass; CLI hard filters also remove discovery surfaces.
+		if (isMcpTool({ name: event.toolName }) && process.env[PIBOX_MCP_ENABLED_ENV] === "0") {
+			return { block: true, reason: "This agent was not granted MCP tools or resources." };
 		}
 		if (mode === "bypass") return;
 		const activePolicy = policy ?? loadPermissionPolicy(ctx.cwd);
-		const evaluation = evaluateToolCall(activePolicy, event.toolName, (event.input ?? {}) as Record<string, unknown>, ctx.cwd);
+		const evaluation = evaluateToolCall(activePolicy, event.toolName, (event.input ?? {}) as Record<string, unknown>, ctx.cwd, nativeMcpIdentity(event.toolName));
 		if (evaluation.decision === "allow") return;
 		const rule = evaluation.matchedRule ? ` Rule: ${evaluation.matchedRule}.` : "";
 		if (evaluation.decision === "deny") return { block: true, reason: `Permission denied: ${evaluation.summary}.${rule}` };

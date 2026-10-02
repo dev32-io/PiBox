@@ -1,7 +1,7 @@
 ---
 name: e2e-tester
 description: End-to-end and user-visible behavior verification
-tools: [read, grep, find, bash, e2e_workspace, mcp:playwright, mcp:maestro]
+tools: [read, grep, find, bash, e2e_workspace, mcp]
 tier: low
 ---
 

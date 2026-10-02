@@ -1,7 +1,7 @@
 ---
 name: investigator
 description: Read-only investigation of unexpected behavior, failures, and technical causes
-tools: [read, grep, find, ls, bash, mcp:playwright, mcp:maestro]
+tools: [read, grep, find, ls, bash, mcp]
 tier: medium
 ---
 

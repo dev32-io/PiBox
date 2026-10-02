@@ -870,6 +870,7 @@ test("production Pi resolver uses JSON print mode, a private prompt file, and th
 	assert.equal((await stat(attemptUserPromptPath(transcriptPath, "attempt"))).mode & 0o777, 0o600);
 	assert.deepEqual(invocation.env, {
 		BASE_ENV: "base", WORKFLOW_TOKEN: "token", WORKFLOW_REF: "item", ATTEMPT_REF: "attempt",
+		PIBOX_MCP_ENABLED: "0", PIBOX_SUBAGENT_ALL_TOOLS: "0",
 		PIBOX_RUNTIME_ROLE: "subagent", PIBOX_SUBAGENT_AGENT: "reviewer", PIBOX_FAST_CHILD_ENABLED: "1", PIBOX_SUBAGENT_EVENT_FD: "3",
 		PIBOX_SUBAGENT_PROMPT_PATH: attemptUserPromptPath(transcriptPath, "attempt"), PIBOX_LIFETIME_TERM_GRACE_MS: "75",
 	});
@@ -1104,4 +1105,18 @@ test("display metadata survives service continuation but never enters child invo
 		assert.equal("routing" in invocation, false);
 		assert.equal(invocation.stableSystemContext, "stable");
 	}
+});
+
+test("invocation hard-filter removes explicitly named MCP surfaces when binary capability is off", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "pibox-no-mcp-invocation-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const resolver = createPiInvocationResolver({ piInvocation: { command: "pi-test", args: [] } });
+	const invocation = await resolver({
+		agentId: "agent", attemptId: "attempt", agent: "reviewer", cwd: root,
+		stableSystemContext: "", attemptUserPrompt: "fixture", transcriptPath: join(root, "session.jsonl"), continuation: false,
+		provider: "fixture", model: "fixture", effort: "off", tools: ["read", "codemode", "mcp", "mcpScript", "mcp__one__echo", "read_mcp_resource"],
+		extensionPaths: [], skillPaths: [], fast: false, env: { PIBOX_MCP_ENABLED: "0" },
+	});
+	assert.equal(invocation.args[invocation.args.indexOf("--tools") + 1], "read,codemode");
+	assert.equal(invocation.env?.PIBOX_MCP_ENABLED, "0");
 });

@@ -187,6 +187,14 @@ function model(provider = "openai-codex", id = "gpt-5.6-sol", reasoning = true):
 
 function catalog() {
 	const config = structuredClone(DEFAULT_SUBAGENT_CATALOG_CONFIG);
+	// Fixture routes match the fake model registry used by these tests; shipped defaults are exercised by the tier-profile tests.
+	config.modelTierListProfiles.profiles.codex = {
+		low: ["openai-codex/gpt-5.6-luna#high", "ollama-cloud/deepseek-v4-flash#low"],
+		medium: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
+		high: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro:0813#high"],
+		max: ["openai-codex/gpt-5.6-sol#max", "ollama-cloud/deepseek-v4-pro#max"],
+		local: ["local-llm/meta/muse-glimmer#high"],
+	};
 	config.agents = {
 		"general-purpose": {
 			description: "General",
@@ -1325,7 +1333,7 @@ test("standalone model selection is strict by default, including shorthand alias
 test("tier effort preserves configured fallback effort rather than pinning the unavailable primary", async () => {
 	const f = harness({ availableModels: [model("ollama-cloud", "fallback", false)], loadCatalog: () => {
 		const loaded = catalog();
-		loaded.config.modelTierListProfiles.profiles.performance!.high = ["openai-codex/missing#medium", "ollama-cloud/fallback#off"];
+		loaded.config.modelTierListProfiles.profiles.codex!.high = ["openai-codex/missing#medium", "ollama-cloud/fallback#off"];
 		return loaded;
 	} });
 	await f.fire("session_start", { reason: "startup" });
@@ -1397,4 +1405,24 @@ test("background truncation directs report reads and failed reports remain reada
 	await f.fire("session_start", { reason: "startup" });
 	await assert.rejects(f.tools.get("subagent_read").execute("old", { agentId: oldId }, undefined, undefined, f.ctx), /Unknown standalone/);
 	await f.fire("session_shutdown", { reason: "quit" });
+});
+
+test("standalone launch resolves binary MCP from current registry without granting ordinary extensions", async () => {
+	for (const enabled of [false, true]) {
+		const f = harness({ loadCatalog: () => {
+			const loaded = catalog();
+			loaded.config.agents["general-purpose"]!.tools = ["read", ...(enabled ? ["mcp"] : [])];
+			return loaded;
+		} });
+		await f.fire("session_start", { reason: "startup" });
+		for (const name of ["codemode", "tool_search", "mcp__one__echo", "read_mcp_resource", "unrelated_extension"]) f.tools.set(name, { name });
+		const pending = f.tools.get("subagent_spawn").execute("spawn", { agent: "general-purpose", title: "Binary MCP", task: "Fixture" }, undefined, undefined, f.ctx);
+		await new Promise((resolve) => setImmediate(resolve));
+		const service = f.services[0]!;
+		assert.deepEqual(service.launches[0]!.tools, enabled ? ["read", "codemode", "tool_search", "mcp__one__echo", "read_mcp_resource"] : ["read"]);
+		assert.equal(service.launches[0]!.env?.PIBOX_MCP_ENABLED, enabled ? "1" : "0");
+		service.finish([...service.snapshots.keys()][0]!, "completed", "done");
+		await pending;
+		await f.fire("session_shutdown", { reason: "quit" });
+	}
 });

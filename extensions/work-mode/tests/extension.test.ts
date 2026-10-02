@@ -114,7 +114,7 @@ test("mode transitions stage workflow schemas, persist privately, and gate stale
 	assert.equal(testHarness.appended.at(-1)?.data.workflowToolsExposed, true);
 	await testHarness.commands.get("mode")?.("agent", ctx);
 	assert.equal(currentWorkMode(), "agent");
-	assert.ok(WORKFLOW_TOOL_NAMES.every((name) => testHarness.active().includes(name)), "exposed schemas remain resident");
+	assert.ok(WORKFLOW_TOOL_NAMES.every((name) => !testHarness.active().includes(name)), "workflow schemas are removed even after provider exposure");
 	const agentPrompt = await handlers.get("before_agent_start")?.({ systemPrompt: workflowPrompt.systemPrompt }, ctx) as { systemPrompt: string };
 	assert.match(agentPrompt.systemPrompt, /\[PiBox mode: Agent\]/);
 	assert.doesNotMatch(agentPrompt.systemPrompt, /PiBox mode: Workflow/);
@@ -173,7 +173,7 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	const { handlers, ctx } = testHarness;
 	await handlers.get("session_start")?.({ reason: "resume" }, ctx);
 	assert.equal(currentWorkMode(), "designer");
-	assert.ok(WORKFLOW_TOOL_NAMES.every((name) => testHarness.active().includes(name)));
+	assert.ok(WORKFLOW_TOOL_NAMES.every((name) => !testHarness.active().includes(name)), "legacy sticky exposure cannot override restored Designer mode");
 
 	testHarness.branch([custom({ ...saved, mode: "orchestrator", providerMode: "agent", workflowToolsExposed: false })]);
 	await handlers.get("session_tree")?.({}, ctx);
@@ -224,6 +224,13 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 		changesToolDefinitions: true,
 		mayMissPromptCache: true,
 	});
+	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "workflow", providerMode: "workflow", workflowToolsExposed: true }, "agent"), {
+		changesSystemPrompt: true,
+		changesToolDefinitions: true,
+		mayMissPromptCache: true,
+	});
+	assert.equal(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: true }, "workflow").changesToolDefinitions, true, "legacy exposure does not hide readdition impact");
+	assert.equal(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: true }, "designer").changesToolDefinitions, false);
 	assert.equal(modeTransitionImpact({ schemaVersion: 1, mode: "agent", workflowToolsExposed: false }, "designer").mayMissPromptCache, false);
 	await handlers.get("session_shutdown")?.({}, ctx);
 
@@ -281,4 +288,21 @@ test("every mode has one stable system declaration and no synthetic user advisor
 		await handlers.get("session_shutdown")?.({}, ctx);
 		resetInteractiveFooterRegistryForTests();
 	}
+});
+
+test("workflow readdition preserves initial tool allowlist", async () => {
+	const h = harness([], {}, ["read", "workflow_status"]);
+	await h.handlers.get("session_start")?.({ reason: "startup" }, h.ctx);
+	try {
+		assert.deepEqual(h.active(), ["read"]);
+		await h.commands.get("mode")?.("workflow", h.ctx);
+		assert.deepEqual(h.active(), ["read", "workflow_status"]);
+		await h.handlers.get("before_provider_request")?.({}, h.ctx);
+		await h.commands.get("mode")?.("agent", h.ctx);
+		assert.deepEqual(h.active(), ["read"]);
+		await h.handlers.get("before_provider_request")?.({}, h.ctx);
+		assert.equal(h.appended.at(-1)?.data.workflowToolsExposed, false);
+		await h.commands.get("mode")?.("workflow", h.ctx);
+		assert.deepEqual(h.active(), ["read", "workflow_status"]);
+	} finally { await h.handlers.get("session_shutdown")?.({}, h.ctx); }
 });

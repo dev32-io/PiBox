@@ -59,7 +59,7 @@ test("spawn guidance judges initial tier from assignment complexity", () => {
 		"High for genuinely difficult ambiguity or interacting invariants",
 		"Max only exceptionally, with a reason High is insufficient",
 		"Failed attempts do not by themselves justify escalation",
-		"Nuke profiles upgrade routed models, not task tiers",
+		"Profiles choose routed models, not task tiers",
 		"configured agent model takes precedence",
 		"local-llm model requires tier local, so up/down tier overrides do not apply while that model is selected",
 		"strict explicit-model, fallback, and local-isolation semantics",

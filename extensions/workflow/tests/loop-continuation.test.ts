@@ -124,6 +124,14 @@ async function fixture(t: TestContext, options: { e2eFailures?: number; repairRo
 	t.after(async () => { await manager.teardown(); const receipts = await readFile(marker, "utf8").catch(() => ""); for (const workspaceRoot of new Set(receipts.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).workspaceRoot as string))) if (workspaceRoot.startsWith("/tmp/pibox-e2e-workspace-")) await rm(workspaceRoot, { recursive: true, force: true }); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }); });
 	const launcher = new WorkflowSubagentLauncher(manager, WORKFLOW_CHILD_EXTENSION_PATHS);
 	const config = structuredClone(DEFAULT_HARNESS_CONFIG);
+	// Fake providers are Sol/Luna in this suite; keep fixture routing on them.
+	config.modelTierListProfiles.profiles[config.modelTierProfile] = {
+		low: ["openai-codex/gpt-5.6-luna#high", "ollama-cloud/deepseek-v4-flash#low"],
+		medium: ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"],
+		high: ["openai-codex/gpt-5.6-sol#high", "ollama-cloud/deepseek-v4-pro:0813#high"],
+		max: ["openai-codex/gpt-5.6-sol#max", "ollama-cloud/deepseek-v4-pro#max"],
+		local: ["local-llm/meta/muse-glimmer#high"],
+	};
 	config.limits.repairRounds = options.repairRounds ?? 8;
 	for (const role of ["code-reviewer", "e2e-tester"] as const) config.agents[role]!.tools = [...(config.agents[role]!.tools ?? []), "workflow_ledger"];
 	const runtime: any = {

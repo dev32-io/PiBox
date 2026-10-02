@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { streamSimple } from "@earendil-works/pi-ai/api/anthropic-messages";
-import type { Model } from "@earendil-works/pi-ai";
+import { normalizeContext, type Model } from "@earendil-works/pi-ai";
 import providerFallback, { defaultProviderCooldowns } from "../index.js";
 
 const model: Model<"anthropic-messages"> = { id: "claude-sonnet-4-5", name: "offline", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://offline.invalid", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 8192 };
@@ -20,7 +20,7 @@ test("bare Anthropic exhausted 429 has no response callback but terminal lifecyc
 	let responses = 0;
 	let requests = 0;
 	fire("before_provider_request");
-	const message = await streamSimple(model, { messages: [{ role: "user", content: "offline", timestamp: 0 }] }, {
+	const message = await streamSimple(model, normalizeContext({ messages: [{ role: "user", content: "offline", timestamp: 0 }] }), {
 		apiKey: "sk-ant-api03-OFFLINE-FAKE", maxRetries: 0, cacheRetention: "none",
 		onResponse(response) { responses++; fire("after_provider_response", response); },
 		async fetch() { requests++; return new Response(JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "rate limit exceeded" } }), { status: 429, headers: { "content-type": "application/json" } }); },

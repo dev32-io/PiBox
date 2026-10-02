@@ -12,6 +12,14 @@ const completeRepositoryProfile = [
 	"      local: [local-llm/repo#off]",
 ].join("\n");
 
+const completeGlobalProfile = {
+	low: ["global/low#off"],
+	medium: ["global/medium#off"],
+	high: ["global/high#high"],
+	max: ["global/max#off"],
+	local: ["local-llm/global#off"],
+};
+
 function fixture() {
 	const files: Record<string, string> = {
 		"/repo/.git": "",
@@ -19,7 +27,10 @@ function fixture() {
 			unrelated: true,
 			modelTierListProfiles: {
 				defaultProfile: "token-conservative",
-				profiles: { performance: { high: ["global/high#high"] } },
+				profiles: {
+					performance: structuredClone(completeGlobalProfile),
+					"token-conservative": { ...structuredClone(completeGlobalProfile), medium: ["global/token-conservative#off"] },
+				},
 			},
 		}),
 		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  high: [ignored/yaml#off]\nlimits:\n  maxConcurrency: 2\n",
@@ -51,22 +62,23 @@ test("profile selector, standalone catalog, and workflow resolve identical globa
 	assert.deepEqual(workflow.modelTierListProfiles, selector);
 	assert.equal(selector.defaultProfile, "performance", "repository default wins over the global default");
 	assert.deepEqual(selector.profiles.performance?.high, ["repo/high-override#max"], "repository arrays replace global arrays");
-	assert.deepEqual(selector.profiles.performance?.medium, ["openai-codex/gpt-5.6-sol#medium", "ollama-cloud/deepseek-v4-flash#max"], "omitted capability keys inherit");
+	assert.deepEqual(selector.profiles.performance?.medium, ["global/medium#off"], "omitted capability keys inherit existing global configuration");
 	assert.ok(selector.profiles["repository-only"], "complete repository-only profiles are additive");
 });
 
-test("global-only loading excludes all repository policy and explicit session profiles win", () => {
+test("global-only loading excludes all repository policy, keeps configured profiles authoritative, and honors explicit session profiles", () => {
 	const options = { ...fixture(), includeProject: false };
 	const selector = loadModelTierListProfiles("/repo", options);
-	const catalog = loadSubagentCatalog("/repo", { ...options, modelTierProfile: "nuke" }).config;
-	const workflow = loadHarnessConfig("/repo", { ...options, modelTierProfile: "nuke" }).config;
+	const catalog = loadSubagentCatalog("/repo", { ...options, modelTierProfile: "token-conservative" }).config;
+	const workflow = loadHarnessConfig("/repo", { ...options, modelTierProfile: "token-conservative" }).config;
 	assert.equal(selector.defaultProfile, "token-conservative");
 	assert.deepEqual(selector.profiles.performance?.high, ["global/high#high"]);
-	assert.equal(selector.profiles["repository-only"], undefined);
+	assert.equal(selector.profiles[ "repository-only"], undefined);
+	assert.equal(selector.profiles.codex, undefined, "shipped profiles are never injected into existing configuration");
 	assert.deepEqual(catalog.modelTierListProfiles, selector);
 	assert.deepEqual(workflow.modelTierListProfiles, selector);
-	assert.equal(catalog.modelTierProfile, "nuke");
-	assert.equal(workflow.modelTierProfile, "nuke");
+	assert.equal(catalog.modelTierProfile, "token-conservative");
+	assert.equal(workflow.modelTierProfile, "token-conservative");
 	assert.equal(catalog.agents["repository-only"], undefined);
 });
 
@@ -90,7 +102,7 @@ test("all three loaders reject unsupported repository schema and legacy model al
 test("all three loaders allow a missing repository schema and merge tier overrides", () => {
 	const files: Record<string, string> = {
 		"/repo/.git": "",
-		"/repo/.pi/harness.yaml": "modelTierListProfiles:\n  profiles:\n    performance:\n      high: [repo/no-schema#high]\n",
+		"/repo/.pi/harness.yaml": "modelTierListProfiles:\n  profiles:\n    codex:\n      high: [repo/no-schema#high]\n",
 	};
 	const options = { home: "/home", exists: (path: string) => path in files, readFile: (path: string) => files[path] ?? "" };
 	const selector = loadModelTierListProfiles("/repo", options);
@@ -98,7 +110,7 @@ test("all three loaders allow a missing repository schema and merge tier overrid
 	const workflow = loadHarnessConfig("/repo", options).config.modelTierListProfiles;
 	assert.deepEqual(catalog, selector);
 	assert.deepEqual(workflow, selector);
-	assert.deepEqual(selector.profiles.performance?.high, ["repo/no-schema#high"]);
+	assert.deepEqual(selector.profiles.codex?.high, ["repo/no-schema#high"]);
 });
 
 test("all three loaders ignore an invalid untrusted repository", () => {

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent, generateDiffString, initTheme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import styledOutputs from "../index.js";
@@ -397,5 +400,24 @@ test("every styled built-in keeps native expansion including compact skill/rule 
 		assert.doesNotMatch(component.render(120).join("\n"), /HIDDEN_CONTENT/);
 		assert.equal(mouseAt(component, "Loaded")?.handled, true);
 		assert.match(component.render(120).join("\n"), /HIDDEN_CONTENT/);
+	}
+});
+
+test("write preview uses native execution context cwd for relative rewrites", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "pibox-styled-write-"));
+	const definitions = new Map<string, any>();
+	const handlers = install(() => undefined, definitions);
+	try {
+		assert.notEqual(cwd, process.cwd());
+		const path = "existing.txt";
+		await writeFile(join(cwd, path), "old content\n");
+		const result = await definitions.get("write").execute("rewrite", { path, content: "new content\n" }, undefined, undefined, { cwd });
+		assert.equal(await readFile(join(cwd, path), "utf8"), "new content\n");
+		assert.equal(result.details.piboxWrite.action, "rewrite");
+		assert.equal(result.details.piboxWrite.diff, generateDiffString("old content\n", "new content\n").diff);
+		assert.deepEqual(result.content, [{ type: "text", text: `Successfully wrote to ${path}` }]);
+	} finally {
+		handlers.get("session_shutdown")?.({}, { hasUI: false });
+		await rm(cwd, { recursive: true, force: true });
 	}
 });

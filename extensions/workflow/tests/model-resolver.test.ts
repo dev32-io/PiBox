@@ -19,18 +19,18 @@ test("keeps omitted dynamic routing on medium when a repository config also defi
 		readFile: (path) => files[path] ?? "",
 	});
 	assert.deepEqual(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.local, ["local-llm/qwen3.8-27b-uncensored#medium"]);
-	const result = resolveHarnessModel(loaded.config, [model("openai-codex", "gpt-5.6-sol", true, { medium: "medium" })], { tier: "medium" });
+	const result = resolveHarnessModel(loaded.config, [model("openai-codex", "gpt-6.1-sol", true, { high: "high" })], { tier: "medium" });
 	assert.equal(result.status, "resolved");
-	if (result.status === "resolved") assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-5.6-sol#medium");
+	if (result.status === "resolved") assert.equal(`${result.model.provider}/${result.model.id}#${result.effort}`, "openai-codex/gpt-6.1-sol#high");
 });
 
 test("resolves the configured model and effort pair from one tier", () => {
-	const available = [model("openai-codex", "gpt-5.6-sol")];
+	const available = [model("openai-codex", "gpt-6-astra")];
 	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, available, { tier: "high" });
 	assert.equal(result.status, "resolved");
 	if (result.status === "resolved") {
-		assert.equal(result.model.id, "gpt-5.6-sol");
-		assert.equal(result.effort, "high");
+		assert.equal(result.model.id, "gpt-6-astra");
+		assert.equal(result.effort, "low");
 		assert.equal(result.fallbackUsed, false);
 	}
 });
@@ -151,23 +151,24 @@ test("ordinary tiers never promote a matching local route", () => {
 });
 
 test("strict concrete override does not silently fall back", () => {
-	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, [model("openai-codex", "gpt-5.6-luna", true, { max: "max" })], {
+	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, [model("openai-codex", "gpt-6.1-sol", true, { high: "high" })], {
 		tier: "high",
-		override: { model: "gpt-5.6-sol", effort: "high" },
+		override: { model: "gpt-6-astra", effort: "low" },
 		strict: true,
 	});
 	assert.equal(result.status, "waiting_model");
 	assert.equal(result.attempts.length, 1);
+	assert.equal(result.attempts[0]?.status, "model_missing");
 });
 
 test("strict concrete selection exposes no runtime fallback candidates", () => {
-	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, [model("openai-codex", "gpt-5.6-sol")], {
+	const result = resolveHarnessModel(DEFAULT_HARNESS_CONFIG, [model("openai-codex", "gpt-6-astra")], {
 		tier: "high",
-		override: { model: "gpt-5.6-sol", effort: "high" },
+		override: { model: "gpt-6-astra", effort: "low" },
 		strict: true,
 	});
 	assert.equal(result.status, "resolved");
-	if (result.status === "resolved") assert.deepEqual(result.candidates, [{ provider: "openai-codex", model: "gpt-5.6-sol", effort: "high" }]);
+	if (result.status === "resolved") assert.deepEqual(result.candidates, [{ provider: "openai-codex", model: "gpt-6-astra", effort: "low" }]);
 });
 
 test("skips a configured pair when its effort is unsupported", () => {

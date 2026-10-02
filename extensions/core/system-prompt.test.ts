@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { applySystemPromptContributions, formatSystemPromptContributions, registerSystemPromptContribution } from "./system-prompt.js";
@@ -77,10 +78,10 @@ test("real Anthropic serializer cache metadata is removed with marker", async ()
 	const request = streamAnthropic({
 		id: "claude-sonnet-4-5", name: "Claude", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://api.anthropic.com",
 		reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
-	}, {
+	}, normalizeContext({
 		systemPrompt: "BASE",
 		messages: [{ role: "user", content: MARKER, timestamp: 0 }],
-	}, {
+	}), {
 		client: {} as never,
 		onPayload(payload) {
 			serialized = structuredClone(payload);

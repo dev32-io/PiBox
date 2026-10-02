@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { registerWorkerCapabilities } from "../worker-capabilities.js";
 import { readLedgerSubmission } from "../ledger-submission.js";
@@ -87,10 +88,10 @@ test("real Anthropic declaration retains task clarification read and literal-sea
 		const response = await streamAnthropic({
 			id: "claude-sonnet-4-5", name: "Offline", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://offline.invalid",
 			reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8_192,
-		}, {
+		}, normalizeContext({
 			messages: [{ role: "user", content: "Offline schema capture", timestamp: 0 }],
 			tools: [{ name: tool.name, description: tool.description, parameters: tool.parameters }],
-		}, {
+		}), {
 			// No SDK client: stop at serialized payload, before any network operation.
 			client: {} as never,
 			onPayload(value) { payload = value; throw new Error("OFFLINE_CAPTURE_STOP"); },

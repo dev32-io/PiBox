@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ALL_TOOLS_SELECTOR, DEFAULT_SUBAGENT_TOOLS, resolveToolSelectors, validateToolSelectors } from "../tool-groups.js";
 
-test("resolves generic child selectors and maps optional MCP servers to the proxy", () => {
-	assert.deepEqual(resolveToolSelectors(["read", "mcp:playwright", "read"]), ["read", "mcp"]);
+test("resolves generic child selectors and preserves binary MCP selector", () => {
+	assert.deepEqual(resolveToolSelectors(["read", "mcp", "read"]), ["read", "mcp"]);
 	assert.deepEqual(resolveToolSelectors([ALL_TOOLS_SELECTOR, "read"]), [ALL_TOOLS_SELECTOR, "read"]);
 });
 
 test("target workflow groups and malformed MCP selectors are rejected", () => {
 	assert.throws(() => validateToolSelectors(["pibox:task"]), /Obsolete PiBox tool group/);
-	assert.throws(() => validateToolSelectors(["mcp:"]), /mcp:<server>/);
+	assert.throws(() => validateToolSelectors(["mcp:"]), /Obsolete MCP selector/);
 });
 
 test("generic defaults remain available without workflow handoff tools", () => {

@@ -16,10 +16,10 @@ test("projects only the effective per-launch child decision", (t) => {
 	assert.deepEqual(getActiveFastModePolicy(), { main: true, subagents: "medium" });
 });
 
-test("GPT-6 low-tier children inherit Fast while higher tiers stay off", (t) => {
+test("all Codex model low-tier children inherit Fast while higher tiers stay off", (t) => {
 	t.after(resetActiveFastModePolicy);
 	setActiveFastModePolicy({ main: false, subagents: "low" });
-	for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
+	for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6-unknown", "gpt-5.3-codex-spark", "gpt-5.4-mini", "future-model"]) {
 		const route = { provider: "openai-codex", model };
 		assert.deepEqual(fastModeChildEnvironment("low", route), { [FAST_MODE_CHILD_ENV]: "1" });
 		assert.deepEqual(fastModeChildEnvironment("medium", route), { [FAST_MODE_CHILD_ENV]: "0" });

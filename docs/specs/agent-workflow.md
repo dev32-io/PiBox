@@ -273,7 +273,7 @@ The primary workflow projection is stage-centric, showing current stage/tasks an
 
 Main-session resource tools manage stories, tasks, and stages. Generic `subagent_spawn` handles ad-hoc bounded delegation only; managed task/review/repair/E2E attempts are internal scheduler launches through `SubagentService`.
 
-Agent-definition Markdown frontmatter owns base tools and default tier. Plans select semantic task tiers; `.pi/harness.yaml` maps each tier to ordered concrete `provider/model#effort` routes. Optional `mcp:<server>` selectors rely on user-managed adapter configuration and degrade gracefully when unavailable.
+Agent-definition Markdown frontmatter owns base tools and default tier. Plans select semantic task tiers; `.pi/harness.yaml` maps each tier to ordered concrete `provider/model#effort` routes. The `mcp` selector enables all user-configured native MCP tools and resources; omission disables MCP, and `*` includes it. This binary capability applies to discovery and execution independently of exposure and repository permission bypass. Per-server `mcp:<server>` selectors are obsolete and rejected.
 
 The main model-facing controls remain minimal: inspect status, start, pause, resume, stop, recover, and complete through state-backed capabilities. No control mutates state by editing files directly.
 

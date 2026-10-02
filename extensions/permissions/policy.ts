@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { MCP_RESOURCE_TOOLS } from "../subagent/mcp-capabilities.js";
+import type { McpIdentity } from "../subagent/native-mcp.js";
 import type { LoadedPermissionPolicy, PermissionDecision, PermissionEvaluation, PermissionPolicyFile } from "./types.js";
 
 export const PERMISSION_POLICY_RELATIVE_PATH = ".pi/permissions.yaml";
@@ -122,7 +124,7 @@ function splitSimpleShell(command: string): string[] {
 	return parts.length > 0 ? parts : [command.trim()];
 }
 
-function subjectsForTool(toolName: string, input: Record<string, unknown>, cwd: string): Subject[] {
+function subjectsForTool(toolName: string, input: Record<string, unknown>, cwd: string, identity?: McpIdentity): Subject[] {
 	const lower = toolName.toLowerCase();
 	if (lower === "bash") {
 		const command = typeof input.command === "string" ? input.command : "";
@@ -133,9 +135,9 @@ function subjectsForTool(toolName: string, input: Record<string, unknown>, cwd: 
 		const rawPath = typeof input.path === "string" ? input.path : ".";
 		return [{ kind: pathKind.toLowerCase(), targets: pathTargets(rawPath, cwd), summary: `${pathKind}(${rawPath})` }];
 	}
-	if (lower === "mcp") {
-		const server = typeof input.server === "string" ? input.server : "";
-		const tool = typeof input.tool === "string" ? input.tool : "";
+	if (lower === "mcp" || identity || (MCP_RESOURCE_TOOLS as readonly string[]).includes(toolName)) {
+		const server = identity?.server ?? (typeof input.server === "string" ? input.server : "");
+		const tool = identity?.tool ?? (lower === "mcp" ? (typeof input.tool === "string" ? input.tool : "") : toolName);
 		const target = [server, tool].filter(Boolean).join("/") || "unknown";
 		return [{ kind: "mcp", targets: [target, server, tool].filter(Boolean), summary: `Mcp(${target})` }];
 	}
@@ -159,7 +161,8 @@ function evaluateSubject(policy: LoadedPermissionPolicy, subject: Subject, cwd: 
 	return { decision, summary: subject.summary, ...(matchedRule ? { matchedRule } : {}) };
 }
 
-export function evaluateToolCall(policy: LoadedPermissionPolicy, toolName: string, input: Record<string, unknown>, cwd: string): PermissionEvaluation {
+export function evaluateToolCall(policy: LoadedPermissionPolicy, toolName: string, input: Record<string, unknown>, cwd: string, identity?: McpIdentity): PermissionEvaluation {
+	if (toolName.startsWith("mcp__") && !identity) return { decision: "deny", summary: `Mcp(${toolName})`, matchedRule: "native MCP identity unavailable; requires PiBox native MCP integration on audited Pi 0.99.2" };
 	const policyPath = resolve(cwd, PERMISSION_POLICY_RELATIVE_PATH);
 	if ((toolName === "write" || toolName === "edit") && typeof input.path === "string" && resolve(cwd, input.path) === policyPath) {
 		return { decision: "deny", summary: `${PATH_TOOLS[toolName]}(${input.path})`, matchedRule: "protected permission policy" };
@@ -167,6 +170,6 @@ export function evaluateToolCall(policy: LoadedPermissionPolicy, toolName: strin
 	if (toolName === "bash" && typeof input.command === "string" && /(?:^|[\s'"/])\.pi\/permissions\.ya?ml(?:$|[\s'";|&])/.test(input.command)) {
 		return { decision: "deny", summary: `Bash(${input.command})`, matchedRule: "protected permission policy" };
 	}
-	const evaluations = subjectsForTool(toolName, input, cwd).map((subject) => evaluateSubject(policy, subject, cwd));
+	const evaluations = subjectsForTool(toolName, input, cwd, identity).map((subject) => evaluateSubject(policy, subject, cwd));
 	return evaluations.reduce((strictest, candidate) => RANK[candidate.decision] > RANK[strictest.decision] ? candidate : strictest);
 }

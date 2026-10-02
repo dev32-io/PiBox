@@ -4,6 +4,9 @@ import type { ProviderRoute } from "../provider-fallback/index.js";
 import { classifyProviderFailure, defaultProviderCooldowns, isFallbackEligible, type ProviderCooldowns } from "../provider-fallback/index.js";
 import type { LogicalAgentSnapshot, SubagentService, TerminalResult } from "../subagent/api.js";
 import { PIBOX_RUNTIME_ROLE_ENV, PIBOX_SUBAGENT_RUNTIME_ROLE } from "../subagent/tool-policy.js";
+import { isLedgerWriterAction } from "../workflow/ledger-submission.js";
+import { awaitNativeMcpReady, nativeMcpExtensionPaths } from "../subagent/native-mcp.js";
+import { mcpEnabled, mcpLaunchEnvironment, resolveMcpTools, PIBOX_MCP_ENABLED_ENV, type CapabilityTool } from "../subagent/mcp-capabilities.js";
 import type { ModelTier } from "../subagent/types.js";
 
 const ACTIVE = new Set(["launching", "running", "stopping"]);
@@ -56,7 +59,7 @@ export interface WorkflowSubagentResult {
 
 function sameRoute(left: ProviderRoute, right: ProviderRoute): boolean { return left.provider === right.provider && left.model === right.model && left.effort === right.effort; }
 function configurationKey(input: WorkflowSubagentLaunchInput, route: ProviderRoute, fast: boolean): string {
-	return createHash("sha256").update(JSON.stringify({ role: input.role, tier: input.tier, cwd: input.cwd, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, extensionPaths: input.extensionPaths ?? [], skillPaths: input.skillPaths ?? [], fast, stableSystemContext: input.stableSystemContext })).digest("hex");
+	return createHash("sha256").update(JSON.stringify({ role: input.role, tier: input.tier, cwd: input.cwd, provider: route.provider, model: route.model, effort: route.effort, tools: input.tools, mcp: input.env?.[PIBOX_MCP_ENABLED_ENV], nativeMcp: nativeMcpExtensionPaths(), workerCapabilities: { ledger: isLedgerWriterAction(input.action), taskClarify: Boolean(input.taskId && (input.action === "task-launch" || input.action === "task-repair")) }, extensionPaths: input.extensionPaths ?? [], skillPaths: input.skillPaths ?? [], fast, stableSystemContext: input.stableSystemContext })).digest("hex");
 }
 function splitCredentials(env: Readonly<Record<string, string>>): { environment: Record<string, string>; credentials: Record<string, string> } {
 	const environment: Record<string, string> = {}; const credentials: Record<string, string> = {};
@@ -83,7 +86,7 @@ function result(route: ProviderRoute, terminal: TerminalResult): WorkflowSubagen
 
 /** Narrow, in-memory workflow consumer of the process-global SubagentService. */
 export class WorkflowSubagentLauncher {
-	constructor(readonly service: SubagentService, readonly extensionPaths: readonly string[] = [], readonly cooldowns: ProviderCooldowns = defaultProviderCooldowns) {
+	constructor(readonly service: SubagentService, readonly extensionPaths: readonly string[] = [], readonly cooldowns: ProviderCooldowns = defaultProviderCooldowns, readonly toolRegistry: () => readonly CapabilityTool[] = () => []) {
 		if (!service) throw new Error("WorkflowSubagentLauncher requires SubagentService");
 	}
 
@@ -102,6 +105,8 @@ export class WorkflowSubagentLauncher {
 
 	async launch(input: WorkflowSubagentLaunchInput): Promise<WorkflowSubagentResult> {
 		input.signal?.throwIfAborted();
+		if (mcpEnabled(input.tools)) await awaitNativeMcpReady(input.signal);
+		input = { ...input, tools: resolveMcpTools(input.tools, this.toolRegistry()), env: { ...input.env, ...mcpLaunchEnvironment(input.tools) } };
 		const primary = { provider: input.provider, model: input.model, effort: input.effort };
 		const configured = input.providerCandidates?.length ? input.providerCandidates : [primary];
 		const routes = configured.some((route) => sameRoute(route, primary)) ? [...configured] : [primary, ...configured];

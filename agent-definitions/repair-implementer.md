@@ -1,7 +1,7 @@
 ---
 name: repair-implementer
 description: Focused implementation of accepted review findings
-tools: [read, grep, find, bash, edit, write, mcp:context7, mcp:playwright, mcp:maestro]
+tools: [read, grep, find, bash, edit, write, mcp]
 tier: medium
 ---
 

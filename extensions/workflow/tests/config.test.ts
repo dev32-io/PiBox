@@ -7,18 +7,18 @@ import { DEFAULT_HARNESS_CONFIG, loadHarnessConfig, mergeConfigValues, validateH
 import { HarnessError } from "../errors.js";
 import { activeModelTierLists } from "../../model-tier-list-profiles/profiles.js";
 
-test("uses performance and token-conservative model tier profiles", () => {
+test("uses the shipped codex model tier profile", () => {
 	assert.equal(DEFAULT_HARNESS_CONFIG.limits.repairRounds, 8, "smaller models receive eight bounded review/fix opportunities by default");
-	assert.equal(DEFAULT_HARNESS_CONFIG.modelTierProfile, "performance");
-	assert.equal(DEFAULT_HARNESS_CONFIG.modelTierListProfiles.profiles.performance?.medium[0], "openai-codex/gpt-5.6-sol#medium");
-	assert.equal(DEFAULT_HARNESS_CONFIG.modelTierListProfiles.profiles["token-conservative"]?.medium[0], "openai-codex/gpt-5.6-luna#max");
-	assert.deepEqual(activeModelTierLists(DEFAULT_HARNESS_CONFIG.modelTierListProfiles, DEFAULT_HARNESS_CONFIG.modelTierProfile).tiers.local, ["local-llm/meta/muse-glimmer#high"]);
+	assert.equal(DEFAULT_HARNESS_CONFIG.modelTierProfile, "codex");
+	assert.equal(DEFAULT_HARNESS_CONFIG.modelTierListProfiles.profiles.codex?.medium[0], "openai-codex/gpt-6.1-sol#high");
+	assert.deepEqual(Object.keys(DEFAULT_HARNESS_CONFIG.modelTierListProfiles.profiles), ["codex"]);
+	assert.deepEqual(activeModelTierLists(DEFAULT_HARNESS_CONFIG.modelTierListProfiles, DEFAULT_HARNESS_CONFIG.modelTierProfile).tiers.local, ["local-llm/qwen-3.8-27b#xhigh"]);
 });
 
 test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.match(DEFAULT_HARNESS_CONFIG.agents.implementer?.prompt ?? "", /agent-definitions\/implementer\.md$/);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.implementer?.description, "Feature implementation, refactoring, and bug fixes, including diagnosis needed to deliver the change");
-	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7", "mcp:playwright", "mcp:maestro"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.implementer?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp"]);
 	const generalPurpose = DEFAULT_HARNESS_CONFIG.agents["general-purpose"];
 	assert.match(generalPurpose?.prompt ?? "", /agent-definitions\/general-purpose\.md$/);
 	assert.equal(generalPurpose?.description, "Mixed, research, or unclassified assignments delegated by the main session when no specialist fits");
@@ -27,9 +27,9 @@ test("derives built-in agent policy from standard markdown frontmatter", () => {
 	assert.equal(generalPurpose?.tools?.some((tool) => tool.startsWith("subagent_") || tool.startsWith("workflow_")), false);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.explorer?.tier, "low");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents.investigator?.tier, "medium");
-	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.investigator?.tools, ["read", "grep", "find", "ls", "bash", "mcp:playwright", "mcp:maestro"]);
-	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["repair-implementer"]?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp:context7", "mcp:playwright", "mcp:maestro"]);
-	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "e2e_workspace", "mcp:playwright", "mcp:maestro"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents.investigator?.tools, ["read", "grep", "find", "ls", "bash", "mcp"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["repair-implementer"]?.tools, ["read", "grep", "find", "bash", "edit", "write", "mcp"]);
+	assert.deepEqual(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tools, ["read", "grep", "find", "bash", "e2e_workspace", "mcp"]);
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["e2e-tester"]?.tier, "low");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["code-reviewer"]?.tier, "medium");
 	assert.equal(DEFAULT_HARNESS_CONFIG.agents["repair-implementer"]?.tier, "medium");
@@ -47,7 +47,20 @@ test("merges maps recursively and replaces arrays", () => {
 
 test("loads user then repository tier configuration and records a stable digest", () => {
 	const files: Record<string, string> = {
-		"/home/.pi/agent/settings.json": JSON.stringify({ modelTierListProfiles: { profiles: { performance: { medium: ["settings/bounded#off"] } } } }),
+		"/home/.pi/agent/settings.json": JSON.stringify({
+			modelTierListProfiles: {
+				defaultProfile: "settings",
+				profiles: {
+					settings: {
+						low: ["settings/low#off"],
+						medium: ["settings/bounded#off"],
+						high: ["settings/high#off"],
+						max: ["settings/max#off"],
+						local: ["local-llm/settings#off"],
+					},
+				},
+			},
+		}),
 		"/home/.pi/agent/harness/config.yaml": "schemaVersion: 2\nmodelTiers:\n  medium:\n    - ignored/old-global-yaml#off\nroles:\n  implementer:\n    tier: medium\n    description: YAML must not own this\n    tools: [read]\nlimits:\n  maxConcurrency: 2\n",
 		"/repo/.pi/harness.yaml": "schemaVersion: 2\nagents:\n  e2e-tester:\n    tools: [bash]\nlimits:\n  maxConcurrency: 6\n",
 	};
@@ -71,10 +84,38 @@ test("loads user then repository tier configuration and records a stable digest"
 });
 
 test("resolves a requested session tier profile without changing repository defaults", () => {
-	const loaded = loadHarnessConfig("/repo", { home: "/home", exists: () => false, modelTierProfile: "token-conservative" });
-	assert.equal(loaded.config.modelTierProfile, "token-conservative");
-	assert.equal(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium[0], "openai-codex/gpt-5.6-luna#max");
-	assert.equal(loaded.config.modelTierListProfiles.defaultProfile, "performance");
+	const files: Record<string, string> = {
+		"/home/.pi/agent/settings.json": JSON.stringify({
+			modelTierListProfiles: {
+				defaultProfile: "codex",
+				profiles: {
+					codex: {
+						low: ["openai-codex/gpt-6-luna#xhigh"],
+						medium: ["openai-codex/gpt-6.1-sol#high"],
+						high: ["openai-codex/gpt-6-astra#low"],
+						max: ["openai-codex/gpt-6-astra#medium"],
+						local: ["local-llm/qwen-3.8-27b#xhigh"],
+					},
+					cheap: {
+						low: ["cheap/low#off"],
+						medium: ["cheap/medium#off"],
+						high: ["cheap/high#off"],
+						max: ["cheap/max#off"],
+						local: ["local-llm/cheap#off"],
+					},
+				},
+			},
+		}),
+	};
+	const loaded = loadHarnessConfig("/repo", {
+		home: "/home",
+		exists: (path) => path in files,
+		readFile: (path) => files[path] ?? "",
+		modelTierProfile: "cheap",
+	});
+	assert.equal(loaded.config.modelTierProfile, "cheap");
+	assert.equal(activeModelTierLists(loaded.config.modelTierListProfiles, loaded.config.modelTierProfile).tiers.medium[0], "cheap/medium#off");
+	assert.equal(loaded.config.modelTierListProfiles.defaultProfile, "codex");
 });
 
 test("discovers traditional project agent markdown with optional harness tier routing", () => {
@@ -95,16 +136,16 @@ test("discovers traditional project agent markdown with optional harness tier ro
 
 test("rejects non-local providers in the isolated local route list", () => {
 	const value = structuredClone(DEFAULT_HARNESS_CONFIG) as any;
-	value.modelTierListProfiles.profiles.performance.local = ["openrouter/qwen/qwen3.8-27b#high"];
-	assert.throws(() => validateHarnessConfig(value), /modelTierListProfiles\.profiles\.performance\.local routes must use the local-llm provider/);
+	value.modelTierListProfiles.profiles.codex.local = ["openrouter/qwen/qwen3.8-27b#high"];
+	assert.throws(() => validateHarnessConfig(value), /modelTierListProfiles\.profiles\.codex\.local routes must use the local-llm provider/);
 });
 
 test("normalizes legacy route mappings to one model-effort pair", () => {
 	const value = structuredClone(DEFAULT_HARNESS_CONFIG) as any;
-	value.modelTierListProfiles.profiles.performance.low = [{ provider: "local", model: "small", effort: { standard: "off", deep: "high" } }];
+	value.modelTierListProfiles.profiles.codex.low = [{ provider: "local", model: "small", effort: { standard: "off", deep: "high" } }];
 	const normalized = validateHarnessConfig(value);
 	assert.deepEqual(activeModelTierLists(normalized.modelTierListProfiles, normalized.modelTierProfile).tiers.low, ["local/small#off"]);
-	value.modelTierListProfiles.profiles.performance.low = ["missing-effort"];
+	value.modelTierListProfiles.profiles.codex.low = ["missing-effort"];
 	assert.throws(() => validateHarnessConfig(value), /provider\/model#effort/);
 });
 

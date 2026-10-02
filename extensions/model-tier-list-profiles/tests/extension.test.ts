@@ -23,15 +23,17 @@ function context(entries: unknown[] = []): ExtensionContext {
 }
 
 test("restores the latest valid session profile before configured defaults", () => {
+	const profiles = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
+	profiles.profiles.custom = structuredClone(profiles.profiles.codex!);
 	const entries = [
-		{ type: "custom", customType: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "performance" } },
+		{ type: "custom", customType: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "codex" } },
 		{ type: "custom", customType: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "missing" } },
-		{ type: "custom", customType: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "token-conservative" } },
+		{ type: "custom", customType: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "custom" } },
 	];
-	assert.equal(restoreModelTierProfile(context(entries), DEFAULT_MODEL_TIER_LIST_PROFILES), "token-conservative");
-	const configured = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
-	configured.defaultProfile = "token-conservative";
-	assert.equal(restoreModelTierProfile(context([]), configured), "token-conservative");
+	assert.equal(restoreModelTierProfile(context(entries), profiles), "custom");
+	const configured = structuredClone(profiles);
+	configured.defaultProfile = "custom";
+	assert.equal(restoreModelTierProfile(context([]), configured), "custom");
 });
 
 test("surfaces bootstrap failures before registering session behavior", async () => {
@@ -58,7 +60,9 @@ test("registers /tier-profile, emits session policy, persists switches, and upda
 		registerCommand(_name: string, value: typeof command) { command = value; },
 		appendEntry(type: string, data: unknown) { appended.push({ type, data }); },
 	} as unknown as ExtensionAPI;
-	await modelTierListProfiles(pi, () => structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES), async () => {});
+	const profiles = structuredClone(DEFAULT_MODEL_TIER_LIST_PROFILES);
+	profiles.profiles.custom = structuredClone(profiles.profiles.codex!);
+	await modelTierListProfiles(pi, () => structuredClone(profiles), async () => {});
 	assert.ok(command);
 
 	const statuses = new Map<string, string | undefined>();
@@ -73,26 +77,25 @@ test("registers /tier-profile, emits session policy, persists switches, and upda
 		},
 	} as unknown as ExtensionContext;
 	await handlers.get("session_start")?.[0]?.({ reason: "startup" }, ctx);
-	assert.deepEqual(emitted.at(-1), { name: MODEL_TIER_PROFILE_EVENT, value: { profile: "performance" } });
-	assert.deepEqual(parseModelTierProfileStatus(statuses.get(MODEL_TIER_PROFILE_STATUS_KEY)), { profile: "performance" });
+	assert.deepEqual(emitted.at(-1), { name: MODEL_TIER_PROFILE_EVENT, value: { profile: "codex" } });
+	assert.deepEqual(parseModelTierProfileStatus(statuses.get(MODEL_TIER_PROFILE_STATUS_KEY)), { profile: "codex" });
 	assert.deepEqual(command!.getArgumentCompletions?.(""), [
-		{ value: "nuke", label: "nuke" },
-		{ value: "performance", label: "performance" },
-		{ value: "token-conservative", label: "token-conservative" },
+		{ value: "codex", label: "codex" },
+		{ value: "custom", label: "custom" },
 	]);
 	const footerDialog = await getInteractiveFooterItem("tier-profile")?.dialog(ctx);
 	assert.ok(footerDialog && footerDialog.kind !== "choice");
 	const profileRow = footerDialog.rows[0];
 	assert.ok(profileRow?.kind === "setting");
-	assert.deepEqual(profileRow.values, ["nuke", "performance", "token-conservative"]);
+	assert.deepEqual(profileRow.values, ["codex", "custom"]);
 	await command!.handler("", ctx);
-	assert.deepEqual(selectedItems, ["nuke", "performance (active)", "token-conservative"]);
+	assert.deepEqual(selectedItems, ["codex (active)", "custom"]);
 
-	await command!.handler("token-conservative", ctx);
-	assert.deepEqual(appended, [{ type: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "token-conservative" } }]);
-	assert.deepEqual(emitted.at(-1), { name: MODEL_TIER_PROFILE_EVENT, value: { profile: "token-conservative" } });
-	assert.deepEqual(parseModelTierProfileStatus(statuses.get(MODEL_TIER_PROFILE_STATUS_KEY)), { profile: "token-conservative" });
-	assert.match(notices.at(-1) ?? "", /token-conservative/);
+	await command!.handler("custom", ctx);
+	assert.deepEqual(appended, [{ type: MODEL_TIER_PROFILE_ENTRY_TYPE, data: { profile: "custom" } }]);
+	assert.deepEqual(emitted.at(-1), { name: MODEL_TIER_PROFILE_EVENT, value: { profile: "custom" } });
+	assert.deepEqual(parseModelTierProfileStatus(statuses.get(MODEL_TIER_PROFILE_STATUS_KEY)), { profile: "custom" });
+	assert.match(notices.at(-1) ?? "", /custom/);
 
 	await handlers.get("session_shutdown")?.[0]?.({ reason: "quit" }, ctx);
 	assert.equal(statuses.get(MODEL_TIER_PROFILE_STATUS_KEY), undefined);

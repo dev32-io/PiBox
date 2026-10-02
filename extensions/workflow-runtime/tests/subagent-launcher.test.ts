@@ -192,3 +192,31 @@ test("fallback computes effective Fast per route in both directions and continue
 		assert.equal(service.inspect(fakeOwner).at(-1)?.fast, false);
 	}
 });
+
+test("binary MCP snapshot propagates and invalidates continuation without broadening ordinary tools", async () => {
+	const service = new FakeSubagentService(() => ({ status: "completed", reason: "completed", exitCode: 0, text: "done" }));
+	const registry = [{ name: "codemode" }, { name: "mcp__one__echo", namespace: { name: "mcp__one" } }, { name: "other_extension" }];
+	const launcher = new WorkflowSubagentLauncher(service, [], new ProviderCooldowns(), () => registry);
+	await launcher.launch({ ...common, tools: ["read", "mcp"] });
+	await launcher.launch({ ...common, tools: ["read", "mcp"], attemptToken: "two" });
+	registry.push({ name: "mcp__one__late", namespace: { name: "mcp__one" } });
+	await launcher.launch({ ...common, tools: ["read", "mcp"], attemptToken: "three" });
+	await launcher.launch({ ...common, tools: ["read"], attemptToken: "four" });
+	assert.deepEqual(service.requests.map((request) => request.kind), ["launch", "continue", "launch", "launch"]);
+	const launches = service.requests.filter((request) => request.kind === "launch");
+	assert.deepEqual(launches[0]!.spec.tools, ["read", "codemode", "mcp__one__echo"]);
+	assert.equal(launches[0]!.spec.env?.PIBOX_MCP_ENABLED, "1");
+	assert.deepEqual(launches[2]!.spec.tools, ["read"]);
+	assert.equal(launches[2]!.spec.env?.PIBOX_MCP_ENABLED, "0");
+	assert.notEqual(launches[0]!.spec.continuationKey, launches[1]!.spec.continuationKey);
+	assert.notEqual(launches[1]!.spec.continuationKey, launches[2]!.spec.continuationKey);
+});
+
+test("wildcard continuation key includes worker role capabilities even when exact tool selectors match", async () => {
+	const service = new FakeSubagentService(() => ({ status: "completed", reason: "completed", exitCode: 0, text: "done" }));
+	const launcher = new WorkflowSubagentLauncher(service);
+	await launcher.launch({ ...common, tools: ["*"], taskId: "one" });
+	await launcher.launch({ ...common, tools: ["*"], taskId: "one", action: "task-repair", attemptToken: "two" });
+	await launcher.launch({ ...common, tools: ["*"], action: "e2e", attemptToken: "three" });
+	assert.deepEqual(service.requests.map((request) => request.kind), ["launch", "continue", "launch"]);
+});

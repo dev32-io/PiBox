@@ -99,7 +99,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 - **Safety and context:** [permissions](extensions/permissions/README.md) · [path-scoped rules](extensions/rule/README.md) · [memory](extensions/memory-adapter/README.md) · [distillation](extensions/distill/README.md)
 - **Local integrations:** [services](extensions/service-adapter/README.md) · [sound](extensions/feedback/sound-hooks/README.md) · [local models](extensions/providers/local-llm/README.md) · [Ollama Cloud](extensions/providers/ollama-cloud/README.md)
 
-Local services start lazily and never update without explicit approval. MCP transport and copyrighted audio remain user-supplied.
+Local services start lazily and never update without explicit approval. MCP uses Pi's native integration with user-supplied server configuration; agents opt into all MCP tools/resources with `mcp` or receive none. See [native MCP setup](docs/subagents.md#native-mcp). Copyrighted audio remains user-supplied.
 
 ## Development
 
