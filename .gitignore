@@ -7,5 +7,7 @@ dist/
 /.pibox/
 /.benchmark/
 /agent-artifacts/*/state.yaml
+/agent-artifacts/*/state.yaml.tmp-*
 /agent-artifacts/*/ledger.yaml
+/agent-artifacts/*/ledger.yaml.tmp-*
 /agent-artifacts/*/events.jsonl

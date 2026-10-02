@@ -240,7 +240,9 @@ function requiredRuntimeIgnorePaths(storyId: string): string[] {
 	return [
 		".worktree/pibox/.ignore-check",
 		`agent-artifacts/${storyId}/state.yaml`,
+		`agent-artifacts/${storyId}/state.yaml.tmp-ignore-check`,
 		`agent-artifacts/${storyId}/ledger.yaml`,
+		`agent-artifacts/${storyId}/ledger.yaml.tmp-ignore-check`,
 		`agent-artifacts/${storyId}/events.jsonl`,
 	];
 }

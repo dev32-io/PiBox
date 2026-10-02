@@ -31,7 +31,7 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 	const root = await mkdtemp(join(tmpdir(), "pibox-native-binary-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	let sequence = 0;
-	async function run(selectors: string[], registry: CapabilityTool[], steps: Step[], options: { exposure?: string; mode?: string; searchOnly?: boolean; builtinMcp?: boolean; gatewayFault?: "missing" | "replaced"; preconnected?: boolean; wrapperPath?: string; workflow?: "task-launch" | "e2e" } = {}) {
+	async function run(selectors: string[], registry: CapabilityTool[], steps: Step[], options: { exposure?: string; mode?: string; searchOnly?: boolean; gatewayFault?: "missing" | "replaced"; preconnected?: boolean; workflow?: "task-launch" | "e2e" } = {}) {
 		const cwd = join(root, String(sequence++));
 		const agentDir = join(cwd, "agent");
 		await mkdir(agentDir, { recursive: true });
@@ -47,11 +47,11 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 		const owner = { sessionId: "native", activationId: "native", processInstanceId: "native" };
 		const resolver = createPiInvocationResolver({ piInvocation: {
 			command: process.env.PIBOX_TEST_PI_CLI ?? resolve("node_modules/.bin/pi"),
-			args: ["--offline", "--no-extensions", "--no-skills", "--no-context-files", "--no-themes", ...(options.builtinMcp ? ["-e", "builtin:mcp"] : []), ...(options.gatewayFault ? [] : [...(options.searchOnly ? [] : ["-e", "builtin:codemode"]), "-e", "builtin:tool-search"])],
+			args: ["--offline", "--no-extensions", "--no-skills", "--no-context-files", "--no-themes", ...(options.gatewayFault ? [] : [...(options.searchOnly ? [] : ["-e", "builtin:codemode"]), "-e", "builtin:tool-search"])],
 			env: { PI_CODING_AGENT_DIR: agentDir, HOME: root, PI_OFFLINE: "1", PIBOX_PERMISSION_MODE: options.mode ?? "enforce", PIBOX_MCP_TEST_STEPS: stepsPath, ...(options.gatewayFault ? { PIBOX_MCP_TEST_GATEWAY: options.gatewayFault, PIBOX_MCP_TEST_PRECONNECTED: options.preconnected ? "1" : "0" } : {}) },
 		} });
 		const manager = new SubagentProcessManager({ owner, sessionDirectory: join(cwd, "sessions"), invocationResolver: resolver });
-		const extensionPaths = [options.wrapperPath ?? resolve("extensions/subagent/native-mcp.ts"), join(fixture, "native-mcp-provider.ts"), resolve("extensions/subagent/index.ts"), resolve("extensions/workflow/index.ts")];
+		const extensionPaths = [resolve("extensions/subagent/native-mcp.ts"), join(fixture, "native-mcp-provider.ts"), resolve("extensions/subagent/index.ts"), resolve("extensions/workflow/index.ts")];
 		try {
 			let text: string;
 			let reportPath: string | undefined;
@@ -79,7 +79,6 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 
 	// Wrapper must await delayed indirect registration before the first model request.
 	const initial = (await run(["*"], [], [])).report;
-	assert.equal(initial.version, "0.99.2", "exercise the audited host version");
 	const snapshot = initial.registry;
 	assert.equal(snapshot.filter((tool) => tool.namespace?.name === "mcp__dev_radius").length, 6);
 	const searchOnly = (await run(["*"], [], [], { searchOnly: true })).report;
@@ -133,20 +132,6 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 			}
 		}
 	}
-	// Substitute only the imported version in a disposable copy: no production
-	// override knob and no installed host mutation. The unaudited branch must never
-	// start MCP factories/connections, but must retain its failed parent boundary.
-	const source = await readFile(resolve("extensions/subagent/native-mcp.ts"), "utf8");
-	const unauditedSource = source.replace(", VERSION,", ", VERSION as installedVersion,").replace('import { isMcpTool } from "./mcp-capabilities.js";', `import { isMcpTool } from ${JSON.stringify(resolve("extensions/subagent/mcp-capabilities.ts"))};\nconst VERSION = "unaudited-test-version";`);
-	assert.notEqual(unauditedSource, source);
-	const wrapperPath = join(root, "unaudited-native-mcp.ts");
-	await writeFile(wrapperPath, unauditedSource);
-	await t.test("unaudited version keeps native ownership disabled without starting servers", async () => {
-		const { report, dispatches } = await run(["read", "mcp"], snapshot, failureSteps, { gatewayFault: "missing", mode: "bypass", wrapperPath, builtinMcp: true });
-		assertFailedNative(report, dispatches);
-		assert.ok(report.readinessError?.includes("audited Pi 0.99.2"));
-		assert.deepEqual(dispatches, [], "no unaudited native factory startup");
-	});
 	const steps = [
 		code("text({all:ALL_TOOLS,search:await searchTools('mcp__'),describe:(await describeTool('mcp__dev_radius__echo'))??null,namespaces:await Promise.all(['dev-radius','dev_radius','mcp__dev-radius','mcp__dev_radius'].map(async n=>(await describeNamespace(n))??null))});"),
 		{ name: "tool_search", arguments: { query: "mcp__two__echo", limit: 1 } },

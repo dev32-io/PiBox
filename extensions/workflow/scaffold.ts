@@ -33,7 +33,9 @@ const LEGACY_PRIVATE_IGNORE_EXCEPTIONS = new Set(["!/.pibox/", "/.pibox/*", "!/.
 const WORKTREE_IGNORE_PATTERN = "/.worktree/";
 const STORY_RUNTIME_IGNORES = [
 	["/agent-artifacts/*/state.yaml", "agent-artifacts/ignore-probe/state.yaml"],
+	["/agent-artifacts/*/state.yaml.tmp-*", "agent-artifacts/ignore-probe/state.yaml.tmp-ignore-check"],
 	["/agent-artifacts/*/ledger.yaml", "agent-artifacts/ignore-probe/ledger.yaml"],
+	["/agent-artifacts/*/ledger.yaml.tmp-*", "agent-artifacts/ignore-probe/ledger.yaml.tmp-ignore-check"],
 	["/agent-artifacts/*/events.jsonl", "agent-artifacts/ignore-probe/events.jsonl"],
 ] as const;
 const WORKTREE_IGNORE_PROBE = ".worktree/pibox/.ignore-check";

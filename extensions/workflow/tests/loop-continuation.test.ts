@@ -68,7 +68,7 @@ async function fixture(t: TestContext, options: { e2eFailures?: number; repairRo
 	await exec("git", ["init", "-q", "-b", "feature/example"], { cwd: root });
 	await exec("git", ["config", "user.email", "tests@example.com"], { cwd: root });
 	await exec("git", ["config", "user.name", "Tests"], { cwd: root });
-	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n*.log\n");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/state.yaml.tmp-*\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/ledger.yaml.tmp-*\n/agent-artifacts/*/events.jsonl\n*.log\n");
 	await mkdir(join(root, "agent-artifacts/example/tasks"), { recursive: true });
 	await writeFile(join(root, "agent-artifacts/example/story.yaml"), stringify(story));
 	await writeFile(join(root, "agent-artifacts/example/plan.yaml"), stringify(plan));

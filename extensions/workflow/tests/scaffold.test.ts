@@ -98,13 +98,21 @@ test("initializes an empty Git repository with a committed economy policy", asyn
 	assert.doesNotMatch(policy, /^modelTierListProfiles:|^modelTierProfile:/m, "new repositories must inherit global tier profiles");
 	assert.doesNotMatch(policy, /\nroles:\n/);
 	assert.doesNotMatch(policy, /^\s+tools:/m, "repository harness policy must not duplicate agent frontmatter tools");
-	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/state.yaml.tmp-*\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/ledger.yaml.tmp-*\n/agent-artifacts/*/events.jsonl\n");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".worktree/pibox/probe"), ".worktree/pibox/probe");
 	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/state.yaml"), "agent-artifacts/story/state.yaml");
 	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/ledger.yaml"), "agent-artifacts/story/ledger.yaml");
 	assert.equal(await git(root, "check-ignore", "--no-index", "agent-artifacts/story/events.jsonl"), "agent-artifacts/story/events.jsonl");
 	assert.equal(await git(root, "check-ignore", "--no-index", ".pibox/probe"), ".pibox/probe");
 	assert.equal((await scaffoldHarness(root, "standard")).created, false);
+	// Atomic writes must stay invisible to concurrent Git cleanliness checks.
+	await mkdir(join(root, "agent-artifacts", "story"), { recursive: true });
+	for (const name of ["state.yaml.tmp-123-fixture", "ledger.yaml.tmp-123-fixture"]) {
+		await writeFile(join(root, "agent-artifacts", "story", name), "writing\n");
+	}
+	assert.equal(await git(root, "status", "--porcelain", "--untracked-files=all"), "");
+	await writeFile(join(root, "agent-artifacts", "story", "story.yaml.tmp-123-fixture"), "authored\n");
+	assert.match(await git(root, "status", "--porcelain", "--untracked-files=all"), /story\.yaml\.tmp-123-fixture/, "authored changes remain visible");
 });
 
 test("new repository policy inherits later global tier edits without regeneration", async (t) => {
@@ -148,7 +156,7 @@ test("prepares the worktree ignore for an existing harness policy", async (t) =>
 	const result = await scaffoldHarness(root, "standard");
 	assert.equal(result.created, false);
 	assert.equal(result.worktreeIgnoreAdded, true);
-	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
+	assert.equal(await readFile(join(root, ".gitignore"), "utf8"), "dist/\n/.pibox/\n/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/state.yaml.tmp-*\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/ledger.yaml.tmp-*\n/agent-artifacts/*/events.jsonl\n");
 	assert.equal(await git(root, "log", "-1", "--pretty=%s"), "chore(harness): ignore repository-local worktrees");
 });
 

@@ -74,7 +74,7 @@ async function fixture(t: test.TestContext, options: FixtureOptions) {
 	await exec("git", ["init", "-q", "-b", "feature/example"], { cwd: root });
 	await exec("git", ["config", "user.email", "tests@example.com"], { cwd: root });
 	await exec("git", ["config", "user.name", "Tests"], { cwd: root });
-	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n");
+	await writeFile(join(root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/state.yaml.tmp-*\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/ledger.yaml.tmp-*\n/agent-artifacts/*/events.jsonl\n");
 	await exec("git", ["add", ".gitignore"], { cwd: root });
 	await exec("git", ["commit", "-qm", "base"], { cwd: root });
 	const tasks = options.tasks ?? [task("task-a")];
@@ -464,18 +464,18 @@ test("start preflight refuses an uncompiled placeholder story without creating r
 	assert.equal(await new StoryRuntimeStore(f.root, "example").readState(), undefined);
 });
 
-test("start preflight refuses a missing runtime ledger ignore before state creation", async (t) => {
+for (const ignoredName of ["ledger.yaml", "state.yaml.tmp-*", "ledger.yaml.tmp-*"]) test(`start preflight refuses a missing runtime ${ignoredName} ignore before state creation`, async (t) => {
 	const f = await fixture(t, {});
 	const ignorePath = join(f.root, ".gitignore");
-	await writeFile(ignorePath, (await readFile(ignorePath, "utf8")).replace("agent-artifacts/*/ledger.yaml\n", ""));
+	await writeFile(ignorePath, (await readFile(ignorePath, "utf8")).replace(`/agent-artifacts/*/${ignoredName}\n`, ""));
 	await exec("git", ["add", ".gitignore"], { cwd: f.root });
-	await exec("git", ["commit", "-qm", "remove ledger ignore"], { cwd: f.root });
+	await exec("git", ["commit", "-qm", "remove runtime ignore"], { cwd: f.root });
 	const adapter = f.create();
 	const preflight = await adapter.preflightWorkflow!("work-item:example", f.ctx);
 	assert.equal(preflight.ok, false);
-	assert.match(preflight.detail ?? "", /agent-artifacts\/example\/ledger\.yaml/);
+	assert.ok(preflight.detail?.includes(`agent-artifacts/example/${ignoredName.replace("*", "ignore-check")}`));
 	assert.match(preflight.detail ?? "", /workflow_init|local excludes/);
-	await assert.rejects(adapter.controlExecution!("work-item:example", "start", "start", f.ctx), /ledger\.yaml/);
+	await assert.rejects(adapter.controlExecution!("work-item:example", "start", "start", f.ctx), /runtime-owned paths/);
 	assert.equal(await new StoryRuntimeStore(f.root, "example").readState(), undefined, "ignore refusal must precede runtime initialization");
 });
 
@@ -682,7 +682,7 @@ test("production Git executor shares a sequential stage workspace and pins concu
 		});
 		const adapter = f.create();
 		await start(adapter, f.ctx);
-		await eventually(async () => assert.equal((await adapter.snapshot("work-item:example", f.ctx)).runtime?.outcomeStatus, "written"), 8_000);
+		await eventually(async () => { const runtime = (await adapter.snapshot("work-item:example", f.ctx)).runtime; assert.equal(runtime?.outcomeStatus, "written", JSON.stringify(runtime)); }, 8_000);
 		assert.equal(new Set(workspaces).size, 2);
 		assert.equal(new Set(bases).size, 1);
 		assert.equal(bases[0], (await exec("git", ["rev-parse", "HEAD~3"], { cwd: f.root })).stdout.trim(), "both task branches pin the pre-integration base");
@@ -1505,7 +1505,7 @@ test("E2E workspace intake pauses missing and nonzero output while ignored priva
 		await t.test(scenario, async (t) => {
 			const f = await fixture(t, {});
 			if (scenario === "ignored") {
-				await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/events.jsonl\n/agent-artifacts/example/evidence/e2e-*/\n");
+				await writeFile(join(f.root, ".gitignore"), "/.worktree/\n/agent-artifacts/*/state.yaml\n/agent-artifacts/*/state.yaml.tmp-*\n/agent-artifacts/*/ledger.yaml\n/agent-artifacts/*/ledger.yaml.tmp-*\n/agent-artifacts/*/events.jsonl\n/agent-artifacts/example/evidence/e2e-*/\n");
 				await exec("git", ["add", ".gitignore"], { cwd: f.root });
 				await exec("git", ["commit", "-qm", "ignore legacy evidence"], { cwd: f.root });
 			}

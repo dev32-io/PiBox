@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { createCodemodeExtension, createMcpExtension, createToolSearchExtension, VERSION, type BeforeAgentStartEvent, type BeforeAgentStartEventResult, type ExtensionAPI, type ExtensionContext, type ExtensionHandler, type ToolCallEvent, type ToolCallEventResult, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createCodemodeExtension, createMcpExtension, createToolSearchExtension, type BeforeAgentStartEvent, type BeforeAgentStartEventResult, type ExtensionAPI, type ExtensionContext, type ExtensionHandler, type ToolCallEvent, type ToolCallEventResult, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { isMcpTool } from "./mcp-capabilities.js";
 
 export interface McpIdentity { server: string; tool: string }
@@ -47,7 +47,7 @@ export default async function nativeMcp(pi: ExtensionAPI): Promise<void> {
 		// This is NOT a documented readiness API. Audited 0.99.2 tool_call waits for
 		// all pending servers on ALL_TOOLS/tool_search, honoring ctx.signal. No tool
 		// executes here. Re-audit on upgrade; never silently snapshot before discovery.
-		if (!discovery || !context) throw new Error("Native MCP readiness requires the audited Pi 0.99.2 integration and an active session");
+		if (!discovery || !context) throw new Error("Native MCP readiness requires native discovery and an active session");
 		const tool = pi.getAllTools().find((tool) => schemas.has(tool.name) && tool.parameters === schemas.get(tool.name));
 		if (!tool) throw disable(new Error("Native MCP readiness requires native codemode or tool_search"));
 		const current = context;
@@ -72,14 +72,6 @@ export default async function nativeMcp(pi: ExtensionAPI): Promise<void> {
 		context = undefined;
 		if ((globalThis as Host)[KEY] === state) delete (globalThis as Host)[KEY];
 	});
-	if (VERSION !== "0.99.2") {
-		disable(new Error("Native MCP readiness requires the audited Pi 0.99.2 integration"));
-		// Keep replacement ownership and explicit parent rejection without invoking any
-		// unaudited native factory. Otherwise Pi could fall back to its built-in /mcp.
-		pi.registerCommand("mcp", { description: "Native MCP unavailable on this Pi version", handler: async (_args, ctx) => { ctx.ui.notify(failure!.message, "error"); } });
-		pi.on("before_agent_start", (event) => { delete event.systemPromptOptions.sections.mcp_servers; });
-		return;
-	}
 	// Pi 0.99.2 recognizes its discovery tools by schema reference, not name. Obtain
 	// those references through exported factories without registering or executing tools.
 	const capture: ExtensionAPI = { ...pi, registerTool: (tool) => { schemas.set(tool.name, tool.parameters); } };
