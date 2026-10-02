@@ -15,12 +15,11 @@ function assistantMessage(message: unknown): AssistantMessage | undefined {
 	return message as AssistantMessage;
 }
 
-function responseCharacters(message: unknown): number {
-	const assistant = assistantMessage(message);
-	if (!assistant) return 0;
-	return assistant.content.reduce((total, block) => {
+function responseCharacters(message: AssistantMessage): number {
+	return message.content.reduce((total, block) => {
 		if (block.type === "text") return total + block.text.length;
 		if (block.type === "thinking") return total + block.thinking.length;
+		if (block.type === "toolCall") return total + JSON.stringify(block.arguments).length;
 		return total;
 	}, 0);
 }
@@ -70,11 +69,6 @@ function shimmer(value: string, phase: number, theme: Theme): string {
 	}).join("");
 }
 
-// The provider does not stream request-token usage. Animate Pi's per-call
-// context estimate during the request so the working row still communicates
-// outbound progress before the first response token arrives.
-const INPUT_ESTIMATE_ANIMATION_MS = 1_200;
-
 const COMPLETION_WORDS = [
 	"Cooked",
 	"Brewed",
@@ -90,6 +84,8 @@ interface RoundSummary {
 	durationMs: number;
 	inputTokens: number;
 	outputTokens: number;
+	averageTokensPerSecond?: number;
+	cacheHitPercent?: number;
 	cost?: number;
 }
 
@@ -97,31 +93,20 @@ function tokenCount(value: number): string {
 	return value.toLocaleString("en-US");
 }
 
-function liveUsageDetail(startedAt: number, characters: number, inputEstimate: number, tokensPerCharacter: number): string {
-	const elapsedMs = Math.max(0, Date.now() - startedAt);
-	const outputTokens = Math.round(characters / tokensPerCharacter);
-	if (outputTokens === 0) {
-		const sent = Math.round(inputEstimate * Math.min(1, elapsedMs / INPUT_ESTIMATE_ANIMATION_MS));
-		return `${duration(elapsedMs)}${inputEstimate > 0 ? ` · ↑ ${tokenCount(sent)}` : ""}`;
-	}
-	const rate = elapsedMs >= 1_000 ? ` (${(outputTokens / (elapsedMs / 1_000)).toFixed(1)} tok/s)` : "";
-	return `${duration(elapsedMs)} · ↓ ${tokenCount(outputTokens)}${rate}`;
-}
-
-function roundUsage(messages: unknown[]): { inputTokens: number; outputTokens: number; cost?: number } {
-	let inputTokens = 0;
-	let outputTokens = 0;
+function roundUsage(messages: unknown[]): { cost?: number; cacheHitPercent?: number } {
 	let cost = 0;
 	let hasCost = false;
+	let input = 0;
+	let cacheRead = 0;
 	for (const message of messages) {
 		const assistant = assistantMessage(message);
 		if (!assistant) continue;
-		inputTokens += assistant.usage?.input ?? 0;
-		outputTokens += assistant.usage?.output ?? 0;
 		cost += assistant.usage?.cost.total ?? 0;
 		hasCost ||= (assistant.usage?.cost.total ?? 0) > 0;
+		input += (assistant.usage?.input ?? 0) + (assistant.usage?.cacheRead ?? 0) + (assistant.usage?.cacheWrite ?? 0);
+		cacheRead += assistant.usage?.cacheRead ?? 0;
 	}
-	return { inputTokens, outputTokens, ...(hasCost ? { cost } : {}) };
+	return { ...(hasCost ? { cost } : {}), ...(input > 0 ? { cacheHitPercent: cacheRead / input * 100 } : {}) };
 }
 
 export default function spinners(pi: ExtensionAPI): void {
@@ -129,11 +114,15 @@ export default function spinners(pi: ExtensionAPI): void {
 	let lastCompletionWord = "";
 	let activeContext: ExtensionContext | undefined;
 	let startedAt = 0;
-	let requestStartedAt = 0;
-	let inputEstimate = 0;
-	let previousContextTokens: number | undefined;
-	let previousContextSignature: string | undefined;
-	let characters = 0;
+	let requestStartedAt: number | undefined;
+	let completedDetail: string | undefined;
+	let inputCharacters = 0;
+	let inputBase = 0;
+	let inputTarget = 0;
+	let outputTarget = 0;
+	let completedOutput = 0;
+	let measuredOutputTokens = 0;
+	let measuredRequestMs = 0;
 	let currentMessage = "Analyzing";
 	let hasLiveThinking = false;
 	let shimmerPhase = 0;
@@ -153,7 +142,11 @@ export default function spinners(pi: ExtensionAPI): void {
 	const update = () => {
 		const ctx = activeContext;
 		if (!ctx || ctx.mode !== "tui" || startedAt === 0) return;
-		const detail = liveUsageDetail(requestStartedAt || startedAt, characters, inputEstimate, config.tokensPerCharacter);
+		const elapsedMs = Math.max(0, requestStartedAt === undefined ? Date.now() - startedAt : performance.now() - requestStartedAt);
+		// Count only messages emitted in this run, never history or provider full-context input.
+		const input = Math.round(inputBase + (inputTarget - inputBase) * Math.min(1, elapsedMs / 1_200));
+		const rate = outputTarget / Math.max(1, elapsedMs / 1_000);
+		const detail = completedDetail ?? `${duration(elapsedMs)} · ↑ ${tokenCount(input)} · ↓ ${tokenCount(completedOutput + outputTarget)} · ${rate.toFixed(1)} tok/s`;
 		ctx.ui.setWorkingMessage(
 			`${shimmer(currentMessage, shimmerPhase, ctx.ui.theme)}\n${ctx.ui.theme.fg("dim", "└─")} ${ctx.ui.theme.fg("dim", detail)}`,
 		);
@@ -170,23 +163,30 @@ export default function spinners(pi: ExtensionAPI): void {
 		if (restore && activeContext?.mode === "tui") activeContext.ui.setWorkingMessage();
 		activeContext = undefined;
 		startedAt = 0;
-		requestStartedAt = 0;
-		inputEstimate = 0;
-		characters = 0;
+		requestStartedAt = undefined;
+		completedDetail = undefined;
+		inputCharacters = 0;
+		inputBase = 0;
+		inputTarget = 0;
+		outputTarget = 0;
+		completedOutput = 0;
+		measuredOutputTokens = 0;
+		measuredRequestMs = 0;
 		hasLiveThinking = false;
 	};
 
 	pi.registerEntryRenderer<RoundSummary>("pibox-round-summary", (entry, _options, theme) => {
 		const summary = entry.data;
 		if (!summary) return undefined;
-		const metrics = [`↑ ${tokenCount(summary.inputTokens)}`, `↓ ${tokenCount(summary.outputTokens)}`, ...(summary.cost === undefined ? [] : [`$${summary.cost.toFixed(2)}`])];
+		const metrics = [`↑ ${tokenCount(summary.inputTokens)}`, `↓ ${tokenCount(summary.outputTokens)}`];
+		if (summary.cacheHitPercent !== undefined) metrics.push(`cache ${Number(summary.cacheHitPercent.toFixed(2))}%`);
+		if (summary.cost !== undefined) metrics.push(`$${summary.cost.toFixed(2)}`);
+		if (summary.averageTokensPerSecond !== undefined) metrics.push(`${summary.averageTokensPerSecond.toFixed(1)} tok/s`);
 		const text = `◒ ${summary.word} for ${duration(summary.durationMs)} · ${metrics.join(" · ")}`;
 		return new Text(theme.fg("dim", text), 1, 0);
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		previousContextTokens = undefined;
-		previousContextSignature = undefined;
 		if (ctx.mode !== "tui") return;
 		ctx.ui.setWorkingIndicator({
 			frames: ["◒", "◐", "◓", "◑"].map((glyph) => ctx.ui.theme.fg("accent", glyph)),
@@ -219,26 +219,53 @@ export default function spinners(pi: ExtensionAPI): void {
 	pi.on("turn_start", () => {
 		hasLiveThinking = false;
 	});
-	pi.on("context", (event, ctx) => {
-		// This is presentation-only work. Headless agents must not inspect or retain
-		// their context, and TUI sessions reuse Pi's existing token estimate instead
-		// of serializing the complete message graph on every tool turn.
-		if (!activeContext || ctx.mode !== "tui") return;
-		const reportedTokens = ctx.getContextUsage()?.tokens;
-		const tokens = typeof reportedTokens === "number" ? reportedTokens : undefined;
-		const signature = `${event.messages.length}:${tokens ?? "unknown"}`;
-		// Some providers build/inspect context more than once before sending. An
-		// unchanged snapshot is not a new request and must not restart the meter.
-		if (signature === previousContextSignature) return;
-		inputEstimate = tokens === undefined || previousContextTokens === undefined ? 0 : Math.max(0, tokens - previousContextTokens);
-		previousContextTokens = tokens;
-		previousContextSignature = signature;
-		requestStartedAt = Date.now();
-		characters = 0;
+	pi.on("before_provider_request", () => {
+		if (!activeContext) return;
+		requestStartedAt = performance.now();
+		completedDetail = undefined;
+		inputBase = inputTarget;
+		// ponytail: text-only chars/4 for the cosmetic ramp; model-aware counting needed for images.
+		// Provider input usage includes replayed context, so never use it for this turn-local counter.
+		inputTarget = Math.round(inputCharacters / 4);
+		outputTarget = 0;
+		update();
+	});
+	pi.on("message_end", (event) => {
+		if (!activeContext) return;
+		const message = event.message;
+		if (message.role === "user" || message.role === "toolResult" || message.role === "custom") {
+			const content = message.content;
+			inputCharacters += typeof content === "string" ? content.length
+				: content.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0);
+			return;
+		}
+		const assistant = assistantMessage(message);
+		if (!assistant) return;
+		const elapsedMs = requestStartedAt === undefined ? undefined : Math.max(0, performance.now() - requestStartedAt);
+		requestStartedAt = undefined;
+		const usage = assistant.usage;
+		const hasUsage = usage && usage.input + usage.output + usage.cacheRead + usage.cacheWrite > 0;
+		completedOutput += hasUsage ? usage.output : Math.round(responseCharacters(assistant) / 4);
+		outputTarget = 0;
+		const metrics = [duration(elapsedMs ?? Date.now() - startedAt), `↑ ${tokenCount(Math.round(inputCharacters / 4))}`, `↓ ${tokenCount(completedOutput)}`];
+		// Zero-only usage also represents providers that did not report usage.
+		if (hasUsage) {
+			const input = usage.input + usage.cacheRead + usage.cacheWrite;
+			if (input > 0) metrics.push(`cache ${Number((usage.cacheRead / input * 100).toFixed(2))}%`);
+			if (elapsedMs !== undefined && elapsedMs > 0 && assistant.stopReason !== "error" && assistant.stopReason !== "aborted") {
+				// End-to-end request throughput includes prefill/network time, never tool execution.
+				metrics.push(`${(usage.output / (elapsedMs / 1_000)).toFixed(1)} tok/s`);
+				measuredOutputTokens += usage.output;
+				measuredRequestMs += elapsedMs;
+			}
+		}
+		completedDetail = metrics.join(" · ");
 		update();
 	});
 	pi.on("message_update", (event) => {
-		characters = responseCharacters(event.message);
+		if (!activeContext) return;
+		const assistant = assistantMessage(event.message);
+		if (assistant) outputTarget = Math.round(responseCharacters(assistant) / 4);
 		const thinking = latestThinking(event.message);
 		if (thinking) {
 			hasLiveThinking = true;
@@ -253,14 +280,15 @@ export default function spinners(pi: ExtensionAPI): void {
 				word: nextCompletionWord(),
 				durationMs: Date.now() - startedAt,
 				...usage,
+				inputTokens: Math.round(inputCharacters / 4),
+				outputTokens: completedOutput,
+				...(measuredRequestMs > 0 ? { averageTokensPerSecond: measuredOutputTokens / (measuredRequestMs / 1_000) } : {}),
 			} satisfies RoundSummary);
 		}
 		stop();
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		stop();
-		previousContextTokens = undefined;
-		previousContextSignature = undefined;
 		if (ctx.mode === "tui") {
 			ctx.ui.setWorkingIndicator();
 			ctx.ui.setHiddenThinkingLabel();
