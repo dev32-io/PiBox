@@ -30,6 +30,7 @@ interface RemoteModel {
 	max_tokens?: unknown;
 	max_output_tokens?: unknown;
 	capabilities?: unknown;
+	architecture?: { input_modalities?: unknown } | null;
 }
 
 export function normalizeBaseUrl(raw: string): string {
@@ -116,7 +117,9 @@ export function toPiModels(
 		const reasoning = listedCapabilities.includes("thinking") || listedCapabilities.includes("reasoning")
 			? true
 			: metadata?.reasoning ?? inferred.reasoning;
-		const images = listedCapabilities.some((item) => /vision|image/.test(item))
+		const inputModalities = remote.architecture?.input_modalities;
+		const images = (Array.isArray(inputModalities) && inputModalities.includes("image"))
+			|| listedCapabilities.some((item) => /vision|image/.test(item))
 			? true
 			: metadata?.images ?? inferred.images;
 		const contextWindow = positiveInteger(remote.context_window, remote.context_length, remote.max_model_len)

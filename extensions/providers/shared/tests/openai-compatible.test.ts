@@ -28,6 +28,25 @@ test("maps OpenAI and Ollama model lists with conservative inferred capabilities
 	assert.deepEqual(inferModelCapabilities("deepseek-r1:70b"), { reasoning: true, images: false });
 });
 
+test("recognizes Strata image input modalities without enabling images for text-only or malformed metadata", () => {
+	for (const [architecture, expectedInput] of [
+		[{ input_modalities: ["text", "image"] }, ["text", "image"]],
+		[{ input_modalities: ["text"] }, ["text"]],
+		[{ output_modalities: ["image"] }, ["text"]],
+		[{ input_modalities: "image" }, ["text"]],
+		[null, ["text"]],
+		[undefined, ["text"]],
+	] as const) {
+		const models = toPiModels({
+			data: [{ id: "qwen3.8-flash-next-iq2_xs", architecture }],
+		}, {
+			providerId: "local-llm",
+			baseUrl: "http://localhost:1234/v1",
+		});
+		assert.deepEqual(models[0]?.input, expectedInput);
+	}
+});
+
 test("applies an opt-in provider thinking map only to reasoning models without a specific map", () => {
 	const models = toPiModels({ data: [{ id: "reasoning" }, { id: "specific" }, { id: "plain" }] }, {
 		providerId: "test-provider",
