@@ -82,12 +82,12 @@ export class Mem0Client {
 			method: "POST",
 			body: JSON.stringify({ query, user_id: userId, filters: { repo_id: repoId }, limit }),
 		}, signal);
-		return recordsFrom(value).slice(0, limit);
+		return recordsFrom(value).filter(record => record.metadata?.repo_id === repoId).slice(0, limit);
 	}
 
 	async list(userId: string, repoId: string, options: { limit?: number; signal?: AbortSignal } = {}): Promise<MemoryRecord[]> {
 		const params = new URLSearchParams({ user_id: userId, repo_id: repoId, show_expired: "true", ...(options.limit ? { limit: String(options.limit) } : {}) });
-		return recordsFrom(await this.request(`/memories?${params}`, {}, options.signal));
+		return recordsFrom(await this.request(`/memories?${params}`, {}, options.signal)).filter(record => record.metadata?.repo_id === repoId);
 	}
 
 	private scopedPath(id: string, userId: string, repoId: string, suffix = ""): string {
@@ -96,18 +96,23 @@ export class Mem0Client {
 	}
 
 	async get(id: string, userId: string, repoId: string, signal?: AbortSignal): Promise<MemoryRecord> {
-		return await this.request(this.scopedPath(id, userId, repoId), {}, signal) as MemoryRecord;
+		const record = await this.request(this.scopedPath(id, userId, repoId), {}, signal) as MemoryRecord;
+		if (record?.id !== id || record.metadata?.repo_id !== repoId) throw new Error("Memory does not belong to this repository.");
+		return record;
 	}
 
 	async update(id: string, memory: string, metadata: Record<string, unknown> | undefined, userId: string, repoId: string, signal?: AbortSignal): Promise<unknown> {
+		await this.get(id, userId, repoId, signal);
 		return this.request(this.scopedPath(id, userId, repoId), { method: "PUT", body: JSON.stringify({ memory, ...(metadata ? { metadata } : {}) }) }, signal);
 	}
 
 	async delete(id: string, userId: string, repoId: string, signal?: AbortSignal): Promise<void> {
+		await this.get(id, userId, repoId, signal);
 		await this.request(this.scopedPath(id, userId, repoId), { method: "DELETE" }, signal);
 	}
 
 	async history(id: string, userId: string, repoId: string, signal?: AbortSignal): Promise<unknown> {
+		await this.get(id, userId, repoId, signal);
 		return this.request(this.scopedPath(id, userId, repoId, "/history"), {}, signal);
 	}
 }

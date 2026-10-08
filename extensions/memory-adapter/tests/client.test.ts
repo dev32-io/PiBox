@@ -42,7 +42,7 @@ test("curated writes force infer=false and repository recall stays filtered", as
 				...(body ? { body: JSON.parse(body) } : {}),
 			});
 			response.setHeader("content-type", "application/json");
-			response.end(JSON.stringify(request.url === "/search" ? [{ id: "m1", memory: "remember me" }] : [{ id: "m1", memory: "stored" }]));
+			response.end(JSON.stringify(request.url?.startsWith("/memories/m1") ? { id: "m1", memory: "stored", metadata: { repo_id: "repo" } } : [{ id: "m1", memory: "remember me", metadata: { repo_id: "repo" } }]));
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -124,4 +124,24 @@ test("service errors retain complete diagnostics beyond the old preview boundary
 		assert.equal(error.message, `Mem0 503: ${diagnostic}`);
 		return true;
 	});
+});
+
+test("rejects cross-repository responses on every read path and refuses scoped mutations", async t => {
+	const own = { id: "own", memory: "local", metadata: { repo_id: "repo" } };
+	const foreign = { id: "foreign", memory: "private", metadata: { repo_id: "other" } };
+	const requests: string[] = [];
+	t.mock.method(globalThis, "fetch", async (url: string) => {
+		requests.push(url);
+		const payload = url.includes("/memories/foreign") ? foreign : url.includes("/memories/own/history") ? [{ old_memory: "local history" }] : url.includes("/memories/own") ? own : [foreign, own, { id: "unscoped", memory: "missing namespace" }];
+		return new Response(JSON.stringify(payload), { status: 200 });
+	});
+	const client = new Mem0Client({ baseUrl: "http://127.0.0.1:6001" });
+	assert.deepEqual(await client.search("q", "pibox", "repo", 10), [own]);
+	assert.deepEqual(await client.list("pibox", "repo"), [own]);
+	await assert.rejects(client.get("foreign", "pibox", "repo"), /does not belong/);
+	await assert.rejects(client.history("foreign", "pibox", "repo"), /does not belong/);
+	await assert.rejects(client.update("foreign", "new", {}, "pibox", "repo"), /does not belong/);
+	await assert.rejects(client.delete("foreign", "pibox", "repo"), /does not belong/);
+	assert.ok(!requests.some(url => url.includes("foreign/history")));
+	assert.deepEqual(await client.history("own", "pibox", "repo"), [{ old_memory: "local history" }]);
 });

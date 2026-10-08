@@ -31,7 +31,7 @@ Modes are session-branch-local and select authority, not permission: Workflow st
 | **Subagents** | Markdown-backed agent catalog, titled foreground/background `subagent_spawn`, explicit routing overrides, continuation, temporary report files with ordinary read/search, live progress, and event-aware `wait` without shell polling. |
 | **Models and speed** | Capacity-aware fallback across managed-agent routes, tier profiles, ChatGPT Fast mode for the main agent and selected child tiers, Codex usage meters, and local LLM or Ollama Cloud support. |
 | **Managed workflow** | Reviewed stories and plans, sequential or concurrent stages, isolated Git worktrees, checks, integration, bounded repair, whole-branch review, and final E2E. |
-| **Context and control** | Enforced repository permissions, path-scoped rules, private session scratch with a read-only Visual Companion file explorer, curated memory, and evidence-backed distillation without silent writes. |
+| **Context and control** | Enforced repository permissions, path-scoped rules, private session scratch with a read-only Visual Companion file explorer, proactive repository memory with visible activity, and evidence-backed distillation with explicit approval. |
 | **Visual and local tools** | Designer authority, live architecture diagrams, browser mockups, a reactive workflow board, lazy local services, and optional sound feedback. |
 
 ## Quick start
@@ -86,7 +86,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 | `/tier-profile` | Change managed-agent model routing. |
 | `/fast` | Configure ChatGPT Fast mode for the main agent and subagent tiers. |
 | `/services` | Inspect or control local PiBox services. |
-| `/memory-status`, `/memory-audit` | Inspect repository-scoped memory or audit stored items without changing them. |
+| `/memory-status`, `/memory-debug`, `/memory-audit` | Inspect memory service health, recall outcomes, or stored-item audit recommendations without changing memories. |
 | `/distill` | Turn an explicit code, release, time, path, workflow, or session range into user-reviewed knowledge proposals. |
 | `/simplify [focus]` | Review recent changes for reuse, quality, and efficiency, then apply justified cleanup. Explicit command only; never activated by ordinary prompts. |
 | `/skill:architecture-visualizer` | Open a live architecture explanation in the Visual Companion. |

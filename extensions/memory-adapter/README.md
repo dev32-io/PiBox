@@ -1,8 +1,32 @@
 # PiBox memory adapter
 
-The memory adapter uses a shared, loopback-only Mem0 OSS service for repository-scoped recall and explicit curated writes. Repository identity is derived from the canonical Git common directory, so linked worktrees share memory while unrelated repositories remain separated.
+The memory adapter uses shared, loopback-only Mem0 OSS for repository-scoped recall and curated knowledge. Repository identity comes from the canonical Git common directory: linked worktrees share memory; unrelated repositories do not.
 
-## Commands
+## Agent behavior
+
+The main agent may proactively save useful, non-sensitive repository preferences, user corrections, accepted decisions, and verified reusable lessons. Search related memories before saving to avoid duplicates. Do not store secrets, raw transcripts, unaccepted proposals, routine task progress, or facts already covered by repository documentation.
+
+Recall is appropriate when prior decisions or preferences matter, after a meaningful task change, or when a recurring failure suggests relevant past work. Skip unnecessary searches for trivial self-contained tasks. These decisions are model-guided, not a guarantee that every useful lesson will be saved. PiBox does not force extra model turns or run a background extraction agent.
+
+Subagents can read memory but cannot curate it; the main agent owns saves. Updates, deletions, and audit-driven mutations still require explicit user approval. Normal tool permission rules remain authoritative—memory is not a permission bypass.
+
+Writes use `infer=false`: Mem0 stores the curated content supplied by the agent, rather than extracting facts from complete conversations. Current source and reviewed repository contracts outrank recalled memory. Repository-wide procedural rules belong in `AGENTS.md` or scoped rules, not hidden memory.
+
+## Recall and context
+
+At the start of a normal agent run, PiBox performs a bounded lookup using current and recent user intent. It selects relevant active records, verifies their provenance/freshness, and returns at most 4,000 characters as a custom evidence message before the first model response. Passive retrieval probes an already-running Mem0 service; it does not start the service.
+
+The delivered snapshot is persisted in the session at its original position. Later tool loops, steering, and new user turns do not move or remove it. A later explicit recall returns an ordinary tool result. Neither path sends a steering instruction or starts an extra model turn. Steering does not itself repeat bootstrap retrieval: the agent can make a targeted recall if the objective changes.
+
+Recall content explicitly identifies itself as historical evidence, not new user instructions. Custom messages become user-role content for the provider; their metadata alone is not an instruction boundary. Persisted snippets are included in session files and exports. Branching and reload use Pi's ordinary session history. Compaction is an intentional context-reset boundary: snapshots can be summarized rather than retained verbatim, and the agent should retrieve current evidence again when needed.
+
+For user-derived knowledge, supply `conversationQuote`: an exact excerpt from a user message in the active session branch. PiBox verifies the match and records the session ID, entry ID, and quote hash rather than storing the quotation as provenance. No unrelated tracked file is needed as fake evidence. For code-derived knowledge, supply repository-relative `evidencePaths`: regular tracked files must match the current commit when saved and the verified commit when recalled. Choose one provenance kind, not both. Updating a user-derived memory requires fresh conversation proof.
+
+Automatic and explicit `recall` share eligibility checks. Expired, stale, unsupported, or unrelated records are excluded; `list` and `get` remain available for inspecting repository records. A snapshot identical to the latest memory message still present in context is reused rather than appended again; `/memory-debug` reports `reused`.
+
+## Visibility and commands
+
+Successful saves and recalls produce concise activity notices without dumping stored text. Empty, unavailable, and rejected recall outcomes are inspectable through `/memory-debug`. Activity is not repeated for every tool-loop request. The Mem0 service indicator describes service health, not whether anything was remembered or recalled.
 
 ```text
 /memory-status
@@ -12,13 +36,9 @@ The memory adapter uses a shared, loopback-only Mem0 OSS service for repository-
 /memory-audit
 ```
 
-The `memory_adapter` tool supports `status`, `remember`, `recall`, `list`, `get`, `update`, `delete`, `history`, and advisory `audit` actions. Writes always use `infer=false`; PiBox does not capture turns or tool results automatically.
+The `memory_adapter` tool supports `status`, `remember`, `recall`, `list`, `get`, `update`, `delete`, `history`, and advisory `audit`. Explicit tool operations can start the local service lazily. `/memory-debug` inspects existing diagnostics without triggering a model turn or retrieval.
 
-Automatic recall is run-scoped and available to both the main agent and PiBox-spawned subagents. `before_agent_start` captures the current objective; the first `context` event builds a bounded query from recent user intent, retrieves ten repository-scoped candidates, requires an active high-confidence result, keeps at most five records near the best score, rejects changed or missing evidence, and injects at most 4,000 characters into the copied model context. The result is cached across that run's tool loop and cleared at `agent_settled`, so retrieved memory never accumulates in persistent session history. Passive recall probes an already-running Mem0 service but never starts it. `/memory-debug` shows the latest query, selected IDs and scores, exclusions, context size, failures, and subagent identity without triggering another model turn.
-
-Every curated record carries `repo_id`, type, source, evidence paths, verified commit/date, status, and schema version. Current source and reviewed repository contracts outrank recalled memory. Unconditional procedural instructions belong in `AGENTS.md` or repository rules rather than semantic memory.
-
-`/memory-audit` runs deterministic freshness/evidence checks, caps candidates at 50, and asks the main session for a semantic recommendation. When candidates exist, the audit prompt requires read-only explorer subagents to verify claims against current source before the main session reconciles recommendations. It never mutates memory. Recommendations are `keep`, `reverify`, `update`, `supersede`, `archive`, `delete`, or `needs_user`; mutation requires explicit user approval.
+`/memory-audit` performs bounded deterministic checks, then asks the main session for a semantic recommendation. When candidates exist, read-only explorer subagents verify claims against source before the main session reconciles them. Audit recommendations never mutate memory automatically.
 
 ## Local service
 
