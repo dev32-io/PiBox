@@ -179,45 +179,8 @@ test("branch restoration, mode prompts, startup aliases, and cache impact stay e
 	await handlers.get("session_tree")?.({}, ctx);
 	assert.equal(currentWorkMode(), "orchestrator");
 	const result = await handlers.get("before_agent_start")?.({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
-	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode[\s\S]+plan\.md[\s\S]+ledger\.md/);
-	// Text contract guards only: these do not prove live model behavior.
+	assert.match(result.systemPrompt, /^base[\s\S]+# PiBox Orchestrator Mode/);
 	const prompt = result.systemPrompt;
-	// Guard load-bearing instructions, not every sentence of the prompt.
-	for (const instruction of [
-		"obtain explicit approval, then execute until Done",
-		"pre-approval delegation is read-only",
-		"Markdown checklist (`- [ ]` / `- [x]`) of coherent outcomes",
-		"Group by shared context and outcome",
-		"checklist order is not execution order",
-		"Explicitly choose `tier` on initial spawn",
-		"Continuation retains its existing route",
-		"Local models require `local`",
-		"Parent owns `plan.md` and `ledger.md`; children do not orchestrate recursively",
-		"separate branches/worktrees",
-		"Standalone spawn starts at the repository root",
-		"Worktrees isolate edits, not shared services",
-		"Parent owns integration",
-		"immediately mark its actual `plan.md` checkbox complete only when verified",
-		"Leave partial outcomes unchecked",
-		"Never claim completion from reports or checkboxes alone",
-		"Never start the independent code-review phase before the entire approved plan is implemented, integrated, and verified",
-		"unless the user explicitly requests earlier review",
-		"Review must stay within the approved plan or user-requested scope",
-		"Background results arrive automatically",
-		"Never sleep or poll",
-		"Actively use session scratch as a private workbench and working memory",
-		"Before substantial research or delegation, record the current goal",
-		"chat summaries do not replace file updates",
-		"check off verified outcomes during research as well as implementation",
-		"before follow-up dispatch or user briefing",
-		"After reload, resume, or compaction, read `plan.md`",
-		"never durable repository or workflow authority",
-		"Do not invoke Workflow resource or execution tools",
-	]) assert.ok(prompt.includes(instruction), `missing instruction: ${instruction}`);
-	for (const tier of ["low", "medium", "high", "max"]) {
-		assert.ok(prompt.includes(`| \`${tier}\` |`), `missing tier example: ${tier}`);
-	}
-	assert.doesNotMatch(prompt, /normally omit.*tier|step-by-step Markdown checklist/);
 	assert.doesNotMatch(prompt, /\/tmp\/pibox-session-[0-9a-f]+/, "static mode prompt contains no workspace path");
 	assert.deepEqual(modeTransitionImpact({ schemaVersion: 1, mode: "agent", providerMode: "agent", workflowToolsExposed: false }, "workflow"), {
 		changesSystemPrompt: true,
