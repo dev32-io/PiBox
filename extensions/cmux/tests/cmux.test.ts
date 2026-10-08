@@ -5,9 +5,10 @@ import { access, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises
 import { connect, createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import { createInterface } from "node:readline";
+import test, { type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import cmuxExtension from "../index.js";
+import cmuxExtension, { type CmuxDependencies } from "../index.js";
 import { CmuxPaneAdapter, SocketViewerTransport, chooseLargestOwnedPane, sanitizeTerminalText, splitDirection, splitIsViable, type CmuxClient, type CmuxPane, type ViewerFrame, type ViewerTransport } from "../cmux.js";
 import { CMUX_PANES_ENTRY_TYPE, loadCmuxPanesDefault, resolveCmuxPanesDefault, restoreCmuxPanesEnabled } from "../config.js";
 import type { LogicalAgentSnapshot, RuntimeOwner, SubagentEvent, SubagentService } from "../../subagent/api.js";
@@ -79,6 +80,38 @@ const snapshot = (agentId: string, attemptId: string, title = "Task"): LogicalAg
 const event = (agentId: string, attemptId: string, type: SubagentEvent["type"], data?: Record<string, unknown>): SubagentEvent => ({ owner, cursor: 1, agentId, attemptId, sequence: 1, type, at: "2026-01-01T00:00:00Z", ...(data ? { data } : {}) });
 const displayEvent = (agentId: string, attemptId: string, frame: SubagentDisplayEvent["frame"]): SubagentDisplayEvent => ({ owner, agentId, attemptId, frame });
 
+function extensionFixture(t: TestContext, dependencies: CmuxDependencies = {}, serviceOverrides: Partial<SubagentService> = {}) {
+	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+	let command: any; let listener: ((event: SubagentEvent) => void) | undefined;
+	const branch: any[] = []; const notices: string[] = []; const viewers: FakeViewers[] = []; const clients: FakeCmux[] = [];
+	const active = snapshot("a", "one");
+	const replay = () => ({ snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false });
+	let controlCalls = 0;
+	const forbidden = () => { controlCalls++; throw new Error("child control called"); };
+	const service = {
+		owner, protocolVersion: 1, launch: forbidden, continue: forbidden, wait: forbidden, stop: forbidden, release: forbidden, teardown: forbidden,
+		inspect: () => [active], replay,
+		subscribe: (_owner: RuntimeOwner, _cursor: number, callback: (value: SubagentEvent) => void) => {
+			listener = callback; return { initial: replay(), unsubscribe() { listener = undefined; } };
+		},
+		...serviceOverrides,
+	} as unknown as SubagentService;
+	cmuxExtension({
+		on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (_name: string, value: any) => { command = value; },
+		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+	} as unknown as ExtensionAPI, {
+		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, loadDefault: () => true,
+		resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+		createClient: () => { const value = new FakeCmux([pane("main-pane", "main", 1200, 600)]); clients.push(value); return value; },
+		createViewers: async () => { const value = new FakeViewers(); viewers.push(value); return value; },
+		...dependencies,
+	});
+	const ctx = { cwd: process.cwd(), ui: { notify: (message: string) => notices.push(message) }, sessionManager: { getSessionId: () => "session", getBranch: () => branch } } as unknown as ExtensionContext;
+	const run = (name: string, value = {}) => handlers.get(name)!(value, ctx);
+	t.after(async () => { await run("session_shutdown"); assert.equal(controlCalls, 0, "observer must never control children"); });
+	return { branch, notices, viewers, clients, run, command: (args: string) => command.handler(args, ctx), emit: (value: SubagentEvent) => listener?.(value), get subscribed() { return Boolean(listener); } };
+}
+
 async function opened(width = 1200, height = 600) {
 	const client = new FakeCmux([pane("main-pane", "main", width, height)]);
 	const viewers = new FakeViewers();
@@ -90,6 +123,25 @@ async function opened(width = 1200, height = 600) {
 
 function commandParts(command: string): string[] {
 	return [...command.matchAll(/'([^']*)'/g)].map((match) => match[1]!);
+}
+
+async function socketFixture(t: TestContext) {
+	const transport = await SocketViewerTransport.create(); const sockets: Socket[] = [];
+	t.after(async () => { for (const socket of sockets) socket.destroy(); await transport.shutdown(); });
+	return { transport, connectSocket(path: string, allowHalfOpen = false) { const socket = connect({ path, allowHalfOpen }); sockets.push(socket); return socket; } };
+}
+
+function receiveFrames(socket: Socket, onFrame: (frame: ViewerFrame) => void = () => {}) {
+	let input = ""; const frames: ViewerFrame[] = [];
+	socket.setEncoding("utf8");
+	socket.on("data", (chunk) => {
+		input += chunk;
+		for (;;) {
+			const end = input.indexOf("\n"); if (end < 0) break;
+			const frame = JSON.parse(input.slice(0, end)) as ViewerFrame; input = input.slice(end + 1); frames.push(frame); onFrame(frame);
+		}
+	});
+	return frames;
 }
 
 async function withTimeout<T>(promise: Promise<T>, milliseconds = 2_000): Promise<T> {
@@ -124,58 +176,47 @@ test("cmux pane defaults are global-only, strict, and branch-restored", async ()
 	} finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("cmux panes command toggles active observers and restores branch state across tree and reload", async () => {
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	let command: any; let branch: any[] = []; let listener: ((event: SubagentEvent) => void) | undefined;
-	const notices: string[] = []; const viewers: FakeViewers[] = []; const clients: FakeCmux[] = [];
-	const emit = (value: SubagentEvent) => listener?.(value);
-	const active = snapshot("a", "one");
-	const service = {
-		owner, protocolVersion: 1, inspect: () => [active], replay: () => ({ snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false }),
-		subscribe: (_owner: RuntimeOwner, _cursor: number, callback: (value: SubagentEvent) => void) => { listener = callback; return { initial: { snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false }, unsubscribe() { listener = undefined; } }; },
-	} as unknown as SubagentService;
-	const pi = {
-		on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (_name: string, value: any) => { command = value; },
-		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
-	} as unknown as ExtensionAPI;
-	cmuxExtension(pi, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, loadDefault: () => true,
-		resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
-		createClient: () => { const value = new FakeCmux([pane("main-pane", "main", 1200, 600)]); clients.push(value); return value; },
-		createViewers: async () => { const value = new FakeViewers(); viewers.push(value); return value; },
-	});
-	const ctx = { cwd: process.cwd(), ui: { notify: (message: string) => notices.push(message) }, sessionManager: { getSessionId: () => "session", getBranch: () => branch } } as unknown as ExtensionContext;
-	await handlers.get("session_start")!({}, ctx);
-	assert.ok(listener); assert.equal(viewers[0]!.commands.length, 1);
-	await command.handler("off", ctx);
-	assert.equal(listener, undefined); assert.ok(viewers[0]!.log.includes("shutdown")); assert.ok(clients[0]!.log.includes("close:surface-1"));
-	await command.handler("on", ctx);
-	assert.ok(listener); assert.equal(viewers[1]!.commands.length, 1, "on reseeds active attempts");
-	emit(event("b", "two", "attempt_started"));
-	assert.equal(viewers[1]!.commands.length, 2, "on observes future attempts");
-	await command.handler("", ctx);
-	assert.equal(listener, undefined, "no args toggles off");
-	branch = [{ type: "custom", customType: CMUX_PANES_ENTRY_TYPE, data: { schemaVersion: 1, enabled: true } }];
-	await handlers.get("session_tree")!({}, ctx);
-	assert.ok(listener); assert.equal(viewers[2]!.commands.length, 1, "tree restoration reattaches active attempts");
-	await handlers.get("session_shutdown")!({}, ctx);
-	await handlers.get("session_start")!({ reason: "reload" }, ctx);
-	assert.ok(listener); assert.equal(viewers[3]!.commands.length, 1, "reload restores branch override");
-	await command.handler("status", ctx); assert.match(notices.at(-1)!, /on.*active/);
-	await command.handler("bad", ctx); assert.match(notices.at(-1)!, /Usage:/);
-	await handlers.get("session_shutdown")!({}, ctx);
+test("enabled/disabled defaults, legacy opt-out, observer-only toggles, tree and reload", async (t) => {
+	for (const enabled of [true, false]) {
+		const host = extensionFixture(t, { loadDefault: () => enabled, env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main", PIBOX_CMUX_PANES: "0" } });
+		const { viewers, clients, notices } = host;
+		await host.run("session_start");
+		assert.equal(host.subscribed, enabled);
+		assert.equal(viewers.length, enabled ? 1 : 0);
+		if (!enabled) await host.command("on");
+		assert.deepEqual(viewers[0]!.frames.get("a\0one")?.[0], { type: "init", title: "worker · Task", limited: true });
+		await host.command("off");
+		assert.equal(host.subscribed, false); assert.ok(viewers[0]!.log.includes("shutdown")); assert.ok(clients[0]!.log.includes("close:surface-1"));
+		await host.command("on");
+		assert.ok(host.subscribed); assert.equal(viewers[1]!.commands.length, 1, "on reseeds active attempts");
+		host.emit(event("b", "two", "attempt_started"));
+		assert.equal(viewers[1]!.commands.length, 2, "on observes future attempts");
+		await host.command("");
+		assert.equal(host.subscribed, false, "no args toggles off");
+		host.branch.splice(0, host.branch.length, { type: "custom", customType: CMUX_PANES_ENTRY_TYPE, data: { schemaVersion: 1, enabled: true } });
+		await host.run("session_tree");
+		assert.ok(host.subscribed); assert.equal(viewers[2]!.commands.length, 1, "tree restoration reattaches active attempts");
+		await host.run("session_shutdown");
+		assert.equal(host.subscribed, false);
+		await host.run("session_start", { reason: "reload" });
+		assert.ok(host.subscribed); assert.equal(viewers[3]!.commands.length, 1, "reload restores branch override live-only");
+		await host.command("status"); assert.match(notices.at(-1)!, /on.*active/);
+		await host.command("bad"); assert.match(notices.at(-1)!, /Usage:/);
+		await host.run("session_shutdown");
+	}
 });
 
-test("command remains available outside cmux without creating resources", async () => {
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>(); let command: any; const notices: string[] = []; const entries: unknown[] = [];
-	cmuxExtension({
-		on: (name: string, handler: any) => handlers.set(name, handler), registerCommand: (_name: string, value: any) => { command = value; }, appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
-	} as unknown as ExtensionAPI, { env: {}, loadDefault: () => true, resolveSubagents: () => { throw new Error("must not resolve"); }, createClient: () => { throw new Error("must not create"); } });
-	const ctx = { cwd: process.cwd(), ui: { notify: (message: string) => notices.push(message) }, sessionManager: { getBranch: () => [], getSessionId: () => "session" } } as unknown as ExtensionContext;
-	await handlers.get("session_start")!({}, ctx);
-	await command.handler("status", ctx); assert.match(notices.at(-1)!, /on.*unavailable outside cmux/);
-	await command.handler("", ctx); assert.match(notices.at(-1)!, /off.*unavailable outside cmux/); assert.equal(entries.length, 1);
-	await handlers.get("session_shutdown")!({}, ctx);
+test("extension stays absent in children and command works outside cmux without resources", async (t) => {
+	const registrations: string[] = [];
+	cmuxExtension({ on: (name: string) => registrations.push(name), registerCommand: (name: string) => registrations.push(name) } as unknown as ExtensionAPI, {
+		env: { CMUX_WORKSPACE_ID: "w", CMUX_SURFACE_ID: "s", PIBOX_RUNTIME_ROLE: "subagent" }, loadDefault: () => { throw new Error("child must not load settings"); },
+	});
+	assert.deepEqual(registrations, []);
+	const host = extensionFixture(t, { env: {}, resolveSubagents: () => { throw new Error("must not resolve"); }, createClient: () => { throw new Error("must not create"); } });
+	await host.run("session_start");
+	await host.command("status"); assert.match(host.notices.at(-1)!, /on.*unavailable outside cmux/);
+	await host.command(""); assert.match(host.notices.at(-1)!, /off.*unavailable outside cmux/); assert.equal(host.branch.length, 1);
+	assert.equal(host.viewers.length, 0);
 });
 
 test("layout reserves one third initially then halves owned panes along their longest axis", async () => {
@@ -353,129 +394,60 @@ test("user close never reopens same attempt; continuation gets a fresh pane", as
 	await adapter.shutdown();
 });
 
-test("extension ignores legacy opt-out, observes without child controls, and remains absent in children", async () => {
-	const childRegistrations: string[] = [];
-	cmuxExtension({ on: (name: string) => childRegistrations.push(name), registerCommand: (name: string) => childRegistrations.push(name) } as unknown as ExtensionAPI, {
-		env: { CMUX_WORKSPACE_ID: "w", CMUX_SURFACE_ID: "s", PIBOX_RUNTIME_ROLE: "subagent" },
-	});
-	assert.deepEqual(childRegistrations, []);
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	const pi = { on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI;
-	const active = snapshot("a", "one");
-	let listener: ((event: SubagentEvent) => void) | undefined;
-	const forbidden = () => { throw new Error("child control called"); };
-	const service = {
-		owner, protocolVersion: 1, launch: forbidden, continue: forbidden, wait: forbidden, stop: forbidden, release: forbidden, teardown: forbidden,
-		inspect: () => [active], replay: () => ({ snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false }),
-		subscribe: (_owner: RuntimeOwner, _cursor: number, callback: (value: SubagentEvent) => void) => { listener = callback; return { initial: { snapshot: { owner, cursor: 0, agents: [active] }, events: [], reset: false }, unsubscribe() { listener = undefined; } }; },
-	} as unknown as SubagentService;
-	const viewers: FakeViewers[] = []; const clients: FakeCmux[] = [];
-	cmuxExtension(pi, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main", PIBOX_CMUX_PANES: "0" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
-		createClient: () => { const value = new FakeCmux([pane("main-pane", "main", 1200, 600)]); clients.push(value); return value; },
-		createViewers: async () => { const value = new FakeViewers(); viewers.push(value); return value; },
-	});
-	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
-	await handlers.get("session_start")!({ reason: "startup" }, ctx);
-	assert.ok(listener);
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.deepEqual(viewers[0]!.frames.get("a\0one")?.[0], { type: "init", title: "worker · Task", limited: true });
-	await handlers.get("session_shutdown")!({ reason: "reload" }, ctx);
-	assert.equal(listener, undefined);
-	assert.ok(viewers[0]!.log.includes("shutdown"));
-	await handlers.get("session_start")!({ reason: "reload" }, ctx);
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.equal(viewers.length, 2);
-	assert.deepEqual(viewers.map((viewer) => viewer.commands.length), [1, 1], "reload closes and rebinds active attempts live-only");
-	await handlers.get("session_shutdown")!({ reason: "quit" }, ctx);
-});
-
-test("rich observer is capability-gated, metadata inspect runs only at attempt start, and cleanup unsubscribes", async () => {
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
+test("rich observer is capability-gated, metadata inspect runs only at attempt start, and cleanup unsubscribes", async (t) => {
 	let compactListener: ((event: SubagentEvent) => void) | undefined;
 	let richListener: ((event: SubagentDisplayEvent) => void) | undefined;
 	let inspectCount = 0; let richUnsubscribed = false;
-	const service = {
-		owner, protocolVersion: 1,
+	const host = extensionFixture(t, {}, {
 		inspect: () => { inspectCount++; return [snapshot("a", "one")]; },
 		replay: () => ({ snapshot: { owner, cursor: 0, agents: [] }, events: [], reset: false }),
 		subscribe: (_owner: RuntimeOwner, _cursor: number, listener: (event: SubagentEvent) => void) => { compactListener = listener; return { initial: { snapshot: { owner, cursor: 0, agents: [] }, events: [], reset: false }, unsubscribe() { compactListener = undefined; } }; },
 		subscribeDisplay: (_owner: RuntimeOwner, listener: (event: SubagentDisplayEvent) => void) => { richListener = listener; return { unsubscribe() { richListener = undefined; richUnsubscribed = true; } }; },
-	} as unknown as SubagentService;
-	const viewers = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
-		createViewers: async () => viewers, createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),
 	});
-	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
-	await handlers.get("session_start")!({}, ctx);
+	await host.run("session_start");
 	compactListener!(event("a", "one", "attempt_started"));
 	compactListener!(event("a", "one", "message_delta", { text: "one" }));
 	compactListener!(event("a", "one", "message_delta", { text: "two" }));
 	richListener!(displayEvent("a", "one", { type: "display_ready" }));
 	assert.equal(inspectCount, 1);
-	assert.equal(viewers.frames.get("a\0one")?.some((frame) => frame.type === "display"), true);
-	await handlers.get("session_shutdown")!({}, ctx);
-	assert.equal(richUnsubscribed, true);
+	assert.equal(host.viewers[0]!.frames.get("a\0one")?.some((frame) => frame.type === "display"), true);
+	await host.run("session_shutdown");
+	assert.equal(compactListener, undefined); assert.equal(richListener, undefined); assert.equal(richUnsubscribed, true);
 });
 
-test("failed cmux probe does not attach rich observer or create viewer", async () => {
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	let subscribed = false; let viewerCreated = false;
-	const service = { owner, protocolVersion: 1, subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } } as unknown as SubagentService;
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
-		env: { CMUX_WORKSPACE_ID: "stale", CMUX_SURFACE_ID: "missing" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
+test("failed cmux probe does not attach rich observer or create viewer", async (t) => {
+	let subscribed = false;
+	const host = extensionFixture(t, {
 		createClient: () => ({ listPanes: async () => { throw new Error("cmux missing"); } }) as unknown as CmuxClient,
-		createViewers: async () => { viewerCreated = true; return new FakeViewers(); },
-	});
-	await handlers.get("session_start")!({}, { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext);
-	assert.equal(subscribed, false);
-	assert.equal(viewerCreated, false);
+	}, { subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } });
+	await host.run("session_start");
+	assert.equal(subscribed, false); assert.equal(host.viewers.length, 0);
 });
 
-test("disable fences delayed startup and disposes its transport", async () => {
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	let command: any; let resolveViewer!: (viewer: ViewerTransport) => void; let subscribed = false;
+test("disable fences delayed startup and disposes its transport", async (t) => {
+	let resolveViewer!: (viewer: ViewerTransport) => void; let reachedViewer!: () => void; let subscribed = false;
 	const pendingViewer = new Promise<ViewerTransport>((resolve) => { resolveViewer = resolve; });
-	const service = { owner, protocolVersion: 1, subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; } } as unknown as SubagentService;
+	const creatingViewer = new Promise<void>((resolve) => { reachedViewer = resolve; });
 	const viewer = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand(_name: string, value: any) { command = value; }, appendEntry() {} } as unknown as ExtensionAPI, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" }, resolveSubagents: () => ({ owner, protocolVersion: 1, service }),
-		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]), createViewers: () => pendingViewer,
+	const host = extensionFixture(t, { createViewers: () => { reachedViewer(); return pendingViewer; } }, {
+		subscribeDisplay: () => { subscribed = true; return { unsubscribe() {} }; },
 	});
-	const ctx = { cwd: process.cwd(), ui: { notify() {} }, sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
-	const starting = handlers.get("session_start")!({}, ctx);
-	await new Promise((resolve) => setImmediate(resolve));
-	await command.handler("off", ctx);
-	resolveViewer(viewer);
-	await starting;
-	assert.equal(subscribed, false);
-	assert.ok(viewer.log.includes("shutdown"));
-	await handlers.get("session_shutdown")!({}, ctx);
+	const starting = host.run("session_start");
+	try {
+		await withTimeout(creatingViewer);
+		await host.command("off");
+	} finally { resolveViewer(viewer); await starting; }
+	assert.equal(subscribed, false); assert.ok(viewer.log.includes("shutdown"));
 });
 
-test("startup failure shuts transport down and current-cursor handshake replays only initial memory events", async () => {
-	const ctx = { cwd: process.cwd(), sessionManager: { getSessionId: () => "session", getBranch: () => [] } } as unknown as ExtensionContext;
-	const failedHandlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	const failedViewer = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => failedHandlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" },
-		resolveSubagents: () => ({ owner, protocolVersion: 1, service: {
-			replay: () => ({ snapshot: { owner, cursor: 7, agents: [] }, events: [], reset: false }),
-			subscribe: () => { throw new Error("activation ended"); },
-		} as unknown as SubagentService }),
-		createViewers: async () => failedViewer,
-		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),
-	});
-	await failedHandlers.get("session_start")!({}, ctx);
-	assert.ok(failedViewer.log.includes("shutdown"));
+test("startup failure shuts transport down and current-cursor handshake replays only initial memory events", async (t) => {
+	const failed = extensionFixture(t, {}, { subscribe: () => { throw new Error("activation ended"); } });
+	await failed.run("session_start");
+	assert.ok(failed.viewers[0]!.log.includes("shutdown"));
 
-	const handlers = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-	const active = snapshot("a", "one");
 	const initial = [event("a", "one", "attempt_started"), event("a", "one", "message_delta", { text: "atomic" })];
 	let subscribedAt = -1;
-	const service = {
-		owner, protocolVersion: 1, inspect: () => [active],
+	const host = extensionFixture(t, {}, {
 		replay: (_owner: RuntimeOwner, cursor?: number) => {
 			assert.equal(cursor, undefined, "only current in-memory cursor requested");
 			return { snapshot: { owner, cursor: 9, agents: [] }, events: [], reset: false };
@@ -484,18 +456,9 @@ test("startup failure shuts transport down and current-cursor handshake replays 
 			subscribedAt = cursor;
 			return { initial: { snapshot: { owner, cursor: 9, agents: [] }, events: initial, reset: false }, unsubscribe() {} };
 		},
-	} as unknown as SubagentService;
-	const viewers = new FakeViewers();
-	cmuxExtension({ on: (name: string, handler: any) => handlers.set(name, handler), registerCommand() {}, appendEntry() {} } as unknown as ExtensionAPI, {
-		env: { CMUX_WORKSPACE_ID: "workspace", CMUX_SURFACE_ID: "main" },
-		resolveSubagents: () => ({ owner, protocolVersion: 1, service }), createViewers: async () => viewers,
-		createClient: () => new FakeCmux([pane("main-pane", "main", 1200, 600)]),
 	});
-	await handlers.get("session_start")!({}, ctx);
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	assert.equal(subscribedAt, 9);
-	assert.match(viewers.writes.get("a\0one")!, /atomic/);
-	await handlers.get("session_shutdown")!({}, ctx);
+	await host.run("session_start");
+	assert.equal(subscribedAt, 9); assert.match(host.viewers[0]!.writes.get("a\0one")!, /atomic/);
 });
 
 test("failed surface close remains owned and retries during shutdown", async () => {
@@ -518,74 +481,59 @@ test("failed surface close remains owned and retries during shutdown", async () 
 	assert.equal(real.panes.some((candidate) => candidate.surfaceIds.includes("surface-1")), false);
 });
 
-test("socket transport waits for viewer, flushes before close, force-closes malformed clients, and removes files", async () => {
-	const transport = await SocketViewerTransport.create();
+test("socket transport waits for viewer, flushes before close, force-closes malformed clients, and removes files", async (t) => {
+	const { transport, connectSocket } = await socketFixture(t);
 	const command = transport.command("attempt", () => assert.fail("unexpected close"));
 	const [, , socketPath, token] = commandParts(command);
 	assert.ok(socketPath && token);
 	transport.write("attempt", "first 🪨 last");
 	const close = transport.close("attempt");
-	await new Promise((resolve) => setTimeout(resolve, 20));
-	const viewer = connect(socketPath!);
-	viewer.setEncoding("utf8");
+	const viewer = connectSocket(socketPath!);
 	await once(viewer, "connect");
+	const frames = receiveFrames(viewer, (frame) => { if (frame.type === "close") viewer.write(`${JSON.stringify({ type: "drained" })}\n`); });
 	viewer.write(`${JSON.stringify({ type: "hello", token })}\n`);
-	let input = ""; const frames: any[] = [];
-	viewer.on("data", (chunk) => {
-		input += chunk;
-		for (;;) {
-			const end = input.indexOf("\n"); if (end < 0) break;
-			const frame = JSON.parse(input.slice(0, end)); input = input.slice(end + 1); frames.push(frame);
-			if (frame.type === "close") viewer.write(`${JSON.stringify({ type: "drained" })}\n`);
-		}
-	});
 	await withTimeout(close);
 	assert.deepEqual(frames.map((frame) => frame.type), ["text", "close"]);
-	assert.equal(frames[0].text, "first 🪨 last");
+	assert.deepEqual(frames[0], { type: "text", text: "first 🪨 last" });
 
 	const hangingCommand = transport.command("hanging", () => undefined);
 	const hangingToken = commandParts(hangingCommand)[3]!;
-	const hanging = connect({ path: socketPath!, allowHalfOpen: true });
+	const hanging = connectSocket(socketPath!, true);
 	hanging.setEncoding("utf8");
 	await once(hanging, "connect");
 	hanging.write(`${JSON.stringify({ type: "hello", token: hangingToken })}\n`);
 	hanging.on("data", (chunk) => { if (chunk.includes('"close"')) hanging.write(`${JSON.stringify({ type: "drained" })}\n`); });
-	const started = Date.now();
 	await withTimeout(transport.close("hanging"), 1_000);
-	assert.ok(Date.now() - started < 1_000, "half-open viewer close is bounded");
 	hanging.destroy();
 
 	const budgetCommand = transport.command("budget", () => undefined);
 	const budgetToken = commandParts(budgetCommand)[3]!;
 	const initialText = "a".repeat(60 * 1024); const laterText = "b".repeat(8 * 1024);
 	transport.write("budget", initialText);
-	const budgetViewer = connect(socketPath!);
-	budgetViewer.setEncoding("utf8");
+	const budgetViewer = connectSocket(socketPath!);
 	await once(budgetViewer, "connect");
-	let budgetInput = ""; const budgetFrames: any[] = [];
-	const received = new Promise<void>((resolve) => budgetViewer.on("data", (chunk) => {
-		budgetInput += chunk;
-		for (;;) {
-			const end = budgetInput.indexOf("\n"); if (end < 0) break;
-			budgetFrames.push(JSON.parse(budgetInput.slice(0, end))); budgetInput = budgetInput.slice(end + 1);
-			const receivedLength = budgetFrames.reduce((total, frame) => total + (frame.type === "text" ? frame.text.length : 0), 0);
+	let receivedLength = 0;
+	let budgetFrames: ViewerFrame[] = [];
+	const received = new Promise<void>((resolve) => {
+		budgetFrames = receiveFrames(budgetViewer, (frame) => {
+			if (frame.type === "text") receivedLength += frame.text.length;
 			if (receivedLength === initialText.length) setImmediate(() => transport.write("budget", laterText));
 			if (receivedLength === initialText.length + laterText.length) resolve();
-		}
-	}));
+		});
+	});
 	budgetViewer.write(`${JSON.stringify({ type: "hello", token: budgetToken })}\n`);
 	await withTimeout(received);
 	assert.equal(budgetFrames.filter((frame) => frame.type === "text").map((frame) => frame.text).join(""), initialText + laterText);
 	assert.ok(budgetFrames.every((frame) => Buffer.byteLength(`${JSON.stringify(frame)}\n`) <= 16 * 1024));
 	transport.abandon("budget");
 
-	const invalid = connect(socketPath!);
+	const invalid = connectSocket(socketPath!);
 	await once(invalid, "connect");
 	const invalidClosed = once(invalid, "close");
 	invalid.write("null\n");
 	await withTimeout(invalidClosed);
 
-	const malformed = connect(socketPath!);
+	const malformed = connectSocket(socketPath!);
 	await once(malformed, "connect");
 	const malformedClosed = once(malformed, "close");
 	await withTimeout(transport.shutdown());
@@ -593,8 +541,8 @@ test("socket transport waits for viewer, flushes before close, force-closes malf
 	await assert.rejects(access(socketPath!));
 });
 
-test("socket queue coalesces headers, marks dropped detail, preserves orphan tool end, and closes last", async () => {
-	const transport = await SocketViewerTransport.create();
+test("socket queue coalesces headers, marks dropped detail, preserves orphan tool end, and closes last", async (t) => {
+	const { transport, connectSocket } = await socketFixture(t);
 	const command = transport.command("queued", () => undefined);
 	const [, , socketPath, token] = commandParts(command);
 	transport.send("queued", { type: "init", title: "old" });
@@ -607,17 +555,9 @@ test("socket queue coalesces headers, marks dropped detail, preserves orphan too
 	transport.send("queued", { type: "display", frame: { type: "tool_start", toolCallId: "orphan", toolName: "read", argsText: "x".repeat(12 * 1024) } });
 	transport.send("queued", { type: "text", text: "y".repeat(60 * 1024) });
 	transport.send("queued", { type: "display", frame: { type: "tool_end", toolCallId: "orphan", toolName: "read", text: "done", isError: false } });
-	const viewer = connect(socketPath!); viewer.setEncoding("utf8");
+	const viewer = connectSocket(socketPath!);
 	await once(viewer, "connect");
-	let input = ""; const frames: ViewerFrame[] = [];
-	viewer.on("data", (chunk) => {
-		input += chunk;
-		for (;;) {
-			const end = input.indexOf("\n"); if (end < 0) break;
-			const frame = JSON.parse(input.slice(0, end)) as ViewerFrame; input = input.slice(end + 1); frames.push(frame);
-			if (frame.type === "close") viewer.write(`${JSON.stringify({ type: "drained" })}\n`);
-		}
-	});
+	const frames = receiveFrames(viewer, (frame) => { if (frame.type === "close") viewer.write(`${JSON.stringify({ type: "drained" })}\n`); });
 	viewer.write(`${JSON.stringify({ type: "hello", token })}\n`);
 	await withTimeout(transport.close("queued"));
 	const init = frames.find((frame) => frame.type === "init") as Extract<ViewerFrame, { type: "init" }>;
@@ -628,7 +568,6 @@ test("socket queue coalesces headers, marks dropped detail, preserves orphan too
 	assert.equal(frames.some((frame) => frame.type === "notice" && /omitted/.test(frame.text)), true);
 	assert.equal(frames.some((frame) => frame.type === "display" && frame.frame.type === "tool_end"), true);
 	assert.equal(frames.at(-1)?.type, "close");
-	await transport.shutdown();
 });
 
 test("socket listen failure removes temporary directory", { concurrency: false }, async () => {
@@ -645,72 +584,48 @@ test("socket listen failure removes temporary directory", { concurrency: false }
 	}
 });
 
-test("delayed real viewer accepts framed multibyte escaped text under stdout backpressure", async () => {
-	const transport = await SocketViewerTransport.create();
-	let unexpectedlyClosed = false;
-	const command = transport.command("real", () => { unexpectedlyClosed = true; });
-	const parts = commandParts(command);
-	const text = `begin\n${"🙂\\\tline\n".repeat(4_000)}end`;
-	transport.write("real", text);
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	const child = spawn(parts[0]!, parts.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
-	child.stdout!.pause();
-	let output = "";
-	child.stdout!.setEncoding("utf8");
-	child.stdout!.on("data", (chunk) => { output += chunk; });
-	await new Promise((resolve) => setTimeout(resolve, 30));
-	child.stdout!.resume();
-	await withTimeout(new Promise<void>((resolve) => {
-		const timer = setInterval(() => { if (output.length === text.length) { clearInterval(timer); resolve(); } }, 5);
-	}), 5_000);
-	assert.equal(output, text);
-	await withTimeout(transport.close("real"));
-	await withTimeout(once(child, "close").then(() => undefined));
-	assert.equal(unexpectedlyClosed, false);
-	await transport.shutdown();
-});
-
-test("real viewer preserves split UTF-8 and applies stdout backpressure", async () => {
+test("real viewer preserves split UTF-8, escaped framed output, drains paused stdout, and exits cleanly", async (t) => {
 	const directory = await mkdtemp(join(tmpdir(), "pibox-viewer-test-"));
-	const socketPath = join(directory, "viewer.sock");
-	const server = createServer();
-	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
-	const viewerPath = new URL("../viewer.mjs", import.meta.url);
-	const child = spawn(process.execPath, [viewerPath.pathname, socketPath, "token"], { stdio: ["ignore", "pipe", "ignore"] });
-	let socket: Socket | undefined;
-	let clientInput = "";
-	const connected = new Promise<void>((resolve) => server.once("connection", (value) => {
-		socket = value; value.setEncoding("utf8");
-		value.on("data", (chunk) => { clientInput += chunk; if (clientInput.includes('"drained"')) value.end(); }); resolve();
-	}));
-	try {
-		await withTimeout(connected);
-		while (!clientInput.includes("\n")) await new Promise((resolve) => setTimeout(resolve, 5));
-		assert.deepEqual(JSON.parse(clientInput.slice(0, clientInput.indexOf("\n"))), { type: "hello", token: "token" });
-		const unicode = Buffer.from(`${JSON.stringify({ type: "text", text: "A🪨B" })}\n`);
-		const split = unicode.indexOf(Buffer.from("🪨")) + 2;
-		socket!.write(unicode.subarray(0, split));
-		socket!.write(unicode.subarray(split));
-		const payload = "x".repeat(8 * 1024);
-		let backpressured = false; const frames = 64;
-		for (let index = 0; index < frames; index++) {
-			const accepted = socket!.write(`${JSON.stringify({ type: "text", text: payload })}\n`);
-			backpressured ||= !accepted;
+	const socketPath = join(directory, "viewer.sock"); const server = createServer();
+	let socket: Socket | undefined; let child: ReturnType<typeof spawn> | undefined; let exited: Promise<unknown> | undefined;
+	const cleanup = async () => {
+		child?.kill("SIGKILL"); socket?.destroy();
+		try { if (exited) await withTimeout(exited); }
+		finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+			await rm(directory, { recursive: true, force: true });
 		}
-		assert.equal(backpressured, true);
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		let output = "";
-		child.stdout!.setEncoding("utf8");
-		child.stdout!.on("data", (chunk) => { output += chunk; });
-		const expectedLength = "A🪨B".length + payload.length * frames;
-		await withTimeout(new Promise<void>((resolve) => {
-			const timer = setInterval(() => { if (output.length === expectedLength) { clearInterval(timer); resolve(); } }, 5);
-		}), 5_000);
-		assert.ok(output.startsWith("A🪨B"));
-		assert.equal(output.length, expectedLength);
-	} finally {
-		child.kill(); socket?.destroy();
-		await new Promise<void>((resolve) => server.close(() => resolve()));
-		await rm(directory, { recursive: true, force: true });
+	};
+	t.after(cleanup);
+	server.on("connection", (value) => { socket = value; });
+	const listening = once(server, "listening"); server.listen(socketPath); await withTimeout(listening);
+	const connected = once(server, "connection");
+	child = spawn(process.execPath, [new URL("../viewer.mjs", import.meta.url).pathname, socketPath, "token"], { stdio: ["ignore", "pipe", "ignore"] });
+	exited = once(child, "close");
+	let resolveFirst!: () => void; const firstOutput = new Promise<void>((resolve) => { resolveFirst = resolve; });
+	let output = ""; child.stdout!.setEncoding("utf8"); child.stdout!.on("data", (chunk) => { output += chunk; if (output.length >= "A🪨B".length) resolveFirst(); });
+	await withTimeout(connected);
+	const replies = createInterface({ input: socket! }); t.after(() => replies.close());
+	const [hello] = await withTimeout(once(replies, "line"));
+	assert.deepEqual(JSON.parse(hello), { type: "hello", token: "token" });
+	const unicode = Buffer.from(`${JSON.stringify({ type: "text", text: "A🪨B" })}\n`);
+	const split = unicode.indexOf(Buffer.from("🪨")) + 2;
+	await withTimeout(new Promise<void>((resolve) => socket!.write(unicode.subarray(0, split), () => resolve())));
+	socket!.write(unicode.subarray(split));
+	await withTimeout(firstOutput);
+	assert.equal(output, "A🪨B");
+	child.stdout!.pause();
+	const payload = "🙂\\\tline\n".repeat(512); const frames = 64;
+	const drained = once(replies, "line");
+	for (let index = 0; index < frames; index++) {
+		socket!.write(`${JSON.stringify({ type: "text", text: payload })}\n`, index === 0 ? () => child!.stdout!.resume() : undefined);
 	}
+	socket!.write(`${JSON.stringify({ type: "close" })}\n`);
+	const [ack] = await withTimeout(drained, 5_000);
+	assert.deepEqual(JSON.parse(ack), { type: "drained" });
+	socket!.end();
+	assert.deepEqual(await withTimeout(exited), [0, null]);
+	assert.equal(output, "A🪨B" + payload.repeat(frames));
+	await cleanup();
+	await assert.rejects(access(directory));
 });
