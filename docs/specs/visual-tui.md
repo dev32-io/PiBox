@@ -1,9 +1,9 @@
 # PiBox Visual TUI Specification
 
-**Status:** Approved for planning; implementation not yet started  
+**Status:** Implemented; original design spec, details have since evolved (see each component README)\
 **Scope:** Visual presentation only  
 **Theme:** `rattle`  
-**Target:** Pi coding agent 0.84.1 or newer
+**Target:** Pi coding agent 0.84.1 or newer at design time (package now requires `>=0.99.2`)
 
 ## 1. Purpose
 
@@ -232,7 +232,7 @@ Conceptual layout:
 
 ```text
 PiBox │ GPT-5.6 Sol (OpenAI) │ ~/Development/PiBox │ main +2 ?1     ▋▋▋▋▋▋░░░░ 38% / 400k
-◆ Permissions: Enforced │ Effort: Medium                    ↑ 124k ↓ 8.2k │ cache 71% │ $0.042
+◆ Permissions: Enforced │ Effort: Medium                    T: 132k (cached 90k ~71%) ↑ 124k ↓ 8.2k │ $0.042
 ```
 
 The exact PiBox mark and separators will be selected during implementation. The status bar should not require Nerd Font glyphs to remain understandable.
@@ -599,7 +599,6 @@ Contrast foreground should be selected using a documented luminance formula. The
   "colorPreviews": {
     "enabled": true,
     "messageTypes": ["user", "assistant"],
-    "includeThinking": false,
     "includeInlineCode": true,
     "includeFencedCode": false,
     "formats": ["rgb3", "rgb6"]
@@ -618,7 +617,7 @@ Features:
 - Curated changing activity verbs
 - Optional typewriter transition
 - Elapsed time
-- Approximate streamed token count where useful
+- Turn-local input/output token counts and tok/s (measured from this run's messages, not history)
 - Theme-aware verb, separator, and status colors
 - Hidden-thinking shortcut hint
 - Correct cleanup during turn end, agent end, reload, and shutdown
@@ -640,7 +639,7 @@ Avoid excessively whimsical or role-playing language.
 
 ### 10.2 Token estimate
 
-A live token count based on streamed characters is necessarily approximate and must be labeled or visually treated as an estimate. Final provider-reported token usage belongs in the status bar/session metrics.
+Live output counts are streamed estimates until provider usage arrives; the spinner counts only messages emitted in the current run. Cumulative session usage belongs in the status bar.
 
 ### 10.3 Animation constraints
 
@@ -668,7 +667,7 @@ The first visual phase may show:
 - Native command hint
 - Native Bash hint
 - Model-cycle shortcut
-- Permission-mode shortcut (`Shift+Tab`); thinking-level selection remains available through Pi's native `/thinking` command
+- Model-cycle and permission-mode shortcuts; thinking-level selection remains available through Pi's native `/thinking` command
 
 Do not show or advertise features that PiBox has not implemented, such as skills, MCP, plan mode, or chat mode.
 

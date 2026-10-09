@@ -19,7 +19,7 @@ Both use Pi's provider and credential APIs, appear in `/login`, store secrets th
 - Discovery: `GET /models`
 - Streaming: OpenAI-compatible `POST /chat/completions`
 
-The OpenAI-compatible catalog does not expose complete Pi model metadata. PiBox supplements discovered IDs with a curated table derived from the official Ollama library pages for hosted context limits, reasoning support, and image input. Endpoint-provided metadata takes precedence. Unknown models use zero/unknown cost, a 128K context default, a 32K output default, and conservative capability inference from model names and advertised capability arrays.
+The OpenAI-compatible catalog does not expose complete Pi model metadata. PiBox supplements discovered IDs with a curated table derived from the official Ollama library pages for hosted context limits, reasoning support, and image input. Endpoint-provided metadata takes precedence. Unknown models use zero/unknown cost, a 128K context default, a 32K output default, and conservative capability inference from model names, advertised capability arrays, and advertised `architecture.input_modalities` containing `image`.
 
 ## Local LLM
 
@@ -65,7 +65,7 @@ Because generic model-list APIs rarely advertise request capabilities, PiBox def
 - `max_tokens`
 - no strict or grammar tools
 - streamed usage enabled
-- text-only input unless a vision-capable name/capability is detected
+- text-only input unless a vision-capable name, capability, or advertised `image` input modality is detected
 - reasoning disabled unless a reasoning-capable name/capability is detected
 - zero monetary cost
 

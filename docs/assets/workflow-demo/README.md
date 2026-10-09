@@ -18,7 +18,7 @@ The committed animation is not a Pillow-drawn terminal. `capture.tape` starts a 
 
 Requirements:
 
-- Pi 0.84.4 from this repository's supported toolchain;
+- Pi 0.99.2 from this repository's supported toolchain (checked-in media was recorded with an earlier 0.84.x);
 - [VHS](https://github.com/charmbracelet/vhs) **v0.11.0**, supplied with `VHS_BIN` or on `PATH`;
 - [ttyd](https://github.com/tsl0922/ttyd) **1.7.7** on `PATH` (a documented VHS runtime dependency; `record.py` verifies the version);
 - FFmpeg 8.1.2 or a compatible release on `PATH`;

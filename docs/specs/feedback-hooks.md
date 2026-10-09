@@ -1,7 +1,7 @@
 # PiBox Feedback Hooks Specification
 
 **Status:** Implemented  
-**Initial scope:** Audio feedback for completed agent responses
+**Scope:** Audio feedback for completed agent responses and workflow stage/attention boundaries
 
 ## Purpose
 
@@ -9,10 +9,10 @@ Pi already provides typed extension lifecycle events. PiBox adds a small semanti
 
 ## Initial contract
 
-- `response-complete` is the only supported feedback event.
-- It maps to Pi's `agent_settled` event.
-- It fires after the whole ReAct loop, including automatic retries, compaction recovery, and queued continuations.
-- The only action is asynchronous local sound playback.
+- Supported feedback events: `response-complete`, `workflow-stage-completed`, and `workflow-error`.
+- `response-complete` maps to Pi's `agent_settled` event and plays only if the last assistant message did not end `aborted` or `error`. It fires after the whole ReAct loop, including automatic retries, compaction recovery, and queued continuations.
+- Workflow events come from the workflow runtime lifecycle event (`stage-completed`, `error`); a single-channel arbiter lets errors win and debounces stage-success sounds.
+- The only action is asynchronous local sound playback; `PIBOX_SOUND_ENABLED`, `PIBOX_SOUND_THEME`, and `PIBOX_SOUND_ROOT` override defaults.
 - Playback occurs only in TUI mode.
 - Missing local media fails silently.
 

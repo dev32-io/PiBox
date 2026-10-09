@@ -271,9 +271,9 @@ The primary workflow projection is stage-centric, showing current stage/tasks an
 
 ## 12. Capability and configuration boundaries
 
-Main-session resource tools manage stories, tasks, and stages. Generic `subagent_spawn` handles ad-hoc bounded delegation only; managed task/review/repair/E2E attempts are internal scheduler launches through `SubagentService`.
+Main-session resource tools manage stories, E2E cases, tasks, and stages. Generic `subagent_spawn` handles ad-hoc bounded delegation only; managed task/review/repair/E2E attempts are internal scheduler launches through `SubagentService`.
 
-Agent-definition Markdown frontmatter owns base tools and default tier. Plans select semantic task tiers; `.pi/harness.yaml` maps each tier to ordered concrete `provider/model#effort` routes. The `mcp` selector enables all user-configured native MCP tools and resources; omission disables MCP, and `*` includes it. This binary capability applies to discovery and execution independently of exposure and repository permission bypass. Per-server `mcp:<server>` selectors are obsolete and rejected.
+Agent-definition Markdown frontmatter owns base tools and default tier. Plans select semantic task tiers; Tier profiles in `~/.pi/agent/settings.json` (`modelTierListProfiles`) map each tier to ordered concrete `provider/model#effort` routes; `.pi/harness.yaml` may override same-name profile/tier route arrays. The `mcp` selector enables all user-configured native MCP tools and resources; omission disables MCP, and `*` includes it. This binary capability applies to discovery and execution independently of exposure and repository permission bypass. Per-server `mcp:<server>` selectors are obsolete and rejected.
 
 The main model-facing controls remain minimal: inspect status, start, pause, resume, stop, recover, and complete through state-backed capabilities. No control mutates state by editing files directly.
 

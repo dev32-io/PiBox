@@ -17,27 +17,13 @@ const PLAN_TEMPLATE = `# Session Scratch Plan
 
 > Non-authoritative private scratch. Temporary; not a product, workflow, or repository source of truth.
 
-Research -> Plan -> Approval -> Execution until the agreed goal and Done criteria are met. Proactively draft once enough findings support a useful approach; do not wait for a separate plan request.
+# Goal
+# Done when
+# Out of scope
+# Plan
+# Proposed
 
-## Research
-
-Complete enough read-only research for a defensible approach. Review and reconcile relevant delegated findings before presenting a plan; keep researching or ask clarifying questions while they remain pending. Separate facts, assumptions, and material decisions.
-
-## Plan
-
-Write and show a discussion draft as soon as enough evidence is available. Record one current Goal, Deliverable, verifiable Done criteria, and a concise checklist (- [ ] / - [x]). Each step should name its next action, dependencies, completion checks, and whether work is sequential or independent. Group independent work into parallel lanes with explicit prerequisites, file ownership, shared interfaces/resources, and integration checks. Checklist order is not a scheduling dependency. Subagents and ad hoc branches/worktrees are available for safe concurrency; plan isolation and integration where needed. State remaining assumptions. Use this draft to clarify what the user wants and revise it as discussion and targeted research resolve open questions; planning does not authorize implementation.
-
-## Approval
-
-Wait for explicit user approval before implementation or implementation delegation. Routine iteration within approved scope needs no renewed approval. Material goal, scope, or reserved user decisions do; genuine blockers also pause with the remaining gap and required input recorded.
-
-## Execution
-
-After approval, use this file as the control loop without routine prompt pauses. After compaction, resume, background completion, or missing context, recover the approved goal and current unchecked step here; consult ledger.md for evidence and decisions.
-
-For every result, inspect it and run the current step's completion checks. Once verified, immediately edit the actual checkbox from - [ ] to - [x]. Leave partial or blocked work unchecked and record completed substeps plus the remaining gap. Record evidence and decisions in ledger.md, then launch or continue all safely ready items within available capacity. Reassess dependencies after each result; do not wait for unrelated lanes or impose numbered-order waves. Serialize only actual dependencies or conflicting edits/resources; worktrees do not isolate shared test services. Verify all Done criteria before claiming completion.
-
-At goal changes and completion, remove obsolete or superseded detail using judgment, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
+At goal changes and completion, remove obsolete or superseded detail, retaining summaries or pointers only where useful—without forced archives, hard caps, or automatic deletion.
 
 `;
 const LEDGER_TEMPLATE = `# Session Scratch Ledger

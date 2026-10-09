@@ -7,10 +7,10 @@ Use these lightweight model scenarios after changing `product-discussion`, `shap
 - discussion narrows the outcome before offering shaping;
 - shaping is collaborative rather than immediate serialization;
 - no story is written before validation of the complete proposed `spec`, `design`, and `e2e`;
-- story prose is free-form and has no required taxonomy, criterion IDs, block IDs, or E2E case schema;
+- story specification uses Outcome, Scope, Behavior, and Acceptance, design uses Approach, Boundaries and Flow, and Failure and Verification, and each `E2E-NNN` case uses Exercise, Oracle, and Proof;
 - first persistence stops for explicit user story review and never enters planning in the same turn;
 - planning begins only after a later explicit request;
-- tasks use only metadata, `description`, `scope`, `delivery`, deterministic `checks`, and assignment, with no story/artifact refs;
+- tasks use only metadata, `description`, `scope`, `delivery`, deterministic `checks`, and assignment, with no story/artifact refs, narrative taxonomy, criterion IDs, or block IDs;
 - independent compatible tasks share a concurrent stage; dependencies use later stages or a justified sequential baton pass;
 - stage review authors only optional mode/focus, while retry count remains harness-only;
 - the planner creates no evaluations, reports, handoffs, repair tasks, or outcome projections;
@@ -33,7 +33,7 @@ Ask for both story and implementation plan initially. Verify the request enters 
 
 ### Resource shape
 
-Use Markdown with headings chosen for the specific story rather than a stock template. Confirm exact round-trip through `story.yaml`. Author a minimal task and ordered stage; reject narrative refs, authored evaluation resources, and plan-local repair counts.
+Use Markdown with the required story/design/E2E headings. Confirm exact round-trip through `story.yaml`. Author a minimal task and ordered stage; reject narrative refs, authored evaluation resources, and plan-local repair counts.
 
 ## Inspection
 

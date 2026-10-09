@@ -18,7 +18,7 @@ New evidence may move work backward to the phase that owns the unresolved questi
 
 ## 1. Free-form product discussion
 
-Start from the user's ideas and observed problems. Recover the outcome behind a proposed mechanism, inspect facts when useful, compare meaningful alternatives, and challenge material risk without taking authority away. The conversation can last many turns or end without any workflow artifact.
+Start from the user's ideas and observed problems. Recover the outcome behind a proposed mechanism, inspect facts when useful, compare meaningful alternatives, and challenge material risk without taking authority away, raising a premise concern again only on new evidence or an unaddressed reply and stopping once the user has decided. The conversation can last many turns or end without any workflow artifact.
 
 Ordinary discussion does not authorize story persistence, planning, or execution. When common ground emerges, offer to shape the behavior and high-level design; do not bundle shaping and delivery planning into one invisible transition.
 
