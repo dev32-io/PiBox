@@ -188,7 +188,7 @@ export default function serviceAdapter(pi: ExtensionAPI): void {
 		label: "Service Adapter",
 		description: "Inspect or control PiBox-managed local services. Updates always require explicit interactive approval.",
 		promptSnippet: "Inspect, start, or stop PiBox-managed local services",
-		promptGuidelines: ["Start shared services lazily when a dependent operation needs them. Never update a service without the user's explicit approval."],
+		promptGuidelines: ["Start shared services when a dependent operation needs them, not earlier."],
 		parameters,
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
 			if (input.action === "status" && !input.service) {

@@ -86,8 +86,8 @@ export default function sessionScratchExtension(pi: ExtensionAPI): void {
 		description: "Inspect or initialize this Pi session's private, non-authoritative /tmp scratch workspace.",
 		promptSnippet: "Inspect or initialize private session scratch",
 		promptGuidelines: [
-			"Use scratch_workspace for plans, notes, scripts, experiments, and temporary output; actively make use of this flexible workspace in Orchestrator mode.",
-			"Never treat scratch as workflow authority or durable repository state.",
+			"Use scratch_workspace for plans, notes, scripts, experiments, and temporary output.",
+			"Scratch is not workflow authority or durable repository state.",
 			"If prior scratch is missing or invalid, report the lost continuity before initializing a replacement.",
 		],
 		parameters: Type.Object({ action: StringEnum(["status", "init"] as const) }),

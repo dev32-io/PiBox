@@ -100,7 +100,7 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 		label: "Visual Companion",
 		description: "Open an Architecture document or browser-renderable visual mockup in the single session-local Visual Companion shell, or stop its loopback backend.",
 		promptSnippet: "Open or stop the session-local browser visual companion for an Architecture document or visual mockup",
-		promptGuidelines: ["Use visual_companion after an Architecture document or visual mockup exists; update the same artifact directly for live rerendering, and stop the companion when it is no longer needed."],
+		promptGuidelines: ["Use after the artifact exists; edit the same artifact for live rerendering, and stop the companion when done."],
 		parameters,
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
 			if (input.action === "stop") {

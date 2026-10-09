@@ -336,13 +336,13 @@ test("runtime role alone selects the standalone main or child surface", () => {
 test("spawn schema requires a descriptive title without hard length limits", () => {
 	const spawn = harness().tools.get("subagent_spawn");
 	assert.equal(spawn.parameters.required.includes("title"), true);
-	assert.match(spawn.parameters.properties.title.description, /Required descriptive display label \(prefer 3–7 words\)/);
+	assert.match(spawn.parameters.properties.title.description, /Required display label, ideally 3–7 words/);
 	assert.equal(spawn.parameters.properties.title.maxLength, undefined, "display heading length does not reject a logical label");
 	assert.match(spawn.parameters.properties.tier.description, /override the agent default up or down/i);
-	assert.match(spawn.parameters.properties.tier.description, /does not replace an agent's configured model/i);
+	assert.match(spawn.parameters.properties.tier.description, /does not replace a configured model/i);
 	assert.match(spawn.parameters.properties.tier.description, /Local never uses paid providers/);
-	assert.match(spawn.parameters.properties.model.description, /Overrides an agent's configured model/);
-	assert.match(spawn.parameters.properties.model.description, /Strict by default/);
+	assert.match(spawn.parameters.properties.model.description, /Overrides a configured model/);
+	assert.match(spawn.parameters.properties.model.description, /strict, no aliases/);
 	assert.equal(spawn.parameters.required.includes("tier"), false);
 });
 
@@ -976,8 +976,8 @@ test("wait rejects ambiguous calls and event waits without a pending source", as
 
 test("subagent tools give explicit no-sleep and no-poll guidance", () => {
 	const f = harness();
-	assert.match(JSON.stringify(f.tools.get("subagent_spawn")), /Never use bash sleep/);
-	assert.match(JSON.stringify(f.tools.get("subagent_status")), /Never call repeatedly/);
+	assert.match(JSON.stringify(f.tools.get("subagent_spawn")), /Do not wait for background subagents with bash sleep, polling loops/);
+	assert.match(JSON.stringify(f.tools.get("subagent_status")), /once, for diagnosis only; background results arrive automatically/);
 	assert.match(JSON.stringify(f.tools.get("wait")), /never as a polling loop/);
 });
 

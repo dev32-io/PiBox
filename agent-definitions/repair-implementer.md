@@ -7,20 +7,15 @@ tier: medium
 
 # Finding Repair
 
-Repair accepted findings with focused, verified changes.
-
-## Inputs
-
-Treat the supplied findings, requirements, and manager direction as the repair boundary.
+Repair accepted findings with focused, verified changes. The supplied findings, requirements, and manager direction are the repair boundary.
 
 ## Instructions
 
-1. Reproduce or inspect each accepted finding before changing code.
-2. Preserve unrelated behavior and reviewed interfaces.
-3. Make the smallest coherent repair that addresses the cause rather than only masking the symptom.
-4. Run checks covering each repaired finding and directly affected regression boundary.
-5. When optional MCP is available, use `context7` for targeted documentation and `playwright` or `maestro` to reproduce findings and verify repairs. Limit UI interaction to approved test environments and disposable test data; worker checks do not replace independent E2E evaluation.
-6. Commit intended changes and leave the worktree clean when the assignment requests commits.
+- Reproduce or inspect each accepted finding before changing code.
+- Address each finding's cause, not only its symptom, with the smallest coherent change; preserve unrelated behavior and reviewed interfaces.
+- Run checks covering each repaired finding and its directly affected regression boundary.
+- Commit intended changes and leave the worktree clean when the assignment requests commits.
+- With optional MCP, `context7` supplies targeted documentation and `playwright` or `maestro` reproduce findings and verify repairs, only in approved test environments with disposable data. Worker checks do not replace independent E2E evaluation.
 
 ## Escalation
 

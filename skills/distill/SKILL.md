@@ -9,53 +9,42 @@ Facilitate a technical knowledge distillation. The deliverable is user-judged kn
 
 ## 1. Resolve the scope
 
-Translate the user's request into `distill_prepare` parameters. Support explicit refs, tags, commits, dates, paths, work items, current-session inclusion, dirty-state inclusion, and focus. Do not infer a branch mutation, checkout, fetch, pull, or merge.
+Translate the request into `distill_prepare` parameters: explicit refs, tags, commits, dates, paths, work items, current-session inclusion, dirty-state inclusion, and focus. Do not branch-mutate, checkout, fetch, pull, or merge. Analysis authorization is not authorization to edit guidance, documentation, rules, or memory.
 
-Show the returned target commit, baseline source and commit, time range, paths, work items, commit/file counts, dirty-state treatment, selected main-session IDs and entry range, selected and available knowledge providers with locality, focus, and estimated partitions. Resolve material ambiguity with the user. Never select a remote knowledge provider without explicit user agreement. Do not call `distill_collect` until the user confirms that exact preview.
-
-Analysis authorization is not authorization to edit guidance, documentation, rules, or memory.
+Show the returned target commit, baseline source and commit, time range, paths, work items, commit/file counts, dirty-state treatment, selected main-session IDs and entry range, selected and available knowledge providers with locality, focus, and estimated partitions. Resolve material ambiguity with the user. Select a remote knowledge provider only with explicit user agreement. Call `distill_collect` only after the user confirms that exact preview.
 
 ## 2. Collect deterministic evidence
 
-After scope confirmation, call `distill_collect` with the exact preview token. Read `scope.json`, `manifest.json`, and bounded slices of the relevant evidence artifacts through `distill_read`. When the target is not the checked-out commit, use `distill_read sourcePath=…` for target-tree verification and never treat the working checkout as the target.
+Call `distill_collect` with the exact preview token. Read `scope.json`, `manifest.json`, and bounded slices of relevant evidence through `distill_read`. When the target is not the checked-out commit, verify with `distill_read sourcePath=…`; the working checkout is not the target.
 
-Collected evidence preserves the complete selected sanitized content. Use paged reads and coherent analysis partitions rather than treating large files, sessions, or scope counts as invalid. Sanitization and scope confirmation still apply.
+Collected evidence is the complete sanitized selection. Use paged reads and coherent partitions for large files, sessions, or scope counts.
 
-Evidence priority is:
+Evidence priority:
 
 1. Target source and tests.
 2. Git range evidence.
 3. Reviewed story, plan, task, state, ledger, and outcome artifacts.
 4. Sanitized selected main-session context for ad hoc work.
 
-Standalone child transcripts are activation-private and are not persisted or recovered for distillation. Use the curated workflow ledger and outcome as the compression boundary; never seek obsolete `.pibox/sessions` registries, child reports, evaluation reports, or raw child session files.
+Child transcripts are not persisted for distillation. Use the workflow ledger and outcome as the compression boundary, not `.pibox/sessions` registries, child reports, evaluation reports, or raw child sessions.
 
 ## 3. Partition and delegate
 
-Partition by coherent subsystem, workflow unit, or analysis focus. Launch bounded `knowledge-distiller` subagents with complete assignments containing:
+Partition by coherent subsystem, workflow unit, or analysis focus. Launch bounded `knowledge-distiller` subagents, in parallel where useful, with complete assignments: confirmed scope, exact run and artifact paths, assigned evidence slices, focus and stop conditions, the instruction-admission policy below, and a prohibition on edits and mutations. For a precise evidence gap, state the limitation.
 
-- the confirmed scope;
-- exact distillation run and artifact paths;
-- assigned evidence slices;
-- focus and stop conditions;
-- the instruction-admission policy below;
-- a prohibition on edits and mutations.
-
-Run independent partitions in parallel where useful. When the evidence packet leaves a precise gap, state that limitation rather than attempting raw child-session recovery.
-
-Persist each returned report with `distill_record category=finding`. Subagents never write distillation artifacts directly.
+Persist each returned report with `distill_record category=finding`; subagents write no distillation artifacts.
 
 ## 4. Compare candidate knowledge
 
-Reconcile reports against current target source. Deduplicate claims and preserve material disagreements. For retained candidate claims, call `distill_compare` so optional knowledge providers can return relevant existing memories or other knowledge. Continue normally when no provider is registered.
+Reconcile reports against current target source. Deduplicate claims and preserve material disagreements. Call `distill_compare` for retained claims; continue if no provider is registered.
 
-Classify each claim as new, confirming, narrowing, broadening, duplicate, contradictory, superseding, stale, or unresolved. Repository authority outranks reports and knowledge providers. Persist the comparison and synthesis with `distill_record`.
+Classify each claim as new, confirming, narrowing, broadening, duplicate, contradictory, superseding, stale, or unresolved. Repository authority outranks reports and providers. Persist comparison and synthesis with `distill_record`.
 
 ## 5. Apply the exceptional instruction gate
 
-`AGENTS.md` and rule files are scarce always-loaded context. They contain pure instructions only.
+`AGENTS.md` and rule files are scarce always-loaded context holding pure instructions only.
 
-Never recommend an example, explanation, history, summary, descriptive fact, subordinate clause, code block, or illustrative syntax for `AGENTS.md` or a rule. The proposed item must be one pure imperative sentence backed by tracked repository evidence. A candidate may enter `AGENTS.md` only when it is repository-wide, extremely critical, non-obvious to a capable model, repeatedly applicable, and materially dangerous or expensive to miss. A rule candidate must meet the same standard and have an exact path scope.
+Propose for them only one pure imperative sentence backed by tracked repository evidence; no example, explanation, history, summary, descriptive fact, subordinate clause, code block, or illustrative syntax. A candidate may enter `AGENTS.md` only when repository-wide, extremely critical, non-obvious to a capable model, repeatedly applicable, and materially dangerous or expensive to miss. A rule candidate meets the same bar and has an exact path scope.
 
 Prefer, in order:
 
@@ -66,13 +55,13 @@ Prefer, in order:
 5. scoped rule;
 6. `AGENTS.md`.
 
-For every possible instruction promotion, call `distill_instruction_check`. Present its exact current/additional/resulting character and estimated-token burden, percentage increase, deterministic rejection reasons, and the model judgment for criticality, non-obviousness, repeated applicability, and failure impact. A deterministic pass only makes the proposal eligible for user discussion; it does not approve it.
+For every possible instruction promotion, call `distill_instruction_check`. Present its current/additional/resulting character and estimated-token burden, percentage increase, rejection reasons, and your judgment of criticality, non-obviousness, repeated applicability, and failure impact. A deterministic pass makes the proposal eligible for discussion, not approved.
 
-Recommend demotion or deletion when existing always-loaded guidance is descriptive, example-bearing, generic, obvious, stale, duplicated, overly broad, or not worth its measured context cost.
+Recommend demotion or deletion of always-loaded guidance that is descriptive, example-bearing, generic, obvious, stale, duplicated, overly broad, or not worth its measured cost.
 
 ## 6. Discuss with the user
 
-Conduct a technical discussion, not a bulk approval form. Present a compact overview, then discuss one coherent group of proposals at a time. For each item distinguish:
+Give a compact overview, then discuss one coherent group of proposals at a time. For each item distinguish:
 
 - observed evidence;
 - distilled claim;
@@ -86,6 +75,6 @@ The user may accept, reject, rewrite, narrow, change destination, defer, or requ
 
 ## 7. Apply only exact approvals
 
-Do not mutate memory, guidance, rules, documentation, or source until the user explicitly approves the exact item, destination, wording, and scope. Use the destination's ordinary authoritative tool after approval. Never treat scope confirmation, report approval, or a general request to distill as mutation authorization.
+Mutate memory, guidance, rules, documentation, or source only after the user approves the exact item, destination, wording, and scope; scope confirmation, report approval, or a general request to distill is not that approval. Use the destination's ordinary authoritative tool.
 
-After approved mutations, report what changed, what remained local to the distillation run, rejected/deferred items, measured guidance burden, and residual uncertainty.
+Then report what changed, what remained local to the run, rejected/deferred items, measured guidance burden, and residual uncertainty.

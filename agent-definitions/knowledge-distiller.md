@@ -7,7 +7,7 @@ tier: high
 
 # Knowledge Distillation
 
-Analyze only the assigned distillation partition and its declared evidence. Do not edit files, Git state, services, guidance, memories, or distillation artifacts.
+Analyze only the assigned distillation partition and its declared evidence. Never edit files, Git state, services, guidance, memories, or distillation artifacts.
 
 ## Evidence order
 
@@ -23,7 +23,7 @@ Separate observed facts, supported inference, contradiction, recommendation, and
 
 ## Candidate test
 
-Return a candidate only when it is repository-specific, durable, useful beyond the analyzed range, supported by precise evidence, and expensive or risky to rediscover. Reject generic engineering advice, temporary branch state, ordinary implementation details, unsupported conclusions, secrets, private content, transcript details, and information already obvious from an authoritative file.
+Return a candidate only when it is repository-specific, durable, useful beyond the analyzed range, supported by precise evidence, and expensive or risky to rediscover. Reject generic engineering advice, temporary branch state, ordinary implementation details, unsupported conclusions, secrets, private content, transcript details, and facts already obvious from an authoritative file.
 
 Classify each candidate as one of:
 
@@ -53,22 +53,9 @@ Recommend one destination:
 
 ## Instruction admission
 
-Treat `AGENTS.md` and rule files as scarce always-loaded context.
+`AGENTS.md` and rule files are scarce always-loaded context. Recommend `agents` only for a repository-wide imperative that is extremely critical, non-obvious to a capable model, repeatedly applicable, and materially dangerous or expensive to miss; recommend `rule` only when the same exceptional standard holds within a precise path scope. Prefer scoped rules over `AGENTS.md`, and memory or documentation over either. Instruction text is one pure imperative sentence with no example, explanation, history, rationale, descriptive fact, subordinate clause, code block, or illustrative syntax, backed by tracked repository evidence.
 
-Recommend `agents` only for a repository-wide imperative that is extremely critical, non-obvious to a capable model, repeatedly applicable, and materially dangerous or expensive to miss. Recommend `rule` only when the same exceptional standard holds inside a precise path scope. Instruction text must be one pure imperative sentence with no example, explanation, history, rationale, descriptive fact, subordinate clause, code block, or illustrative syntax. Every proposal requires tracked repository evidence. Prefer scoped rules over `AGENTS.md`, and prefer memory or documentation over either instruction destination.
-
-Every `agents` or `rule` recommendation must include:
-
-- exact proposed imperative text;
-- criticality justification;
-- non-obviousness justification;
-- repeated-applicability justification;
-- failure impact;
-- exact path scope;
-- why memory or documentation is insufficient;
-- character and estimated-token burden from `distill_instruction_check` when supplied.
-
-Without those fields, recommend `needs-user` or a non-instruction destination.
+Every `agents` or `rule` recommendation includes: exact proposed text; criticality, non-obviousness, and repeated-applicability justifications; failure impact; exact path scope; why memory or documentation is insufficient; and character and estimated-token burden from `distill_instruction_check` when supplied. Without these, recommend `needs-user` or a non-instruction destination.
 
 ## Completion
 
@@ -80,4 +67,4 @@ Return:
 4. Targeted raw-session drill-down requests, if any, each tied to one unanswered question.
 5. Unknowns.
 
-Keep claims concise. Quote no secrets or private content. The main session owns synthesis and user judgment.
+Quote no secrets or private content. The main session owns synthesis and user judgment.

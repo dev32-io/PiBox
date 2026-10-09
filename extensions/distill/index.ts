@@ -174,7 +174,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_prepare", label: "Prepare Distillation Scope",
-		description: "Resolve and preview a deterministic Git/workflow/session distillation scope without writing artifacts or changing Git. The returned previewToken must be confirmed by the user before collection.",
+		description: "Resolve and preview a deterministic Git/workflow/session distillation scope, writing no artifacts and changing no Git state. The user must confirm the returned previewToken before collection.",
 		promptSnippet: "Resolve a read-only distillation scope for user review",
 		parameters: Type.Object(SCOPE_FIELDS, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
@@ -207,7 +207,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_collect", label: "Collect Distillation Evidence",
-		description: "Collect a previously previewed and user-confirmed distillation scope into ignored .pibox/distill artifacts. This is read-only with respect to source, Git, guidance, and knowledge stores.",
+		description: "Collect a previewed, user-confirmed distillation scope into ignored .pibox/distill artifacts. Reads source, Git, guidance, and knowledge stores only.",
 		promptSnippet: "Collect confirmed read-only distillation evidence",
 		parameters: Type.Object({ previewToken: Type.String({ minLength: 64, maxLength: 64 }) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
@@ -276,7 +276,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_record", label: "Record Distillation Analysis",
-		description: "Persist an analyst report, synthesis, knowledge comparison, or user decision inside an existing ignored distillation run. This never edits source guidance or memory.",
+		description: "Persist an analyst report, synthesis, knowledge comparison, or user decision inside an existing ignored distillation run; edits no guidance or memory.",
 		parameters: Type.Object({
 			runId: Type.String(), category: StringEnum(["finding", "synthesis", "comparison", "decision"] as const),
 			id: Type.Optional(Type.String()), content: Type.String({ minLength: 1 }),
@@ -298,7 +298,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_compare", label: "Compare Distilled Knowledge",
-		description: "Search optional registered knowledge providers for existing items related to proposed findings. Works without a memory provider and never mutates knowledge.",
+		description: "Search registered knowledge providers, if any, for existing items related to proposed findings; mutates nothing.",
 		parameters: Type.Object({ runId: Type.String(), claims: Type.Array(Type.Object({ id: Type.String(), query: Type.String({ minLength: 3 }) }, { additionalProperties: false }), { minItems: 1 }), limitPerProvider: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false }),
 		async execute(_id, params, signal, _update, ctx) {
 			const identity = await repository(ctx);
@@ -344,7 +344,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_instruction_check", label: "Measure Instruction Promotion",
-		description: "Apply the exceptional AGENTS.md/rule admission gate and measure exact context burden. It rejects examples and explanatory prose, but remains advisory and never edits guidance.",
+		description: "Apply the exceptional AGENTS.md/rule admission gate and measure exact context burden. Rejects examples and explanatory prose; advisory, edits no guidance.",
 		parameters: Type.Object({
 			candidate: Type.String({ minLength: 1 }), destination: StringEnum(["agents", "rule"] as const), targetPath: Type.String(),
 			paths: Type.Optional(Type.Array(Type.String())), evidencePaths: Type.Array(Type.String(), { minItems: 1 }), criticality: Type.String(), nonObviousness: Type.String(), repeatedApplicability: Type.String(), failureImpact: Type.String(),

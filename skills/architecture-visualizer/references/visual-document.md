@@ -1,6 +1,6 @@
 # Visual Document
 
-The format is deliberately small and permissive. It defines what the renderer needs to draw, not an ontology for architecture.
+The format is small and permissive: what the renderer needs to draw, not an architecture ontology.
 
 ## Document
 
@@ -49,7 +49,7 @@ A node needs only `id`. Its visible label falls back through `label`, `title`, `
 
 `kind` is open-ended. The renderer has small visual conveniences for `note`, `label`, `actor`, `decision`, and `database`; every other value uses a generic component style. Arbitrary additional fields are shown in the details panel.
 
-Do not add positions, sizes, coordinates, or routes. Such fields are ignored because layout belongs to the renderer.
+Positions, sizes, coordinates, and routes are ignored; the renderer owns layout.
 
 ## Standalone annotations
 
@@ -63,7 +63,7 @@ Annotations use the same shape as nodes and participate in automatic layout:
 }
 ```
 
-Use `annotations` to distinguish explanatory canvas content from domain concepts. Using a regular node with `kind: "note"` or `kind: "label"` is also valid.
+Use `annotations` for explanatory canvas content distinct from domain concepts; a regular node with `kind: "note"` or `"label"` also works.
 
 ## Groups
 
@@ -74,7 +74,7 @@ Use `annotations` to distinguish explanatory canvas content from domain concepts
 }
 ```
 
-A node joins a group with `"group": "application"`. Group membership influences renderer-owned layout. The webpage can hide grouping without changing the document.
+A node joins a group with `"group": "application"`. Group membership influences renderer-owned layout.
 
 ## Edges
 
@@ -91,11 +91,11 @@ A node joins a group with `"group": "application"`. Group membership influences 
 
 `from` and `to` are accepted aliases for `source` and `target`. An edge needs valid endpoints. Its `id` is optional; the renderer derives one deterministically when omitted.
 
-Relationships may carry any semantic `kind` and arbitrary additional information. The renderer does not judge whether a relationship is valid architecture or UML.
+Edges may carry any `kind` and additional fields; the renderer does not validate them as architecture.
 
 ## Multiple views
 
-Views are independent canvases and may reuse the same IDs. Useful divisions include overview/detail, static/runtime, communication/control-flow, or current/desired behavior, but the agent may choose any framing helpful to the user.
+Views are independent canvases and may reuse IDs. Useful divisions: overview/detail, static/runtime, communication/control-flow, current/desired.
 
 ## Lightweight validation
 

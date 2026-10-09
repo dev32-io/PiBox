@@ -347,18 +347,18 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 		label: "Spawn Subagent",
 		description: catalog ? subagentSpawnToolDescription(catalog) : "Launch one configured standalone subagent. The available catalog is loaded when the session starts.",
 		promptGuidelines: [
-			"After subagent_spawn starts background work, continue meaningful non-overlapping work or end the turn; its terminal result is delivered automatically and wakes the session when idle.",
-			"Never use bash sleep, polling loops, or repeated subagent_status calls to wait for background subagents; use wait with event subagent_settled once only when further progress is genuinely blocked.",
+			"After starting background work, continue non-overlapping work or end the turn; the terminal result is delivered automatically and wakes an idle session.",
+			"Do not wait for background subagents with bash sleep, polling loops, or repeated subagent_status; call wait with event subagent_settled once, only when blocked.",
 		],
 		parameters: Type.Object({
 			agent: Type.String({ description: "Exact configured agent name" }),
-			title: Type.String({ description: "Required descriptive display label (prefer 3–7 words). Not an agent name or assignment; retained across continuation." }),
-			task: Type.String({ description: "Detailed self-contained assignment, scope, evidence, constraints, and stop conditions. Use readable prose with normal word spacing." }),
+			title: Type.String({ description: "Required display label, ideally 3–7 words; not an agent name or assignment. Retained across continuation." }),
+			task: Type.String({ description: "Self-contained assignment with scope, evidence, constraints, and stop conditions. Use readable prose with normal word spacing." }),
 			mode: Type.Optional(StringEnum(["background", "foreground"] as const, { default: "foreground" })),
-			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Override the agent default up or down; guidance, not a cap. Does not replace an agent's configured model. Local never uses paid providers." })),
-			model: Type.Optional(Type.String({ description: "Exact registered model ID or provider/model, optionally #effort. Overrides an agent's configured model. Strict by default; no fuzzy aliases." })),
-			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Overrides the explicit model or tier primary route effort. Fallback routes retain their configured effort. Must agree with any #effort suffix." })),
-			allowFallback: Type.Optional(Type.Boolean({ description: "With an explicit model only: opt into pre-launch substitution from the tier list. Default false. No standalone runtime retry; local explicit models remain strict." })),
+			tier: Type.Optional(StringEnum(["low", "medium", "high", "max", "local"] as const, { description: "Override the agent default up or down; guidance, not a cap. Does not replace a configured model. Local never uses paid providers." })),
+			model: Type.Optional(Type.String({ description: "Exact registered model ID or provider/model, optionally #effort. Overrides a configured model; strict, no aliases." })),
+			effort: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const, { description: "Overrides the primary route effort of the model or tier; fallback routes keep theirs. Must agree with any #effort suffix." })),
+			allowFallback: Type.Optional(Type.Boolean({ description: "Explicit model only: allow pre-launch substitution from the tier list. Default false; no runtime retry; local models stay strict." })),
 		}, { additionalProperties: false }),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const current = requireBinding();
@@ -395,8 +395,8 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "wait",
 		label: "Wait",
-		description: "Wait once for elapsed time or for the next supported event, then resume with a tool-result message. Event waiting is a simple subscribe-and-wake mechanism; currently only background subagent settlement is supported.",
-		promptSnippet: "Wait once for elapsed time or a supported event without shell sleep or polling",
+		description: "Wait once for elapsed time or the next supported event (currently only background subagent settlement), then resume with a tool-result message.",
+		promptSnippet: "Wait once for elapsed time or a supported event",
 		promptGuidelines: [
 			"Use wait durationMs only when elapsed time itself is required, never as a polling loop.",
 			"Use wait with event subagent_settled only at a genuine dependency barrier; background subagent results otherwise arrive automatically.",
@@ -444,7 +444,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "subagent_status",
 		label: "Subagent Status",
-		description: "Inspect this activation's bounded standalone subagent snapshot once for diagnosis. Never call repeatedly or combine with sleep to wait for completion; background results arrive automatically and wait supports a true dependency barrier.",
+		description: "Inspect this activation's bounded standalone subagent snapshot once, for diagnosis only; background results arrive automatically.",
 		parameters: Type.Object({
 			agentId: Type.Optional(Type.String()),
 			includeSettled: Type.Optional(Type.Boolean({ default: false })),
@@ -494,7 +494,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "subagent_continue",
 		label: "Continue Subagent",
-		description: "Run new work against a settled standalone subagent's same-activation transcript, retaining its agent type, title, model, effort, and tools. Waits for settlement; not a live messaging tool. Use subagent_read to retrieve an existing report without a model turn.",
+		description: "Run new work against a settled standalone subagent's same-activation transcript, keeping its agent type, title, model, effort, and tools. Waits for settlement; not live messaging. Use subagent_read for an existing report.",
 		parameters: Type.Object({ agentId: Type.String(), task: Type.String({ description: "New user turn for the settled logical agent. Use readable prose with normal word spacing." }) }, { additionalProperties: false }),
 		async execute(_id, params, signal, onUpdate) {
 			const current = requireBinding();
@@ -530,7 +530,7 @@ export default function subagentExtension(pi: ExtensionAPI, dependencies: Subage
 	pi.registerTool({
 		name: "subagent_read",
 		label: "Read Subagent Report",
-		description: "Compatibility reader for a bounded page of the settled standalone report. For e2e-tester, reads validated report.json instead of native report.md. Prefer normal read/grep. No model turn, wait, or continuation. Offsets count Unicode characters; pages contain at most 12,000 characters / 48KB. Supply returned attemptId on later pages to reject a replaced report.",
+		description: "Read a bounded page of the settled standalone report, with no model turn, wait, or continuation. For e2e-tester, reads validated report.json instead of report.md. Prefer normal read/grep. Offsets count Unicode characters; pages hold at most 12,000 characters / 48KB. Pass the returned attemptId on later pages to reject a replaced report.",
 		parameters: Type.Object({
 			agentId: Type.String(),
 			attemptId: Type.Optional(Type.String({ description: "Expected report attempt ID; prevents mixing pages after a continuation" })),

@@ -1,9 +1,9 @@
 import type { LoadedSubagentCatalog } from "./types.js";
 
 const SPAWN_DESCRIPTION = [
-	"Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams semantic progress. Background is for independent work: it returns immediately, steers terminal results into ongoing work, and wakes an idle parent.",
-	"Choose initial-spawn tier from assignment reasoning, not agent role, configured default, or prompt length: Low for bounded lookup/mechanical work; Medium for ordinary engineering; High for genuinely difficult ambiguity or interacting invariants; Max only exceptionally, with a reason High is insufficient. Failed attempts do not by themselves justify escalation. Profiles choose routed models, not task tiers.",
-	"A configured agent model takes precedence over its default or requested tier; only an explicit model override replaces it. A local-llm model requires tier local, so up/down tier overrides do not apply while that model is selected. Existing strict explicit-model, fallback, and local-isolation semantics still apply.",
+	"Launch one configured standalone subagent with a self-contained bounded assignment. Foreground waits and streams progress. Background is for independent work: it returns immediately and its terminal result steers ongoing work or wakes an idle parent.",
+	"Choose the initial tier from the assignment's reasoning demands, not agent role, configured default, or prompt length: Low for bounded lookup/mechanical work; Medium for ordinary engineering; High for difficult ambiguity or interacting invariants; Max only with a reason High is insufficient. Failed attempts alone do not justify escalation. Profiles choose routed models, not tiers.",
+	"A configured agent model overrides its default or requested tier; only an explicit `model` replaces it. A local-llm model requires tier local, so tier overrides do not apply while it is selected. Strict explicit-model, fallback, and local-isolation semantics still apply.",
 ].join("\n\n");
 
 function compareNames(left: string, right: string): number {

@@ -98,6 +98,6 @@ test("the /distill command enters the skill with the user's natural-language sco
 	await h.commands.get("distill").handler("what changed since v1.0 for failure modes", {});
 	assert.equal(h.sent.length, 1);
 	assert.match(h.sent[0] ?? "", /what changed since v1\.0 for failure modes/);
-	assert.match(h.sent[0] ?? "", /Do not call `distill_collect` until the user confirms/);
+	assert.match(h.sent[0] ?? "", /Call `distill_collect` only after the user confirms/);
 	assert.match(h.sent[0] ?? "", /example, explanation, history, summary, descriptive fact/);
 });

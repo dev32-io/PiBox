@@ -38,7 +38,7 @@ test("describes loaded catalog entries in deterministic name order", () => {
 		"- pinned [default tier: medium; configured model takes precedence]: Pinned agent",
 		"- zeta [default tier: medium]: Last agent",
 	].join("\n"));
-	assert.match(subagentSpawnToolDescription(catalog), /bounded assignment[\s\S]*Choose initial-spawn tier from assignment reasoning[\s\S]*- alpha \[default tier: low\]: First agent/);
+	assert.match(subagentSpawnToolDescription(catalog), /bounded assignment[\s\S]*Choose the initial tier[\s\S]*- alpha \[default tier: low\]: First agent/);
 });
 
 test("spawn guidance judges initial tier from assignment complexity", () => {
@@ -53,16 +53,16 @@ test("spawn guidance judges initial tier from assignment complexity", () => {
 		diagnostics: [],
 	});
 	for (const expected of [
-		"Choose initial-spawn tier from assignment reasoning, not agent role, configured default, or prompt length",
+		"Choose the initial tier from the assignment's reasoning demands, not agent role, configured default, or prompt length",
 		"Low for bounded lookup/mechanical work",
 		"Medium for ordinary engineering",
-		"High for genuinely difficult ambiguity or interacting invariants",
-		"Max only exceptionally, with a reason High is insufficient",
-		"Failed attempts do not by themselves justify escalation",
-		"Profiles choose routed models, not task tiers",
-		"configured agent model takes precedence",
-		"local-llm model requires tier local, so up/down tier overrides do not apply while that model is selected",
-		"strict explicit-model, fallback, and local-isolation semantics",
+		"High for difficult ambiguity or interacting invariants",
+		"Max only with a reason High is insufficient",
+		"Failed attempts alone do not justify escalation",
+		"Profiles choose routed models, not tiers",
+		"configured agent model overrides",
+		"local-llm model requires tier local, so tier overrides do not apply while it is selected",
+		"Strict explicit-model, fallback, and local-isolation semantics",
 	]) assert.ok(description.includes(expected), `missing guidance: ${expected}`);
 	assert.doesNotMatch(description, /normally omit tier|agent's default tier|prompt length determines tier/);
 });

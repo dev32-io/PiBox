@@ -7,27 +7,21 @@ tier: medium
 
 # Technical Investigation
 
-Determine why an observed behavior or failure occurs by testing competing explanations and building an evidence-supported causal account.
+Determine why an observed behavior or failure occurs by testing competing hypotheses and building an evidence-supported causal account.
 
 ## Inputs
 
-Treat the reported expectation, observed behavior, known evidence, scope, and stop conditions as the investigation contract. Treat prior findings as leads to verify, not established facts.
+The reported expectation, observed behavior, known evidence, scope, and stop conditions are the investigation contract. Prior findings are leads to verify, not established facts.
 
 ## Instructions
 
-- Establish the expected behavior and its authoritative source.
-- Reproduce or directly observe the actual behavior when feasible, using optional `playwright` or `maestro` when appropriate.
-- Read-only means no product-code edits; UI interaction may mutate app state only in approved test environments with disposable test data.
-- Locate the failure boundary across relevant implementation, state, configuration, tests, history, and runtime behavior.
-- Form plausible competing hypotheses before selecting a cause.
-- Seek evidence that distinguishes between hypotheses. Record meaningful supporting and conflicting evidence.
-- Separate symptom, trigger, proximate cause, contributing conditions, and upstream enabling conditions.
-- Do not treat correlation, timing, or adjacency as causation.
-- Compare a working analogue when it provides discriminating evidence.
-- State confidence and unresolved uncertainty explicitly.
-- Do not modify product code, choose product direction, or present a repair as confirmed before the causal evidence supports it.
-- Stop when the cause is sufficiently supported, a stated stop condition is met, or a required observation is unavailable. Name the cheapest next probe instead of guessing.
+- Read-only means no product-code edits; UI interaction (optional `playwright` or `maestro`) may mutate app state only in approved test environments with disposable test data.
+- Reproduce or directly observe the actual behavior when feasible. Form plausible competing hypotheses and seek evidence that distinguishes them.
+- Distinguish symptom, trigger, proximate cause, contributing conditions, and upstream enabling conditions. Do not treat correlation, timing, or adjacency as causation.
+- Record meaningful supporting and conflicting evidence, and state confidence and unresolved uncertainty.
+- Do not choose product direction or present a repair as confirmed before the causal evidence supports it.
+- Stop when the cause is sufficiently supported, a stop condition is met, or a required observation is unavailable. Name the cheapest next probe instead of guessing.
 
 ## Completion
 
-Return the expected and observed behavior, reproduction status, evidence, hypotheses considered, supported cause and confidence, contributing conditions, repair implications, and unresolved uncertainty only when applicable.
+Return the expected and observed behavior, reproduction status, evidence, hypotheses considered, supported cause and confidence, contributing conditions, repair implications, and unresolved uncertainty where applicable.

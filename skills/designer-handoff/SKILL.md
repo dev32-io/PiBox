@@ -5,18 +5,13 @@ description: Deliver or regenerate an approved visual mockup as a lean implement
 
 # Designer Handoff
 
-Turn the approved current mockup into direct visual implementation references. Let the images carry appearance; keep prose limited to information the images cannot express.
+Turn the approved current mockup into direct visual implementation references. Images carry appearance; prose carries only what images cannot express.
 
-## Preserve Authority
+## Source
 
-- Preserve the approved prototype as the source of every reference.
-- Do not capture references from production implementation code.
-- Do not simplify or reinterpret the approved appearance while preparing the handoff.
-- Use the current prototype directory as `<prototype-root>`, preserving an established repository location such as `design/prototype/<name>/` or `design/prototypes/<name>/`.
+The approved prototype is the source of every reference. Capture from it, not production code, and do not simplify or reinterpret its appearance. Use the current prototype directory as `<prototype-root>`, keeping an established location such as `design/prototype/<name>/` or `design/prototypes/<name>/`.
 
 ## Produce the References
-
-Create:
 
 ```text
 <prototype-root>/
@@ -26,67 +21,42 @@ Create:
     └── recordings/
 ```
 
-### Prefer scripted batch capture
+### Capture by script
 
-Generate references with a repeatable script or command whenever possible. Prefer, in order:
+Generate references with one repeatable script that produces the whole component/state matrix. Prefer, in order:
 
 1. an existing repository capture or rendering script;
-2. a temporary script that drives the available browser/runtime directly, such as headless Chrome through CDP, and generates the complete component/state matrix in one execution;
-3. an existing project browser library or CLI used non-interactively from a script.
+2. a temporary script driving the available browser/runtime directly, such as headless Chrome through CDP;
+3. an existing project browser library or CLI used non-interactively.
 
-A browser renderer may still be necessary for faithful HTML/CSS output, but Playwright and browser MCP are not requirements. Prefer one scripted batch over repeated agent-driven browser calls. Use browser MCP only for a reference or state that cannot reasonably be generated or captured through the available script/runtime path, and keep that fallback narrowly scoped.
+Playwright and browser MCP are not required; use browser MCP only for a state that cannot reasonably be scripted, narrowly.
 
-Keep temporary capture fixtures and scripts outside the repository unless the user asks to retain them or the repository already owns equivalent capture infrastructure. Capture from local approved prototype assets, preserve deterministic state/timing controls, and visually inspect the generated files after the script completes.
+Keep temporary fixtures and scripts outside the repository unless the user asks to retain them or the repository already owns equivalent capture infrastructure. Capture from local approved prototype assets with deterministic state/timing controls.
 
 ### One preview target per file
 
-Produce one cropped static PNG for every approved **component × variant × state** represented by the current mockup.
+Produce one cropped static PNG for every approved **component × variant × state** in the mockup. A file contains exactly one independently implementable component instance in one state, the unit an implementer would instantiate in one component preview.
 
-A reference file must contain exactly one independently implementable component instance in exactly one state. The component boundary is the unit an implementer would instantiate and render in one component preview.
-
-- A button reference contains one button only.
-- Five button variants require five separate files.
-- Rest, hover, focus, pressed, destructive, and disabled states require separate files when approved.
-- A segmented control may remain one file because its segments together form one component.
+- A button file contains one button; five variants need five files.
+- Rest, hover, focus, pressed, destructive, and disabled states need separate files when approved.
+- A segmented control is one file because its segments form one component.
 - A showcase section, specimen row, comparison group, variant grid, collection, or page is not a component reference.
 
-A showcase may group components for user review, but keep each component instance individually targetable and capture the component element itself. Showcase grouping must never become the handoff capture boundary.
+A showcase may group components for review, but keep each instance individually targetable and capture the component element itself.
 
-### Crop and name clearly
+### Crop and name
 
-Use stable filenames that identify component, applicable variant, and state:
+Use stable filenames identifying component, variant, and state:
 
 ```text
 handoff/static/action-button--primary--rest.png
-handoff/static/action-button--primary--pressed.png
-handoff/static/action-button--secondary--rest.png
 ```
 
-Crop to the component's rendered bounds. Retain only the minimal local background or transparent padding needed to preserve its edge, shadow, focus ring, blur, or material. Exclude showcase headings, descriptions, neighboring examples, and unrelated page chrome.
+Crop to the component's rendered bounds, keeping only the local background or transparent padding needed to preserve its edge, shadow, focus ring, blur, or material. Exclude showcase headings, descriptions, neighbors, and page chrome.
 
-### Record motion only when needed
+### Motion
 
-When static references cannot communicate an approved transition or motion, create ordered PNG keyframes under:
-
-```text
-handoff/recordings/<motion-name>/
-```
-
-Each keyframe must preserve the same one-component boundary. Do not use a montage, specimen row, or multi-component recording as the implementation reference. A playback file may accompany the keyframes when useful, but the PNG keyframes are the comparison inputs.
-
-## Verify Before Delivery
-
-Inspect every generated PNG before finishing.
-
-For each file, verify:
-
-- it contains one component instance;
-- it contains one state at one motion point;
-- its crop excludes showcase or neighboring content;
-- its appearance comes from the approved prototype;
-- it corresponds to one sensible implementation preview target.
-
-If any image contains multiple component instances or multiple states, split and recapture it. Do not deliver grouped references.
+When static references cannot communicate an approved transition, add ordered PNG keyframes under `handoff/recordings/<motion-name>/`, each keeping the one-component boundary (no montage or multi-component recording). A playback file may accompany them; the keyframes are the comparison inputs.
 
 ## Keep `handoff.md` Lean
 
@@ -95,12 +65,10 @@ Write only:
 1. A brief outcome.
 2. The prototype entry point.
 3. An exact path and one-line meaning for every static reference and motion sequence.
-4. Behavior, accessibility requirements, exceptions, or unresolved blockers that the images cannot communicate.
+4. Behavior, accessibility requirements, exceptions, or unresolved blockers the images cannot communicate.
 
-Do not repeat dimensions, colors, spacing, shadows, typography, or styling visible in the prototype source or rendered references. Do not add a metadata file, component manifest, capture schema, or implementation plan.
-
-The rendered references are the visual authority. When in doubt, inspect the referenced image rather than inferring appearance from prose.
+Do not repeat dimensions, colors, spacing, shadows, typography, or styling visible in the prototype or images. Add no metadata file, component manifest, capture schema, or implementation plan. The images are the visual authority.
 
 ## Completion
 
-A handoff is complete only when every approved implementation-preview target has its own per-state reference, optional motion keyframes are similarly isolated, every file has been visually inspected, and `handoff.md` points to each reference exactly.
+Visually inspect every PNG. Each must show one component instance in one state at one motion point, cropped free of showcase or neighboring content, from the approved prototype; split and recapture any that do not. Done when every approved preview target has its own reference, motion keyframes are likewise isolated, and `handoff.md` points to each exactly.

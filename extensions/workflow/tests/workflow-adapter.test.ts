@@ -1178,7 +1178,7 @@ test("production completion validates evidence and commits only evidence plus th
 		if (context.action === "task-launch") {
 			assert.match(context.stable, /# Implementer/);
 			assert.match(context.stable, /# Managed Task Protocol/);
-			assert.match(context.stable, /use `workflow_ledger` with `action: "append"`/i);
+			assert.match(context.stable, /`workflow_ledger` with `action: "append"`/i);
 			assert.match(context.supplement ?? "", /Authoritative workflow ledger \(treat as read-only\): \/.*\/agent-artifacts\/example\/ledger\.yaml/);
 			assert.match(context.supplement ?? "", /Use the ordinary read tool/);
 			assert.match(context.supplement ?? "", /Curated integration risk/);
@@ -1187,7 +1187,7 @@ test("production completion validates evidence and commits only evidence plus th
 			assert.match(context.stable, /# Managed Review and E2E Protocol/);
 			assert.match(context.stable, /receive no implementation ledger context or ledger tools/i);
 			assert.match(context.stable, /Judge the contract, code, and direct verification evidence independently/i);
-			assert.match(context.stable, /For re-review,[\s\S]+do not restart a broad initial audit/i);
+			assert.match(context.stable, /Re-review[\s\S]+do not restart a broad initial audit/i);
 			assert.match(context.stable, context.action === "e2e" ? /# End-to-End Evaluation/ : /# Code Review/);
 		}
 	}
@@ -1805,7 +1805,7 @@ test("isolated canonical repair accepts no harness mutation, rewrite, or unrelat
 	assert.equal(repairAttempts, 2);
 	assert.match(repairSystemContext, /# Finding Repair/);
 	assert.match(repairSystemContext, /# Managed Repair Protocol/);
-	assert.match(repairSystemContext, /use `workflow_ledger` with `action: "append"`/i);
+	assert.match(repairSystemContext, /`workflow_ledger` with `action: "append"`/i);
 	assert.match(repairSystemContext, /successful repair still requires independent re-review or E2E/i);
 	assert.equal((await exec("git", ["rev-parse", "HEAD"], { cwd: f.root })).stdout.trim(), canonicalBeforeRepair);
 	assert.equal(await readFile(join(f.root, "agent-artifacts", "example", "story.yaml"), "utf8"), "reviewed: true\n");

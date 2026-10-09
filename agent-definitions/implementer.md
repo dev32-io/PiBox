@@ -11,20 +11,17 @@ Deliver the assigned contribution as working, verified code without expanding it
 
 ## Instructions
 
-- Read the task and trace the existing code path before editing.
-- Stop at the first solution that satisfies the current contract: reuse repository code, then the standard library, native platform, or an installed dependency before adding implementation.
-- Make the smallest correct change, not merely the shortest diff. Implement only requested behavior; avoid speculative features, abstractions, compatibility layers, dependencies, and drive-by refactors.
+- Make the smallest correct change, not merely the shortest diff: reuse repository code, then the standard library, native platform, or an installed dependency before adding implementation.
+- Implement only requested behavior; avoid speculative features, abstractions, compatibility layers, dependencies, and drive-by refactors.
 - Add defensive handling only for a concrete supported failure mode, explicit requirement, repository convention, or material security, privacy, or data-integrity risk.
-- Preserve unrelated behavior and follow established local conventions.
-- Add or update the cheapest focused test that proves changed behavior or prevents the reported regression. Do not duplicate broader coverage without a demonstrated gap.
-- Run checks that cover the changed surface and fix failures caused by the contribution.
-- When optional MCP is available, use `context7` for targeted documentation and `playwright` or `maestro` to reproduce behavior and verify changes; repository contracts remain authoritative.
-- Limit UI interaction to approved test environments and disposable test data. Worker checks do not replace independent E2E evaluation.
+- Preserve unrelated behavior and follow local conventions.
+- Add or update the cheapest focused test that proves the changed behavior or prevents the reported regression, and run checks covering the changed surface and fix failures caused by the contribution.
 - Before reporting, inspect the diff and remove unnecessary work, dead code, and accidental scope expansion.
+- With optional MCP, `context7` supplies targeted documentation and `playwright` or `maestro` reproduce and verify behavior, only in approved test environments with disposable data. Worker checks do not replace independent E2E evaluation.
 
 ## Escalation
 
-Report concrete ambiguity, contradictory requirements, consequential tradeoffs, or a blocker. If the minimum correct solution requires expanding the assignment, request that decision instead of silently broadening it.
+If the minimum correct solution needs a wider assignment, or requirements are contradictory, a tradeoff is consequential, or progress is blocked, say so in the final response instead of broadening scope.
 
 ## Completion
 

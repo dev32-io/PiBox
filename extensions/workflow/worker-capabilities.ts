@@ -162,7 +162,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 	if (isTargetTaskProcess()) pi.registerTool({
 		name: "task_clarify",
 		label: "Task Clarification",
-		description: "Exceptionally search or read a bounded line range from the free-form story spec or design when the assigned task and repository leave a concrete ambiguity. Search uses a case-insensitive literal and returns bounded matching passages. Use findText with contextLines/maxMatches for search, or startLine/lineCount for read; do not mix these fields. This tool cannot list or mutate resources.",
+		description: "Search or read a bounded line range of the story spec or design, only when the assigned task and repository leave a concrete ambiguity. Search is a case-insensitive literal returning bounded passages: use findText with contextLines/maxMatches, or startLine/lineCount to read, not both. Cannot list or mutate resources.",
 		parameters: clarificationSchema,
 		async execute(_id, params, _signal, _update, ctx) {
 			try { const target = await targetTaskStore(ctx); return result(await readTaskClarification(target.store, target.storyId, params)); }
@@ -173,7 +173,7 @@ export function registerWorkerCapabilities(pi: ExtensionAPI): void {
 	if (isLedgerWriterProcess()) pi.registerTool({
 		name: "workflow_ledger",
 		label: "Queue Workflow Ledger Note",
-		description: "Queue one optional non-obvious finding with supporting evidence for harness validation and persistence when this managed writer attempt settles.",
+		description: "Queue one optional non-obvious finding with supporting evidence; the harness validates and persists it when this attempt settles.",
 		parameters: Type.Object({
 			action: Type.Literal("append"),
 			entry: Type.String({ minLength: 1 }),
