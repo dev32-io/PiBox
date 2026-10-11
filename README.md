@@ -76,7 +76,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 
 ## Explore architecture
 
-![Visual Companion showing Sentient's gateway architecture: session runtime, ReAct loop, tool broker, session store, provider client, egress proxy, frame delivery, clients, and speech services](docs/assets/architecture-demo/architecture-visualizer.png)
+![Visual Companion showing Sentient's gateway architecture: session runtime, ReAct loop, tool broker, session store, provider client, egress proxy, frame delivery, clients, and speech services](docs/assets/architecture-demo/sentient-gateway.png)
 
 *Sentient gateway architecture rendered in Visual Companion—not PiBox's own architecture. Explore system boundaries and component relationships, drill into focused views, or follow a request step by step.*
 
