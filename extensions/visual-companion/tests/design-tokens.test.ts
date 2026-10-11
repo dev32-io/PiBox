@@ -121,7 +121,7 @@ test("shell and Architecture consume common tokens with readable system fallback
 		readFile(resolve(commonAssets, "styles.css"), "utf8"),
 		readFile(resolve(architectureAssets, "index.html"), "utf8"),
 		readFile(resolve(architectureAssets, "styles.css"), "utf8"),
-		readFile(resolve(architectureAssets, "app.js"), "utf8"),
+		readFile(resolve(architectureAssets, "../scripts/viewer.jsx"), "utf8"),
 		readFile(resolve("extensions/visual-companion/story-board/assets/styles.css"), "utf8"),
 		readFile(resolve("extensions/visual-companion/mockup/assets/styles.css"), "utf8"),
 	]);
@@ -131,20 +131,18 @@ test("shell and Architecture consume common tokens with readable system fallback
 	assert.match(shellCss, /var\(--color-canvas,\s*Canvas\)/);
 	assert.match(architectureCss, /var\(--color-text,\s*CanvasText\)/);
 	assert.match(architectureApp, /getComputedStyle\(document\.documentElement\)/);
-	assert.match(architectureApp, /theme\.accent/);
+	assert.match(architectureApp, /mantineTheme=\{mantineTheme\}/);
+	assert.match(architectureApp, /colorScheme="dark"/);
+	assert.match(architectureApp, /\.map\(color\)/);
 	assert.doesNotMatch([shellCss, architectureCss, architectureApp, storyCss, mockupCss].join("\n"), /#[\da-f]{3,8}\b|rgba?\(/i, "viewer assets must not establish a second shared palette");
 });
 
-test("Architecture keeps narrow details as an operable sheet and honors common motion", async () => {
-	const [html, css] = await Promise.all([
-		readFile(resolve(architectureAssets, "index.html"), "utf8"),
-		readFile(resolve(architectureAssets, "styles.css"), "utf8"),
-	]);
-	assert.match(html, /id="details"[^>]+aria-label="Selected element details"[^>]+tabindex="-1"/);
-	assert.match(html, /id="close-details"[^>]+aria-label="Close element details"/);
-	const narrow = css.slice(css.indexOf("@media (max-width: 820px)"), css.indexOf("@media (max-width: 560px)"));
-	assert.match(narrow, /aside\s*\{[\s\S]*position:\s*absolute/);
-	assert.match(narrow, /aside\[data-open="true"\]/);
-	assert.doesNotMatch(narrow, /aside\s*\{[^}]*display:\s*none/s);
-	assert.match(narrow, /var\(--motion-normal,\s*0s\)/);
+test("Architecture applies shared tokens inside native popup and graph shadow tree", async () => {
+	const css = await readFile(resolve(architectureAssets, "../scripts/shadow.css"), "utf8");
+	assert.match(css, /\.likec4-shadow-root/);
+	for (const token of ["--colors-diagram-background", "--colors-likec4-dropdown-bg", "--colors-likec4-overlay-body", "--likec4-palette-fill", "--likec4-palette-hiContrast"]) assert.ok(css.includes(token));
+	assert.match(css, /var\(--color-surface\)/);
+	assert.match(css, /var\(--color-text\)/);
+	assert.match(css, /prefers-reduced-motion: reduce/);
+	assert.doesNotMatch(css, /#[\da-f]{3,8}\b|rgba?\(/i, "theme uses shared tokens, not a second palette");
 });

@@ -46,7 +46,7 @@ test("mockup viewer serves one bounded browser-renderable prototype directory", 
 	await writeFile(join(root, "secret.txt"), "not served");
 	const backend = await createVisualCompanionBackend({ viewers: [createMockupViewer()] });
 	try {
-		const shown = backend.show({ viewerId: "mockup", artifactPath: prototype });
+		const shown = await backend.show({ viewerId: "mockup", artifactPath: prototype });
 		assert.equal(shown.valid, true);
 		assert.match(await fetch(shown.viewerUrl).then((response) => response.text()), /Interactive visual mockup/);
 		const content = await fetch(`${shown.viewerUrl}content/`);
@@ -78,7 +78,7 @@ test("single-file mockups reload when a sibling asset changes", async () => {
 	const backend = await createVisualCompanionBackend({ viewers: [createMockupViewer()] });
 	const controller = new AbortController();
 	try {
-		const shown = backend.show({ viewerId: "mockup", artifactPath: entry });
+		const shown = await backend.show({ viewerId: "mockup", artifactPath: entry });
 		assert.equal(shown.valid, true);
 		assert.match(await fetch(`${shown.viewerUrl}content/`).then((response) => response.text()), /Concept/);
 		const events = await fetch(`${shown.viewerUrl}events`, { signal: controller.signal });
@@ -99,7 +99,7 @@ test("mockup viewer rejects regular non-HTML files", async () => {
 	await writeFile(entry, "not html");
 	const backend = await createVisualCompanionBackend({ viewers: [createMockupViewer()] });
 	try {
-		const shown = backend.show({ viewerId: "mockup", artifactPath: entry });
+		const shown = await backend.show({ viewerId: "mockup", artifactPath: entry });
 		assert.equal(shown.valid, false);
 		assert.match(shown.errors?.join(" ") ?? "", /HTML file/);
 	} finally {

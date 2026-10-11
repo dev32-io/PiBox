@@ -89,6 +89,7 @@ export async function createVisualCompanionBackend({
   const registry = new Map();
   const states = new Map();
   const pendingDisposals = new Set();
+  const pendingLoads = new Set();
   const commonStaticRoutes = normalizeRoutes({ ...markdownAssets, ...commonRoutes }, "Common");
   const commonDynamicHandlers = normalizeRoutes(commonHandlers, "Common handler");
   let selectedViewer;
@@ -110,13 +111,29 @@ export async function createVisualCompanionBackend({
     for (const client of state.clients) client.write(message);
   }
 
-  function refresh(viewerId) {
+  function refresh(viewerId, state) {
+    if (state.loading) return state.loading;
     const registration = registry.get(viewerId);
-    const state = states.get(viewerId);
-    if (!registration || !state || !registration.viewer.loadDocument) return;
-    state.latest = registration.viewer.loadDocument(state.artifactPath);
-    if (state.latest.ok) state.lastValid = state.latest.document;
-    notify(state);
+    const active = () => !closed && states.get(viewerId) === state && registry.get(viewerId) === registration;
+    const pending = (async () => {
+      while (active()) {
+        clearTimeout(state.timer);
+        const generation = state.generation;
+        let latest;
+        try { latest = await registration.viewer.loadDocument(state.artifactPath); }
+        catch (error) { latest = { ok: false, errors: [error instanceof Error ? error.message : String(error)] }; }
+        if (!active()) return;
+        if (generation !== state.generation) continue;
+        state.latest = latest;
+        if (latest.ok) state.lastValid = latest.document;
+        notify(state);
+        return;
+      }
+    })();
+    state.loading = pending;
+    pendingLoads.add(pending);
+    void pending.finally(() => { state.loading = undefined; pendingLoads.delete(pending); });
+    return pending;
   }
 
   function disposeRegistration(registration) {
@@ -255,7 +272,8 @@ export async function createVisualCompanionBackend({
       selectedViewer = viewerId;
       return `${baseUrl}/?viewer=${encodeURIComponent(viewerId)}`;
     },
-    show({ viewerId, artifactPath }) {
+    async show({ viewerId, artifactPath }) {
+      if (closed) throw new Error("Visual Companion backend is closed.");
       const registration = registry.get(viewerId);
       if (!registration) throw new Error(`Unknown visual companion: ${viewerId}`);
       if (!artifactPath) return { viewerId, url: api.select(viewerId), viewerUrl: `${baseUrl}/v/${encodeURIComponent(viewerId)}/` };
@@ -264,22 +282,31 @@ export async function createVisualCompanionBackend({
       if (!existsSync(resolvedArtifact)) throw new Error(`Visualization file not found: ${resolvedArtifact}`);
 
       disposeState(viewerId);
-      const latest = registration.viewer.loadDocument(resolvedArtifact);
-      const watchPath = latest.ok ? registration.viewer.watchPath?.(resolvedArtifact, latest.document) ?? resolvedArtifact : resolvedArtifact;
-      if (!existsSync(watchPath)) throw new Error(`Visual companion watch path not found: ${watchPath}`);
-      const state = { artifactPath: resolvedArtifact, latest, lastValid: latest.ok ? latest.document : undefined, clients: new Set(), watcher: undefined, timer: undefined };
+      const state = { artifactPath: resolvedArtifact, latest: { ok: false, errors: ["Loading artifact…"] }, lastValid: undefined, clients: new Set(), watcher: undefined, timer: undefined, generation: 0, loading: undefined };
+      states.set(viewerId, state);
       const onChange = () => {
+        state.generation++;
         clearTimeout(state.timer);
-        state.timer = setTimeout(() => refresh(viewerId), 60);
+        state.timer = setTimeout(() => { void refresh(viewerId, state); }, 60);
         state.timer.unref?.();
       };
+      const watchArtifact = (watchPath) => {
+        state.watcher?.close();
+        try { state.watcher = watch(watchPath, { recursive: statSync(watchPath).isDirectory() }, onChange); }
+        catch { state.watcher = watch(watchPath, onChange); }
+        state.watcher.unref?.();
+      };
       try {
-        state.watcher = watch(watchPath, { recursive: statSync(watchPath).isDirectory() }, onChange);
-      } catch {
-        state.watcher = watch(watchPath, onChange);
+        watchArtifact(resolvedArtifact);
+        await refresh(viewerId, state);
+        if (closed || states.get(viewerId) !== state) throw new Error("Visual companion load was superseded or closed.");
+        const watchPath = state.latest.ok ? registration.viewer.watchPath?.(resolvedArtifact, state.latest.document) : undefined;
+        if (watchPath && watchPath !== resolvedArtifact) watchArtifact(watchPath);
+      } catch (error) {
+        if (states.get(viewerId) === state) disposeState(viewerId);
+        throw error;
       }
-      state.watcher.unref?.();
-      states.set(viewerId, state);
+      const latest = state.latest;
       return {
         viewerId,
         artifactPath: resolvedArtifact,
@@ -294,6 +321,7 @@ export async function createVisualCompanionBackend({
       closed = true;
       closePromise = (async () => {
         for (const viewerId of [...states.keys()]) disposeState(viewerId);
+        await Promise.allSettled([...pendingLoads]);
         for (const registration of registry.values()) disposeRegistration(registration);
         registry.clear();
         const disposalResults = await Promise.allSettled([...pendingDisposals]);

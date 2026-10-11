@@ -1,0 +1,92 @@
+/* Inserted through ReactLikeC4 children: these rules live inside its shadow root.
+   Shared PiBox custom properties inherit across the host boundary. */
+.likec4-shadow-root {
+  --colors-diagram-background: var(--color-canvas);
+  --colors-diagram-background-pattern: var(--color-border-subtle);
+  --colors-surface-canvas: var(--color-canvas);
+  --colors-surface-default: var(--color-surface);
+  --colors-surface-sunken: var(--color-surface-inset);
+  --colors-surface-code: var(--color-surface-inset);
+  --colors-surface-field: var(--color-surface-inset);
+  --colors-surface-field-hover: var(--color-surface-hover);
+  --colors-surface-sunken-hover: var(--color-surface-hover);
+  --colors-border-focus: var(--color-accent);
+  --colors-surface-hover: var(--color-surface-hover);
+  --colors-surface-selected: var(--color-selected-well);
+  --colors-text: var(--color-text);
+  --colors-text-default: var(--color-text);
+  --colors-text-bright: var(--color-text);
+  --colors-text-dimmed: var(--color-text-secondary);
+  --colors-text-non-essential: var(--color-text-muted);
+  --colors-border-default: var(--color-border);
+  --colors-border-subtle: var(--color-border-subtle);
+  --colors-border-strong: var(--color-border-strong);
+  --colors-likec4-panel-action: var(--color-text-secondary);
+  --colors-likec4-panel-action-hover: var(--color-text);
+  --colors-likec4-panel-action-disabled: var(--color-text-disabled);
+  --colors-likec4-panel-action-bg: var(--color-surface);
+  --colors-likec4-panel-action-bg-hover: var(--color-surface-hover);
+  --colors-likec4-panel-text-dimmed: var(--color-text-secondary);
+  --colors-likec4-walkthrough-parallel-frame: var(--color-accent);
+  --colors-likec4-panel-bg: var(--color-surface);
+  --colors-likec4-panel-text: var(--color-text);
+  --colors-likec4-panel-border: var(--color-border);
+  --colors-likec4-dropdown-bg: var(--color-surface-raised);
+  --colors-likec4-dropdown-border: var(--color-border);
+  --colors-likec4-overlay-body: var(--color-surface);
+  --colors-likec4-overlay-border: var(--color-border);
+  --colors-likec4-overlay-backdrop: var(--color-scrim);
+  --colors-likec4-accent: var(--color-accent);
+  color: var(--color-text);
+}
+.likec4-shadow-root [data-likec4-color="primary"] {
+  --likec4-palette-fill: var(--color-surface-strong) !important;
+  --likec4-palette-stroke: var(--color-accent) !important;
+  --likec4-palette-hiContrast: var(--color-text) !important;
+  --likec4-palette-loContrast: var(--color-text-secondary) !important;
+  --likec4-palette-relation-stroke: var(--color-accent) !important;
+  --likec4-palette-relation-label: var(--color-text) !important;
+  --likec4-palette-relation-label-bg: var(--color-canvas) !important;
+}
+:focus-visible { outline: 2px solid var(--color-accent-hover, Highlight); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; scroll-behavior: auto !important; }
+}
+@media (forced-colors: active) {
+  .likec4-shadow-root { --colors-diagram-background: Canvas; --colors-text: CanvasText; }
+  .likec4-shadow-root [data-likec4-color] {
+    --likec4-palette-fill: Canvas !important;
+    --likec4-palette-stroke: CanvasText !important;
+    --likec4-palette-hiContrast: CanvasText !important;
+    --likec4-palette-loContrast: CanvasText !important;
+    --likec4-palette-relation-stroke: CanvasText !important;
+    --likec4-palette-relation-label: CanvasText !important;
+    --likec4-palette-relation-label-bg: Canvas !important;
+    --likec4-palette-relation-stroke-selected: Highlight !important;
+  }
+  :focus-visible { outline: 2px solid Highlight; }
+}
+
+/* Native details use initial-only motion coordinates. Constrain their card
+   at compact viewport sizes without changing desktop placement or dragging. */
+@media (max-width: 748px), (max-height: 698px) {
+  dialog > [data-likec4-color] {
+    left: 24px !important;
+    top: 24px !important;
+    max-width: calc(100vw - 48px);
+    max-height: calc(100vh - 48px);
+    transform: none !important;
+  }
+}
+/* Use native tab/panel semantics, not generated engine class names. */
+dialog [role="tablist"] { flex-wrap: wrap; flex-shrink: 0; }
+dialog [role="tabpanel"] .mantine-ScrollArea-content { min-width: 0; }
+dialog [role="tabpanel"] .mantine-ScrollArea-content > div,
+dialog [role="tabpanel"] .mantine-ScrollArea-content > div > div {
+  min-width: 0;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+dialog [role="tabpanel"] .mantine-Text-root {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

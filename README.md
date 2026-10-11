@@ -32,11 +32,11 @@ Modes are session-branch-local and select authority, not permission: Workflow st
 | **Models and speed** | Capacity-aware fallback across managed-agent routes, tier profiles, ChatGPT Fast mode for the main agent and selected child tiers, Codex usage meters, and local LLM or Ollama Cloud support. |
 | **Managed workflow** | Reviewed stories and plans, sequential or concurrent stages, isolated Git worktrees, checks, integration, bounded repair, whole-branch review, and final E2E. |
 | **Context and control** | Enforced repository permissions, path-scoped rules, private session scratch with a read-only Visual Companion file explorer, proactive repository memory with visible activity, and evidence-backed distillation with explicit approval. |
-| **Visual and local tools** | Designer authority, live architecture diagrams, browser mockups, a reactive workflow board, lazy local services, and optional sound feedback. |
+| **Visual and local tools** | LikeC4 architecture exploration with nested views, search, guided walkthroughs, and screenshots; Designer authority, browser mockups, a reactive workflow board, lazy local services, and optional sound feedback. |
 
 ## Quick start
 
-Requires [Pi 0.99.2 or newer](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#quick-start).
+Requires **Node.js 22.22.3 or newer** and [Pi 0.99.2 or newer](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md#quick-start).
 
 ```bash
 npm install
@@ -74,6 +74,22 @@ Managed execution lives only within the current Pi activation; quitting is treat
 
 ![Visual Companion showing the completed Aero Todo workflow with progress, delivery metrics, sequential and concurrent stages, and final assurance](docs/assets/workflow-demo/workflow-dashboard.png)
 
+## Explore architecture
+
+Ask PiBox to explain a system visually, or invoke:
+
+```text
+/skill:architecture-visualizer Show the main responsibilities, then walk through one request.
+```
+
+The Architecture tab uses **LikeC4** in PiBox's charcoal theme. One native model supports overview and nested detail views, with search, focus mode, relationship browsing, and step-by-step dynamic walkthroughs. **Save screenshot** saves the current diagram viewport as PNG—not off-screen content or every view.
+
+The agent authors a self-contained `.c4` file under `.pibox/visualization/architecture/`, opens it through the existing Visual Companion, and inspects rendered screenshots before claiming visual verification. Same-file edits update the browser; invalid edits show diagnostics while retaining the last valid diagram.
+
+LikeC4 installs with PiBox, not once per session or target repository. The backend remains session-owned; rendering assets and fonts are local. No additional MCP server or agent tools are required. After updating PiBox in an active session, use `/reload` to load the new integration. Legacy architecture JSON is preserved but must be reauthored as `.c4`.
+
+See the [architecture visualizer guide](docs/architecture-visualizer.md) for navigation, authoring, and development details.
+
 ## Everyday controls
 
 | Control | Purpose |
@@ -95,7 +111,7 @@ Managed execution lives only within the current Pi activation; quitting is treat
 
 - **Modes and workflow:** [work modes](docs/work-modes.md) · [workflow](docs/workflow.md) · [collaboration flow](docs/agent-collaboration-flow.md) · [E2E](docs/workflow-e2e.md)
 - **Agents and models:** [standalone subagents](docs/subagents.md) · [agent workflow](docs/specs/agent-workflow.md) · [model tiers](docs/model-tier-guidance.md) · [Fast mode](extensions/fast-mode/README.md) · [provider integrations](docs/specs/provider-integrations.md)
-- **Interface:** [interactive footer](extensions/tui/interactive-footer/README.md) · [status and usage](extensions/tui/status-bar/README.md) · [styled output](extensions/tui/styled-outputs/README.md) · [visual TUI](docs/specs/visual-tui.md)
+- **Interface:** [architecture visualizer](docs/architecture-visualizer.md) · [interactive footer](extensions/tui/interactive-footer/README.md) · [status and usage](extensions/tui/status-bar/README.md) · [styled output](extensions/tui/styled-outputs/README.md) · [visual TUI](docs/specs/visual-tui.md)
 - **Safety and context:** [permissions](extensions/permissions/README.md) · [path-scoped rules](extensions/rule/README.md) · [memory](extensions/memory-adapter/README.md) · [distillation](extensions/distill/README.md)
 - **Local integrations:** [services](extensions/service-adapter/README.md) · [sound](extensions/feedback/sound-hooks/README.md) · [local models](extensions/providers/local-llm/README.md) · [Ollama Cloud](extensions/providers/ollama-cloud/README.md)
 
@@ -111,6 +127,8 @@ npm run eval:workflow
 
 CI runs these checks for pushes and pull requests to `develop`, the serving branch. Generated benchmark data stays under ignored `.benchmark/` paths. Scratch explorer ships a checked-in, locally served Web Awesome bundle; after changing its pinned build inputs or `scripts/scratch-webawesome-entry.js`, run `npm run build:scratch-vendor` and commit regenerated `extensions/visual-companion/scratch/assets/webawesome.min.js`. See [vendor notices](extensions/visual-companion/scratch/licenses/README.md).
 
+Architecture viewer assets are also checked in. After changing its browser source or pinned build dependencies, run `npm run build:architecture` and commit the regenerated assets. See the [build and dependency notes](docs/architecture-visualizer.md#development).
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Bundled third-party components retain their own licenses; see [architecture notices](skills/architecture-visualizer/assets/notices/THIRD-PARTY.txt) and [Scratch vendor notices](extensions/visual-companion/scratch/licenses/README.md).

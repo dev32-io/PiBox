@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { parse, stringify } from "yaml";
 import { ASSISTED_E2E_CASES, ASSISTED_FIXTURE_MARKER, createAssistedFixtureRepository, CURRENT_STORY_ID, RECOVERY_STORY_ID } from "../fixtures.js";
+import { loadDocument } from "../../../../skills/architecture-visualizer/scripts/server.mjs";
 import { TASK_STATUSES } from "../projector.js";
 import { StoryBoardReader } from "../reader.js";
 
@@ -27,7 +28,7 @@ test("canonical disposable fixture maps complete coverage to E2E-001 through E2E
 		const report = await reader.readReportDetail("active-delivery", "task-report"); assert.ok(report); assert.equal(report.history.length, 2); assert.equal(report.findings.length, 1); assert.ok(report.riskAcceptance);
 		assert.deepEqual(report.evidence.map((item) => [item.id, item.available, item.supported]), [["EV-001", true, true], ["EV-002", true, true], ["EV-003", false, true], ["EV-004", true, false], ["EV-005", true, true]]);
 		const currentStatePath = join(fixture.repositoryRoot, "agent-artifacts", CURRENT_STORY_ID, "state.yaml"); const currentState = parse(await readFile(currentStatePath, "utf8")); currentState.outcomeStatus = "failed"; await writeFile(currentStatePath, stringify(currentState)); const gatedReader = new StoryBoardReader(fixture.repositoryRoot); const gatedWorkspace = await gatedReader.readWorkspace(CURRENT_STORY_ID); assert.ok(gatedWorkspace); assert.equal(gatedWorkspace.documentGroups.flatMap((group) => group.documents).some((document) => document.id === "outcome"), false); assert.equal(await gatedReader.readDocumentDetail(CURRENT_STORY_ID, "outcome"), undefined);
-		await stat(fixture.architectureArtifactPath); const architecture = JSON.parse(await readFile(fixture.architectureArtifactPath, "utf8")); assert.ok(architecture.views[0].nodes.length);
+		await stat(fixture.architectureArtifactPath); const architecture = await loadDocument(fixture.architectureArtifactPath); assert.equal(architecture.ok, true, architecture.errors.join("\n"));
 	} finally { await fixture.cleanup(); }
 });
 

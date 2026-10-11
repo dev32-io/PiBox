@@ -58,36 +58,34 @@ test("Story Board exposes non-color status text and modal focus, return, and nar
 	assert.doesNotMatch(css, /#[\da-f]{3,8}\b|rgba?\(/i, "Story Board must use shared palette tokens");
 });
 
-test("Architecture controls and graph selection are keyboard operable with focus-managed narrow details", async () => {
-	const [html, app, css] = await Promise.all([
-		readFile(resolve(architectureAssets, "index.html"), "utf8"),
-		readFile(resolve(architectureAssets, "app.js"), "utf8"),
-		readFile(resolve(architectureAssets, "styles.css"), "utf8"),
+test("Architecture delegates keyboard selection and focus-managed details to native LikeC4 with shadow-root accessibility styles", async () => {
+	const [app, css, upstream] = await Promise.all([
+		readFile(resolve(architectureAssets, "../scripts/viewer.jsx"), "utf8"),
+		readFile(resolve(architectureAssets, "../scripts/shadow.css"), "utf8"),
+		readFile(resolve("node_modules/likec4/react/index.mjs"), "utf8"),
 	]);
-	assert.match(html, /role="group" aria-label="Graph controls"/);
-	assert.match(html, /id="refresh"[^>]*>Refresh</);
-	assert.match(html, /id="canvas"[^>]+tabindex="0"[^>]+aria-label="Interactive architecture graph"/);
-	assert.match(html, /id="selection-status"[^>]+class="sr-only"[^>]+role="status"[^>]+aria-live="polite"[^>]+aria-atomic="true"/);
-	assert.match(app, /\["ArrowLeft", "ArrowRight", "Home", "End", "Enter"\]/);
-	assert.match(app, /cy\.on\("select", "node, edge", \(event\) => announceSelection\(event\.target\)\)/);
-	assert.match(app, /Selected \$\{label\}\. \$\{kind\}\.\$\{position\}/);
-	assert.match(app, /Item \$\{index \+ 1\} of \$\{elements\.length\} in keyboard navigation order/);
-	assert.match(app, /details\.addEventListener\("keydown"/);
-	assert.match(app, /event\.key === "Escape"/);
-	assert.match(app, /cy\.elements\(":selected"\)\.unselect/);
-	assert.match(app, /preserveViewport/);
-	assert.match(app, /Showing the last valid document/);
-	assert.match(app, /generation !== loadGeneration/);
-	assert.match(css, /#canvas:focus-visible/);
-	assert.match(css, /input\[type="checkbox"\] \{ accent-color: var\(--color-accent, Highlight\); \}/);
-	assert.match(css, /\.legend \.node-dot \{ background: var\(--color-accent, Highlight\); \}/);
-	const forcedColors = css.slice(css.indexOf("@media (forced-colors: active)"));
-	assert.match(forcedColors, /\.canvas-wrap canvas \{ forced-color-adjust: none; \}/);
-	assert.match(forcedColors, /#canvas:focus-visible \{ outline: 2px solid Highlight;/);
-	assert.doesNotMatch(css, /#canvas\s*\{[^}]*forced-color-adjust:\s*none/s, "the focusable graph container remains under system forced-color control");
-	assert.match(app, /const forcedColorsQuery = matchMedia\("\(forced-colors: active\)"\)/);
-	assert.match(app, /if \(forcedColorsQuery\.matches\)/);
-	assert.match(app, /forcedColorsQuery\.addEventListener\("change"[\s\S]*renderGraph\(\{ preserveViewport: true \}\)/);
-	for (const color of ["Canvas", "CanvasText", "Highlight"]) assert.match(app, new RegExp(`systemColor\\("${color}"\\)`));
-	assert.match(css, /aside\[data-open="true"\]/);
+	assert.match(app, /role="group" aria-label="Graph controls"/);
+	assert.match(app, /<button onClick=\{refresh\}>Refresh</);
+	assert.match(app, /nodesFocusable: true, edgesFocusable: true/);
+	assert.match(app, /role="status" aria-live="polite" aria-atomic="true"/);
+	assert.match(app, /onSelectionChange:[\s\S]*Selected/);
+	assert.match(app, /enableElementDetails enableRelationshipDetails/);
+	assert.match(app, /request !== generation.current/);
+	assert.match(app, /showing the last valid document/);
+	assert.match(app, /<style>\{shadowCss\}<\/style>/, "accessibility CSS must enter the shadow root, not only style host");
+	assert.match(css, /:focus-visible/);
+	assert.match(css, /prefers-reduced-motion: reduce/);
+	assert.match(css, /forced-colors: active/);
+	for (const color of ["Canvas", "CanvasText", "Highlight"]) assert.ok(css.includes(color));
+	// Version-bound delegate contracts; actual keyboard/modal/narrow behavior is
+	// also part of browser E2E, not inferred from these static checks.
+	assert.match(upstream, /function NodeWrapper/);
+	assert.match(upstream, /function EdgeWrapper/);
+	assert.match(upstream, /key === "Escape"/);
+	const details = upstream.slice(upstream.indexOf("function ElementDetailsCard("), upstream.indexOf("function ElementDetails("));
+	assert.match(details, /showModal\(\)/, "native modal owns focus containment, Escape and focus return");
+	assert.match(details, /zy\.dialog/);
+	assert.match(details, /onClose: pe/);
+	assert.match(details, /Math\.min\(700, T - 48\)/, "details shrink to narrow viewport");
+	assert.match(details, /Math\.min\(650, E - 48\)/, "details stay within viewport height");
 });

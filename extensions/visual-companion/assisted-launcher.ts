@@ -92,7 +92,9 @@ export async function launchAssistedVisualCompanion(options: AssistedLaunchOptio
 	};
 	backend = await createVisualCompanionBackend({ viewers: [storyBoard, architecture], host: options.host ?? "127.0.0.1", port: options.port ?? 0, commonHandlers: handlers });
 	if (backend.viewers.length !== 2 || backend.viewers[0] !== storyBoard.id || backend.viewers[1] !== architecture.id) { await backend.close(); throw new Error("Assisted launcher production composition diverged from the approved viewers."); }
-	if (options.architectureArtifactPath) backend.show({ viewerId: "architecture", artifactPath: resolve(options.architectureArtifactPath) });
+	try {
+		if (options.architectureArtifactPath) await backend.show({ viewerId: "architecture", artifactPath: resolve(options.architectureArtifactPath) });
+	} catch (error) { await backend.close(); throw error; }
 	function close(): Promise<void> {
 		if (closePromise) return closePromise;
 		state = "closing"; closePromise = backend.close().finally(() => { state = "closed"; }); return closePromise;

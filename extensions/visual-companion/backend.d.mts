@@ -33,7 +33,7 @@ export interface VisualCompanionViewer {
 	handlers?: Record<string, VisualCompanionRouteHandler>;
 	/** Resolve viewer-owned dynamic static content after explicit routes. */
 	resolveAsset?(route: string, context: VisualCompanionRouteContext): string | VisualCompanionAsset | undefined;
-	loadDocument?(path: string): VisualDocumentLoadResult;
+	loadDocument?(path: string): VisualDocumentLoadResult | Promise<VisualDocumentLoadResult>;
 	/** Select the watched file or directory after a successful load. */
 	watchPath?(artifactPath: string, document: unknown): string;
 	close?(): void | Promise<void>;
@@ -56,7 +56,7 @@ export interface VisualCompanionBackend {
 	readonly selectedViewer?: string;
 	registerViewer(viewer: VisualCompanionViewer): () => void;
 	select(viewerId: string): string;
-	show(input: { viewerId: string; artifactPath?: string }): VisualCompanionSelection;
+	show(input: { viewerId: string; artifactPath?: string }): Promise<VisualCompanionSelection>;
 	close(): Promise<void>;
 }
 

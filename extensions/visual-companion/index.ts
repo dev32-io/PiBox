@@ -98,7 +98,7 @@ export default function visualCompanion(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "visual_companion",
 		label: "Visual Companion",
-		description: "Open an Architecture document or browser-renderable visual mockup in the single session-local Visual Companion shell, or stop its loopback backend.",
+		description: "Open a native LikeC4 .c4 Architecture document (Node >=22.22.3) or browser-renderable visual mockup in the single session-local Visual Companion shell, or stop its loopback backend.",
 		promptSnippet: "Open or stop the session-local browser visual companion for an Architecture document or visual mockup",
 		promptGuidelines: ["Use after the artifact exists; edit the same artifact for live rerendering, and stop the companion when done."],
 		parameters,

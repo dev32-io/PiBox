@@ -1,0 +1,113 @@
+Bundled license information:
+
+react/cjs/react.production.js:
+  /**
+   * @license React
+   * react.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+scheduler/cjs/scheduler.production.js:
+  /**
+   * @license React
+   * scheduler.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+react-dom/cjs/react-dom.production.js:
+  /**
+   * @license React
+   * react-dom.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+react-dom/cjs/react-dom-client.production.js:
+  /**
+   * @license React
+   * react-dom-client.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+react/cjs/react-jsx-runtime.production.js:
+  /**
+   * @license React
+   * react-jsx-runtime.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+use-sync-external-store/cjs/use-sync-external-store-shim.production.js:
+  /**
+   * @license React
+   * use-sync-external-store-shim.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+use-sync-external-store/cjs/use-sync-external-store-shim/with-selector.production.js:
+  /**
+   * @license React
+   * use-sync-external-store-shim/with-selector.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+react/cjs/react-compiler-runtime.production.js:
+  /**
+   * @license React
+   * react-compiler-runtime.production.js
+   *
+   * Copyright (c) Meta Platforms, Inc. and affiliates.
+   *
+   * This source code is licensed under the MIT license found in the
+   * LICENSE file in the root directory of this source tree.
+   */
+
+@likec4/core/dist/chunks/libs/chroma-js.mjs:
+  /**
+  * @license
+  *
+  * The APCA contrast prediction algorithm is based of the formulas published
+  * in the APCA-1.0.98G specification by Myndex. The specification is available at:
+  * https://raw.githubusercontent.com/Myndex/apca-w3/master/images/APCAw3_0.1.17_APCA0.0.98G.svg
+  *
+  * Note that the APCA implementation is still beta, so please update to
+  * future versions of chroma.js when they become available.
+  *
+  * You can read more about the APCA Readability Criterion at
+  * https://readtech.org/ARC/
+  */
+
+@likec4/core/dist/chunks/types.mjs:
+  /*
+  * @version    1.4.1
+  * @date       2026-09-02
+  * @stability  3 - Stable
+  * @author     Lauri Rooden (https://github.com/litejs/natural-compare-lite)
+  * @license    MIT License
+  */

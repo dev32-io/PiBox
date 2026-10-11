@@ -52,7 +52,7 @@ export function createVisualCompanionPlatform(options: VisualCompanionPlatformOp
 				input.signal?.throwIfAborted();
 				const viewer = typeof input.viewer === "function" ? input.viewer() : input.viewer;
 				if (!started.backend.viewers.includes(viewer.id)) started.backend.registerViewer(viewer);
-				return { ...started.backend.show({ viewerId: viewer.id, ...(input.artifactPath ? { artifactPath: input.artifactPath } : {}) }), reused: started.reused };
+				return { ...await started.backend.show({ viewerId: viewer.id, ...(input.artifactPath ? { artifactPath: input.artifactPath } : {}) }), reused: started.reused };
 			});
 		},
 		stop() {

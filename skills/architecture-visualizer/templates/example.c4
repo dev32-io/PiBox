@@ -1,0 +1,47 @@
+// ILLUSTRATIVE syntax example only: not current or proposed PiBox architecture.
+// App containment means logical membership, not a shared deployment process.
+specification {
+  element actor { style { shape person } }
+  element system
+  element component
+  element storage { style { shape storage } }
+}
+model {
+  user = actor 'User' 'Submits work for processing.'
+  app = system 'App' 'Accepts work and records results.' {
+    metadata { claim 'illustrative'; source 'Fictional example; replace with inspected code evidence.' }
+    api = component 'API' 'Validates requests and dispatches accepted work.'
+    worker = component 'Worker' 'Processes accepted work and records results.'
+    store = storage 'Store' 'Owns accepted requests and completed results.'
+  }
+  user -> app.api 'submits work'
+  app.api -> app.worker 'dispatches work' {
+    description 'Illustrative handoff; no queue or retry behavior is implied.'
+    metadata { claim 'illustrative' }
+  }
+  app.api -> app.store 'writes request'
+  app.worker -> app.store 'writes result'
+}
+views {
+  view index {
+    title 'ILLUSTRATIVE — who accepts work?'
+    description 'For maintainers. Arrows show labeled interactions; App contains the processing components.'
+    include user
+    include app with { navigateTo processing }
+    autoLayout LeftRight
+  }
+  view processing of app {
+    title 'ILLUSTRATIVE — how is work processed?'
+    description 'For maintainers. Arrows show requests, dispatch, and writes inside the logical App boundary.'
+    include user, app, app.*
+    autoLayout TopBottom
+  }
+  dynamic view request {
+    title 'ILLUSTRATIVE — one request, step by step'
+    description 'Authored scenario, not a recorded execution. Step through acceptance, dispatch, and result storage.'
+    user -> app.api 'submits work'
+    app.api -> app.store 'writes request'
+    app.api -> app.worker 'dispatches work'
+    app.worker -> app.store 'writes result'
+  }
+}

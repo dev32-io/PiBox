@@ -99,7 +99,17 @@ export async function createAssistedFixtureRepository(): Promise<AssistedFixture
 
 	const recoveryRoot = join(artifacts, RECOVERY_STORY_ID); const validRecovery = stringify({ schemaVersion: 1, id: RECOVERY_STORY_ID, kind: "story", title: "Recovered historical story", phase: "execution", state: "active", planning: { revision: 2 }, artifacts: [], tasks: [], integrationUnits: [], evaluations: [] });
 	await put(recoveryRoot, "index.valid.yaml", validRecovery); await put(recoveryRoot, "index.yaml", "id: malformed-recovery\ntitle: Malformed historical story\nstate: active\ninvalid: [unterminated");
-	const architectureArtifactPath = join(repositoryRoot, "architecture.json"); await put(repositoryRoot, "architecture.json", JSON.stringify({ version: 1, title: "Assisted fixture architecture", views: [{ id: "production-composition", title: "Production composition", nodes: [{ id: "backend", label: "Visual Companion backend" }, { id: "story-board", label: "Story Board" }, { id: "architecture", label: "Architecture" }], edges: [{ id: "story", source: "backend", target: "story-board" }, { id: "arch", source: "backend", target: "architecture" }] }] }));
+	const architectureArtifactPath = join(repositoryRoot, "architecture.c4"); await put(repositoryRoot, "architecture.c4", `
+specification { element component }
+model {
+  backend = component 'Visual Companion backend'
+  storyBoard = component 'Story Board'
+  architecture = component 'Architecture'
+  backend -> storyBoard 'serves'
+  backend -> architecture 'serves'
+}
+views { view production_composition { title 'Production composition' include * } }
+`);
 	let cleaned = false;
 	return { repositoryRoot, architectureArtifactPath, recoveryStoryId: RECOVERY_STORY_ID, cases: [...ASSISTED_E2E_CASES], async recoverMalformedResource() { await put(recoveryRoot, "index.yaml", validRecovery); }, async cleanup() { if (!cleaned) { cleaned = true; await rm(repositoryRoot, { recursive: true, force: true }); } } };
 }

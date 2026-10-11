@@ -36,8 +36,8 @@ test("one random-port backend serves multiple registered visualizers", async () 
 	const second = await fixture(root, "sequence");
 	const backend = await createVisualCompanionBackend({ viewers: [first.viewer, second.viewer] });
 	try {
-		const architecture = backend.show({ viewerId: "architecture", artifactPath: first.artifactPath });
-		const sequence = backend.show({ viewerId: "sequence", artifactPath: second.artifactPath });
+		const architecture = await backend.show({ viewerId: "architecture", artifactPath: first.artifactPath });
+		const sequence = await backend.show({ viewerId: "sequence", artifactPath: second.artifactPath });
 		assert.equal(new URL(architecture.url).port, String(backend.port));
 		assert.equal(new URL(sequence.url).port, String(backend.port));
 		assert.notEqual(architecture.url, sequence.url);
@@ -62,7 +62,7 @@ test("backend and artifact watcher cannot pin the owning Pi process after quit",
 			assetsDir: ${JSON.stringify(visualizer.viewer.assetsDir)},
 			loadDocument: (path) => ({ ok: true, document: { path }, errors: [] }),
 		}] });
-		backend.show({ viewerId: "exit-check", artifactPath: ${JSON.stringify(visualizer.artifactPath)} });
+		await backend.show({ viewerId: "exit-check", artifactPath: ${JSON.stringify(visualizer.artifactPath)} });
 	`;
 	try {
 		await new Promise<void>((done, reject) => {
@@ -134,4 +134,53 @@ test("extension registers one session-scoped start/stop tool", async () => {
 	const result = await definition.execute("stop", { action: "stop" }, undefined, undefined, ctx);
 	assert.match(result.content[0].text, /already stopped/);
 	await events.get("session_shutdown")?.({ reason: "quit" }, ctx);
+});
+
+test("async loads coalesce edits, fence superseded results, and close waits for owned work", async () => {
+	const root = await mkdtemp(join(tmpdir(), "visual-companion-async-"));
+	const artifact = join(root, "source.c4");
+	await writeFile(artifact, "initial");
+	const loads: Array<(value: any) => void> = [];
+	let disposed = false;
+	const backend = await createVisualCompanionBackend({ viewers: [{ id: "async", loadDocument: () => new Promise(resolve => loads.push(resolve)), close: () => { disposed = true; } }] });
+	const waitFor = async (predicate: () => boolean) => {
+		for (let i = 0; i < 100 && !predicate(); i++) await new Promise(done => setTimeout(done, 10));
+		assert.ok(predicate(), "async condition settled");
+	};
+	const valid = (revision: string) => ({ ok: true, document: { revision }, errors: [] });
+	try {
+		const first = backend.show({ viewerId: "async", artifactPath: artifact });
+		const firstRejected = assert.rejects(async () => first, /superseded or closed/);
+		await waitFor(() => loads.length === 1);
+		const second = backend.show({ viewerId: "async", artifactPath: artifact });
+		await waitFor(() => loads.length === 2);
+		loads[1]!(valid("second"));
+		await second;
+		loads[0]!(valid("obsolete"));
+		await firstRejected;
+		const document = () => fetch(`${backend.url}/v/async/api/document`).then(response => response.json());
+		assert.equal((await document()).document.revision, "second");
+		await writeFile(artifact, "edit1");
+		await waitFor(() => loads.length === 3);
+		await writeFile(artifact, "edit2");
+		await new Promise(done => setTimeout(done, 100));
+		assert.equal(loads.length, 3, "no overlapping compilation for same state");
+		loads[2]!(valid("stale edit"));
+		await waitFor(() => loads.length === 4);
+		assert.equal((await document()).document.revision, "second", "stale edit never published");
+		loads[3]!(valid("latest edit"));
+		await waitFor(() => true);
+		assert.equal((await document()).document.revision, "latest edit");
+		await writeFile(artifact, "pending at shutdown");
+		await waitFor(() => loads.length === 5);
+		let closed = false;
+		const closing = backend.close().then(() => { closed = true; });
+		await new Promise(done => setTimeout(done, 20));
+		assert.equal(closed, false);
+		assert.equal(disposed, false, "viewer resources outlive owned compilation");
+		loads[4]!(valid("late"));
+		await closing;
+		assert.equal(disposed, true);
+		await assert.rejects(async () => backend.show({ viewerId: "async", artifactPath: artifact }), /closed/);
+	} finally { await backend.close(); await rm(root, { recursive: true, force: true }); }
 });
