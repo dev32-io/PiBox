@@ -76,6 +76,10 @@ Managed execution lives only within the current Pi activation; quitting is treat
 
 ## Explore architecture
 
+![Visual Companion architecture viewer in PiBox's charcoal theme, showing a user submitting work to an application with nested API, worker, and data store components and labeled interactions](docs/assets/architecture-demo/architecture-visualizer.png)
+
+*Actual viewer rendering of the [illustrative architecture example](skills/architecture-visualizer/templates/example.c4). Explore the overview, drill into components, or follow a request step by step.*
+
 Ask PiBox to explain a system visually, or invoke:
 
 ```text
