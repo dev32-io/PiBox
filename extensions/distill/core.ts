@@ -353,6 +353,8 @@ export interface CollectOptions {
 	privateRoot: string;
 	scope: ResolvedDistillScope;
 	entries: any[];
+	/** Pre-rendered session scratch evidence; written as scratch.md when sessions are in scope. */
+	scratch?: string;
 	dirtySnapshot?: DirtySnapshot;
 }
 
@@ -403,6 +405,7 @@ export async function collectDistillRun(git: GitRunner, options: CollectOptions)
 	const artifacts: Record<string, string> = {
 		"scope.json": `${JSON.stringify(options.scope, null, 2)}\n`, "changes.md": changes, "transcript.md": transcript,
 		"guidance.md": guidance, "workflow.md": workflow,
+		...(options.scope.includeSession && options.scratch !== undefined ? { "scratch.md": sanitizeDistillText(options.scratch) } : {}),
 	};
 	for (const [name, content] of Object.entries(artifacts)) await atomicWriteFile(join(runRoot, name), content, 0o600);
 	const manifest = {
@@ -441,65 +444,6 @@ export async function assertSafeArtifactPath(privateRoot: string, runId: string,
 	try { if ((await lstat(path)).isSymbolicLink()) throw new Error("Distillation artifacts must not be symbolic links."); }
 	catch (error: any) { if (error?.code !== "ENOENT") throw error; }
 	return path;
-}
-
-export interface InstructionAssessment {
-	eligibleForDiscussion: boolean;
-	reasons: string[];
-	burden: {
-		targetPath: string;
-		insertionText: string;
-		currentCharacters: number;
-		addedCharacters: number;
-		resultingCharacters: number;
-		currentEstimatedTokens: number;
-		addedEstimatedTokens: number;
-		resultingEstimatedTokens: number;
-		percentageIncrease: number;
-	};
-}
-
-const IMPERATIVE = /^(?:always\b|never\b|do not\b|must\b|use\b|keep\b|preserve\b|treat\b|require\b|run\b|avoid\b|ensure\b|validate\b|reject\b|prefer\b|store\b|load\b|read\b|write\b|update\b|remove\b|scope\b|route\b|derive\b|verify\b)/i;
-const EXAMPLE = /(?:\bfor example\b|\be\.g\.|\bsuch as\b|\bexample\s*:|```|`[^`]+`\s*(?:is|means))/i;
-const EXPLANATION = /(?:\bbecause\b|\bsince\b|\bso that\b|\btherefore\b|\bnoting\b|\bgiven that\b|\bas a result\b|\bthis (?:prevents|allows|means|ensures)\b|\bin order to\b)/i;
-const DESCRIPTIVE_CLAUSE = /(?:\bwhile\b|\bwhereas\b|\balthough\b|\bwhich\b|\b(?:production|the (?:repository|system|service|application|code|data))\s+(?:is|are|has|contains|stores|uses|runs)\b)/i;
-
-export function assessInstruction(input: { candidate: string; destination: "agents" | "rule"; targetPath: string; targetContent: string; paths?: string[]; evidencePaths: string[]; criticality: string; nonObviousness: string; repeatedApplicability: string; failureImpact: string }): InstructionAssessment {
-	const candidate = input.candidate.replace(/\s+/g, " ").trim();
-	const reasons: string[] = [];
-	if (!candidate) reasons.push("candidate is empty");
-	const clauses = candidate.split(/[.!?;]+|\b(?:and|or)\b/i).map((clause) => clause.trim()).filter(Boolean);
-	if (!clauses.length || clauses.some((clause) => !IMPERATIVE.test(clause))) reasons.push("every sentence must be phrased as a pure imperative instruction");
-	if (/[:,;()]/.test(candidate)) reasons.push("compound or parenthetical clauses are not allowed in instruction items");
-	if (EXAMPLE.test(candidate)) reasons.push("examples are forbidden in AGENTS.md and rule files");
-	if (EXPLANATION.test(candidate)) reasons.push("instruction contains explanatory prose");
-	if (DESCRIPTIVE_CLAUSE.test(candidate)) reasons.push("instruction contains a descriptive subordinate clause");
-	if (candidate.split(/[.!?]+/).filter(Boolean).length > 1) reasons.push("instruction must be exactly one concise imperative sentence");
-	if (input.destination === "agents" && (input.paths?.length ?? 0) > 0) reasons.push("path-scoped instructions belong in a rule, not AGENTS.md");
-	if (input.destination === "rule" && !(input.paths?.length ?? 0)) reasons.push("a rule requires an explicit path scope");
-	if (!input.evidencePaths.length) reasons.push("instruction promotion requires repository evidence paths");
-	const justifications = [["criticality", input.criticality, /(?:critical|security|privacy|production|irreversible|corrupt|data loss|safety|compatib)/i], ["non-obviousness", input.nonObviousness, /(?:non-obvious|not obvious|hidden|counterintuitive|easy to miss|similar|resembles|model may)/i], ["repeated applicability", input.repeatedApplicability, /(?:repeat|recur|across|every|multiple|frequent)/i], ["failure impact", input.failureImpact, /(?:security|privacy|production|irreversible|corrupt|data loss|break|incident|outage|expose)/i]] as const;
-	const genericJustification = /(?:\bstatement\b|\bjustification\b|\bdeterministic gate\b|\bsufficiently long\b|\bcriteria\b|\bmultiple frequent context\b)/i;
-	for (const [name, value, signal] of justifications) {
-		const words = value.toLowerCase().match(/[a-z][a-z-]+/g) ?? [];
-		const diversity = words.length ? new Set(words).size / words.length : 0;
-		if (value.trim().length < 40 || !signal.test(value) || genericJustification.test(value) || diversity < 0.6) reasons.push(`${name} justification lacks required substantive risk/applicability signals`);
-	}
-	if (!/(?:task|workflow|change|release|deployment|integration|operation|maintenance|review|implementation|module|path)/i.test(input.repeatedApplicability)) reasons.push("repeated applicability must identify concrete recurring work scopes");
-	const contextBody = input.targetContent.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
-	const insertionText = `${contextBody && !contextBody.endsWith("\n") ? "\n" : ""}- ${candidate}\n`;
-	const currentCharacters = contextBody.length;
-	const addedCharacters = insertionText.length;
-	const resultingCharacters = currentCharacters + addedCharacters;
-	return {
-		eligibleForDiscussion: reasons.length === 0, reasons,
-		burden: {
-			targetPath: input.targetPath, insertionText, currentCharacters, addedCharacters, resultingCharacters,
-			currentEstimatedTokens: Math.ceil(currentCharacters / 4), addedEstimatedTokens: Math.ceil(addedCharacters / 4),
-			resultingEstimatedTokens: Math.ceil(resultingCharacters / 4),
-			percentageIncrease: currentCharacters ? Number((addedCharacters / currentCharacters * 100).toFixed(2)) : 100,
-		},
-	};
 }
 
 export async function listDistillRuns(privateRoot: string): Promise<string[]> {

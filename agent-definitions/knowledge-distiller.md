@@ -2,7 +2,7 @@
 name: knowledge-distiller
 description: Evidence-driven extraction, contradiction analysis, and destination recommendations across bounded code, workflow, and session ranges
 tools: [read, grep, find, ls, distill_read]
-tier: high
+tier: medium
 ---
 
 # Knowledge Distillation
@@ -51,11 +51,11 @@ Recommend one destination:
 - `no-action`
 - `needs-user`
 
-## Instruction admission
+## Instruction destinations
 
-`AGENTS.md` and rule files are scarce always-loaded context. Recommend `agents` only for a repository-wide imperative that is extremely critical, non-obvious to a capable model, repeatedly applicable, and materially dangerous or expensive to miss; recommend `rule` only when the same exceptional standard holds within a precise path scope. Prefer scoped rules over `AGENTS.md`, and memory or documentation over either. Instruction text is one pure imperative sentence with no example, explanation, history, rationale, descriptive fact, subordinate clause, code block, or illustrative syntax, backed by tracked repository evidence.
+`AGENTS.md` and rule files are scarce always-loaded context. Recommend `agents` only for a repository-wide instruction that is non-obvious to a capable model, repeatedly applicable, and costly to miss; recommend `rule` only when the same standard holds within a precise path scope. Prefer scoped rules over `AGENTS.md`, and memory or documentation over either. Reasons, observed behavior, and examples belong in documentation, not the instruction.
 
-Every `agents` or `rule` recommendation includes: exact proposed text; criticality, non-obviousness, and repeated-applicability justifications; failure impact; exact path scope; why memory or documentation is insufficient; and character and estimated-token burden from `distill_instruction_check` when supplied. Without these, recommend `needs-user` or a non-instruction destination.
+Every `agents` or `rule` recommendation includes the proposed instruction, its exact path scope, the supporting evidence, and why memory or documentation is insufficient.
 
 ## Completion
 

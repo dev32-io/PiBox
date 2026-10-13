@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
-import { assessInstruction, assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, renderSessionTranscript, resolveDistillScope, safeArtifactPath, sanitizeDistillText, type GitRunner } from "../core.js";
+import { assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, renderSessionTranscript, resolveDistillScope, safeArtifactPath, sanitizeDistillText, type GitRunner } from "../core.js";
 import { selectedSessionEntries } from "../index.js";
 
 const exec = promisify(execFile);
@@ -288,92 +288,4 @@ test("confines local artifacts and redacts common secret forms", async (t) => {
 	assert.equal(sanitizeDistillText("before\u2028plain text\u2029after\r\nlast"), "before\u2028plain text\u2029after\r\nlast");
 	const longNonSecret = `ordinary diagnostic text \u2028 ${"non-auth diagnostic value. ".repeat(80_000)}\u2029 done`;
 	assert.equal(sanitizeDistillText(longNonSecret), longNonSecret);
-});
-
-test("treats AGENTS and rule promotion as an exceptional measured instruction gate", () => {
-	const accepted = assessInstruction({
-		candidate: "Never mutate production without explicit user authorization.", destination: "agents", targetPath: "AGENTS.md", targetContent: "# Rules\n", evidencePaths: ["deploy/setup.ts"],
-		criticality: "A mistaken production mutation can irreversibly alter private user data.",
-		nonObviousness: "The repository includes operational commands whose local and production forms look similar.",
-		repeatedApplicability: "Production-adjacent maintenance occurs repeatedly across deployment and debugging tasks.",
-		failureImpact: "Missing the boundary can cause irreversible data loss and a security incident.",
-	});
-	assert.equal(accepted.eligibleForDiscussion, true);
-	assert.ok(accepted.burden.addedEstimatedTokens > 0);
-	assert.equal(accepted.burden.resultingCharacters, accepted.burden.currentCharacters + accepted.burden.addedCharacters);
-	assert.equal(accepted.burden.resultingEstimatedTokens, Math.ceil(accepted.burden.resultingCharacters / 4));
-	const longCandidate = assessInstruction({
-		candidate: `Preserve ${"critical credentials ".repeat(30)}`.trim(), destination: "agents", targetPath: "AGENTS.md", targetContent: "# Rules\n", evidencePaths: Array.from({ length: 21 }, (_, index) => `deploy/evidence-${index}.ts`),
-		criticality: "A mistaken production mutation can irreversibly alter private user data.",
-		nonObviousness: "The repository includes operational commands whose local and production forms look similar.",
-		repeatedApplicability: "Production maintenance occurs repeatedly across deployment and debugging tasks.",
-		failureImpact: "Missing the boundary can cause irreversible data loss and a security incident.",
-	});
-	assert.doesNotMatch(longCandidate.reasons.join("\n"), /context budget|1-20/);
-
-	const example = assessInstruction({
-		candidate: "Use safe commands; for example, run the staging command first.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", evidencePaths: ["deploy/setup.ts"],
-		criticality: "This is a sufficiently long criticality explanation for the deterministic gate.",
-		nonObviousness: "This is a sufficiently long non-obviousness explanation for the deterministic gate.",
-		repeatedApplicability: "This is a sufficiently long repeated-applicability explanation for the deterministic gate.",
-		failureImpact: "This is a sufficiently long failure-impact explanation for the deterministic gate.",
-	});
-	assert.equal(example.eligibleForDiscussion, false);
-	assert.match(example.reasons.join("\n"), /examples are forbidden/);
-
-	const descriptive = assessInstruction({
-		candidate: "Always protect credentials. Production stores private customer data.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", evidencePaths: ["src/config.ts"],
-		criticality: "Credential exposure can cause irreversible compromise across repository deployments.",
-		nonObviousness: "Several neutral configuration fields can contain credentials without secret-like names.",
-		repeatedApplicability: "Credential-bearing configuration is handled repeatedly across integrations and deployments.",
-		failureImpact: "A missed instruction can expose private credentials and require emergency rotation.",
-	});
-	assert.equal(descriptive.eligibleForDiscussion, false);
-	assert.match(descriptive.reasons.join("\n"), /every sentence must be phrased/);
-	const embedded = assessInstruction({
-		candidate: "Always protect credentials while production stores private customer data.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", evidencePaths: ["src/config.ts"],
-		criticality: "Credential exposure can cause irreversible compromise across repository deployments.",
-		nonObviousness: "Several neutral configuration fields can contain credentials without secret-like names.",
-		repeatedApplicability: "Credential-bearing configuration is handled repeatedly across integrations and deployments.",
-		failureImpact: "A missed instruction can expose private credentials and require emergency rotation.",
-	});
-	assert.equal(embedded.eligibleForDiscussion, false);
-	assert.match(embedded.reasons.join("\n"), /descriptive subordinate clause/);
-	const noting = assessInstruction({
-		candidate: "Always protect credentials, noting customer data is private.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", evidencePaths: ["src/config.ts"],
-		criticality: "Credential exposure creates a critical privacy incident across production deployments.",
-		nonObviousness: "Neutral configuration fields hide secrets in a way that is easy to miss.",
-		repeatedApplicability: "Credential handling recurs across multiple integrations and deployment paths.",
-		failureImpact: "A missed instruction can expose private credentials and cause a security incident.",
-	});
-	assert.equal(noting.eligibleForDiscussion, false);
-	assert.match(noting.reasons.join("\n"), /compound|explanatory/);
-	const coordinated = assessInstruction({
-		candidate: "Always protect credentials and credentials are private.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", evidencePaths: ["src/config.ts"],
-		criticality: "Credential exposure creates a critical privacy incident across production deployments.",
-		nonObviousness: "Neutral configuration fields hide secrets in a way that is easy to miss.",
-		repeatedApplicability: "Credential handling recurs across multiple integration and deployment tasks.",
-		failureImpact: "A missed instruction can expose private credentials and cause a security incident.",
-	});
-	assert.equal(coordinated.eligibleForDiscussion, false);
-	assert.match(coordinated.reasons.join("\n"), /every sentence must be phrased/);
-	const tautological = assessInstruction({
-		candidate: "Always protect credentials.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", evidencePaths: ["src/config.ts"],
-		criticality: "Credential exposure creates a critical privacy incident across production deployments.",
-		nonObviousness: "Neutral configuration fields hide secrets in a way that is easy to miss.",
-		repeatedApplicability: "This statement repeats repeatedly across every multiple frequent context.",
-		failureImpact: "A missed instruction can expose private credentials and cause a security incident.",
-	});
-	assert.equal(tautological.eligibleForDiscussion, false);
-	assert.match(tautological.reasons.join("\n"), /repeated applicability/);
-
-	const scoped = assessInstruction({
-		candidate: "Preserve generated API compatibility.", destination: "agents", targetPath: "AGENTS.md", targetContent: "", paths: ["src/api/**"], evidencePaths: ["src/api/schema.ts"],
-		criticality: "Breaking the generated API creates widespread downstream compatibility failures.",
-		nonObviousness: "Generated files resemble ordinary source and their authority boundary is not obvious.",
-		repeatedApplicability: "The generated API is touched repeatedly by feature, release, and compatibility work.",
-		failureImpact: "A missed instruction can break every downstream client during the next release.",
-	});
-	assert.equal(scoped.eligibleForDiscussion, false);
-	assert.match(scoped.reasons.join("\n"), /belong in a rule/);
 });

@@ -33,7 +33,6 @@ function callLabel(name: string, args: Record<string, any>): { action: string; t
 		case "distill_read": return { action: args.runId ? "Read distillation" : "List distillations", target: [args.runId, args.path].filter(Boolean).join(" · ") };
 		case "distill_record": return { action: `Record distillation ${args.category ?? "artifact"}`, target: [args.runId, args.id].filter(Boolean).join(" · ") };
 		case "distill_compare": return { action: "Compare distilled knowledge", target: `${args.claims?.length ?? 0} claim(s)` };
-		case "distill_instruction_check": return { action: "Measure instruction burden", target: args.targetPath };
 		case "memory_adapter": {
 			switch (args.action) {
 				case "status": return { action: "Inspect memory status" };

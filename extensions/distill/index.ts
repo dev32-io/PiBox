@@ -1,21 +1,23 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, parseFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, readFileSync } from "node:fs";
 import { open, readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomicWriteFile, discoverRepository, isGitPathIgnored, readTextIfExists } from "../workflow/repository.js";
+import { atomicWriteFile, discoverRepository, readTextIfExists } from "../workflow/repository.js";
 import { RepositoryMutex } from "../workflow/canonical-mutation.js";
 import {
-	assessInstruction, assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, listDistillRuns, resolveDistillScope, sanitizeDistillText,
+	assertSafeArtifactPath, collectDistillRun, currentDirtySnapshot, listDistillRuns, resolveDistillScope, sanitizeDistillText,
 	type DistillScopeInput, type GitRunner, type ResolvedDistillScope,
 } from "./core.js";
 import {
 	DISTILL_KNOWLEDGE_DISCOVERY_EVENT, type DistillKnowledgeDiscovery, type DistillKnowledgeItem, type DistillKnowledgeProvider,
 } from "./provider.js";
+import { renderSessionScratch, scratchAvailable, scratchBindingFor } from "./scratch.js";
+import type { SessionScratchBinding } from "../session-scratch/types.js";
 
 const SCOPE_FIELDS = {
 	target: Type.Optional(Type.String()),
@@ -63,22 +65,22 @@ function sliceEntryRange(entries: any[], scope: ResolvedDistillScope): any[] {
 	return entries.slice(start, end);
 }
 
-export async function selectedSessionEntries(ctx: ExtensionContext, scope: ResolvedDistillScope, options: { includeCurrent?: boolean; applyRange?: boolean } = {}): Promise<any[]> {
+async function sessionBranches(ctx: ExtensionContext, scope: ResolvedDistillScope, includeCurrent = true): Promise<Array<{ id: string; entries: any[] }>> {
 	if (!scope.includeSession || !scope.sessionIds.length) return [];
 	const currentId = sessionId(ctx);
 	const manager = ctx.sessionManager as any;
 	const currentEntries: any[] = manager.getBranch?.() ?? manager.buildContextEntries?.() ?? manager.getEntries?.() ?? [];
 	const sessionFile = manager.getSessionFile?.() as string | undefined;
 	const directory = sessionFile ? dirname(sessionFile) : undefined;
-	const output: any[] = [];
+	const output: Array<{ id: string; entries: any[] }> = [];
 	for (const id of scope.sessionIds) {
 		if (id === currentId) {
-			if (options.includeCurrent !== false) {
+			if (includeCurrent) {
 				const prefix = `${currentId}:`;
 				const anchor = scope.sessionKey?.startsWith(prefix) ? scope.sessionKey.slice(prefix.length) : undefined;
 				const anchorIndex = anchor && anchor !== "root" ? currentEntries.findIndex((entry) => entry?.id === anchor) : currentEntries.length - 1;
 				if (anchor && anchor !== "root" && anchorIndex < 0) throw new Error("The previewed current-session leaf is no longer on the active branch.");
-				output.push({ type: "branch_summary", id: `session-${id}`, summary: `Session ${id}` }, ...currentEntries.slice(0, Math.max(0, anchorIndex + 1)));
+				output.push({ id, entries: currentEntries.slice(0, Math.max(0, anchorIndex + 1)) });
 			}
 			continue;
 		}
@@ -99,9 +101,25 @@ export async function selectedSessionEntries(ctx: ExtensionContext, scope: Resol
 			break;
 		}
 		if (!matched) throw new Error(`Selected session was not found in this repository's Pi session directory: ${id}`);
-		output.push({ type: "branch_summary", id: `session-${id}`, summary: `Session ${id}` }, ...matched);
+		output.push({ id, entries: matched });
 	}
+	return output;
+}
+
+export async function selectedSessionEntries(ctx: ExtensionContext, scope: ResolvedDistillScope, options: { includeCurrent?: boolean; applyRange?: boolean } = {}): Promise<any[]> {
+	const output = (await sessionBranches(ctx, scope, options.includeCurrent !== false))
+		.flatMap(({ id, entries }) => [{ type: "branch_summary", id: `session-${id}`, summary: `Session ${id}` }, ...entries]);
 	return options.applyRange === false ? output : sliceEntryRange(output, scope);
+}
+
+/** Scratch bindings for every selected session; scratch is live, best-effort context and is not part of the preview digest. */
+export async function selectedSessionScratch(ctx: ExtensionContext, scope: ResolvedDistillScope): Promise<Array<{ sessionId: string; binding: SessionScratchBinding | undefined }>> {
+	return (await sessionBranches(ctx, scope)).map(({ id, entries }) => ({ sessionId: id, binding: scratchBindingFor(id, entries) }));
+}
+
+/** Distillation runs live in the Pi agent directory, outside the repository, keyed by the shared Git common directory. */
+export function distillStoreRoot(repositoryId: string): string {
+	return join(getAgentDir(), "pibox", repositoryId);
 }
 
 function sessionInputDigest(historicalEntries: any[]): string {
@@ -120,14 +138,6 @@ function sessionScopeKey(ctx: ExtensionContext): string {
 async function assertCollectedRun(privateRoot: string, runId: string): Promise<void> {
 	const manifest = await assertSafeArtifactPath(privateRoot, runId, "manifest.json");
 	if (!existsSync(manifest)) throw new Error(`Distillation run is not collected: ${runId}`);
-}
-
-function instructionTarget(root: string, path: string): string {
-	if (!path || path.startsWith("/") || path.split(/[\\/]/).includes("..")) throw new Error("targetPath must be repository-relative.");
-	if (!(basename(path) === "AGENTS.md" || /^\.(?:pi|claude)\/rules\/.+\.md$/.test(path))) throw new Error("Instruction targets are limited to AGENTS.md and .pi/.claude rule files.");
-	const target = resolve(root, path);
-	if (relative(root, target).startsWith("..")) throw new Error("targetPath must stay inside the repository.");
-	return target;
 }
 
 export function gitRunnerFor(pi: ExtensionAPI, cwd: string): GitRunner {
@@ -159,7 +169,10 @@ export default function distillExtension(pi: ExtensionAPI): void {
 	const previews = new Map<string, { scope: ResolvedDistillScope; repositoryId: string; repositoryRoot: string }>();
 	const providers = new Map<string, DistillKnowledgeProvider>();
 
-	const repository = async (ctx: ExtensionContext) => discoverRepository(ctx.cwd);
+	const repository = async (ctx: ExtensionContext) => {
+		const identity = await discoverRepository(ctx.cwd);
+		return { ...identity, privateRoot: distillStoreRoot(identity.id) };
+	};
 	const gitFor = gitRunnerFor;
 	const discoverProviders = () => {
 		providers.clear();
@@ -192,12 +205,13 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			const historicalEntries = await selectedSessionEntries(ctx, scope, { includeCurrent: false, applyRange: false });
 			scope = await resolveDistillScope(gitFor(pi, identity.root), { ...scopeInput, externalInputDigest: sessionInputDigest(historicalEntries) });
 			if (scope.sessionStartEntry || scope.sessionEndEntry) await selectedSessionEntries(ctx, scope);
+			const scratch = await Promise.all((await selectedSessionScratch(ctx, scope)).map(async ({ sessionId, binding }) => ({ sessionId, available: await scratchAvailable(binding) })));
 			previews.set(scope.previewToken, { scope, repositoryId: identity.id, repositoryRoot: identity.root });
 			const preview = {
 				runId: scope.runId, previewToken: scope.previewToken, target: scope.target, baseline: scope.baseline,
 				time: { since: scope.since ?? null, until: scope.until ?? null }, paths: scope.paths, workItems: scope.workItems,
 				commitCount: scope.commitCount, changedFiles: scope.changedFiles, dirty: scope.dirty, includeDirty: scope.includeDirty,
-				includeSession: scope.includeSession, sessionIds: scope.sessionIds, sessionEntries: { start: scope.sessionStartEntry ?? null, end: scope.sessionEndEntry ?? null },
+				includeSession: scope.includeSession, sessionIds: scope.sessionIds, sessionEntries: { start: scope.sessionStartEntry ?? null, end: scope.sessionEndEntry ?? null }, sessionScratch: scratch,
 				focus: scope.focus, knowledgeProviders: scope.knowledgeProviders,
 				availableKnowledgeProviders: [...providers.values()].map((provider) => ({ id: provider.id, locality: provider.locality, description: provider.description })), estimatedPartitions: scope.estimatedPartitions,
 			};
@@ -207,7 +221,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_collect", label: "Collect Distillation Evidence",
-		description: "Collect a previewed, user-confirmed distillation scope into ignored .pibox/distill artifacts. Reads source, Git, guidance, and knowledge stores only.",
+		description: "Collect a previewed, user-confirmed distillation scope into private artifacts stored outside the repository. Reads source, Git, guidance, and knowledge stores only.",
 		promptSnippet: "Collect confirmed read-only distillation evidence",
 		parameters: Type.Object({ previewToken: Type.String({ minLength: 64, maxLength: 64 }) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
@@ -216,7 +230,6 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			const identity = await repository(ctx);
 			if (identity.id !== preview.repositoryId || identity.root !== preview.repositoryRoot) throw new Error("Distillation preview belongs to another repository. Run distill_prepare again.");
 			const scope = preview.scope;
-			if (!await isGitPathIgnored(identity.root, ".pibox")) throw new Error("Refusing to collect distillation artifacts because .pibox is not ignored.");
 			const git = gitFor(pi, identity.root);
 			await assertSafeArtifactPath(identity.privateRoot, scope.runId, "manifest.json");
 			const mutex = new RepositoryMutex(join(identity.privateRoot, "distill", scope.runId));
@@ -229,16 +242,16 @@ export default function distillExtension(pi: ExtensionAPI): void {
 				if (dirtySnapshot && dirtySnapshot.digest !== scope.dirtyDigest) throw new Error("The dirty checkout changed after preview. Run distill_prepare again.");
 				return collectDistillRun(git, {
 					repositoryRoot: identity.root, privateRoot: identity.privateRoot, scope,
-					entries: await selectedSessionEntries(ctx, scope), ...(dirtySnapshot ? { dirtySnapshot } : {}),
+					entries: await selectedSessionEntries(ctx, scope), scratch: await renderSessionScratch(await selectedSessionScratch(ctx, scope)), ...(dirtySnapshot ? { dirtySnapshot } : {}),
 				});
 			});
-			return result(`${collected.reused ? "Reused" : "Collected"} distillation ${scope.runId}.\nArtifacts: ${collected.files.join(", ")}`, { runId: scope.runId, ...collected, scope });
+			return result(`${collected.reused ? "Reused" : "Collected"} distillation ${scope.runId}.\nRun root: ${collected.runRoot}\nArtifacts: ${collected.files.join(", ")}`, { runId: scope.runId, ...collected, scope });
 		},
 	});
 
 	pi.registerTool({
 		name: "distill_read", label: "Read Distillation Artifact",
-		description: "List local distillation runs or read a bounded presentation slice of one ignored run artifact or immutable source file.",
+		description: "List local distillation runs or read a bounded presentation slice of one private run artifact or immutable source file.",
 		parameters: Type.Object({ runId: Type.Optional(Type.String()), path: Type.Optional(Type.String()), sourcePath: Type.Optional(Type.String()), offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 30_000 })) }, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
 			const identity = await repository(ctx);
@@ -276,7 +289,7 @@ export default function distillExtension(pi: ExtensionAPI): void {
 
 	pi.registerTool({
 		name: "distill_record", label: "Record Distillation Analysis",
-		description: "Persist an analyst report, synthesis, knowledge comparison, or user decision inside an existing ignored distillation run; edits no guidance or memory.",
+		description: "Persist an analyst report, synthesis, knowledge comparison, or user decision inside an existing private distillation run; edits no guidance or memory.",
 		parameters: Type.Object({
 			runId: Type.String(), category: StringEnum(["finding", "synthesis", "comparison", "decision"] as const),
 			id: Type.Optional(Type.String()), content: Type.String({ minLength: 1 }),
@@ -339,31 +352,6 @@ export default function distillExtension(pi: ExtensionAPI): void {
 			await import("node:fs/promises").then(({ mkdir }) => mkdir(dirname(path), { recursive: true, mode: 0o700 }));
 			await atomicWriteFile(path, serialized, 0o600);
 			return result(selectedProviders.length ? JSON.stringify(payload, null, 2) : "No selected knowledge providers are available. Continue with repository guidance and prior distillation artifacts.", { providers: selectedProviders.map(({ id, locality }) => ({ id, locality })), missingProviders, truncated, comparisons, path: "comparisons/providers.json" });
-		},
-	});
-
-	pi.registerTool({
-		name: "distill_instruction_check", label: "Measure Instruction Promotion",
-		description: "Apply the exceptional AGENTS.md/rule admission gate and measure exact context burden. Rejects examples and explanatory prose; advisory, edits no guidance.",
-		parameters: Type.Object({
-			candidate: Type.String({ minLength: 1 }), destination: StringEnum(["agents", "rule"] as const), targetPath: Type.String(),
-			paths: Type.Optional(Type.Array(Type.String())), evidencePaths: Type.Array(Type.String(), { minItems: 1 }), criticality: Type.String(), nonObviousness: Type.String(), repeatedApplicability: Type.String(), failureImpact: Type.String(),
-		}, { additionalProperties: false }),
-		async execute(_id, params, _signal, _update, ctx) {
-			const identity = await repository(ctx);
-			const target = instructionTarget(identity.root, params.targetPath);
-			for (const path of params.evidencePaths) {
-				if (path.startsWith("/") || path.split(/[\\/]/).includes("..")) throw new Error(`Instruction evidence must be an existing repository-relative file: ${path}`);
-				let info;
-				try { info = await stat(resolve(identity.root, path)); } catch { throw new Error(`Instruction evidence must be an existing repository-relative file: ${path}`); }
-				if (!info.isFile()) throw new Error(`Instruction evidence must be a file, not a directory: ${path}`);
-			}
-			const tracked = await pi.exec("git", ["ls-files", "--error-unmatch", "--", ...params.evidencePaths], { cwd: identity.root, timeout: 5_000 });
-			const trackedPaths = new Set(tracked.stdout.split("\n").filter(Boolean));
-			if (tracked.code !== 0 || params.evidencePaths.some((path) => !trackedPaths.has(path))) throw new Error("Instruction evidence paths must be exact tracked repository files.");
-			const targetContent = await readTextIfExists(target) ?? "";
-			const assessment = assessInstruction({ ...params, targetContent });
-			return result(`${assessment.eligibleForDiscussion ? "Eligible for exceptional user discussion; not approved." : "Rejected by deterministic instruction gate."}\n${JSON.stringify(assessment, null, 2)}`, assessment);
 		},
 	});
 

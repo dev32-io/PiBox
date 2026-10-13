@@ -1,6 +1,6 @@
 ---
 name: prompt-writing
-description: Write, rewrite, shorten, or review standing agent instructions — system and mode prompts, agent definitions, AGENTS.md, CLAUDE.md, and path-scoped rule files. Use when creating or editing these files or when an agent keeps ignoring or drifting from them. Not for subagent briefs or task prompts written while delegating work, and not for authoring SKILL.md files (use skill-creator).
+description: Write, rewrite, shorten, or review standing agent instructions — system and mode prompts, agent definitions, AGENTS.md, and CLAUDE.md. Use when creating or editing these files or when an agent keeps ignoring or drifting from them. Not for subagent briefs or task prompts written while delegating work, and not for path-scoped rule files or their details docs (use rule-writing) or SKILL.md files (use skill-creator).
 ---
 
 # Prompt Writing
@@ -39,7 +39,7 @@ Test each remaining line: if deleting it would not change likely behavior, delet
 
 **Agent definitions.** Define the role's output and authority boundaries. The parent's brief supplies the task; do not prescribe method the agent can choose itself.
 
-**AGENTS.md / CLAUDE.md.** Only universally applicable, non-inferable facts: exact build/test/verify commands, costly traps, boundaries, and where authoritative docs live (point, don't copy). Keep it well under 200 lines. Move instructions that apply to part of the tree into path-scoped rules (`.pi/rules/` or `.claude/rules/` with `paths:` frontmatter). When `distill_instruction_check` is available, run it on a proposed unconditional addition.
+**AGENTS.md / CLAUDE.md.** Only universally applicable, non-inferable facts: exact build/test/verify commands, costly traps, boundaries, and where authoritative docs live (point, don't copy). Keep it well under 200 lines. Move instructions that apply to part of the tree into path-scoped rules (`.pi/rules/` or `.claude/rules/` with `paths:` frontmatter); write those with rule-writing.
 
 ## Finish
 
