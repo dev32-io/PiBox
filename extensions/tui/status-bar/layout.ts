@@ -1,10 +1,10 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { StatusBarConfig } from "./config.js";
 import type { GitSnapshot } from "./git.js";
 import type { SessionMetrics } from "./metrics.js";
 import { renderPermissionMode } from "../../permissions/display.js";
-import { ICON_FOLDER, ICON_GIT_BRANCH, ICON_SEPARATOR } from "../icons.js";
+import { ICON_FOLDER, ICON_POWERLINE_ARROW, ICON_POWERLINE_BRANCH } from "../icons.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
@@ -59,7 +59,7 @@ function formatTokens(value: number): string {
 }
 
 function separator(theme: Theme): string {
-	return theme.fg("dim", ICON_SEPARATOR);
+	return theme.fg("dim", "│");
 }
 
 function workModeMark(data: StatusRenderData): string {
@@ -151,16 +151,45 @@ function modelSegment(data: StatusRenderData): string {
 	return `${data.theme.fg("text", name)} ${data.theme.fg("dim", `(${model.provider})`)}`;
 }
 
-function pathSegment(data: StatusRenderData, mode: LayoutMode): string {
-	const path = formatCwd(data.ctx.cwd, mode === "wide");
-	return data.theme.fg("dim", `${ICON_FOLDER} ${path}`);
+interface PowerlineBlock {
+	color: ThemeColor;
+	text: string;
 }
 
-function gitSegment(data: StatusRenderData): string {
-	const status = formatGit(data.git);
-	if (!status) return "";
+const RESET_FG = "\x1b[39m";
+const RESET_BG = "\x1b[49m";
+const BLOCK_TEXT = "\x1b[38;2;11;17;22m";
+
+/** Turn a theme foreground escape into the matching background escape. */
+function backgroundOf(foreground: string): string {
+	return foreground.replace(/\[38;/g, "[48;").replace(/\[3([0-7])m/g, "[4$1m").replace(/\[9([0-7])m/g, "[10$1m");
+}
+
+/**
+ * Oh-my-zsh agnoster style: filled blocks with dark text, each ending in a hard
+ * powerline arrow drawn in its own color on the next block's background.
+ * Hosts without ANSI theme access (tests, minimal themes) get the plain text.
+ */
+function powerline(theme: Theme, blocks: PowerlineBlock[]): string {
+	const visible = blocks.filter((block) => block.text);
+	if (visible.length === 0) return "";
+	if (typeof theme.getFgAnsi !== "function") return visible.map((block) => block.text).join(" ");
+	const fg = visible.map((block) => theme.getFgAnsi(block.color));
+	const bg = fg.map(backgroundOf);
+	return visible.map((block, index) => {
+		const next = index + 1 < visible.length ? bg[index + 1] : RESET_BG;
+		return `${bg[index]}${BLOCK_TEXT} ${block.text} ${fg[index]}${next}${ICON_POWERLINE_ARROW}${RESET_FG}`;
+	}).join("") + RESET_BG;
+}
+
+function locationSegment(data: StatusRenderData, mode: LayoutMode, withGit: boolean): string {
+	const path = formatCwd(data.ctx.cwd, mode === "wide");
+	const status = withGit ? formatGit(data.git) : undefined;
 	const dirty = data.git.staged + data.git.modified + data.git.untracked > 0;
-	return data.theme.fg(dirty ? "warning" : "success", `${ICON_GIT_BRANCH} ${status}`);
+	return powerline(data.theme, [
+		{ color: "border", text: `${ICON_FOLDER} ${path}` },
+		...(status ? [{ color: (dirty ? "warning" : "success") as ThemeColor, text: `${ICON_POWERLINE_BRANCH} ${status}` }] : []),
+	]);
 }
 
 function permissionSegment(data: StatusRenderData): string {
@@ -280,10 +309,9 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	const divider = separator(data.theme);
 	const piMark = workModeMark(data);
 	const model = modelSegment(data);
-	const path = pathSegment(data, mode);
 	const row1LeftCandidates = [
-		[piMark, divider, model, divider, path, gitSegment(data)],
-		[piMark, divider, model, divider, path],
+		[piMark, divider, model, locationSegment(data, mode, true)],
+		[piMark, divider, model, locationSegment(data, mode, false)],
 		[piMark, divider, model],
 		[piMark],
 	];

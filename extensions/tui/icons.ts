@@ -16,8 +16,8 @@ export const ICON_WORKFLOW = "\u{f0e8}"; // nf-fa-sitemap
 export const ICON_WEB = "\u{f0ac}"; // nf-fa-globe (MCP and web tools)
 export const ICON_TOOL = "\u{f0ad}"; // nf-fa-wrench (unknown third-party tools)
 export const ICON_GIT_BRANCH = "\u{e725}"; // nf-dev-git_branch
-// Soft (thin) powerline divider: a hard triangle needs background fills this footer does not use.
-export const ICON_SEPARATOR = "\u{e0b1}"; // nf-pl-left_soft_divider
+export const ICON_POWERLINE_BRANCH = "\u{e0a0}"; // nf-pl-branch (agnoster/oh-my-zsh branch mark)
+export const ICON_POWERLINE_ARROW = "\u{e0b0}"; // nf-pl-left_hard_divider (filled segment end)
 
 const BUILTIN_TOOL_ICONS: Record<string, string> = {
 	bash: ICON_BASH,
