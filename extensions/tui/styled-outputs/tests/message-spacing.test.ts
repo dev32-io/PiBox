@@ -213,7 +213,10 @@ test("composed tool families share three-column semantic indentation", () => {
 		thirdParty.updateResult({ content: [{ type: "text", text: "result" }], isError: false });
 		const rendered = rows(thirdParty);
 		assertIndent(rendered, "✓ call", 3);
-		assertIndent(rendered, "call continuation", 6);
+		const continuation = rendered.find((line) => line.endsWith("call continuation"));
+		assert.equal(continuation, "   │  call continuation", "a rail joins the glyph to the status branch");
+		const pending = new ToolExecutionComponent("spacing_test", `pending-${renderShell}`, {}, {}, definition, { requestRender() {} } as any, process.cwd());
+		assert.equal(rows(pending).find((line) => line.endsWith("call continuation")), "      call continuation", "no dangling rail without a status branch");
 		assertIndent(rendered, "└─ Done", 3);
 		assertIndent(rendered, "result continuation", 6);
 	}

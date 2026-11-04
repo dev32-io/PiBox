@@ -231,14 +231,16 @@ class ToolCallHeader implements Component {
 		const lead = ` ${theme.bold(theme.fg("toolTitle", this.action))}`;
 		const indent = 1 + visibleWidth(lead) + 1;
 		const available = Math.max(1, width - indent);
+		// A rail under the lifecycle glyph joins wrapped header rows to the `└─` status branch below.
+		const continuation = `${theme.fg("dim", "│")}${" ".repeat(indent - 1)}`;
 		const targetLines = this.target ? this.target.split("\n") : [];
 		// Only a command with real extra lines collapses; a long single line always wraps in full.
 		const collapsed = this.collapseMultiline && targetLines.length > COLLAPSED_COMMAND_LINES;
 		const shown = (collapsed ? targetLines.slice(0, COLLAPSED_COMMAND_LINES) : targetLines).flatMap((line) => wrapPlain(line, available));
 		const lines = shown.length === 0
 			? [lead]
-			: shown.map((row, index) => index === 0 ? `${lead} ${theme.fg("dim", row)}` : `${" ".repeat(indent)}${theme.fg("dim", row)}`);
-		if (collapsed) lines.push(`${" ".repeat(indent)}${theme.fg("dim", `… +${plural(targetLines.length - COLLAPSED_COMMAND_LINES, "line")} (${this.toggle} to expand)`)}`);
+			: shown.map((row, index) => index === 0 ? `${lead} ${theme.fg("dim", row)}` : `${continuation}${theme.fg("dim", row)}`);
+		if (collapsed) lines.push(`${continuation}${theme.fg("dim", `… +${plural(targetLines.length - COLLAPSED_COMMAND_LINES, "line")} (${this.toggle} to expand)`)}`);
 		const bounded = lines.map((line, index) => truncateToWidth(line, Math.max(1, width - (index === 0 ? 1 : 0)), ""));
 		this.cache = { width, lines: bounded };
 		return bounded;

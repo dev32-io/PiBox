@@ -87,7 +87,7 @@ test("long single-line bash commands wrap in full under a hanging indent", () =>
 		assert.ok(rows.length > 1, "the command wraps instead of being cut");
 		assert.match(rows[0]!, /^✓ Bash cd /);
 		for (const row of rows) assert.ok(row.length <= 80, row);
-		for (const row of rows.slice(1)) assert.match(row, /^ {7}\S/, "continuations align under the command, not column 0");
+		for (const row of rows.slice(1)) assert.match(row, /^│ {6}\S/, "continuations align under the command, with a rail joining the glyph to the status branch");
 		assert.equal(rows.map((row) => row.slice(7)).join(" ").replace(/ +/g, " "), command.replace(/ +/g, " "));
 		assert.doesNotMatch(rows.join("\n"), /to expand/, "a merely wrapped single-line command is never collapsed");
 	}
@@ -98,14 +98,14 @@ test("multi-line commands collapse to three rows and expand with preserved newli
 	const collapsed = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(80));
 	assert.deepEqual(collapsed, [
 		"✓ Bash cat > /tmp/script.sh <<'EOF'",
-		"       set -e",
-		"         echo one",
-		"       … +3 lines (ctrl+o to expand)",
+		"│      set -e",
+		"│        echo one",
+		"│      … +3 lines (ctrl+o to expand)",
 	]);
 	const hosted = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {}, keyText: () => "ctrl+shift+o/f2" }).render(80));
 	assert.match(hosted.at(-1)!, /\(ctrl\+shift\+o to expand\)$/, "Pi 1.5 host keybinding labels win");
 	const expanded = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: true, state: {} }).render(80));
-	assert.deepEqual(expanded, ["✓ Bash cat > /tmp/script.sh <<'EOF'", "       set -e", "         echo one", "         echo two", "       echo three", "       EOF"]);
+	assert.deepEqual(expanded, ["✓ Bash cat > /tmp/script.sh <<'EOF'", "│      set -e", "│        echo one", "│        echo two", "│      echo three", "│      EOF"]);
 });
 
 test("expanded output is not capped by the collapsed character limit", () => {
@@ -156,13 +156,13 @@ test("narrow multi-line commands collapse by real lines, each wrapped in full, w
 	const long = "echo " + "word ".repeat(20).trim();
 	const command = ["set -e", long, "echo three", "echo four", "echo five"].join("\n");
 	const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
-	assert.equal(rows.at(-1), "       … +2 lines (ctrl+o to expand)");
+	assert.equal(rows.at(-1), "│      … +2 lines (ctrl+o to expand)");
 	const body = rows.slice(0, -1);
 	assert.ok(body.length > 3, "the long second line is wrapped in full, not cut to three rows");
 	assert.equal(body.map((row, index) => row.slice(index === 0 ? 7 : 7)).join(" ").replace(/ +/g, " ").trim(), `set -e ${long} echo three`.replace(/ +/g, " "));
 	for (const row of rows) assert.ok(row.length <= 40, row);
 	const four = plain(renderToolCall("bash", { command: "a\nb\nc\nd" }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
-	assert.equal(four.at(-1), "       … +1 line (ctrl+o to expand)", "singular count");
+	assert.equal(four.at(-1), "│      … +1 line (ctrl+o to expand)", "singular count");
 	const three = plain(renderToolCall("bash", { command: "a\nb\nc" }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
 	assert.doesNotMatch(three.join("\n"), /to expand/, "three real lines fit without a hint");
 });

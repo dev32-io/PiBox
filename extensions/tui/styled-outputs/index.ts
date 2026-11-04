@@ -28,7 +28,7 @@ import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from ".
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v19");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v20");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -269,7 +269,8 @@ function installToolPatch(): void {
 				const partial = this.isPartial;
 				const symbol = this.result?.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 				const prefix = () => `${shellIndent}${partial ? theme.fg("muted", runningGlyph()) : symbol} `;
-				const continuation = `${shellIndent}   `;
+				// Wrapped call rows keep a rail under the glyph when a `└─` status branch follows.
+				const continuation = result ? `${shellIndent}${theme.fg("dim", "│")}  ` : `${shellIndent}   `;
 				renderContainer.children[0] = retainRegion(callRegion, new LinePrefixedComponent(
 					call, prefix, continuation, visibleWidth(prefix()), visibleWidth(continuation),
 				));
