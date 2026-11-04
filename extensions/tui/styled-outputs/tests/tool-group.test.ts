@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { AssistantMessageComponent, ToolExecutionComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { getCapabilities, resetCapabilitiesCache, setCapabilities, stripTerminalSequences } from "@earendil-works/pi-tui";
 import styledOutputs from "../index.js";
 import { exploreCounts, exploreRuns, exploreTarget } from "../components/tool-group.js";
 import { toolActivity } from "../components/tool-activity.js";
@@ -98,7 +98,10 @@ test("a single read-only call renders exactly as an ungrouped row", () => {
 
 const IMAGE_RESULT = { content: [{ type: "text", text: "Read image file [image/png]" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }], isError: false };
 
-test("a read that returns an image by content renders standalone, splitting the group around it", () => {
+test("a read that returns an image by content renders standalone, splitting the group around it", (t) => {
+	// Pi only attaches Image children on image-capable terminals; CI runners are not.
+	setCapabilities({ ...getCapabilities(), images: "kitty" });
+	t.after(() => resetCapabilitiesCache());
 	const { tools } = install();
 	const pair = message(tools, [READ("a"), READ("shot", `${CWD}/shot`)]);
 	pair[0]!.updateResult(ok("one"));
