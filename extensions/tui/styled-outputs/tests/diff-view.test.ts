@@ -118,13 +118,28 @@ test("unchanged gaps fold into dim rows aligned with the code column", () => {
 test("collapsed previews end with a pluralized footer using the expand key", () => {
 	const diff = multiHunk();
 	const footer = (options: Partial<DiffViewOptions>, width = 100) => plain(view(diff, width, { expanded: false, ...options })).at(-1);
-	assert.equal(footer({ limit: 3, toggle: "ctrl+o" }), "   … 31 more diff lines • 2 more hunks • ctrl+o to expand");
-	assert.equal(footer({ limit: 3, toggle: "ctrl+o" }, 160), "   … 31 more diff lines • 2 more hunks • ctrl+o to expand", "split view shares the footer");
-	assert.equal(footer({ limit: 33, toggle: "alt+e" }), "   … 1 more diff line • alt+e to expand");
+	// The first hunk's four leading context lines fold away, leaving 30 diff lines.
+	assert.equal(footer({ limit: 3, toggle: "ctrl+o" }), "   … 27 more diff lines • 2 more hunks • ctrl+o to expand");
+	assert.equal(footer({ limit: 3, toggle: "ctrl+o" }, 160), "   … 27 more diff lines • 2 more hunks • ctrl+o to expand", "split view shares the footer");
+	assert.equal(footer({ limit: 29, toggle: "alt+e" }), "   … 1 more diff line • alt+e to expand");
 	assert.ok(!plain(view(diff, 100, { expanded: true, limit: 3 })).some((row) => row.includes("to expand")), "expanded shows everything");
 	const result = { content: [{ type: "text", text: "ok" }], details: { piboxWrite: { action: "rewrite", diff } } };
 	const write = plain(renderToolResult("write", result, { expanded: false }, theme, { args: { path: "/r/a.ts" }, isError: false, state: {}, keyText: () => "ctrl+x" }).render(100));
-	assert.equal(write.at(-1), "   … 31 more diff lines • 2 more hunks • ctrl+x to expand");
+	assert.equal(write.at(-1), "   … 10 more diff lines • 1 more hunk • ctrl+x to expand");
+});
+
+test("collapsed edits open on the first change and cap at twenty diff lines", () => {
+	const diff = multiHunk();
+	const edit = (expanded: boolean) => plain(renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff } }, { expanded }, theme, { args: { path: "/r/a.ts" }, isError: false, state: {} }).render(100));
+	const collapsed = edit(false);
+	assert.equal(collapsed[1]!.trim(), "… 19 unchanged lines …", "leading context folds into the gap before the first change");
+	assert.equal(collapsed[2], "   -20 const value20 = compute(20);");
+	assert.equal(collapsed.filter((row) => /^ {3}[-+ ]\s*\d+ /.test(row)).length, 20);
+	assert.equal(collapsed.at(-1), "   … 10 more diff lines • 1 more hunk • ctrl+o to expand");
+	const expanded = edit(true);
+	assert.equal(expanded[1]!.trim(), "… 15 unchanged lines …");
+	assert.equal(expanded.filter((row) => /^ {3}[-+ ]\s*\d+ /.test(row)).length, 34, "expansion shows every diff line, leading context included");
+	assert.ok(!expanded.some((row) => row.includes("to expand")));
 });
 
 test("narrow widths render unified; wide widths render a framed split view", () => {

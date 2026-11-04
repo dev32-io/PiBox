@@ -14,11 +14,11 @@ test("icon module exposes the exact Nerd Font code points", () => {
 	assert.deepEqual(
 		{
 			bash: cp(icons.ICON_BASH), read: cp(icons.ICON_READ), edit: cp(icons.ICON_EDIT), write: cp(icons.ICON_WRITE),
-			grep: cp(icons.ICON_GREP), folder: cp(icons.ICON_FOLDER), subagent: cp(icons.ICON_SUBAGENT), workflow: cp(icons.ICON_WORKFLOW),
+			grep: cp(icons.ICON_GREP), folder: cp(icons.ICON_FOLDER), explore: cp(icons.ICON_EXPLORE), subagent: cp(icons.ICON_SUBAGENT), workflow: cp(icons.ICON_WORKFLOW),
 			web: cp(icons.ICON_WEB), tool: cp(icons.ICON_TOOL), branch: cp(icons.ICON_GIT_BRANCH), separator: cp(icons.ICON_SEPARATOR),
 		},
 		{
-			bash: [0xf489], read: [0xf15c], edit: [0xf044], write: [0xea7f], grep: [0xf002], folder: [0xf07b], subagent: [0xf06a9],
+			bash: [0xf489], read: [0xf15c], edit: [0xf044], write: [0xea7f], grep: [0xf002], folder: [0xf07b], explore: [0xf1e5], subagent: [0xf06a9],
 			workflow: [0xf0e8], web: [0xf0ac], tool: [0xf0ad], branch: [0xe725], separator: [0xe0b1],
 		},
 	);

@@ -343,9 +343,20 @@ function split(layout: Layout, hunks: Shown[], width: number): string[] {
 
 type Shown = { hunk: Hunk; entries: { entry: Entry; clip?: number }[] };
 
+/** Leading context before the first change folds away, so a collapsed preview opens on the change itself. */
+function fromFirstChange(hunks: Hunk[]): Hunk[] {
+	const [first, ...rest] = hunks;
+	const skip = first?.entries.findIndex((entry) => entry.kind !== "ctx") ?? -1;
+	if (!first || skip <= 0) return hunks;
+	// A fold of 0 means the hidden count is unknown; it stays unknown.
+	const fold = first.fold === 0 ? 0 : (first.fold ?? 0) + skip;
+	return [{ fold, entries: first.entries.slice(skip) }, ...rest];
+}
+
 /** The collapsed preview keeps the first `limit` diff lines within an optional character budget; a line crossing the budget is clipped. */
 function visible(hunks: Hunk[], limit: number | undefined, characterLimit = Infinity): { shown: Shown[]; hiddenLines: number; hiddenHunks: number; clipped: boolean } {
 	if (limit === undefined) return { shown: hunks.map((hunk) => ({ hunk, entries: hunk.entries.map((entry) => ({ entry })) })), hiddenLines: 0, hiddenHunks: 0, clipped: false };
+	hunks = fromFirstChange(hunks);
 	const shown: Shown[] = [];
 	let lines = limit;
 	let characters = characterLimit;

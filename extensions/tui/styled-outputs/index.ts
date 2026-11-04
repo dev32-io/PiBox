@@ -24,12 +24,16 @@ import { formatToolDuration, markToolTiming, resetToolActivity, runningGlyph, ru
 import { plural } from "./components/plural.js";
 import { decoratedToolIcon } from "../icons.js";
 import { LinePrefixedComponent } from "./components/tool-shell.js";
+import { applyExploreRole, exploreGroupView, observeAssistantContent, resetExploreGroups } from "./components/tool-group.js";
 import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v21");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v22");
+// The host's own updateDisplay, kept so a later version wraps it rather than an older patch.
+const TOOL_BASE_UPDATE_DISPLAY = Symbol.for("pibox:styled-outputs:tool-base-update-display");
+const EXPLORE_OBSERVE_FLAG = Symbol.for("pibox:styled-outputs:explore-observe:v1");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -115,6 +119,16 @@ function installMessagePatches(): void {
 		};
 		assistantPrototype[PATCH_FLAG] = true;
 	}
+	if (!assistantPrototype[EXPLORE_OBSERVE_FLAG]) {
+		const previousUpdateContent = assistantPrototype.updateContent;
+		// Pi creates a message's tool rows right after rendering the message, so its content
+		// decides which consecutive read-only calls share a group before those rows exist.
+		assistantPrototype.updateContent = function piBoxExploreObserve(message: any, isStreaming?: boolean) {
+			previousUpdateContent.call(this, message, isStreaming);
+			observeAssistantContent(this, Array.isArray(message?.content) ? message.content : []);
+		};
+		assistantPrototype[EXPLORE_OBSERVE_FLAG] = true;
+	}
 
 	const userPrototype = UserMessageComponent.prototype as any;
 	if (!userPrototype[PATCH_FLAG]) {
@@ -185,10 +199,13 @@ class LatestHarnessToolComponent implements Component {
 function installToolPatch(): void {
 	const prototype = ToolExecutionComponent.prototype as any;
 	if (prototype[TOOL_PATCH_FLAG]) return;
-	const originalUpdateDisplay = prototype.updateDisplay;
+	const originalUpdateDisplay = prototype[TOOL_BASE_UPDATE_DISPLAY] ??= prototype.updateDisplay;
 	prototype.updateDisplay = function piBoxToolUpdateDisplay() {
 		// Harness rows keep their own subagent indicators; unknown tools have no lifecycle row.
 		const tracked = !isHarnessTool(this.toolName) && this.hasRendererDefinition?.() !== false;
+		// Grouped rows render their previews without a status line; the group tree carries it.
+		const exploreRole = STYLED_TOOL_NAMES.has(this.toolName) && globalState().theme ? applyExploreRole(this) : "solo";
+		if (this.rendererState) this.rendererState.piboxGrouped = exploreRole !== "solo";
 		// Record timing before renderers run so they read it from ctx.state.
 		const timing = tracked ? markToolTiming(this.rendererState, {
 			executionStarted: this.executionStarted,
@@ -224,6 +241,17 @@ function installToolPatch(): void {
 				const [headline = "", ...body] = this.contentText.text.split("\n");
 				this.contentText.setText([headline, ...body.map((line: string) => line ? `   ${line}` : line)].join("\n"));
 			}
+		}
+
+		// Later members of an exploration group render nothing (no spacer, no mouse target);
+		// the anchor row draws the whole group from the members' live state.
+		if (exploreRole === "member") {
+			this.hideComponent = true;
+			return;
+		}
+		if (exploreRole === "anchor" && Array.isArray(renderContainer?.children)) {
+			renderContainer.children = [exploreGroupView(this, globalState().theme!)];
+			return;
 		}
 
 		// PiBox harness tools share one semantic renderer so structured results remain
@@ -358,6 +386,7 @@ export default function styledOutputs(pi: ExtensionAPI): void {
 
 	pi.on("session_start", (_event, ctx) => {
 		toolActivity().clear();
+		resetExploreGroups();
 		const state = globalState();
 		state.unsubscribeSubagents?.();
 		state.unsubscribeSubagents = undefined;
@@ -373,6 +402,7 @@ export default function styledOutputs(pi: ExtensionAPI): void {
 	pi.on("agent_end", () => toolActivity().settle());
 	pi.on("session_shutdown", () => {
 		toolActivity().clear();
+		resetExploreGroups();
 		const state = globalState();
 		state.unsubscribeSubagents?.();
 		state.unsubscribeSubagents = undefined;

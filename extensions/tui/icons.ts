@@ -10,6 +10,7 @@ export const ICON_EDIT = "\u{f044}"; // nf-fa-pencil_square_o
 export const ICON_WRITE = "\u{ea7f}"; // nf-cod-new_file: outline file with a plus, matching the outline style of the others
 export const ICON_GREP = "\u{f002}"; // nf-fa-search
 export const ICON_FOLDER = "\u{f07b}"; // nf-fa-folder (find, ls, cwd)
+export const ICON_EXPLORE = "\u{f1e5}"; // nf-fa-binoculars (grouped read-only exploration)
 export const ICON_SUBAGENT = "\u{f06a9}"; // nf-md-robot
 export const ICON_WORKFLOW = "\u{f0e8}"; // nf-fa-sitemap
 export const ICON_WEB = "\u{f0ac}"; // nf-fa-globe (MCP and web tools)

@@ -1,5 +1,5 @@
 import { relative } from "node:path";
-import { DEFAULT_MAX_LINES, type Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, sliceByColumn, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { builtinToolIcon } from "../../icons.js";
 import { formatToolDuration, runningGlyph, runningStatus, type ToolTiming } from "./tool-activity.js";
@@ -27,6 +27,8 @@ export function classifyLoadedResource(path: string): LoadedResource | undefined
 const COLLAPSED_PREVIEW_CHARACTER_LIMIT = 1_200;
 // Collapsed multi-line commands (heredocs, scripts) show this many real lines, each wrapped in full.
 const COLLAPSED_COMMAND_LINES = 3;
+/** Collapsed edit and write previews show this many diff lines; expansion shows all of them. */
+export const COLLAPSED_DIFF_ROWS = 20;
 
 /** Pi >=1.5 formats the host's configured keys; older hosts fall back to our keybinding registry. */
 export function expandKeyLabel(ctx?: any): string {
@@ -34,7 +36,7 @@ export function expandKeyLabel(ctx?: any): string {
 	return hosted || getKeybindings().getKeys("app.tools.expand")[0] || "ctrl+o";
 }
 
-function shortenPath(value: string, cwd: string): string {
+export function shortenPath(value: string, cwd: string): string {
 	if (!value) return ".";
 	const home = process.env.HOME;
 	if (home && (value === home || value.startsWith(`${home}/`))) return `~${value.slice(home.length)}`;
@@ -42,11 +44,11 @@ function shortenPath(value: string, cwd: string): string {
 	return result && !result.startsWith("..") ? result : value;
 }
 
-function firstText(result: any): string {
+export function firstText(result: any): string {
 	return result?.content?.find((part: any) => part?.type === "text")?.text ?? "";
 }
 
-function nonEmptyLines(value: string): string[] {
+export function nonEmptyLines(value: string): string[] {
 	if (!value || value === "(no output)") return [];
 	return value.split("\n").filter((line) => line.trim().length > 0);
 }
@@ -55,7 +57,7 @@ function writeMetadata(result: any): { action?: "create" | "rewrite"; diff?: str
 	return result?.details?.piboxWrite;
 }
 
-function actionLabel(name: ToolName, ctx: any): string {
+export function actionLabel(name: ToolName, ctx: any): string {
 	if (name === "edit") return "Update";
 	if (name === "write") {
 		const action = ctx.state?.piboxWrite?.action;
@@ -78,7 +80,7 @@ function summary(name: ToolName, args: any, cwd: string): string {
 	}
 }
 
-function countLabel(name: ToolName, lines: string[]): string | undefined {
+export function countLabel(name: ToolName, lines: string[]): string | undefined {
 	if (lines.length === 0) return undefined;
 	switch (name) {
 		case "grep": return plural(lines.length, "match", "matches");
@@ -95,8 +97,8 @@ function previewLimit(name: ToolName): number {
 function previewLines(name: ToolName, lines: string[], expanded: boolean): PreviewLine[] {
 	if (expanded) return lines.map((text) => ({ text, diff: name === "edit" || name === "write" }));
 	if (name === "edit") {
-		const shown: PreviewLine[] = lines.slice(0, DEFAULT_MAX_LINES).map((text) => ({ text, diff: true }));
-		if (lines.length > DEFAULT_MAX_LINES) shown.push({ text: `+${plural(lines.length - DEFAULT_MAX_LINES, "more line")}`, omitted: true });
+		const shown: PreviewLine[] = lines.slice(0, COLLAPSED_DIFF_ROWS).map((text) => ({ text, diff: true }));
+		if (lines.length > COLLAPSED_DIFF_ROWS) shown.push({ text: `+${plural(lines.length - COLLAPSED_DIFF_ROWS, "more line")}`, omitted: true });
 		return shown;
 	}
 	const limit = previewLimit(name);
@@ -240,7 +242,8 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 	const language = loadedResource || ctx.isError ? undefined : languageForPath(ctx.args?.path ?? ctx.args?.file_path);
 	const component = new Container();
 	// The header owns the live `Running…` line; partial results contribute only their streaming preview.
-	if (!ctx.isPartial) {
+	// Grouped exploration rows summarize their status on the group's tree row instead.
+	if (!ctx.isPartial && !ctx.state?.piboxGrouped) {
 		const status = ctx.isError ? theme.fg("error", "Error") : theme.fg("success", "Done");
 		const durationMs = typeof ctx.durationMs === "number" ? ctx.durationMs : ctx.state?.piboxTiming?.durationMs;
 		const counts = typeof diff === "string" && diff ? diffStatus(diff, language, theme) : [countLabel(name, rawLines)].filter(Boolean).map((text) => theme.fg("muted", text!));
@@ -252,9 +255,10 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 		component.addChild(new DiffView(diff, language, theme, {
 			expanded: options.expanded,
 			toggle: expandKeyLabel(ctx),
+			limit: COLLAPSED_DIFF_ROWS,
 			...(name === "edit"
-				? { limit: DEFAULT_MAX_LINES, hintColor: "warning" as const }
-				: { limit: previewLimit(name), characterLimit: COLLAPSED_PREVIEW_CHARACTER_LIMIT, hintColor: "dim" as const }),
+				? { hintColor: "warning" as const }
+				: { characterLimit: COLLAPSED_PREVIEW_CHARACTER_LIMIT, hintColor: "dim" as const }),
 		}));
 	} else if (rawLines.length > 0) {
 		appendPreview(component, name, previewLines(name, rawLines, options.expanded), theme, expandKeyLabel(ctx), language);
