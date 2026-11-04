@@ -524,9 +524,10 @@ Broad prototype patching of Pi internals is discouraged because it is sensitive 
 
 ### 8.4 Tool output
 
-- Tool headers should show action and concise target/summary.
-- Success and error states should remain visible when output is collapsed.
-- Expanded output must be line-limited.
+- Tool headers should show action and the full target/summary; long targets wrap with a hanging indent under the target. Collapsed multi-line commands show their first rows and an expand hint.
+- Success and error states should remain visible when output is collapsed. Finished rows show their duration when it is known.
+- Running rows show live elapsed time; their glyph animates only in fullscreen mode.
+- Collapsed output must be line-limited; expanded output shows everything.
 - Large output must not flood the terminal.
 - Edit/write diffs should use `toolDiffAdded`, `toolDiffRemoved`, and `toolDiffContext`.
 - Paths should be shortened relative to the current project where possible.

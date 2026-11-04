@@ -3,7 +3,9 @@
 Provides Pikit-style visual structure adapted to `rattle`:
 
 - Width-aware `●`, `❯`, and `✽` transcript components
-- Compact built-in tool headers with running/success/error symbols
+- Compact built-in tool headers with running/success/error symbols. Commands and targets are never cut: long ones wrap under a hanging indent, and collapsed multi-line commands (heredocs, scripts) show three rows plus a `… +N lines (ctrl+o to expand)` hint using the configured key.
+- Running built-in and third-party rows show `└─ Running… 12s`; finished rows add their duration (`└─ Done • 3 lines • 2.1s`). Duration comes from Pi's `ctx.durationMs` (Pi ≥1.1) or from start/end times kept in renderer state; rows restored from a saved session omit it.
+- In fullscreen mode the running glyph twinkles (`· ✢ ✶ ✻ ✽ ✻ ✶ ✢`) on the shared 90ms clock, driven by one render timer that runs only while a tool row is running. Regular (main-screen) mode keeps a static `✽` and no timer to avoid scrollback redraws; the mode is read from the TUI reference's `mode` property.
 - Single-line `Loaded skill …` and `Loaded rule …` rows without redundant collapsed previews
 - Shared lifecycle symbols and `└─ Done`/`Error` branches around third-party renderers
 - Child-lifecycle icons and one status row for subagent spawn/continue: Starting, Running, Stopping, Done, Failed, Stopped, or detached-history Launched. Status precedes the indented Prompt and Result blocks; background acknowledgment instructions and AgentId stay in expanded details.
@@ -15,7 +17,7 @@ Provides Pikit-style visual structure adapted to `rattle`:
 - Theme-normalized collapsed summaries without third-party foreground/background leakage
 - Tool rows aligned with transcript message-body indentation
 - `└─` status branches, counts, and expansion hints
-- Head/tail limiting for expanded output
+- Head/tail limiting for collapsed output; expanded output is shown in full
 - Compact tool padding without transcript-wide background blocks
 - Tight tool stacks with no automatic blank row between consecutive calls
 - One explicit turn boundary before user prompts instead of stacked shell padding

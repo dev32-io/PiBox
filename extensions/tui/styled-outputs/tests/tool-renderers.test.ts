@@ -77,3 +77,63 @@ test("caps collapsed long-line output by characters", () => {
 	assert.match(rendered, /… \+200 more characters \(ctrl\+o to expand\)/);
 	assert.doesNotMatch(rendered, new RegExp(`x{1201}`));
 });
+
+const plain = (lines: string[]) => lines.map((line) => stripTerminalSequences(line).trimEnd());
+
+test("long single-line bash commands wrap in full under a hanging indent", () => {
+	const command = "cd /Users/kevinye/Development/sentient/.worktree/skill-hub && git merge --no-edit feature/skill-hub-long-branch-name && git log --oneline -5";
+	for (const expanded of [false, true]) {
+		const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded, state: {} }).render(80));
+		assert.ok(rows.length > 1, "the command wraps instead of being cut");
+		assert.match(rows[0]!, /^✓ Bash cd /);
+		for (const row of rows) assert.ok(row.length <= 80, row);
+		for (const row of rows.slice(1)) assert.match(row, /^ {7}\S/, "continuations align under the command, not column 0");
+		assert.equal(rows.map((row) => row.slice(7)).join(" ").replace(/ +/g, " "), command.replace(/ +/g, " "));
+		assert.doesNotMatch(rows.join("\n"), /to expand/, "a merely wrapped single-line command is never collapsed");
+	}
+});
+
+test("multi-line commands collapse to three rows and expand with preserved newlines", () => {
+	const command = "cat > /tmp/script.sh <<'EOF'\nset -e\n  echo one\n  echo two\necho three\nEOF";
+	const collapsed = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(80));
+	assert.deepEqual(collapsed, [
+		"✓ Bash cat > /tmp/script.sh <<'EOF'",
+		"       set -e",
+		"         echo one",
+		"       … +3 lines (ctrl+o to expand)",
+	]);
+	const hosted = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {}, keyText: () => "ctrl+shift+o/f2" }).render(80));
+	assert.match(hosted.at(-1)!, /\(ctrl\+shift\+o to expand\)$/, "Pi 1.5 host keybinding labels win");
+	const expanded = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: true, state: {} }).render(80));
+	assert.deepEqual(expanded, ["✓ Bash cat > /tmp/script.sh <<'EOF'", "       set -e", "         echo one", "         echo two", "       echo three", "       EOF"]);
+});
+
+test("expanded output is not capped by the collapsed character limit", () => {
+	const text = "x".repeat(3_000);
+	const result = renderToolResult("bash", { content: [{ type: "text", text }] }, { expanded: true }, theme, { args: { command: "emit" }, isError: false });
+	const rendered = plain(result.render(200)).join("");
+	assert.equal(rendered.match(/x/g)?.length, 3_000);
+	assert.doesNotMatch(rendered, /more characters/);
+});
+
+test("finished status lines report duration only when it is known", () => {
+	const status = (ctx: any) => plain(renderToolResult("bash", { content: [{ type: "text", text: "a\nb\nc" }] }, { expanded: false }, theme, { args: { command: "x" }, isError: false, ...ctx }).render(80))[0];
+	assert.equal(status({ durationMs: 2_100, state: {} }), "└─ Done • 3 lines • 2.1s", "Pi >=1.1 ctx.durationMs");
+	assert.equal(status({ state: { piboxTiming: { startedAt: 1, durationMs: 400 } } }), "└─ Done • 3 lines • 0.4s", "renderer-state timing on Pi 1.0");
+	assert.equal(status({ durationMs: 1_500, state: { piboxTiming: { durationMs: 9_000 } } }), "└─ Done • 3 lines • 1.5s", "host duration wins");
+	assert.equal(status({ state: {} }), "└─ Done • 3 lines", "unknown (restored) duration is omitted");
+	assert.equal(status({}), "└─ Done • 3 lines");
+	const error = renderToolResult("bash", { content: [{ type: "text", text: "boom" }] }, { expanded: false }, theme, { args: { command: "x" }, isError: true, durationMs: 65_000 });
+	assert.equal(plain(error.render(80))[0], "└─ Error • 1 lines • 1m 05s");
+});
+
+test("running rows show live elapsed time and partial output without a premature Done", (t) => {
+	t.mock.method(Date, "now", () => 20_000);
+	const state = { piboxTiming: { startedAt: 7_600 } };
+	const call = plain(renderToolCall("bash", { command: "sleep 30" }, theme, { isPartial: true, isError: false, state }).render(80));
+	assert.deepEqual(call, ["✽ Bash sleep 30", "└─ Running… 12s"]);
+	const before = plain(renderToolCall("bash", { command: "sleep 30" }, theme, { isPartial: true, isError: false, state: {} }).render(80));
+	assert.deepEqual(before, ["✽ Bash sleep 30", "└─ Running…"], "no start timestamp means no invented elapsed time");
+	const partial = plain(renderToolResult("bash", { content: [{ type: "text", text: "tick" }] }, { expanded: false }, theme, { args: { command: "x" }, isPartial: true, isError: false, state }).render(80));
+	assert.deepEqual(partial, ["   tick"]);
+});

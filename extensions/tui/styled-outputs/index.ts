@@ -20,13 +20,14 @@ import { decorateHexColors } from "./color-preview.js";
 import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "./config.js";
 import { createPrefixedMarkdown } from "./components/message-layout.js";
 import { renderToolCall, renderToolResult } from "./components/tool-renderers.js";
+import { formatToolDuration, markToolTiming, resetToolActivity, runningGlyph, runningStatus, toolActivity } from "./components/tool-activity.js";
 import { LinePrefixedComponent } from "./components/tool-shell.js";
 import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v17");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v18");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -184,7 +185,17 @@ function installToolPatch(): void {
 	if (prototype[TOOL_PATCH_FLAG]) return;
 	const originalUpdateDisplay = prototype.updateDisplay;
 	prototype.updateDisplay = function piBoxToolUpdateDisplay() {
+		// Harness rows keep their own subagent indicators; unknown tools have no lifecycle row.
+		const tracked = !isHarnessTool(this.toolName) && this.hasRendererDefinition?.() !== false;
+		// Record timing before renderers run so they read it from ctx.state.
+		const timing = tracked ? markToolTiming(this.rendererState, {
+			executionStarted: this.executionStarted,
+			isPartial: this.isPartial,
+			durationMs: this.result?.durationMs,
+		}) : undefined;
 		originalUpdateDisplay.call(this);
+		// Only rows that actually started executing animate; restored pending rows never do.
+		if (tracked) toolActivity().update(this.toolCallId, this.isPartial && this.executionStarted === true, this.ui);
 		if (typeof this.ui?.requestRender === "function") globalState().requestRender = () => this.ui.requestRender();
 		// Keep exactly one starter row before a tool-only assistant response while
 		// preserving compact spacing between sibling calls in the same response.
@@ -254,21 +265,20 @@ function installToolPatch(): void {
 				return region;
 			};
 			if (theme && call) {
-				const symbol = this.isPartial
-					? theme.fg("muted", "✽")
-					: this.result?.isError
-						? theme.fg("error", "✗")
-						: theme.fg("success", "✓");
-				const prefix = `${shellIndent}${symbol} `;
+				const partial = this.isPartial;
+				const symbol = this.result?.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
+				const prefix = () => `${shellIndent}${partial ? theme.fg("muted", runningGlyph()) : symbol} `;
 				const continuation = `${shellIndent}   `;
 				renderContainer.children[0] = retainRegion(callRegion, new LinePrefixedComponent(
-					call, prefix, continuation, visibleWidth(prefix), visibleWidth(continuation),
+					call, prefix, continuation, visibleWidth(prefix()), visibleWidth(continuation),
 				));
 			}
 			if (theme && result) {
-				const status = this.isPartial ? "Running…" : this.result?.isError ? "Error" : "Done";
-				const color = this.isPartial ? "muted" : this.result?.isError ? "error" : "success";
-				const prefix = `${shellIndent}${theme.fg("dim", "└─")} ${theme.fg(color, status)}${theme.fg("dim", " • ")}`;
+				const partial = this.isPartial;
+				const color = partial ? "muted" : this.result?.isError ? "error" : "success";
+				const finished = this.result?.isError ? "Error" : "Done";
+				const duration = timing?.durationMs === undefined ? "" : `${theme.fg("dim", " • ")}${theme.fg("muted", formatToolDuration(timing.durationMs))}`;
+				const prefix = () => `${shellIndent}${theme.fg("dim", "└─")} ${theme.fg(color, partial ? runningStatus(timing) : finished)}${partial ? "" : duration}${theme.fg("dim", " • ")}`;
 				const continuation = `${shellIndent}   `;
 				const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
 				const collapsed = !this.isPartial && !this.expanded;
@@ -276,7 +286,7 @@ function installToolPatch(): void {
 					result,
 					prefix,
 					continuation,
-					visibleWidth(prefix),
+					visibleWidth(prefix()),
 					visibleWidth(continuation),
 					"",
 					0,
@@ -337,11 +347,13 @@ export default function styledOutputs(pi: ExtensionAPI): void {
 	const state = globalState();
 	state.harnessCallRenderer = renderHarnessToolCall;
 	state.harnessResultRenderer = renderHarnessToolResult;
+	resetToolActivity();
 	installMessagePatches();
 	installToolPatch();
 	registerStyledTools(pi);
 
 	pi.on("session_start", (_event, ctx) => {
+		toolActivity().clear();
 		const state = globalState();
 		state.unsubscribeSubagents?.();
 		state.unsubscribeSubagents = undefined;
@@ -351,7 +363,12 @@ export default function styledOutputs(pi: ExtensionAPI): void {
 		// footer and own their render invalidation rather than depending on it.
 		state.unsubscribeSubagents = getSubagentUiProjectionRegistry().subscribe(() => state.requestRender?.());
 	});
+	// Rows normally leave the running set through their final render; these
+	// events guarantee the shared timer stops even if a row is discarded first.
+	pi.on("tool_execution_end", (event) => toolActivity().settle(event.toolCallId));
+	pi.on("agent_end", () => toolActivity().settle());
 	pi.on("session_shutdown", () => {
+		toolActivity().clear();
 		const state = globalState();
 		state.unsubscribeSubagents?.();
 		state.unsubscribeSubagents = undefined;

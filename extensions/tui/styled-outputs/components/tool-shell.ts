@@ -2,7 +2,7 @@ import { sliceByColumn, stripTerminalSequences, truncateToWidth, visibleWidth, t
 
 /** Prefix a rendered component without depending on the tool's own component type. */
 export class LinePrefixedComponent implements Component {
-	private mouseLayout: { width: number; height: number; shown: number; firstLineOffset: number } | undefined;
+	private mouseLayout: { width: number; height: number; shown: number; firstLineOffset: number; firstPrefixWidth: number } | undefined;
 	private mouseRegion: { handleMouse(event: any): any } | undefined;
 
 	// Use the host's actual region constructor, not our pi-tui dependency: the
@@ -15,7 +15,7 @@ export class LinePrefixedComponent implements Component {
 	handleMouse(event: any): any {
 		const layout = this.mouseLayout;
 		if (!layout || event.y < 0 || event.y >= layout.shown) return undefined;
-		const prefix = event.y === 0 ? this.firstPrefixWidth : this.continuationPrefixWidth;
+		const prefix = event.y === 0 ? layout.firstPrefixWidth : this.continuationPrefixWidth;
 		const x = event.x - prefix;
 		const offset = event.y === 0 ? layout.firstLineOffset : 0;
 		if (x < 0 || x + offset >= layout.width) return undefined;
@@ -26,7 +26,8 @@ export class LinePrefixedComponent implements Component {
 
 	constructor(
 		private readonly child: Component,
-		private readonly firstPrefix: string,
+		// A function prefix is resolved per render for live lifecycle state (animated glyph, elapsed time).
+		private readonly firstPrefix: string | (() => string),
 		private readonly continuationPrefix: string,
 		private readonly firstPrefixWidth: number,
 		private readonly continuationPrefixWidth: number,
@@ -41,11 +42,13 @@ export class LinePrefixedComponent implements Component {
 	) {}
 
 	render(width: number): string[] {
-		const reserved = Math.max(this.firstPrefixWidth + this.firstSuffixWidth, this.continuationPrefixWidth);
+		const firstPrefix = typeof this.firstPrefix === "function" ? this.firstPrefix() : this.firstPrefix;
+		const firstPrefixWidth = typeof this.firstPrefix === "function" ? visibleWidth(firstPrefix) : this.firstPrefixWidth;
+		const reserved = Math.max(firstPrefixWidth + this.firstSuffixWidth, this.continuationPrefixWidth);
 		const childWidth = Math.max(1, width - reserved);
 		const rendered = this.child.render(childWidth);
 		const lines = this.maxLines === undefined ? rendered : rendered.slice(0, this.maxLines);
-		this.mouseLayout = { width: childWidth, height: rendered.length, shown: lines.length, firstLineOffset: 0 };
+		this.mouseLayout = { width: childWidth, height: rendered.length, shown: lines.length, firstLineOffset: 0, firstPrefixWidth };
 		const output = lines.map((line, index) => {
 			// Box renderers pad every line to their full width. Remove that visual tail
 			// so lifecycle hints sit beside the status instead of at the far edge.
@@ -62,7 +65,7 @@ export class LinePrefixedComponent implements Component {
 					: this.stripFirstLinePadding
 						? sliceByColumn(compact, leadingWidth, Math.max(0, visibleWidth(trimmed) - leadingWidth), true)
 						: compact;
-				return `${this.firstPrefix}${compact}${this.firstSuffix}`;
+				return `${firstPrefix}${compact}${this.firstSuffix}`;
 			}
 			return `${this.continuationPrefix}${compact}`;
 		});

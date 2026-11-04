@@ -7,6 +7,7 @@ import { AssistantMessageComponent, ToolExecutionComponent, UserMessageComponent
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import styledOutputs from "../index.js";
 import { getSubagentUiProjectionRegistry } from "../../../subagent/ui-projection.js";
+import { TOOL_RUNNING_FRAMES, toolActivity } from "../components/tool-activity.js";
 
 function theme(): any {
 	return new Proxy({}, {
@@ -400,6 +401,131 @@ test("every styled built-in keeps native expansion including compact skill/rule 
 		assert.doesNotMatch(component.render(120).join("\n"), /HIDDEN_CONTENT/);
 		assert.equal(mouseAt(component, "Loaded")?.handled, true);
 		assert.match(component.render(120).join("\n"), /HIDDEN_CONTENT/);
+	}
+});
+
+test("clicking a long built-in bash row toggles only that row's full command and output", { skip: !supportsToolMouse }, () => {
+	initTheme("dark", false);
+	const definitions = new Map<string, any>();
+	install(undefined, definitions);
+	const command = [
+		"cd /Users/kevinye/Development/sentient/.worktree/skill-hub && git merge --no-edit feature/skill-hub-with-a-long-branch-name",
+		"git status --short",
+		"git log --oneline -3",
+		"echo COMMAND_END",
+	].join("\n");
+	const output = Array.from({ length: 20 }, (_, i) => i === 19 ? "OUTPUT_END" : `row ${i}`).join("\n");
+	const make = (id: string) => {
+		const component = new ToolExecutionComponent("bash", id, { command }, {}, definitions.get("bash"), { requestRender() {} } as any, process.cwd());
+		component.updateResult({ content: [{ type: "text", text: output }], isError: false });
+		return component;
+	};
+	const clicked = make("clicked-bash");
+	const sibling = make("sibling-bash");
+	const text = (component: ToolExecutionComponent) => component.render(120).map((line) => stripTerminalSequences(line)).join("\n");
+	const collapsed = text(clicked);
+	assert.match(collapsed, /feature\/skill-hub-with-a-long-branch-name/, "the first command line is never cut");
+	assert.doesNotMatch(collapsed, /COMMAND_END/);
+	assert.match(collapsed, /… \+\d+ lines \(ctrl\+o to expand\)/);
+	assert.equal(mouseAt(clicked, "Bash")?.handled, true);
+	const expanded = text(clicked);
+	assert.match(expanded, /COMMAND_END/);
+	for (let i = 0; i < 19; i++) assert.match(expanded, new RegExp(`row ${i}\\b`));
+	assert.match(expanded, /OUTPUT_END/);
+	assert.equal(text(sibling), collapsed, "the sibling row is untouched");
+	assert.equal(mouseAt(clicked, "COMMAND_END")?.handled, true);
+	assert.equal(text(clicked), collapsed);
+});
+
+test("decorated third-party rows toggle while running with a partial result", { skip: !supportsToolMouse }, () => {
+	initTheme("dark", false);
+	install();
+	const definition = {
+		...toolDefinition, renderShell: "default",
+		renderResult: () => ({ render: () => ["one", "two", "three", "four", "RESULT_END"], invalidate() {} }),
+	};
+	const component = new ToolExecutionComponent("spacing_test", "third-party-running", {}, {}, definition, { requestRender() {} } as any, process.cwd());
+	component.markExecutionStarted();
+	component.updateResult({ content: [{ type: "text", text: "partial" }], isError: false }, true);
+	assert.match(component.render(120).join("\n"), /Running…/);
+	assert.equal(mouseAt(component, "call")?.handled, true);
+	assert.match(component.render(120).join("\n"), /RESULT_END/);
+	component.updateResult({ content: [{ type: "text", text: "final" }], isError: false });
+	toolActivity().clear();
+});
+
+test("fullscreen rows animate on the shared timer and report elapsed and final durations", (t) => {
+	const start = 90 * 8 * 20; // frame 0 of the shared clock
+	let now = start;
+	t.mock.method(Date, "now", () => now);
+	initTheme("dark", false);
+	const definitions = new Map<string, any>();
+	const handlers = install(undefined, definitions);
+	const ui = { mode: "fullscreen", requestRender() {} };
+	const rows = (component: ToolExecutionComponent) => component.render(120).map((line) => stripTerminalSequences(line).trimEnd()).filter(Boolean);
+	try {
+		const bash = new ToolExecutionComponent("bash", "timed-bash", { command: "sleep 2" }, {}, definitions.get("bash"), ui as any, process.cwd());
+		assert.equal(toolActivity().animating, false, "streaming arguments are not running yet");
+		assert.match(rows(bash)[0]!, /^ {3}✽ Bash sleep 2/);
+		bash.markExecutionStarted();
+		assert.equal(toolActivity().animating, true, "the first running row starts the timer");
+		const third = new ToolExecutionComponent("spacing_test", "timed-third", {}, {}, { ...toolDefinition, renderShell: "default" }, ui as any, process.cwd());
+		third.markExecutionStarted();
+		third.updateResult({ content: [{ type: "text", text: "progress" }], isError: false }, true);
+		assert.equal(toolActivity().runningCount, 2);
+
+		now = start + 90 * 2;
+		assert.match(rows(bash)[0]!, new RegExp(`^ {3}${TOOL_RUNNING_FRAMES[2]} Bash`), "frames follow Date.now on the shared clock");
+		assert.match(rows(third)[0]!, new RegExp(`^ {3}${TOOL_RUNNING_FRAMES[2]} call`), "decorated rows stay in phase");
+		now = start + 12_500;
+		assert.deepEqual(rows(bash).slice(1), ["   └─ Running… 12s"]);
+		assert.match(rows(third).join("\n"), /└─ Running… 12s • progress/);
+
+		now = start + 2_100;
+		bash.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+		assert.match(rows(bash).join("\n"), /✓ Bash sleep 2\n {3}└─ Done • 1 lines • 2\.1s/, "duration from renderer state when the host has none");
+		assert.equal(toolActivity().animating, true, "the other row keeps the timer alive");
+
+		now = start + 3_000;
+		third.updateResult({ content: [{ type: "text", text: "final" }], isError: false, durationMs: 400 } as any);
+		assert.match(rows(third).join("\n"), /└─ Done • 0\.4s • final/, "host ctx.durationMs wins (Pi >=1.1)");
+		assert.equal(toolActivity().animating, false, "the last finished row stops the timer");
+
+		const aborted = new ToolExecutionComponent("bash", "aborted-bash", { command: "sleep 9" }, {}, definitions.get("bash"), ui as any, process.cwd());
+		aborted.markExecutionStarted();
+		assert.equal(toolActivity().animating, true);
+		aborted.updateResult({ content: [{ type: "text", text: "Operation aborted" }], isError: true });
+		assert.equal(toolActivity().animating, false, "abort settles the row");
+
+		const orphan = new ToolExecutionComponent("bash", "orphan-bash", { command: "sleep 9" }, {}, definitions.get("bash"), ui as any, process.cwd());
+		orphan.markExecutionStarted();
+		handlers.get("agent_end")?.({}, {});
+		assert.equal(toolActivity().animating, false, "agent end stops the timer even if a row never finalized");
+		orphan.invalidate();
+		assert.equal(toolActivity().animating, false);
+
+		const restored = new ToolExecutionComponent("bash", "restored-bash", { command: "ls" }, {}, definitions.get("bash"), ui as any, process.cwd());
+		restored.updateResult({ content: [{ type: "text", text: "a" }], isError: false });
+		assert.match(rows(restored).join("\n"), /└─ Done • 1 lines$/m, "restored rows omit unknown durations");
+	} finally {
+		handlers.get("session_shutdown")?.({}, {});
+	}
+	assert.equal(toolActivity().animating, false);
+});
+
+test("regular mode renders a static glyph without a timer", (t) => {
+	t.mock.method(Date, "now", () => 10_000 + 90 * 2);
+	initTheme("dark", false);
+	const definitions = new Map<string, any>();
+	const handlers = install(undefined, definitions);
+	try {
+		const bash = new ToolExecutionComponent("bash", "regular-bash", { command: "sleep 2" }, {}, definitions.get("bash"), { mode: "regular", requestRender() {} } as any, process.cwd());
+		bash.markExecutionStarted();
+		assert.equal(toolActivity().animating, false);
+		assert.equal(toolActivity().runningCount, 1);
+		assert.match(stripTerminalSequences(bash.render(120).join("\n")), /✽ Bash sleep 2/);
+	} finally {
+		handlers.get("session_shutdown")?.({}, {});
 	}
 });
 

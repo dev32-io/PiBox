@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 import { DEFAULT_MAX_LINES, renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
-import { Container, getKeybindings, Text } from "@earendil-works/pi-tui";
+import { Container, getKeybindings, sliceByColumn, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { formatToolDuration, runningGlyph, runningStatus, type ToolTiming } from "./tool-activity.js";
 import { LinePrefixedComponent } from "./tool-shell.js";
 
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -20,6 +21,14 @@ export function classifyLoadedResource(path: string): LoadedResource | undefined
 // into a full screen. Keep collapsed tool output scannable by limiting that case
 // by characters as well as by logical lines.
 const COLLAPSED_PREVIEW_CHARACTER_LIMIT = 1_200;
+// Collapsed multi-line commands (heredocs, scripts) show this many wrapped rows.
+const COLLAPSED_COMMAND_LINES = 3;
+
+/** Pi >=1.5 formats the host's configured keys; older hosts fall back to our keybinding registry. */
+export function expandKeyLabel(ctx?: any): string {
+	const hosted = typeof ctx?.keyText === "function" ? String(ctx.keyText("app.tools.expand") ?? "").split("/")[0] : "";
+	return hosted || getKeybindings().getKeys("app.tools.expand")[0] || "ctrl+o";
+}
 
 function shortenPath(value: string, cwd: string): string {
 	if (!value) return ".";
@@ -58,7 +67,7 @@ function summary(name: ToolName, args: any, cwd: string): string {
 		case "read":
 		case "edit":
 		case "write": return shortenPath(args.path ?? args.file_path ?? "", cwd);
-		case "bash": return String(args.command ?? "").replace(/\s+/g, " ").slice(0, 90);
+		case "bash": return String(args.command ?? "");
 		case "grep": return `${args.pattern ?? ""} in ${shortenPath(args.path ?? ".", cwd)}`;
 		case "find": return `${args.pattern ?? ""} in ${shortenPath(args.path ?? ".", cwd)}`;
 		case "ls": return shortenPath(args.path ?? ".", cwd);
@@ -121,8 +130,7 @@ export function normalizeDiffGutters(diff: string): string {
 	}).join("\n");
 }
 
-function appendPreview(container: Container, name: ToolName, lines: PreviewLine[], theme: Theme): void {
-	const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
+function appendPreview(container: Container, name: ToolName, lines: PreviewLine[], theme: Theme, toggle: string): void {
 	for (const line of lines) {
 		let content: string;
 		if (line.omitted) {
@@ -135,17 +143,86 @@ function appendPreview(container: Container, name: ToolName, lines: PreviewLine[
 	}
 }
 
-export function renderToolCall(name: ToolName, args: any, theme: Theme, ctx: any): Text {
+/** Greedy fill that prefers a word break, but hard-breaks rather than orphaning a short word before a long path. */
+function wrapPlain(text: string, width: number): string[] {
+	const lines: string[] = [];
+	let rest = text;
+	while (visibleWidth(rest) > width) {
+		const slice = sliceByColumn(rest, 0, width);
+		const space = slice.lastIndexOf(" ");
+		// A wide character that cannot fit still advances, so narrow widths cannot loop forever.
+		const cut = space >= Math.ceil(slice.length / 2) ? space : Math.max(slice.length, String.fromCodePoint(rest.codePointAt(0)!).length);
+		lines.push(rest.slice(0, cut).trimEnd());
+		rest = rest.slice(cut).replace(/^ /, "");
+	}
+	lines.push(rest);
+	return lines;
+}
+
+class ToolCallHeader implements Component {
+	private cache: { width: number; lines: string[] } | undefined;
+
+	constructor(
+		private readonly theme: Theme,
+		private readonly action: string,
+		private readonly target: string,
+		private readonly status: "running" | "done" | "error",
+		private readonly collapseMultiline: boolean,
+		private readonly toggle: string,
+		private readonly timing: ToolTiming | undefined,
+	) {}
+
+	render(width: number): string[] {
+		const theme = this.theme;
+		const glyph = this.status === "running"
+			? theme.fg("muted", runningGlyph())
+			: this.status === "error" ? theme.fg("error", "✗") : theme.fg("success", "✓");
+		const lines = [...this.body(width)];
+		lines[0] = `${glyph}${lines[0]}`;
+		if (this.status === "running") lines.push(truncateToWidth(`${theme.fg("dim", "└─")} ${theme.fg("muted", runningStatus(this.timing))}`, width, "…"));
+		return lines;
+	}
+
+	// Everything after the one-column lifecycle glyph is stable per width; only the glyph and elapsed time change per frame.
+	private body(width: number): string[] {
+		if (this.cache?.width === width) return this.cache.lines;
+		const theme = this.theme;
+		const lead = ` ${theme.bold(theme.fg("toolTitle", this.action))}`;
+		const indent = 1 + visibleWidth(lead) + 1;
+		const available = Math.max(1, width - indent);
+		const rows = this.target ? this.target.split("\n").flatMap((line) => wrapPlain(line, available)) : [];
+		const shown = this.collapseMultiline && rows.length > COLLAPSED_COMMAND_LINES ? rows.slice(0, COLLAPSED_COMMAND_LINES) : rows;
+		const lines = shown.length === 0
+			? [lead]
+			: shown.map((row, index) => index === 0 ? `${lead} ${theme.fg("dim", row)}` : `${" ".repeat(indent)}${theme.fg("dim", row)}`);
+		if (rows.length > shown.length) lines.push(`${" ".repeat(indent)}${theme.fg("dim", `… +${rows.length - shown.length} lines (${this.toggle} to expand)`)}`);
+		const bounded = lines.map((line, index) => truncateToWidth(line, Math.max(1, width - (index === 0 ? 1 : 0)), ""));
+		this.cache = { width, lines: bounded };
+		return bounded;
+	}
+
+	invalidate(): void {
+		this.cache = undefined;
+	}
+}
+
+function displayTarget(name: ToolName, target: string): string {
+	// Commands keep their own newlines; every other target is a single display line.
+	if (name !== "bash") return target.replace(/\s+/g, " ").trim();
+	return target
+		.replace(/\r\n?/g, "\n")
+		.replace(/\t/g, "   ")
+		.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+		.replace(/^\n+|\s+$/g, "");
+}
+
+export function renderToolCall(name: ToolName, args: any, theme: Theme, ctx: any): Component {
 	const isError = ctx.isError;
-	const prefix = ctx.isPartial ? theme.fg("muted", "✽") : isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
 	const loadedResource = name === "read" ? classifyLoadedResource(args.path ?? args.file_path ?? "") : undefined;
 	const action = loadedResource ? ctx.isPartial ? "Loading" : isError ? "Load" : "Loaded" : actionLabel(name, ctx);
-	const target = loadedResource ? `${loadedResource.kind} ${loadedResource.label}` : summary(name, args, ctx.cwd ?? process.cwd());
-	const header = `${prefix} ${theme.bold(theme.fg("toolTitle", action))} ${theme.fg("dim", target)}`;
-	const detail = ctx.isPartial ? `\n${theme.fg("dim", "└─")} ${theme.fg("muted", "Running…")}` : "";
-	const component = ctx.lastComponent instanceof Text ? ctx.lastComponent : new Text("", 0, 0);
-	component.setText(header + detail);
-	return component;
+	const target = displayTarget(name, loadedResource ? `${loadedResource.kind} ${loadedResource.label}` : summary(name, args, ctx.cwd ?? process.cwd()));
+	const status = ctx.isPartial ? "running" : isError ? "error" : "done";
+	return new ToolCallHeader(theme, action, target, status, !ctx.expanded, expandKeyLabel(ctx), ctx.state?.piboxTiming);
 }
 
 export function renderToolResult(name: ToolName, result: any, options: { expanded: boolean }, theme: Theme, ctx: any): Container {
@@ -162,12 +239,15 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 	const diff = name === "edit" ? result.details?.diff : metadata?.diff;
 	if (diff) rawLines = diff.split("\n");
 	const renderedLines = diff ? renderDiff(normalizeDiffGutters(diff)).split("\n") : rawLines;
-	const error = !!ctx.isError;
-	const status = error ? theme.fg("error", "Error") : theme.fg("success", "Done");
-	const count = countLabel(name, ctx.args ?? {}, rawLines);
-	const countText = count ? `${theme.fg("dim", " • ")}${theme.fg("muted", count)}` : "";
 	const component = new Container();
-	component.addChild(new Text(`${theme.fg("dim", "└─")} ${status}${countText}`, 0, 0));
-	if (renderedLines.length > 0) appendPreview(component, name, previewLines(name, renderedLines, options.expanded), theme);
+	// The header owns the live `Running…` line; partial results contribute only their streaming preview.
+	if (!ctx.isPartial) {
+		const status = ctx.isError ? theme.fg("error", "Error") : theme.fg("success", "Done");
+		const durationMs = typeof ctx.durationMs === "number" ? ctx.durationMs : ctx.state?.piboxTiming?.durationMs;
+		const metadata = [countLabel(name, ctx.args ?? {}, rawLines), durationMs === undefined ? undefined : formatToolDuration(durationMs)]
+			.filter(Boolean).map((text) => `${theme.fg("dim", " • ")}${theme.fg("muted", text!)}`).join("");
+		component.addChild(new Text(`${theme.fg("dim", "└─")} ${status}${metadata}`, 0, 0));
+	}
+	if (renderedLines.length > 0) appendPreview(component, name, previewLines(name, renderedLines, options.expanded), theme, expandKeyLabel(ctx));
 	return component;
 }
