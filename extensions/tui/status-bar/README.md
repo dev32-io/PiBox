@@ -12,7 +12,7 @@ Formatting intentionally includes:
 - Thin-block cyan/blue context gauge
 - Leading and trailing row padding
 
-Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups. The service row retains the same leading/trailing padding and width-safe truncation as the former visual-companion row; segments use `│` separators. The cwd and Git status render as oh-my-zsh agnoster-style powerline blocks: a blue (`border`) folder block followed by a green (`success`, clean) or amber (`warning`, dirty) branch block (U+E0A0), each ending in a hard arrow (U+E0B0) with dark text. A dim `○` means intentionally stopped, not failed.
+Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups. The service row retains the same leading/trailing padding and width-safe truncation as the former visual-companion row; segments use `│` separators. The first row starts with one continuous oh-my-zsh agnoster-style powerline chain: a rounded cap (U+E0B6), the work-mode mark on cyan (`accent`), the model and provider in light text on slate (`borderMuted`), then a blue (`border`) folder block followed by a green (`success`, clean) or amber (`warning`, dirty) branch block (U+E0A0), each ending in a hard arrow (U+E0B0) with dark text. A dim `○` means intentionally stopped, not failed.
 
 Git status uses one asynchronous `git status --porcelain=v2 --branch` process every 10 seconds, with a three-second timeout, single-flight protection, failure backoff, cached rendering, and early refresh after file/Git-related activity. No subprocess runs from `render()`.
 

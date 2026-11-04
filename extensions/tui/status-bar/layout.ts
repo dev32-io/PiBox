@@ -4,7 +4,7 @@ import type { StatusBarConfig } from "./config.js";
 import type { GitSnapshot } from "./git.js";
 import type { SessionMetrics } from "./metrics.js";
 import { renderPermissionMode } from "../../permissions/display.js";
-import { ICON_FOLDER, ICON_POWERLINE_ARROW, ICON_POWERLINE_BRANCH } from "../icons.js";
+import { ICON_FOLDER, ICON_POWERLINE_ARROW, ICON_POWERLINE_BRANCH, ICON_POWERLINE_CAP } from "../icons.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
@@ -152,44 +152,69 @@ function modelSegment(data: StatusRenderData): string {
 }
 
 interface PowerlineBlock {
+	/** Theme token whose foreground color becomes the block background. */
 	color: ThemeColor;
+	/** Block body; may carry its own foreground escapes, otherwise dark text. */
 	text: string;
+	/** Light text for darker blocks. */
+	light?: boolean;
 }
 
 const RESET_FG = "\x1b[39m";
 const RESET_BG = "\x1b[49m";
-const BLOCK_TEXT = "\x1b[38;2;11;17;22m";
+const DARK_TEXT = "\x1b[38;2;11;17;22m";
+const LIGHT_TEXT = "\x1b[38;2;220;231;236m";
+const SOFT_TEXT = "\x1b[38;2;178;195;204m";
 
 /** Turn a theme foreground escape into the matching background escape. */
 function backgroundOf(foreground: string): string {
 	return foreground.replace(/\[38;/g, "[48;").replace(/\[3([0-7])m/g, "[4$1m").replace(/\[9([0-7])m/g, "[10$1m");
 }
 
+function hasAnsiTheme(theme: Theme): boolean {
+	return typeof theme.getFgAnsi === "function";
+}
+
 /**
- * Oh-my-zsh agnoster style: filled blocks with dark text, each ending in a hard
- * powerline arrow drawn in its own color on the next block's background.
- * Hosts without ANSI theme access (tests, minimal themes) get the plain text.
+ * One continuous oh-my-zsh agnoster-style chain: a rounded cap, then filled
+ * blocks, each ending in a hard powerline arrow drawn in its own color on the
+ * next block's background. Hosts without ANSI theme access get plain text.
  */
 function powerline(theme: Theme, blocks: PowerlineBlock[]): string {
 	const visible = blocks.filter((block) => block.text);
 	if (visible.length === 0) return "";
-	if (typeof theme.getFgAnsi !== "function") return visible.map((block) => block.text).join(" ");
+	if (!hasAnsiTheme(theme)) return visible.map((block) => block.text).join(" ");
 	const fg = visible.map((block) => theme.getFgAnsi(block.color));
 	const bg = fg.map(backgroundOf);
-	return visible.map((block, index) => {
+	const cap = `${fg[0]}${ICON_POWERLINE_CAP}${RESET_FG}`;
+	return cap + visible.map((block, index) => {
 		const next = index + 1 < visible.length ? bg[index + 1] : RESET_BG;
-		return `${bg[index]}${BLOCK_TEXT} ${block.text} ${fg[index]}${next}${ICON_POWERLINE_ARROW}${RESET_FG}`;
+		const text = block.light ? LIGHT_TEXT : DARK_TEXT;
+		return `${bg[index]}${text}${index === 0 ? "" : " "}${block.text}${text} ${fg[index]}${next}${ICON_POWERLINE_ARROW}${RESET_FG}`;
 	}).join("") + RESET_BG;
 }
 
-function locationSegment(data: StatusRenderData, mode: LayoutMode, withGit: boolean): string {
+function modelBlockText(data: StatusRenderData): string {
+	const model = data.ctx.model;
+	if (!model) return "no-model";
+	let name = model.name || model.id;
+	if (name.startsWith("Claude ")) name = name.slice(7);
+	return `${LIGHT_TEXT}${name} ${SOFT_TEXT}${model.provider}`;
+}
+
+/** π (work mode) → model → cwd → git, as one chain; trailing blocks drop first when narrow. */
+function headerChain(data: StatusRenderData, mode: LayoutMode, depth: number): string {
 	const path = formatCwd(data.ctx.cwd, mode === "wide");
-	const status = withGit ? formatGit(data.git) : undefined;
+	const status = formatGit(data.git);
 	const dirty = data.git.staged + data.git.modified + data.git.untracked > 0;
-	return powerline(data.theme, [
+	const blocks: PowerlineBlock[] = [
+		{ color: "accent", text: WORK_MODE_ICONS[data.workMode ?? DEFAULT_WORK_MODE] },
+		{ color: "borderMuted", text: modelBlockText(data), light: true },
 		{ color: "border", text: `${ICON_FOLDER} ${path}` },
 		...(status ? [{ color: (dirty ? "warning" : "success") as ThemeColor, text: `${ICON_POWERLINE_BRANCH} ${status}` }] : []),
-	]);
+	];
+	const chain = powerline(data.theme, blocks.slice(0, depth));
+	return data.selectedInteractiveId === "work-mode" ? `${data.theme.fg("accent", "›")} ${chain}` : chain;
 }
 
 function permissionSegment(data: StatusRenderData): string {
@@ -309,16 +334,18 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	const divider = separator(data.theme);
 	const piMark = workModeMark(data);
 	const model = modelSegment(data);
-	const row1LeftCandidates = [
-		[piMark, divider, model, locationSegment(data, mode, true)],
-		[piMark, divider, model, locationSegment(data, mode, false)],
-		[piMark, divider, model],
-		[piMark],
-	];
+	const row1LeftCandidates = hasAnsiTheme(data.theme)
+		? [4, 3, 2, 1].map((depth) => [headerChain(data, mode, depth)])
+		: [
+			[piMark, divider, model, divider, formatCwd(data.ctx.cwd, mode === "wide"), formatGit(data.git) ?? ""],
+			[piMark, divider, model, divider, formatCwd(data.ctx.cwd, mode === "wide")],
+			[piMark, divider, model],
+			[piMark],
+		];
 	const context = contextSegment(data, mode);
 	const quota = quotaSegment(data, mode, width, context);
 	let row1Right = [context, ...(quota ? [separator(data.theme), quota] : [])];
-	let row1Left = row1LeftCandidates.find((candidate) => rowFits(candidate, row1Right, width)) ?? [piMark];
+	let row1Left = row1LeftCandidates.find((candidate) => rowFits(candidate, row1Right, width)) ?? row1LeftCandidates.at(-1)!;
 	if (!rowFits(row1Left, row1Right, width)) row1Right = [];
 	const row1 = buildRow(row1Left, row1Right, width);
 	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];

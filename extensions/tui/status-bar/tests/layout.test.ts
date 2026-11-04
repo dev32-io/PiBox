@@ -4,6 +4,7 @@ import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { normalizeStatusBarConfig } from "../config.js";
 import { layoutMode, renderStatusBar, renderStatusBarLayout } from "../layout.js";
+import { DEFAULT_WORK_MODE, WORK_MODE_ICONS } from "../../../work-mode/policy.js";
 import type { SubagentUiAgentProjection } from "../../../subagent/ui-projection.js";
 
 const theme = {
@@ -279,7 +280,7 @@ test("renders rounded cumulative cache percentage inside cached tokens", () => {
 });
 
 test("cwd and git render as agnoster-style powerline blocks; other segments keep │ dividers", () => {
-	const ansi: Record<string, string> = { border: "\x1b[38;2;71;139;199m", success: "\x1b[38;2;79;183;167m", warning: "\x1b[38;2;214;164;95m" };
+	const ansi: Record<string, string> = { accent: "\x1b[38;2;98;184;214m", borderMuted: "\x1b[38;2;83;101;112m", border: "\x1b[38;2;71;139;199m", success: "\x1b[38;2;79;183;167m", warning: "\x1b[38;2;214;164;95m" };
 	const colorTheme = { ...theme, getFgAnsi: (token: string) => ansi[token] ?? "\x1b[39m" } as unknown as Theme;
 	const strip = (value: string) => value.replace(/\x1b\[[0-9;]*m/g, "");
 	const [, dirtyRow, , settingsRow] = renderStatusBar(140, { ...data, theme: colorTheme });
@@ -292,6 +293,15 @@ test("cwd and git render as agnoster-style powerline blocks; other segments keep
 	assert.ok(clean.includes("\x1b[48;2;79;183;167m"), "clean repos use the success color");
 	const noGit = renderStatusBar(140, { ...data, theme: colorTheme, git: { insideWorkTree: false, staged: 0, modified: 0, untracked: 0, ahead: 0, behind: 0 } as any })[1]!;
 	assert.ok(noGit.includes("\x1b[38;2;71;139;199m\x1b[49m\u{e0b0}"), "without git the path block ends on the default background");
+	const mark = WORK_MODE_ICONS[DEFAULT_WORK_MODE];
+	// π and the model join the same chain: rounded cyan cap, π block, slate model block, then the path.
+	assert.ok(strip(dirtyRow!).startsWith(` \u{e0b6}${mark} \u{e0b0} Test Model local \u{e0b0} \u{f07b}`), strip(dirtyRow!));
+	assert.ok(dirtyRow!.includes("\x1b[38;2;98;184;214m\u{e0b6}"), "cap uses the π block color");
+	assert.ok(dirtyRow!.includes("\x1b[38;2;98;184;214m\x1b[48;2;83;101;112m\u{e0b0}"), "π arrow flows into the model block");
+	assert.ok(dirtyRow!.includes("\x1b[38;2;83;101;112m\x1b[48;2;71;139;199m\u{e0b0}"), "model arrow flows into the path block");
+	assert.ok(strip(renderStatusBar(140, { ...data, theme: colorTheme, selectedInteractiveId: "work-mode" } as any)[1]!).startsWith(` › \u{e0b6}${mark}`), "selection marker stays outside the chain");
+	const narrow = strip(renderStatusBar(40, { ...data, theme: colorTheme })[1]!);
+	assert.ok(narrow.startsWith(` \u{e0b6}${mark}`), narrow);
 	assert.doesNotMatch(strip(settingsRow!), /\u{e0b1}/u);
 	assert.match(strip(settingsRow!), / │ /);
 	for (const width of [60, 90, 140]) for (const line of renderStatusBar(width, { ...data, theme: colorTheme })) assert.ok(visibleWidth(line) <= width);

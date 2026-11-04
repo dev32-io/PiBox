@@ -18,6 +18,7 @@ export const ICON_TOOL = "\u{f0ad}"; // nf-fa-wrench (unknown third-party tools)
 export const ICON_GIT_BRANCH = "\u{e725}"; // nf-dev-git_branch
 export const ICON_POWERLINE_BRANCH = "\u{e0a0}"; // nf-pl-branch (agnoster/oh-my-zsh branch mark)
 export const ICON_POWERLINE_ARROW = "\u{e0b0}"; // nf-pl-left_hard_divider (filled segment end)
+export const ICON_POWERLINE_CAP = "\u{e0b6}"; // nf-ple-left_half_circle_thick (rounded chain start)
 
 const BUILTIN_TOOL_ICONS: Record<string, string> = {
 	bash: ICON_BASH,
