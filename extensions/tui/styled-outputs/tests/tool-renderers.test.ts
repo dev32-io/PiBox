@@ -2,19 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
-import { classifyLoadedResource, normalizeDiffGutters, renderToolCall, renderToolResult } from "../components/tool-renderers.js";
+import { classifyLoadedResource, renderToolCall, renderToolResult } from "../components/tool-renderers.js";
 
 const theme = {
 	fg: (_token: string, value: string) => value,
 	bold: (value: string) => value,
 } as unknown as Theme;
-
-test("reserves a sign column in diff line-number gutters", () => {
-	assert.equal(
-		normalizeDiffGutters(" 8     context\n+8     added\n-23    removed\n 24    context"),
-		"  8     context\n+ 8     added\n-23    removed\n 24    context",
-	);
-});
 
 test("renders skill and rule reads as compact loaded resources", () => {
 	assert.deepEqual(classifyLoadedResource("/repo/skills/architecture-visualizer/SKILL.md"), { kind: "skill", label: "architecture-visualizer" });

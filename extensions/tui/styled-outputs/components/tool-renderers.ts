@@ -1,9 +1,10 @@
 import { relative } from "node:path";
-import { DEFAULT_MAX_LINES, renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_MAX_LINES, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, sliceByColumn, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { formatToolDuration, runningGlyph, runningStatus, type ToolTiming } from "./tool-activity.js";
 import { plural } from "./plural.js";
-import { highlightSnippet, INVERSE_OFF, languageForPath, renderSyntaxDiff, type StyledLine } from "./syntax.js";
+import { DiffView, diffStatus } from "./diff-view.js";
+import { highlightSnippet, languageForPath } from "./syntax.js";
 import { LinePrefixedComponent } from "./tool-shell.js";
 
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -76,16 +77,7 @@ function summary(name: ToolName, args: any, cwd: string): string {
 	}
 }
 
-function countLabel(name: ToolName, args: any, lines: string[]): string | undefined {
-	if (name === "edit" || name === "write") {
-		let additions = 0;
-		let removals = 0;
-		for (const line of lines) {
-			if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-			if (line.startsWith("-") && !line.startsWith("---")) removals++;
-		}
-		if (additions || removals) return `+${additions} −${removals}`;
-	}
+function countLabel(name: ToolName, lines: string[]): string | undefined {
 	if (lines.length === 0) return undefined;
 	switch (name) {
 		case "grep": return plural(lines.length, "match", "matches");
@@ -122,55 +114,17 @@ function previewLines(name: ToolName, lines: string[], expanded: boolean): Previ
 	return shown;
 }
 
-// Keep the change marker in a fixed-width gutter. Without the reserved column,
-// single-digit additions/removals (`+8`) make their source content appear one
-// column left of context and multi-digit diff lines.
-export function normalizeDiffGutters(diff: string): string {
-	const lines = diff.split("\n");
-	const numbered = lines.map((line) => line.match(/^([ +\-])(\d+)(\s.*)$/));
-	const numberWidth = Math.max(2, ...numbered.flatMap((match) => match ? [match[2]?.length ?? 0] : []));
-	return lines.map((line, index) => {
-		const match = numbered[index];
-		if (!match) return line;
-		return `${match[1]}${match[2]?.padStart(numberWidth)}${match[3]}`;
-	}).join("\n");
+function previewBody(name: ToolName, body: PreviewLine[], theme: Theme, language: string | undefined): string[] {
+	const highlighted = name === "read" ? highlightSnippet(body.map((line) => line.text).join("\n"), language) : undefined;
+	return highlighted ?? body.map((line) => line.diff ? line.text : theme.fg("dim", line.text));
 }
 
-function previewBody(name: ToolName, body: PreviewLine[], theme: Theme, language: string | undefined, hasDiff: boolean): StyledLine[] {
-	const text = body.map((line) => line.text).join("\n");
-	if (hasDiff && body[0]?.diff) {
-		return renderSyntaxDiff(text, language, theme) ?? renderDiff(text).split("\n").map((line) => ({ text: line }));
-	}
-	const highlighted = name === "read" ? highlightSnippet(text, language) : undefined;
-	if (highlighted) return highlighted.map((line) => ({ text: line }));
-	return body.map((line) => ({ text: line.diff ? line.text : theme.fg("dim", line.text) }));
-}
-
-function appendPreview(container: Container, name: ToolName, lines: PreviewLine[], theme: Theme, toggle: string, language: string | undefined, hasDiff: boolean): void {
-	const rows: StyledLine[] = previewBody(name, lines.filter((line) => !line.omitted), theme, language, hasDiff);
+function appendPreview(container: Container, name: ToolName, lines: PreviewLine[], theme: Theme, toggle: string, language: string | undefined): void {
+	const rows = previewBody(name, lines.filter((line) => !line.omitted), theme, language);
 	for (const line of lines) {
-		if (line.omitted) rows.push({ text: theme.fg(name === "edit" ? "warning" : "dim", `… ${line.text} (${toggle} to expand)`) });
+		if (line.omitted) rows.push(theme.fg(name === "edit" ? "warning" : "dim", `… ${line.text} (${toggle} to expand)`));
 	}
-	for (const row of rows) {
-		const bg = row.bg;
-		// Tinted diff rows fill the full width, which LinePrefixedComponent would trim as padding.
-		// Reverse video from a changed span that crosses a wrap is closed before the tint's padding.
-		container.addChild(bg
-			? new TintedRow(new Text(row.text, 0, 0, (value) => theme.bg(bg, value.replace(/ *$/, `${INVERSE_OFF}$&`))), 3)
-			: new LinePrefixedComponent(new Text(row.text, 0, 0), "   ", "   ", 3, 3, "", 0, undefined, undefined, undefined, false));
-	}
-}
-
-class TintedRow implements Component {
-	constructor(private readonly child: Text, private readonly indent: number) {}
-
-	render(width: number): string[] {
-		return this.child.render(Math.max(1, width - this.indent)).map((line) => `${" ".repeat(this.indent)}${line}`);
-	}
-
-	invalidate(): void {
-		this.child.invalidate();
-	}
+	for (const row of rows) container.addChild(new LinePrefixedComponent(new Text(row, 0, 0), "   ", "   ", 3, 3, "", 0, undefined, undefined, undefined, false));
 }
 
 /**
@@ -279,22 +233,29 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 		queueMicrotask(() => ctx.invalidate?.());
 	}
 
-	const raw = firstText(result);
-	let rawLines = nonEmptyLines(raw);
-	const diff = name === "edit" ? result.details?.diff : metadata?.diff;
-	if (diff) rawLines = normalizeDiffGutters(diff).split("\n");
+	const rawLines = nonEmptyLines(firstText(result));
+	const diff: unknown = name === "edit" ? result.details?.diff : metadata?.diff;
+	const language = loadedResource || ctx.isError ? undefined : languageForPath(ctx.args?.path ?? ctx.args?.file_path);
 	const component = new Container();
 	// The header owns the live `Running…` line; partial results contribute only their streaming preview.
 	if (!ctx.isPartial) {
 		const status = ctx.isError ? theme.fg("error", "Error") : theme.fg("success", "Done");
 		const durationMs = typeof ctx.durationMs === "number" ? ctx.durationMs : ctx.state?.piboxTiming?.durationMs;
-		const metadata = [countLabel(name, ctx.args ?? {}, rawLines), durationMs === undefined ? undefined : formatToolDuration(durationMs)]
-			.filter(Boolean).map((text) => `${theme.fg("dim", " • ")}${theme.fg("muted", text!)}`).join("");
+		const counts = typeof diff === "string" && diff ? diffStatus(diff, language, theme) : [countLabel(name, rawLines)].filter(Boolean).map((text) => theme.fg("muted", text!));
+		const metadata = [...counts, ...(durationMs === undefined ? [] : [theme.fg("muted", formatToolDuration(durationMs))])]
+			.map((text) => `${theme.fg("dim", " • ")}${text}`).join("");
 		component.addChild(new Text(`${theme.fg("dim", "└─")} ${status}${metadata}`, 0, 0));
 	}
-	if (rawLines.length > 0) {
-		const language = loadedResource || ctx.isError ? undefined : languageForPath(ctx.args?.path ?? ctx.args?.file_path);
-		appendPreview(component, name, previewLines(name, rawLines, options.expanded), theme, expandKeyLabel(ctx), language, Boolean(diff));
+	if (typeof diff === "string" && diff) {
+		component.addChild(new DiffView(diff, language, theme, {
+			expanded: options.expanded,
+			toggle: expandKeyLabel(ctx),
+			...(name === "edit"
+				? { limit: DEFAULT_MAX_LINES, hintColor: "warning" as const }
+				: { limit: previewLimit(name), characterLimit: COLLAPSED_PREVIEW_CHARACTER_LIMIT, hintColor: "dim" as const }),
+		}));
+	} else if (rawLines.length > 0) {
+		appendPreview(component, name, previewLines(name, rawLines, options.expanded), theme, expandKeyLabel(ctx), language);
 	}
 	return component;
 }
