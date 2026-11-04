@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { generateDiffString, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { generateDiffString, initTheme, Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { DiffView, diffStatus, SPLIT_VIEW_MIN_WIDTH, wordDiff, type DiffViewOptions } from "../components/diff-view.js";
 import { renderToolResult } from "../components/tool-renderers.js";
@@ -230,6 +230,31 @@ test("rendered rows are cached per diff, width, and options", () => {
 	assert.equal(first.render(100), first.render(100));
 	assert.equal(new DiffView(diff, "typescript", theme, { expanded: true, limit: 10, toggle: "ctrl+o", hintColor: "dim" }).render(100), first.render(100), "a new component for the same diff reuses rows");
 	assert.notEqual(first.render(160), first.render(100));
+});
+
+test("a theme swap that only recolors syntax, borders, or dim text invalidates cached diffs", () => {
+	const key = Symbol.for("@earendil-works/pi-coding-agent:theme");
+	const globals = globalThis as unknown as Record<symbol, unknown>;
+	const original = globals[key];
+	const colors = Object.fromEntries(Object.keys(rattle.colors).map((token) => [token, hex(token)]));
+	// Pi replaces the instance behind its constant `theme` proxy, which is where highlightCode reads syntax colors.
+	const install = (override: Record<string, string>): Theme => {
+		const merged = { ...colors, ...override };
+		const instance = new Theme(merged as never, merged as never, "truecolor");
+		globals[key] = instance;
+		return instance;
+	};
+	const code = [" 1 const a = 1;", `-2 const name = "alpha";`, `+2 const name = "beta";`, " 3 export {}"].join("\n");
+	const diff = multiHunk();
+	try {
+		for (const [token, source, width, language] of [["syntaxString", code, 100, "typescript"], ["borderMuted", diff, 160, "typescript"], ["dim", diff, 100, "typescript"], ["toolDiffContext", diff, 100, "typescript"]] as const) {
+			const before = view(source, width, { expanded: false }, language, install({}));
+			const after = view(source, width, { expanded: false }, language, install({ [token]: "#123456" }));
+			assert.notDeepEqual(after, before, token);
+		}
+	} finally {
+		globals[key] = original;
+	}
 });
 
 test("edit errors and non-diff results keep their plain previews", () => {

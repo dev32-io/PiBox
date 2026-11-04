@@ -99,7 +99,28 @@ export function observeAssistantContent(owner: object, content: readonly any[]):
 	Object.assign(record, exploreRuns(content));
 	slot().latest = record;
 	// A shown row changes role when a sibling call streams in or its args turn it into a skill read.
+	refreshExploreRoles(record);
+}
+
+/** Re-renders every shown row whose role no longer matches what it displays. */
+export function refreshExploreRoles(record: ExploreRecord): void {
 	for (const row of record.rows.values()) if (exploreRole(row) !== (row as any)[ROW_ROLE]) row.updateDisplay();
+}
+
+/** Pi attaches images outside the row's own container, so a row that returned one cannot sit inside a group tree. */
+function hasImage(row: ExploreRow | undefined): boolean {
+	return !!row?.result?.content?.some?.((item: any) => item?.type === "image");
+}
+
+/** The stretch of the run around `id` that can show inside one tree: a read that returned an image stands alone and splits the run. */
+function groupedRun(record: ExploreRecord | null, id: string): string[] | undefined {
+	const run = record?.runs.get(id);
+	if (!run || hasImage(record!.rows.get(id))) return undefined;
+	let start = run.indexOf(id);
+	let end = start;
+	while (start > 0 && !hasImage(record!.rows.get(run[start - 1]!))) start--;
+	while (end < run.length - 1 && !hasImage(record!.rows.get(run[end + 1]!))) end++;
+	return run.slice(start, end + 1);
 }
 
 export function resetExploreGroups(): void {
@@ -114,9 +135,9 @@ export function exploreRole(row: ExploreRow): ExploreRole {
 		host[ROW_RECORD]?.rows.set(row.toolCallId, row);
 	}
 	const record: ExploreRecord | null = host[ROW_RECORD];
-	const run = record?.runs.get(row.toolCallId);
+	const run = groupedRun(record, row.toolCallId);
 	// Members hide only behind a live anchor row.
-	if (!record || !run || run.length < 2 || record.rows.get(run[0]!) === undefined) return "solo";
+	if (!record || !run || run.length < 2 || !run.includes(row.toolCallId) || record.rows.get(run[0]!) === undefined) return "solo";
 	return run[0] === row.toolCallId ? "anchor" : "member";
 }
 
@@ -129,6 +150,8 @@ export function applyExploreRole(row: ExploreRow): ExploreRole {
 		host[ROW_GLOBAL] = row.expanded;
 		host[ROW_OPEN] = undefined;
 	}
+	// A result carrying an image can split the group around this row.
+	if (hasImage(row) && host[ROW_RECORD]) refreshExploreRoles(host[ROW_RECORD]);
 	return role;
 }
 
@@ -224,7 +247,7 @@ class ExploreGroupView implements Component {
 	render(width: number): string[] {
 		const theme = this.theme;
 		const record: ExploreRecord | null = (this.anchor as any)[ROW_RECORD];
-		const run = record?.runs.get(this.anchor.toolCallId) ?? [this.anchor.toolCallId];
+		const run = groupedRun(record, this.anchor.toolCallId) ?? [this.anchor.toolCallId];
 		const rows = run.flatMap((id) => record?.rows.get(id) ?? []);
 		const running = rows.some((row) => row.isPartial);
 		const glyph = running

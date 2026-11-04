@@ -96,6 +96,28 @@ test("a single read-only call renders exactly as an ungrouped row", () => {
 	assert.match(rows(single!).join("\n"), /✓ \u{f15c} Read src\/solo\.ts\n {3}└─ Done • 1 line/u);
 });
 
+const IMAGE_RESULT = { content: [{ type: "text", text: "Read image file [image/png]" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }], isError: false };
+
+test("a read that returns an image by content renders standalone, splitting the group around it", () => {
+	const { tools } = install();
+	const pair = message(tools, [READ("a"), READ("shot", `${CWD}/shot`)]);
+	pair[0]!.updateResult(ok("one"));
+	assert.match(rows(pair[0]!).join("\n"), /Exploring/, "grouped until the image arrives");
+	pair[1]!.updateResult(IMAGE_RESULT);
+	const [first, second] = pair.map((component) => rows(component).join("\n"));
+	assert.doesNotMatch(`${first}\n${second}`, /Explored/);
+	assert.match(first!, /Read src\/a\.ts\n {3}└─ Done/);
+	assert.match(second!, /Read shot\n {3}└─ Done/);
+	assert.ok(pair[1]!.children.some((child: any) => child.constructor.name === "Image"), "the image child still renders");
+
+	const triple = message(tools, [READ("x"), READ("img", `${CWD}/shot`), READ("z")]);
+	triple.forEach((component, index) => component.updateResult(index === 1 ? IMAGE_RESULT : ok("body")));
+	const text = transcript(triple).join("\n");
+	assert.doesNotMatch(text, /Explored/);
+	assert.equal(text.match(/└─ Done/g)?.length, 3);
+	assert.deepEqual(triple.map((component) => rows(component).some(Boolean)), [true, true, true]);
+});
+
 test("any other tool or visible text between calls breaks the group; hidden thinking does not", () => {
 	assert.deepEqual([...exploreRuns([READ("a"), call("b", "bash", { command: "ls" }), READ("c")]).runs.values()].map((run) => run.length), [1, 1]);
 	assert.deepEqual([...exploreRuns([READ("a"), { type: "text", text: "Now the tests." }, READ("c")]).runs.values()].map((run) => run.length), [1, 1]);

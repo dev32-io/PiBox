@@ -201,8 +201,14 @@ function highlight(hunks: Hunk[], language: string | undefined): boolean {
 	return true;
 }
 
+// Pi swaps its theme instance behind a constant `theme` proxy, so the cache keys on every colour the output bakes in.
+const FINGERPRINT_FG = [
+	"toolDiffAdded", "toolDiffRemoved", "toolDiffContext", "dim", "muted", "success", "error", "warning", "borderMuted", "text", "mdCodeBlock",
+	"syntaxKeyword", "syntaxType", "syntaxNumber", "syntaxString", "syntaxComment", "syntaxFunction", "syntaxPunctuation", "syntaxVariable", "syntaxOperator",
+] as const;
+
 function fingerprint(theme: Theme, language: string | undefined): string {
-	return [language ?? "", theme.fg("toolDiffAdded", ""), theme.fg("toolDiffRemoved", ""), theme.fg("syntaxKeyword", ""), theme.bg("toolSuccessBg", ""), theme.bg("toolErrorBg", "")].join("\0");
+	return [language ?? "", ...FINGERPRINT_FG.map((token) => theme.fg(token, "")), theme.bg("toolSuccessBg", ""), theme.bg("toolErrorBg", "")].join("\0");
 }
 
 function model(diff: string, language: string | undefined, theme: Theme): Model {
