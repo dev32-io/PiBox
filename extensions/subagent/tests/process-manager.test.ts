@@ -863,6 +863,7 @@ test("production Pi resolver uses JSON print mode, a private prompt file, and th
 		"--extension", "/ext/one.ts", "--extension", "/ext/two.ts",
 		"--mode", "json", "-p", "--session", transcriptPath, "--name", "reviewer",
 		"--provider", "provider", "--model", "model", "--thinking", "max", "--tools", "read,grep",
+		"--exclude-tools", "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
 		"--append-system-prompt", stableSystemPromptPath(transcriptPath), "--skill", "/skill/one", "--", "pibox-subagent-user-prompt",
 	]);
 	assert.equal(await readFile(stableSystemPromptPath(transcriptPath), "utf8"), "stable");

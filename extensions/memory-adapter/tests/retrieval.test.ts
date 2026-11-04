@@ -138,6 +138,18 @@ test("manual and bootstrap recall exclude invalid, stale, expired and cross-repo
 	assert.match(f.notices.at(-1)!, /unavailable/);
 });
 
+test("before_agent_start queries with the custom message text when no prompt exists (Pi >=1.2 idle custom run)", async t => {
+	const f = await fixture(t);
+	f.records = [{ id: "m", memory: "Verified lesson", score: 0.8, metadata: {} }];
+	const handler = f.handlers.get("before_agent_start");
+	await handler({ messageType: "custom", message: { role: "custom", customType: "x", content: [{ type: "text", text: "custom wake text" }] } }, f.ctx);
+	assert.match(f.query, /custom wake text/);
+	await handler({ messageType: "user", prompt: "typed prompt" }, f.ctx);
+	assert.match(f.query, /typed prompt/);
+	await handler({ prompt: "legacy prompt" }, f.ctx);
+	assert.match(f.query, /legacy prompt/, "Pi 1.0 events carry no messageType");
+});
+
 test("recall producer renders only eligible packed records with accurate count and inspectable rows", async t => {
 	const f = await fixture(t);
 	f.ctx.sessionManager.appendMessage({ role: "user", content: "Prefer focused offline tests.", timestamp: 1 });

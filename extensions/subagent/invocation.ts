@@ -56,9 +56,10 @@ export function stableSystemPromptPath(transcriptPath: string): string {
 	return `${transcriptPath}.append-system-prompt.md`;
 }
 
-/** Attempt-specific sidecar transformed into the exact user message by the child bridge. */
+/** MCP-off denylist: `*` patterns need Pi >=1.5; Pi 1.0.x matches names exactly and its `--tools` allowlist already hides MCP. */
 const MCP_OFF_EXCLUDES = "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource";
 
+/** Attempt-specific sidecar transformed into the exact user message by the child bridge. */
 export function attemptUserPromptPath(transcriptPath: string, attemptId: string): string {
 	return `${transcriptPath}.${attemptId}.user-prompt.md`;
 }
