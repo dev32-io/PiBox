@@ -137,3 +137,49 @@ test("running rows show live elapsed time and partial output without a premature
 	const partial = plain(renderToolResult("bash", { content: [{ type: "text", text: "tick" }] }, { expanded: false }, theme, { args: { command: "x" }, isPartial: true, isError: false, state }).render(80));
 	assert.deepEqual(partial, ["   tick"]);
 });
+
+test("narrow widths never cut a single-line command or collapse it behind a hint", () => {
+	const command = "cd /Users/kevinye/Development/sentient/.worktree/skill-hub && git merge --no-edit feature/skill-hub-long-branch-name && git log --oneline -5";
+	for (const width of [40, 24]) {
+		const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(width));
+		assert.ok(rows.length > 4, "wraps to more than the collapsed row count");
+		assert.doesNotMatch(rows.join("\n"), /to expand|\+\d+ lines?/);
+		assert.equal(rows.map((row, index) => row.slice(index === 0 ? 7 : 7)).join("").replace(/ /g, ""), command.replace(/ /g, ""));
+		for (const row of rows) assert.ok(row.length <= width, row);
+	}
+	const target = "x".repeat(200);
+	const grep = plain(renderToolCall("grep", { pattern: target, path: "." }, theme, { isPartial: false, isError: false, expanded: false, state: {}, cwd: "/repo" }).render(40));
+	assert.doesNotMatch(grep.join("\n"), /to expand/);
+});
+
+test("narrow multi-line commands collapse by real lines, each wrapped in full, with a real-line count", () => {
+	const long = "echo " + "word ".repeat(20).trim();
+	const command = ["set -e", long, "echo three", "echo four", "echo five"].join("\n");
+	const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
+	assert.equal(rows.at(-1), "       … +2 lines (ctrl+o to expand)");
+	const body = rows.slice(0, -1);
+	assert.ok(body.length > 3, "the long second line is wrapped in full, not cut to three rows");
+	assert.equal(body.map((row, index) => row.slice(index === 0 ? 7 : 7)).join(" ").replace(/ +/g, " ").trim(), `set -e ${long} echo three`.replace(/ +/g, " "));
+	for (const row of rows) assert.ok(row.length <= 40, row);
+	const four = plain(renderToolCall("bash", { command: "a\nb\nc\nd" }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
+	assert.equal(four.at(-1), "       … +1 line (ctrl+o to expand)", "singular count");
+	const three = plain(renderToolCall("bash", { command: "a\nb\nc" }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
+	assert.doesNotMatch(three.join("\n"), /to expand/, "three real lines fit without a hint");
+});
+
+test("wrapping a very long single-line command stays linear", () => {
+	const build = (length: number) => {
+		const command = "echo " + Array.from({ length: length / 5 }, (_, i) => `ab${i % 10}c`).join(" ");
+		const started = performance.now();
+		const rows = renderToolCall("bash", { command }, theme, { isPartial: true, isError: false, expanded: false, state: {} }).render(100);
+		return { ms: performance.now() - started, rows: rows.length };
+	};
+	build(20_000);
+	const best = (length: number) => Math.min(...[1, 2, 3].map(() => build(length).ms));
+	const small = best(50_000);
+	const large = best(200_000);
+	assert.ok(build(100_000).rows > 1_000, "the whole command is rendered");
+	// Quadratic wrapping scales ~16x for 4x the text (and took ~200ms for 100 KB); linear stays near 4x.
+	assert.ok(large < Math.max(small * 10, 25), `4x text took ${small.toFixed(1)}ms -> ${large.toFixed(1)}ms`);
+	assert.ok(large < 500, `${large.toFixed(1)}ms`);
+});

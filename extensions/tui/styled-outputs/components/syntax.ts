@@ -4,27 +4,38 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 export type StyledLine = { text: string; bg?: "toolSuccessBg" | "toolErrorBg" };
 
 const INVERSE = "\x1b[7m";
-const INVERSE_OFF = "\x1b[27m";
+export const INVERSE_OFF = "\x1b[27m";
 
 export function languageForPath(path: unknown): string | undefined {
 	return typeof path === "string" && path ? getLanguageFromPath(path) : undefined;
 }
 
+/** Output that carries no syntax: Pi's no-language fallback, or the raw text when Pi 1.0.0's highlighter throws. */
+export function isUnhighlighted(highlighted: string[], source: string[], fallback: string[]): boolean {
+	return highlighted.every((line, index) => line === fallback[index] || line === source[index]);
+}
+
 /**
  * Highlights one snippet so multi-line constructs keep their context. Pi's highlighter colors
- * unknown languages as code-block text and swallows its own failures, so only a result whose
- * visible text matches the input is trusted; anything else falls back to the caller's plain style.
+ * unsupported languages as code-block text and swallows its own failures, so only a result whose
+ * visible text matches the input and differs from that no-language output is trusted; anything else
+ * falls back to the caller's plain style. `plain` marks a snippet that merely has no tokens to color.
  */
-export function highlightSnippet(text: string, language: string | undefined): string[] | undefined {
+function highlightLines(text: string, language: string | undefined): { lines: string[]; plain: boolean } | undefined {
 	if (!language) return undefined;
 	try {
 		const source = text.split("\n");
 		const highlighted = highlightCode(text, language);
 		if (highlighted.length !== source.length || highlighted.some((line, index) => stripTerminalSequences(line) !== source[index])) return undefined;
-		return highlighted;
+		return { lines: highlighted, plain: isUnhighlighted(highlighted, source, highlightCode(text, undefined)) };
 	} catch {
 		return undefined;
 	}
+}
+
+export function highlightSnippet(text: string, language: string | undefined): string[] | undefined {
+	const result = highlightLines(text, language);
+	return result && !result.plain ? result.lines : undefined;
 }
 
 function isWordCharacter(value: string | undefined): boolean {
@@ -77,16 +88,21 @@ export function renderSyntaxDiff(diff: string, language: string | undefined, the
 		return { kind, number: match[2]!, content: match[3]!.replace(/\t/g, "   "), segment };
 	});
 	const highlighted = new Map<DiffEntry, string>();
+	let colored = false;
 	for (let id = 0; id <= segment; id++) {
 		for (const side of ["del", "add"] as const) {
 			const code = entries.filter((entry): entry is Extract<DiffEntry, { content: string }> => entry.kind !== "other" && entry.segment === id && (entry.kind === "ctx" || entry.kind === side));
 			if (code.length === 0) continue;
-			const lines = highlightSnippet(code.map((entry) => entry.content).join("\n"), language);
-			if (!lines) return undefined;
+			const result = highlightLines(code.map((entry) => entry.content).join("\n"), language);
+			if (!result) return undefined;
+			// A snippet without tokens (blank lines, a lone brace) is fine as long as the diff has some coloring.
+			colored ||= !result.plain;
+			const lines = result.lines;
 			// Context lines take their coloring from the new side.
 			code.forEach((entry, index) => { if (side === "add" || entry.kind === "del") highlighted.set(entry, lines[index]!); });
 		}
 	}
+	if (!colored) return undefined;
 	const sign = { add: "+", del: "-", ctx: " " } as const;
 	const gutterColor = { add: "toolDiffAdded", del: "toolDiffRemoved", ctx: "toolDiffContext" } as const;
 	const styled = entries.map((entry): StyledLine => {

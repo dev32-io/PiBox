@@ -28,7 +28,7 @@ import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from ".
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v18");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v19");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -196,7 +196,7 @@ function installToolPatch(): void {
 		}) : undefined;
 		originalUpdateDisplay.call(this);
 		// Only rows that actually started executing animate; restored pending rows never do.
-		if (tracked) toolActivity().update(this.toolCallId, this.isPartial && this.executionStarted === true, this.ui);
+		if (tracked) toolActivity().update(this.toolCallId, this.isPartial && this.executionStarted === true, this.ui, timing);
 		if (typeof this.ui?.requestRender === "function") globalState().requestRender = () => this.ui.requestRender();
 		// Keep exactly one starter row before a tool-only assistant response while
 		// preserving compact spacing between sibling calls in the same response.

@@ -29,6 +29,8 @@ function formatWholeSeconds(seconds: number): string {
 export interface ToolTiming {
 	startedAt?: number;
 	durationMs?: number;
+	/** Set when the host ended the run while this row was still running; the elapsed clock stops here. */
+	frozenAt?: number;
 }
 
 /**
@@ -55,7 +57,7 @@ export function markToolTiming(
 
 /** `Running… 12s` while in flight. */
 export function runningStatus(timing: ToolTiming | undefined, now = Date.now()): string {
-	const elapsed = timing?.startedAt === undefined ? undefined : formatToolElapsed(now - timing.startedAt);
+	const elapsed = timing?.startedAt === undefined ? undefined : formatToolElapsed((timing.frozenAt ?? now) - timing.startedAt);
 	return elapsed ? `Running… ${elapsed}` : "Running…";
 }
 
@@ -74,7 +76,7 @@ type Schedule = (callback: () => void, ms: number) => { unref?(): unknown };
  * periodic redraws in main-screen mode flicker once rows reach scrollback.
  */
 export class ToolActivityTracker {
-	private readonly rows = new Map<string, ActivityHost>();
+	private readonly rows = new Map<string, { host: ActivityHost; timing?: ToolTiming | undefined }>();
 	// Calls settled by host events stay out even if their discarded row re-renders as partial.
 	private readonly settled = new Set<string>();
 	private timer: ReturnType<Schedule> | undefined;
@@ -92,16 +94,19 @@ export class ToolActivityTracker {
 		return this.rows.size;
 	}
 
-	update(toolCallId: string, running: boolean, host?: ActivityHost): void {
-		if (running && host && !this.settled.has(toolCallId)) this.rows.set(toolCallId, host);
+	update(toolCallId: string, running: boolean, host?: ActivityHost, timing?: ToolTiming): void {
+		if (running && host && !this.settled.has(toolCallId)) this.rows.set(toolCallId, { host, timing });
 		else this.rows.delete(toolCallId);
 		this.sync();
 	}
 
 	/** Host lifecycle (tool end, agent end) is authoritative over row render state. */
-	settle(toolCallId?: string): void {
+	settle(toolCallId?: string, now = Date.now()): void {
 		const ids = toolCallId === undefined ? [...this.rows.keys()] : [toolCallId];
 		for (const id of ids) {
+			// A row that never got its own end keeps its last elapsed time instead of counting on.
+			const timing = this.rows.get(id)?.timing;
+			if (timing && timing.durationMs === undefined) timing.frozenAt ??= now;
 			this.settled.add(id);
 			this.rows.delete(id);
 		}
@@ -116,7 +121,7 @@ export class ToolActivityTracker {
 	}
 
 	private fullscreenHost(): ActivityHost | undefined {
-		for (const host of this.rows.values()) if (host.mode === "fullscreen") return host;
+		for (const { host } of this.rows.values()) if (host.mode === "fullscreen") return host;
 		return undefined;
 	}
 

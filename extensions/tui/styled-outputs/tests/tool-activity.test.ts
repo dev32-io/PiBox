@@ -8,6 +8,7 @@ import {
 	markToolTiming,
 	runningStatus,
 	toolRunningFrame,
+	type ToolTiming,
 } from "../components/tool-activity.js";
 
 test("running frames twinkle through eight stars on the shared 90ms clock", () => {
@@ -126,4 +127,18 @@ test("regular mode keeps static glyphs and never starts the timer", () => {
 	(switching as any).mode = "regular";
 	clock.tick();
 	assert.ok(!tracker.animating, "switching to regular mode stops animation on the next tick");
+});
+
+test("rows still running at agent end stop counting elapsed time", () => {
+	const tracker = new ToolActivityTracker(() => ({}), () => {});
+	const timing: ToolTiming = { startedAt: 1_000 };
+	tracker.update("a", true, { mode: "regular" }, timing);
+	assert.equal(runningStatus(timing, 13_500), "Running… 12s");
+	tracker.settle(undefined, 6_200);
+	assert.equal(runningStatus(timing, 60_000), "Running… 5s", "later redraws keep the frozen elapsed time");
+	assert.equal(runningStatus(timing, 6_300), "Running… 5s");
+	const done: ToolTiming = { startedAt: 1_000, durationMs: 300 };
+	tracker.update("b", true, { mode: "regular" }, done);
+	tracker.settle(undefined, 9_000);
+	assert.equal(done.frozenAt, undefined, "finished timing is untouched");
 });

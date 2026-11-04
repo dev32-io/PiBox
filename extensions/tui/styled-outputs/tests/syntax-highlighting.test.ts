@@ -6,7 +6,7 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { decorateHexColors } from "../color-preview.js";
 import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "../config.js";
 import { createPrefixedMarkdown } from "../components/message-layout.js";
-import { highlightSnippet, renderSyntaxDiff } from "../components/syntax.js";
+import { highlightSnippet, INVERSE_OFF, isUnhighlighted, languageForPath, renderSyntaxDiff } from "../components/syntax.js";
 import { renderToolResult } from "../components/tool-renderers.js";
 
 initTheme("dark", false);
@@ -109,4 +109,57 @@ test("count labels and hints use singular nouns for one item", () => {
 	assert.equal(label("ls", "a\nb"), "└─ Done • 2 entries");
 	const hint = plain(renderToolResult("read", { content: [{ type: "text", text: Array.from({ length: 11 }, (_, i) => `l${i}`).join("\n") }] }, { expanded: false }, theme, { args: { path: "/x.txt" }, isError: false, state: {} }).render(80));
 	assert.match(hint.at(-1)!, /… \+1 more line \(ctrl\+o to expand\)/);
+});
+
+test("languages Pi cannot highlight fall back to the plain dim preview and Pi's diff rendering", () => {
+	const dim = `\x1b[38;2;${rgb(hex("dim"))}m`;
+	for (const path of ["/repo/a.fish", "/repo/main.tf"]) {
+		assert.equal(highlightSnippet("set x 1", languageForPath(path)), undefined, path);
+		const rows = read(path, "set x 1").slice(1);
+		assert.ok(rows.every((line) => line.includes(dim)), JSON.stringify(rows));
+		const diff = renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff: "-1 a b\n+1 a c" } }, { expanded: true }, theme, { args: { path }, isError: false, state: {} });
+		assert.deepEqual(plain(diff.render(100)), ["└─ Done • +1 −1", "   - 1 a b", "   + 1 a c"]);
+		assert.equal(renderSyntaxDiff("-1 a b\n+1 a c", languageForPath(path), theme), undefined);
+	}
+});
+
+test("highlighter output without syntax counts as unhighlighted", () => {
+	const source = ["const a = 1;", "x"];
+	const fallback = ["<code>const a = 1;", "<code>x"];
+	assert.ok(isUnhighlighted(fallback, source, fallback), "Pi's no-language code-block coloring");
+	assert.ok(isUnhighlighted(source, source, fallback), "Pi 1.0.0 returns raw lines when its highlighter throws");
+	assert.ok(!isUnhighlighted(["const a = <n>1</n>;", "x"], source, fallback));
+});
+
+test("diffs keep syntax rendering when a segment has no tokens to color", () => {
+	const diff = [" 1 ", "-2 const value = \"old\";", "+2 const value = \"new\";", " 3 "].join("\n");
+	const rendered = renderSyntaxDiff(diff, "typescript", theme);
+	assert.ok(rendered);
+	assert.match(rendered.map((line) => line.text).join("\n"), SYNTAX_COLOR);
+});
+
+test("read errors are never syntax-highlighted", () => {
+	const dim = `\x1b[38;2;${rgb(hex("dim"))}m`;
+	const message = "ENOENT: no such file or directory, open '/x/a.ts'";
+	const rows = renderToolResult("read", { content: [{ type: "text", text: message }] }, { expanded: false }, theme, { args: { path: "/x/a.ts" }, isError: true, state: {} }).render(100).slice(1);
+	assert.equal(rows.length, 1);
+	assert.ok(rows[0]!.includes(`${dim}${message}`), JSON.stringify(rows[0]));
+	assert.doesNotMatch(rows[0]!.replaceAll(dim, ""), SYNTAX_COLOR);
+});
+
+test("reverse video is closed before tint padding on every wrapped diff line", () => {
+	const diff = [" 1 const a = 1;", "-2 const name = \"alpha beta gamma delta epsilon\"; // trailing", "+2 const name = \"zeta eta theta iota kappa lambda\"; // trailing", " 3 export {}"].join("\n");
+	for (const width of [100, 40, 23]) {
+		const lines = renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff } }, { expanded: true }, theme, { args: { path: "/x/a.ts" }, isError: false, state: {} }).render(width);
+		let wrappedInverse = 0;
+		for (const line of lines) {
+			const [, body = "", padding = ""] = line.match(/^(.*?)( *)\x1b\[49m$/) ?? [];
+			if (!line.includes("\x1b[7m") && !padding) continue;
+			const state = [...body.matchAll(/\x1b\[(7|27)m/g)].at(-1)?.[1];
+			assert.notEqual(state, "7", `inverse still on in padding at width ${width}: ${JSON.stringify(line)}`);
+			if (width < 100 && line.includes("\x1b[7m")) wrappedInverse++;
+		}
+		if (width < 100) assert.ok(wrappedInverse > 0, "the scenario exercises reverse video on wrapped rows");
+	}
+	assert.equal(INVERSE_OFF, "\x1b[27m");
 });

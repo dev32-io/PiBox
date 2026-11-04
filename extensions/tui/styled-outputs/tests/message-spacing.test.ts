@@ -426,7 +426,7 @@ test("clicking a long built-in bash row toggles only that row's full command and
 	const collapsed = text(clicked);
 	assert.match(collapsed, /feature\/skill-hub-with-a-long-branch-name/, "the first command line is never cut");
 	assert.doesNotMatch(collapsed, /COMMAND_END/);
-	assert.match(collapsed, /… \+\d+ lines \(ctrl\+o to expand\)/);
+	assert.match(collapsed, /… \+\d+ lines? \(ctrl\+o to expand\)/);
 	assert.equal(mouseAt(clicked, "Bash")?.handled, true);
 	const expanded = text(clicked);
 	assert.match(expanded, /COMMAND_END/);

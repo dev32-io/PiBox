@@ -3,7 +3,7 @@ import { DEFAULT_MAX_LINES, renderDiff, type Theme } from "@earendil-works/pi-co
 import { Container, getKeybindings, sliceByColumn, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 import { formatToolDuration, runningGlyph, runningStatus, type ToolTiming } from "./tool-activity.js";
 import { plural } from "./plural.js";
-import { highlightSnippet, languageForPath, renderSyntaxDiff, type StyledLine } from "./syntax.js";
+import { highlightSnippet, INVERSE_OFF, languageForPath, renderSyntaxDiff, type StyledLine } from "./syntax.js";
 import { LinePrefixedComponent } from "./tool-shell.js";
 
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -23,7 +23,7 @@ export function classifyLoadedResource(path: string): LoadedResource | undefined
 // into a full screen. Keep collapsed tool output scannable by limiting that case
 // by characters as well as by logical lines.
 const COLLAPSED_PREVIEW_CHARACTER_LIMIT = 1_200;
-// Collapsed multi-line commands (heredocs, scripts) show this many wrapped rows.
+// Collapsed multi-line commands (heredocs, scripts) show this many real lines, each wrapped in full.
 const COLLAPSED_COMMAND_LINES = 3;
 
 /** Pi >=1.5 formats the host's configured keys; older hosts fall back to our keybinding registry. */
@@ -154,8 +154,9 @@ function appendPreview(container: Container, name: ToolName, lines: PreviewLine[
 	for (const row of rows) {
 		const bg = row.bg;
 		// Tinted diff rows fill the full width, which LinePrefixedComponent would trim as padding.
+		// Reverse video from a changed span that crosses a wrap is closed before the tint's padding.
 		container.addChild(bg
-			? new TintedRow(new Text(row.text, 0, 0, (value) => theme.bg(bg, value)), 3)
+			? new TintedRow(new Text(row.text, 0, 0, (value) => theme.bg(bg, value.replace(/ *$/, `${INVERSE_OFF}$&`))), 3)
 			: new LinePrefixedComponent(new Text(row.text, 0, 0), "   ", "   ", 3, 3, "", 0, undefined, undefined, undefined, false));
 	}
 }
@@ -172,20 +173,31 @@ class TintedRow implements Component {
 	}
 }
 
-/** Greedy fill that prefers a word break, but hard-breaks rather than orphaning a short word before a long path. */
+/**
+ * Greedy fill that prefers a word break, but hard-breaks rather than orphaning a short word before a long path.
+ * Each row measures only a window of the remaining text, so cost grows with row count rather than with row count x length.
+ */
 function wrapPlain(text: string, width: number): string[] {
 	const lines: string[] = [];
-	let rest = text;
-	while (visibleWidth(rest) > width) {
+	let position = 0;
+	let window = Math.max(64, width * 2 + 8);
+	for (;;) {
+		let end = Math.min(text.length, position + window);
+		// Zero-width characters can make a window narrower than it is long; widen until it overflows or the text ends.
+		while (end < text.length && visibleWidth(text.slice(position, end)) <= width) end = Math.min(text.length, position + (window *= 2));
+		const rest = text.slice(position, end);
+		if (end >= text.length && visibleWidth(rest) <= width) {
+			lines.push(rest);
+			return lines;
+		}
 		const slice = sliceByColumn(rest, 0, width);
 		const space = slice.lastIndexOf(" ");
 		// A wide character that cannot fit still advances, so narrow widths cannot loop forever.
 		const cut = space >= Math.ceil(slice.length / 2) ? space : Math.max(slice.length, String.fromCodePoint(rest.codePointAt(0)!).length);
 		lines.push(rest.slice(0, cut).trimEnd());
-		rest = rest.slice(cut).replace(/^ /, "");
+		position += cut;
+		if (text[position] === " ") position++;
 	}
-	lines.push(rest);
-	return lines;
 }
 
 class ToolCallHeader implements Component {
@@ -219,12 +231,14 @@ class ToolCallHeader implements Component {
 		const lead = ` ${theme.bold(theme.fg("toolTitle", this.action))}`;
 		const indent = 1 + visibleWidth(lead) + 1;
 		const available = Math.max(1, width - indent);
-		const rows = this.target ? this.target.split("\n").flatMap((line) => wrapPlain(line, available)) : [];
-		const shown = this.collapseMultiline && rows.length > COLLAPSED_COMMAND_LINES ? rows.slice(0, COLLAPSED_COMMAND_LINES) : rows;
+		const targetLines = this.target ? this.target.split("\n") : [];
+		// Only a command with real extra lines collapses; a long single line always wraps in full.
+		const collapsed = this.collapseMultiline && targetLines.length > COLLAPSED_COMMAND_LINES;
+		const shown = (collapsed ? targetLines.slice(0, COLLAPSED_COMMAND_LINES) : targetLines).flatMap((line) => wrapPlain(line, available));
 		const lines = shown.length === 0
 			? [lead]
 			: shown.map((row, index) => index === 0 ? `${lead} ${theme.fg("dim", row)}` : `${" ".repeat(indent)}${theme.fg("dim", row)}`);
-		if (rows.length > shown.length) lines.push(`${" ".repeat(indent)}${theme.fg("dim", `… +${plural(rows.length - shown.length, "line")} (${this.toggle} to expand)`)}`);
+		if (collapsed) lines.push(`${" ".repeat(indent)}${theme.fg("dim", `… +${plural(targetLines.length - COLLAPSED_COMMAND_LINES, "line")} (${this.toggle} to expand)`)}`);
 		const bounded = lines.map((line, index) => truncateToWidth(line, Math.max(1, width - (index === 0 ? 1 : 0)), ""));
 		this.cache = { width, lines: bounded };
 		return bounded;
@@ -277,7 +291,7 @@ export function renderToolResult(name: ToolName, result: any, options: { expande
 		component.addChild(new Text(`${theme.fg("dim", "└─")} ${status}${metadata}`, 0, 0));
 	}
 	if (rawLines.length > 0) {
-		const language = loadedResource ? undefined : languageForPath(ctx.args?.path ?? ctx.args?.file_path);
+		const language = loadedResource || ctx.isError ? undefined : languageForPath(ctx.args?.path ?? ctx.args?.file_path);
 		appendPreview(component, name, previewLines(name, rawLines, options.expanded), theme, expandKeyLabel(ctx), language, Boolean(diff));
 	}
 	return component;
