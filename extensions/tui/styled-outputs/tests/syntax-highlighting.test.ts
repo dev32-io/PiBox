@@ -6,7 +6,8 @@ import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { decorateHexColors } from "../color-preview.js";
 import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "../config.js";
 import { createPrefixedMarkdown } from "../components/message-layout.js";
-import { highlightSnippet, INVERSE_OFF, isUnhighlighted, languageForPath, renderSyntaxDiff } from "../components/syntax.js";
+import { DiffView } from "../components/diff-view.js";
+import { highlightSnippet, isUnhighlighted, languageForPath } from "../components/syntax.js";
 import { renderToolResult } from "../components/tool-renderers.js";
 
 initTheme("dark", false);
@@ -75,27 +76,32 @@ test("edit diffs keep gutters, signs, and tinted changed rows while syntax-color
 	const diff = [" 1 const keep = 1;", "-2 const value = \"old\";", "+2 const value = \"new\";", " 3 export { keep };"].join("\n");
 	const result = renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff } }, { expanded: true }, theme, { args: { path: "/repo/a.ts" }, isError: false, state: {} });
 	const rendered = result.render(100);
-	assert.deepEqual(plain(rendered), ["└─ Done • +1 −1", "     1 const keep = 1;", "   - 2 const value = \"old\";", "   + 2 const value = \"new\";", "     3 export { keep };"]);
+	assert.deepEqual(plain(rendered), ["└─ Done • +1 −1 ▕━━━━━━━━━━▏ • 1 hunk", "     1 const keep = 1;", "   - 2 const value = \"old\";", "   + 2 const value = \"new\";", "     3 export { keep };"]);
 	const [, context, removed, added] = rendered as [string, string, string, string];
 	assert.ok(removed.includes(`\x1b[38;2;${rgb(hex("toolDiffRemoved"))}m- 2 `), "removed gutter color");
 	assert.ok(added.includes(`\x1b[38;2;${rgb(hex("toolDiffAdded"))}m+ 2 `), "added gutter color");
 	assert.ok(removed.includes(`\x1b[48;2;${rgb(hex("toolErrorBg"))}m`) && added.includes(`\x1b[48;2;${rgb(hex("toolSuccessBg"))}m`), "changed rows are tinted");
 	assert.doesNotMatch(context, /\x1b\[48;/);
 	for (const row of [context, removed, added]) assert.match(row.replace(/\x1b\[38;2;[\d;]+m[ +\-\d]+\x1b\[39m/, ""), SYNTAX_COLOR, "code content carries syntax colors");
-	assert.ok(removed.includes("\x1b[7m") && added.includes("\x1b[7m"), "changed span is emphasized");
+	const emphasis = /\x1b\[48;2;(?!16;34;31m|41;25;29m)[\d;]+m(\w+)/;
+	assert.equal(removed.match(emphasis)?.[1], "old", "changed word is emphasized on the removed side");
+	assert.equal(added.match(emphasis)?.[1], "new", "changed word is emphasized on the added side");
 });
 
-test("diffs of unknown languages keep Pi's own rendering", () => {
-	assert.equal(renderSyntaxDiff("+1 text", undefined, theme), undefined);
+test("diffs of unknown languages keep the diff layout without syntax colors", () => {
 	const result = renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff: "-1 a\n+1 b" } }, { expanded: true }, theme, { args: { path: "/repo/a.unknownext" }, isError: false, state: {} });
-	assert.deepEqual(plain(result.render(100)), ["└─ Done • +1 −1", "   - 1 a", "   + 1 b"]);
+	const rendered = result.render(100);
+	assert.deepEqual(plain(rendered), ["└─ Done • +1 −1 ▕━━━━━━━━━━▏ • 1 hunk", "   - 1 a", "   + 1 b"]);
+	assert.doesNotMatch(rendered.slice(1).join("\n").replace(/\x1b\[38;2;(223;107;115|79;183;167)m/g, ""), SYNTAX_COLOR);
 });
 
 test("highlighter failures fall back to plain rendering", () => {
 	const broken = { toLowerCase() { throw new Error("boom"); } } as unknown as string;
 	assert.equal(highlightSnippet("const a = 1;", broken), undefined);
 	assert.equal(highlightSnippet("const a = 1;", undefined), undefined);
-	assert.equal(renderSyntaxDiff("+1 const a = 1;", broken, theme), undefined);
+	const rows = new DiffView("+1 const a = 1;", broken, theme, { expanded: true, limit: 10, toggle: "ctrl+o", hintColor: "dim" }).render(100);
+	assert.equal(plain(rows)[0], "   + 1 const a = 1;");
+	assert.doesNotMatch(rows[0]!.replace(/\x1b\[38;2;79;183;167m/g, ""), SYNTAX_COLOR);
 });
 
 test("count labels and hints use singular nouns for one item", () => {
@@ -111,15 +117,14 @@ test("count labels and hints use singular nouns for one item", () => {
 	assert.match(hint.at(-1)!, /… \+1 more line \(ctrl\+o to expand\)/);
 });
 
-test("languages Pi cannot highlight fall back to the plain dim preview and Pi's diff rendering", () => {
+test("languages Pi cannot highlight fall back to the plain dim preview and plain diff rows", () => {
 	const dim = `\x1b[38;2;${rgb(hex("dim"))}m`;
 	for (const path of ["/repo/a.fish", "/repo/main.tf"]) {
 		assert.equal(highlightSnippet("set x 1", languageForPath(path)), undefined, path);
 		const rows = read(path, "set x 1").slice(1);
 		assert.ok(rows.every((line) => line.includes(dim)), JSON.stringify(rows));
 		const diff = renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff: "-1 a b\n+1 a c" } }, { expanded: true }, theme, { args: { path }, isError: false, state: {} });
-		assert.deepEqual(plain(diff.render(100)), ["└─ Done • +1 −1", "   - 1 a b", "   + 1 a c"]);
-		assert.equal(renderSyntaxDiff("-1 a b\n+1 a c", languageForPath(path), theme), undefined);
+		assert.deepEqual(plain(diff.render(100)), ["└─ Done • +1 −1 ▕━━━━━━━━━━▏ • 1 hunk", "   - 1 a b", "   + 1 a c"]);
 	}
 });
 
@@ -133,9 +138,8 @@ test("highlighter output without syntax counts as unhighlighted", () => {
 
 test("diffs keep syntax rendering when a segment has no tokens to color", () => {
 	const diff = [" 1 ", "-2 const value = \"old\";", "+2 const value = \"new\";", " 3 "].join("\n");
-	const rendered = renderSyntaxDiff(diff, "typescript", theme);
-	assert.ok(rendered);
-	assert.match(rendered.map((line) => line.text).join("\n"), SYNTAX_COLOR);
+	const rendered = new DiffView(diff, "typescript", theme, { expanded: true, limit: 10, toggle: "ctrl+o", hintColor: "dim" }).render(100);
+	assert.match(rendered.join("\n").replace(/\x1b\[38;2;(223;107;115|79;183;167|83;101;112)m/g, ""), SYNTAX_COLOR);
 });
 
 test("read errors are never syntax-highlighted", () => {
@@ -145,21 +149,4 @@ test("read errors are never syntax-highlighted", () => {
 	assert.equal(rows.length, 1);
 	assert.ok(rows[0]!.includes(`${dim}${message}`), JSON.stringify(rows[0]));
 	assert.doesNotMatch(rows[0]!.replaceAll(dim, ""), SYNTAX_COLOR);
-});
-
-test("reverse video is closed before tint padding on every wrapped diff line", () => {
-	const diff = [" 1 const a = 1;", "-2 const name = \"alpha beta gamma delta epsilon\"; // trailing", "+2 const name = \"zeta eta theta iota kappa lambda\"; // trailing", " 3 export {}"].join("\n");
-	for (const width of [100, 40, 23]) {
-		const lines = renderToolResult("edit", { content: [{ type: "text", text: "ok" }], details: { diff } }, { expanded: true }, theme, { args: { path: "/x/a.ts" }, isError: false, state: {} }).render(width);
-		let wrappedInverse = 0;
-		for (const line of lines) {
-			const [, body = "", padding = ""] = line.match(/^(.*?)( *)\x1b\[49m$/) ?? [];
-			if (!line.includes("\x1b[7m") && !padding) continue;
-			const state = [...body.matchAll(/\x1b\[(7|27)m/g)].at(-1)?.[1];
-			assert.notEqual(state, "7", `inverse still on in padding at width ${width}: ${JSON.stringify(line)}`);
-			if (width < 100 && line.includes("\x1b[7m")) wrappedInverse++;
-		}
-		if (width < 100) assert.ok(wrappedInverse > 0, "the scenario exercises reverse video on wrapped rows");
-	}
-	assert.equal(INVERSE_OFF, "\x1b[27m");
 });
