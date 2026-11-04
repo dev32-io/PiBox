@@ -47,13 +47,13 @@ test("renders remaining percentages for variable provider windows after unchange
 		{ usedPercent: 70, resetAt: Date.now() + 60 * 60_000 },
 		{ usedPercent: 85, resetAt: Date.now() + 24 * 60 * 60_000 },
 	] } }).join("\n");
-	assert.match(text, /42\.0% \/ 100k │ 30%/);
+	assert.match(text, /42\.0% \/ 100k \ue0b1 30%/);
 	assert.match(text, /15%/);
 });
 
 test("renders a single returned window as remaining quota without reserving text for a missing short window", () => {
 	const text = renderStatusBar(160, { ...data, usage: { provider: "openai-codex", observedAt: Date.now(), windows: [{ usedPercent: 92 }] } }).join("\n");
-	assert.match(text, /\/ 100k │ 8%/);
+	assert.match(text, /\/ 100k \ue0b1 8%/);
 	assert.doesNotMatch(text, /—|5h|7d/);
 });
 
@@ -81,7 +81,7 @@ test("wide layout distinguishes context and session metrics", () => {
 	const text = renderStatusBar(160, data).join("\n");
 	assert.match(text, /42\.0%/);
 	assert.match(text, /\/ 100k/);
-	assert.match(text, /◆ Permissions: Enforced │ Effort: Medium/);
+	assert.match(text, /◆ Permissions: Enforced \ue0b1 Effort: Medium/);
 	assert.match(text, /↑ 12k/);
 	assert.match(text, /↓ 810/);
 	assert.match(text, /\$0\.04/);
@@ -89,7 +89,7 @@ test("wide layout distinguishes context and session metrics", () => {
 
 test("bypass permission mode is rendered before effort", () => {
 	const row = renderStatusBar(160, { ...data, permissionMode: "bypass" })[3] ?? "";
-	assert.match(row, /⚠ Permissions: Bypass │ Effort: Medium/);
+	assert.match(row, /⚠ Permissions: Bypass \ue0b1 Effort: Medium/);
 });
 
 test("renders the tier profile after effort and before compact Fast scopes", () => {
@@ -98,19 +98,19 @@ test("renders the tier profile after effort and before compact Fast scopes", () 
 		tierProfile: { profile: "token-conservative" },
 		fastMode: { mainAvailable: true, mainEnabled: true, subagents: "medium" },
 	})[3] ?? "";
-	assert.match(row, /Effort: Medium │ Tier: Token-conservative │ Fast: Main\+Sub≤Med/);
+	assert.match(row, /Effort: Medium \ue0b1 Tier: Token-conservative \ue0b1 Fast: Main\+Sub≤Med/);
 });
 
 test("renders compact requested Fast-mode scopes after effort", () => {
 	const off = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: "off" } })[3] ?? "";
-	assert.match(off, /Effort: Medium │ Fast: Off/);
+	assert.match(off, /Effort: Medium \ue0b1 Fast: Off/);
 	const main = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: "off" } })[3] ?? "";
-	assert.match(main, /Effort: Medium │ Fast: Main/);
+	assert.match(main, /Effort: Medium \ue0b1 Fast: Main/);
 	for (const [limit, label] of [["low", "Low"], ["medium", "Med"], ["high", "High"], ["max", "Max"]] as const) {
 		const combined = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: true, subagents: limit } })[3] ?? "";
-		assert.match(combined, new RegExp(`Effort: Medium │ Fast: Main\\+Sub≤${label}`));
+		assert.match(combined, new RegExp(`Effort: Medium \ue0b1 Fast: Main\\+Sub≤${label}`));
 		const subagentsOnly = renderStatusBar(160, { ...data, fastMode: { mainAvailable: true, mainEnabled: false, subagents: limit } })[3] ?? "";
-		assert.match(subagentsOnly, new RegExp(`Effort: Medium │ Fast: Sub≤${label}`));
+		assert.match(subagentsOnly, new RegExp(`Effort: Medium \ue0b1 Fast: Sub≤${label}`));
 	}
 });
 
@@ -146,7 +146,7 @@ test("services share one optional row below effort", () => {
 	const lines = renderStatusBar(120, { ...data, serviceStatuses: ["● Mem0", "● SearXNG", "○ Visual companion"] });
 	assert.equal(lines.length, 5);
 	assert.match(lines[3] ?? "", /Effort: Medium/);
-	assert.match(lines[4] ?? "", /● Mem0 │ ● SearXNG │ ○ Visual companion/);
+	assert.match(lines[4] ?? "", /● Mem0 \ue0b1 ● SearXNG \ue0b1 ○ Visual companion/);
 	for (const line of lines) assert.ok(visibleWidth(line) <= 120);
 });
 
@@ -276,4 +276,14 @@ test("renders rounded cumulative cache percentage inside cached tokens", () => {
 		assert.ok(text.includes(cacheHitPercent === undefined ? "(4.0k cached)" : `(4.0k cached ~${Math.round(cacheHitPercent)}%)`));
 		assert.doesNotMatch(text, /NaN|undefined/);
 	}
+});
+
+test("nerd font icons mark cwd and git branch, with soft powerline dividers", () => {
+	const [, row1, , row2] = renderStatusBar(140, data);
+	assert.ok(row1?.includes("\u{f07b} /Users/test/Development/PiBox"), row1);
+	assert.ok(row1?.includes("\u{e725} main"), row1);
+	assert.ok(row1?.includes(" \u{e0b1} "));
+	assert.ok(row2?.includes(" \u{e0b1} "));
+	assert.doesNotMatch(`${row1}${row2}`, /│/);
+	assert.deepEqual([..."\u{f07b}\u{e725}\u{e0b1}"].map((c) => c.codePointAt(0)), [0xf07b, 0xe725, 0xe0b1]);
 });

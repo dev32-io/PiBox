@@ -139,13 +139,13 @@ test("completed writes defer one metadata invalidation without duplicating their
 			isError: false,
 		});
 		const initial = component.render(120).map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
-		assert.match(initial, /✓ Write /);
+		assert.match(initial, /✓ \u{ea7f} Write /u);
 		assert.equal(initial.match(/└─ Done/g)?.length, 1);
 		assert.equal(renders, 0, "renderer does not invalidate during composition");
 
 		await Promise.resolve();
 		const settled = component.render(120).map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
-		assert.match(settled, new RegExp(`✓ ${action === "create" ? "Create" : "Rewrite"} `));
+		assert.match(settled, new RegExp(`✓ \u{ea7f} ${action === "create" ? "Create" : "Rewrite"} `, "u"));
 		assert.equal(settled.match(/└─ Done/g)?.length, 1);
 		assert.equal(renders, 1, "metadata transition invalidates exactly once");
 	}
@@ -167,7 +167,7 @@ test("composed tool families share three-column semantic indentation", () => {
 	const builtIn = new ToolExecutionComponent("bash", "built-in", { command: "echo output" }, {}, definitions.get("bash"), { requestRender() {} } as any, process.cwd());
 	builtIn.updateResult({ content: [{ type: "text", text: "output\n  nested" }], isError: false });
 	const builtInRows = rows(builtIn);
-	assertIndent(builtInRows, "✓ Bash", 3);
+	assertIndent(builtInRows, "✓ \u{f489} Bash", 3);
 	assertIndent(builtInRows, "└─ Done", 3);
 	assertIndent(builtInRows, "output", 6);
 	assertIndent(builtInRows, "nested", 8);
@@ -175,7 +175,7 @@ test("composed tool families share three-column semantic indentation", () => {
 	const harness = new ToolExecutionComponent("resource_list", "harness", {}, {}, { ...toolDefinition, name: "resource_list", renderShell: "default" }, { requestRender() {} } as any, process.cwd());
 	harness.updateResult({ content: [{ type: "text", text: JSON.stringify({ resources: [{ ref: "story:test", state: "active" }] }) }], isError: false });
 	const harnessRows = rows(harness);
-	assertIndent(harnessRows, "✓ List resources", 3);
+	assertIndent(harnessRows, "✓ \u{f0e8} List resources", 3);
 	assertIndent(harnessRows, "└─ Done", 3);
 	assertIndent(harnessRows, "└─ story:test", 6);
 
@@ -194,7 +194,7 @@ test("composed tool families share three-column semantic indentation", () => {
 	const subagent = new ToolExecutionComponent("subagent_spawn", "subagent", { agent: "investigator", mode: "foreground", task: "Inspect" }, {}, { ...toolDefinition, name: "subagent_spawn", renderShell: "default" }, { requestRender() {} } as any, process.cwd());
 	subagent.updateResult({ content: [{ type: "text", text: "Report\n  proof" }], details: { agent: "investigator", terminal: { status: "completed" } }, isError: false });
 	const subagentRows = rows(subagent);
-	assertIndent(subagentRows, "✓ investigator", 3);
+	assertIndent(subagentRows, "✓ \u{f06a9} investigator", 3);
 	assertIndent(subagentRows, "└─ Done", 3);
 	assertIndent(subagentRows, "Prompt:", 6);
 	assertIndent(subagentRows, "Inspect", 9);
@@ -212,11 +212,11 @@ test("composed tool families share three-column semantic indentation", () => {
 		const thirdParty = new ToolExecutionComponent("spacing_test", `third-${renderShell}`, {}, {}, definition, { requestRender() {} } as any, process.cwd());
 		thirdParty.updateResult({ content: [{ type: "text", text: "result" }], isError: false });
 		const rendered = rows(thirdParty);
-		assertIndent(rendered, "✓ call", 3);
+		assertIndent(rendered, "✓ \u{f0ad} call", 3);
 		const continuation = rendered.find((line) => line.endsWith("call continuation"));
-		assert.equal(continuation, "   │  call continuation", "a rail joins the glyph to the status branch");
+		assert.equal(continuation, "   │   call continuation", "a rail joins the glyph to the status branch");
 		const pending = new ToolExecutionComponent("spacing_test", `pending-${renderShell}`, {}, {}, definition, { requestRender() {} } as any, process.cwd());
-		assert.equal(rows(pending).find((line) => line.endsWith("call continuation")), "      call continuation", "no dangling rail without a status branch");
+		assert.equal(rows(pending).find((line) => line.endsWith("call continuation")), "       call continuation", "no dangling rail without a status branch");
 		assertIndent(rendered, "└─ Done", 3);
 		assertIndent(rendered, "result continuation", 6);
 	}
@@ -469,7 +469,7 @@ test("fullscreen rows animate on the shared timer and report elapsed and final d
 	try {
 		const bash = new ToolExecutionComponent("bash", "timed-bash", { command: "sleep 2" }, {}, definitions.get("bash"), ui as any, process.cwd());
 		assert.equal(toolActivity().animating, false, "streaming arguments are not running yet");
-		assert.match(rows(bash)[0]!, /^ {3}✽ Bash sleep 2/);
+		assert.match(rows(bash)[0]!, /^ {3}✽ \u{f489} Bash sleep 2/u);
 		bash.markExecutionStarted();
 		assert.equal(toolActivity().animating, true, "the first running row starts the timer");
 		const third = new ToolExecutionComponent("spacing_test", "timed-third", {}, {}, { ...toolDefinition, renderShell: "default" }, ui as any, process.cwd());
@@ -478,15 +478,15 @@ test("fullscreen rows animate on the shared timer and report elapsed and final d
 		assert.equal(toolActivity().runningCount, 2);
 
 		now = start + 90 * 2;
-		assert.match(rows(bash)[0]!, new RegExp(`^ {3}${TOOL_RUNNING_FRAMES[2]} Bash`), "frames follow Date.now on the shared clock");
-		assert.match(rows(third)[0]!, new RegExp(`^ {3}${TOOL_RUNNING_FRAMES[2]} call`), "decorated rows stay in phase");
+		assert.match(rows(bash)[0]!, new RegExp(`^ {3}${TOOL_RUNNING_FRAMES[2]} \u{f489} Bash`, "u"), "frames follow Date.now on the shared clock");
+		assert.match(rows(third)[0]!, new RegExp(`^ {3}${TOOL_RUNNING_FRAMES[2]} \u{f0ad} call`, "u"), "decorated rows stay in phase");
 		now = start + 12_500;
 		assert.deepEqual(rows(bash).slice(1), ["   └─ Running… 12s"]);
 		assert.match(rows(third).join("\n"), /└─ Running… 12s • progress/);
 
 		now = start + 2_100;
 		bash.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
-		assert.match(rows(bash).join("\n"), /✓ Bash sleep 2\n {3}└─ Done • 1 line • 2\.1s/, "duration from renderer state when the host has none");
+		assert.match(rows(bash).join("\n"), /✓ \u{f489} Bash sleep 2\n {3}└─ Done • 1 line • 2\.1s/u, "duration from renderer state when the host has none");
 		assert.equal(toolActivity().animating, true, "the other row keeps the timer alive");
 
 		now = start + 3_000;
@@ -526,7 +526,7 @@ test("regular mode renders a static glyph without a timer", (t) => {
 		bash.markExecutionStarted();
 		assert.equal(toolActivity().animating, false);
 		assert.equal(toolActivity().runningCount, 1);
-		assert.match(stripTerminalSequences(bash.render(120).join("\n")), /✽ Bash sleep 2/);
+		assert.match(stripTerminalSequences(bash.render(120).join("\n")), /✽ \u{f489} Bash sleep 2/u);
 	} finally {
 		handlers.get("session_shutdown")?.({}, {});
 	}
@@ -549,4 +549,18 @@ test("write preview uses native execution context cwd for relative rewrites", as
 		handlers.get("session_shutdown")?.({}, { hasUI: false });
 		await rm(cwd, { recursive: true, force: true });
 	}
+});
+
+test("decorated third-party rows show a globe for MCP/web tools and a wrench otherwise", () => {
+	initTheme("dark", false);
+	install();
+	const rowsFor = (name: string) => {
+		const definition = { ...toolDefinition, name, renderShell: "default", renderCall: () => ({ render: () => ["call"], invalidate() {} }) };
+		const component = new ToolExecutionComponent(name, `icon-${name}`, {}, {}, definition, { requestRender() {} } as any, process.cwd());
+		component.updateResult({ content: [{ type: "text", text: "result" }], isError: false });
+		return component.render(120).map((line) => stripTerminalSequences(line).trimEnd()).filter(Boolean);
+	};
+	assert.ok(rowsFor("mcp__server__lookup").some((line) => line.includes("✓ \u{f0ac} call")));
+	assert.ok(rowsFor("web_search").some((line) => line.includes("✓ \u{f0ac} call")));
+	assert.ok(rowsFor("custom_tool").some((line) => line.includes("✓ \u{f0ad} call")));
 });

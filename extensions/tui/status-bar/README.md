@@ -12,7 +12,7 @@ Formatting intentionally includes:
 - Thin-block cyan/blue context gauge
 - Leading and trailing row padding
 
-Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups. The service row retains the same leading/trailing padding and width-safe truncation as the former visual-companion row; segments use `│` separators. A dim `○` means intentionally stopped, not failed.
+Layouts switch explicitly at 110 and 72 columns while preserving the right-aligned context and usage groups. The service row retains the same leading/trailing padding and width-safe truncation as the former visual-companion row; segments use the soft Nerd Font powerline divider (U+E0B1) between segments; the cwd and Git branch carry folder and branch icons. A dim `○` means intentionally stopped, not failed.
 
 Git status uses one asynchronous `git status --porcelain=v2 --branch` process every 10 seconds, with a three-second timeout, single-flight protection, failure backoff, cached rendering, and early refresh after file/Git-related activity. No subprocess runs from `render()`.
 

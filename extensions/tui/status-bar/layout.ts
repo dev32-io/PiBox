@@ -4,6 +4,7 @@ import type { StatusBarConfig } from "./config.js";
 import type { GitSnapshot } from "./git.js";
 import type { SessionMetrics } from "./metrics.js";
 import { renderPermissionMode } from "../../permissions/display.js";
+import { ICON_FOLDER, ICON_GIT_BRANCH, ICON_SEPARATOR } from "../icons.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
@@ -57,13 +58,8 @@ function formatTokens(value: number): string {
 	return `${Math.round(value / 1_000_000)}M`;
 }
 
-function hasNerdFonts(): boolean {
-	const terminal = `${process.env.TERM_PROGRAM ?? ""} ${process.env.TERM ?? ""}`.toLowerCase();
-	return /wezterm|kitty|ghostty|iterm|alacritty|foot|rio|contour/.test(terminal);
-}
-
 function separator(theme: Theme): string {
-	return theme.fg("dim", "│");
+	return theme.fg("dim", ICON_SEPARATOR);
 }
 
 function workModeMark(data: StatusRenderData): string {
@@ -157,16 +153,14 @@ function modelSegment(data: StatusRenderData): string {
 
 function pathSegment(data: StatusRenderData, mode: LayoutMode): string {
 	const path = formatCwd(data.ctx.cwd, mode === "wide");
-	const icon = hasNerdFonts() ? "" : "▣";
-	return data.theme.fg("dim", `${icon} ${path}`);
+	return data.theme.fg("dim", `${ICON_FOLDER} ${path}`);
 }
 
 function gitSegment(data: StatusRenderData): string {
 	const status = formatGit(data.git);
 	if (!status) return "";
-	const icon = hasNerdFonts() ? "" : "⎇";
 	const dirty = data.git.staged + data.git.modified + data.git.untracked > 0;
-	return data.theme.fg(dirty ? "warning" : "success", `${icon} ${status}`);
+	return data.theme.fg(dirty ? "warning" : "success", `${ICON_GIT_BRANCH} ${status}`);
 }
 
 function permissionSegment(data: StatusRenderData): string {

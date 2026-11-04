@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "../components/harness-tool-renderers.js";
 import { resourceDisplayDiff } from "../../../workflow/resource-diff.js";
 
@@ -36,7 +36,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		tier: "medium",
 		resolved: { provider: "openai-codex", model: "gpt-5.6-sol", effort: "medium" },
 	}));
-	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] e2e-tester Verify checkout flow/);
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \u{f06a9} e2e-tester Verify checkout flow/u);
 	assert.doesNotMatch(rendered[0] ?? "", /Verify one browser flow/);
 	assert.equal(rendered[1], "└─ Starting · Medium (openai-codex/gpt-5.6-sol#medium)");
 	assert.doesNotMatch(rendered[1] ?? "", /foreground/);
@@ -70,7 +70,7 @@ test("renders a foreground subagent as an inline pulsing agent row", () => {
 		},
 	}, () => Date.parse("2026-01-01T00:02:00.000Z")));
 	assert.equal(settled.length, 4, "settled foreground rows retain their resolved request metadata and prompt");
-	assert.match(settled[0] ?? "", /^✓ e2e-tester/);
+	assert.match(settled[0] ?? "", /^✓ \u{f06a9} e2e-tester/u);
 	assert.equal(settled[1], "└─ Done · Fast · Medium (openai-codex/gpt-5.6-sol#medium) · 1m 05s · 2 turns · 3 tools · ↓ 1.2k");
 
 });
@@ -96,7 +96,7 @@ test("background transcript rows follow the owner-fenced event projection throug
 	};
 	const call = renderHarnessToolCall("subagent_spawn", { agent: "general-purpose", mode: "background", tier: "low", task: "Inspect" }, theme, false, false, details, () => now, lookup);
 	const result = renderHarnessToolResult("subagent_spawn", { content: [{ type: "text", text: "Spawned in background." }], details }, true, theme, false, lookup);
-	assert.match(lines(call)[0] ?? "", /^[·•●] general-purpose$/);
+	assert.match(lines(call)[0] ?? "", /^[·•●] \u{f06a9} general-purpose$/u);
 	assert.equal(lines(call)[1], "└─ Running · Fast · Low (openai-codex/gpt-5.6-sol#low) · 10s · 1 turn · 1 tool · ↓ 100");
 	assert.doesNotMatch(lines(result).join("\n"), /State:|Title:|Done/);
 
@@ -110,7 +110,7 @@ test("background transcript rows follow the owner-fenced event projection throug
 	const terminalAtOneMinute = lines(call);
 	now = Date.parse("2026-01-01T00:02:00.000Z");
 	assert.deepEqual(lines(call), terminalAtOneMinute, "authoritative processExitedAt freezes the terminal duration across later renders");
-	assert.match(terminalAtOneMinute[0] ?? "", /^✓ general-purpose$/);
+	assert.match(terminalAtOneMinute[0] ?? "", /^✓ \u{f06a9} general-purpose$/u);
 	assert.equal(terminalAtOneMinute[1], "└─ Done · Fast · Low (openai-codex/gpt-5.6-sol#low) · 12s · 1 turn · 1 tool · ↓ 100");
 
 	projection = undefined;
@@ -135,7 +135,7 @@ test("foreground terminal receipts stay pinned to their attempt when the logical
 		terminal: { status: "completed" },
 	};
 	const rendered = lines(renderHarnessToolCall("subagent_continue", { agentId: "agent-1", task: "First follow-up" }, theme, false, false, details, () => Date.parse("2026-01-01T00:03:00.000Z"), () => newerProjection));
-	assert.match(rendered[0] ?? "", /^✓ Continue investigator Original attempt$/);
+	assert.match(rendered[0] ?? "", /^✓ \u{f06a9} Continue investigator Original attempt$/u);
 	assert.equal(rendered[1], "└─ Done · Low (old-provider/old-model#low) · 5s · 1 turn · 1 tool · ↓ 40");
 	assert.doesNotMatch(rendered.join("\n"), /Newer attempt|new-provider|Running/);
 });
@@ -151,17 +151,17 @@ test("renders child lifecycle icons and labels for stopping, failed, stopped, an
 		progress: { startedAt: "2026-01-01T00:00:00.000Z", processStartedAt: "2026-01-01T00:00:01.000Z", processExitedAt: state === "stopping" ? undefined : "2026-01-01T00:00:03.000Z", turns: 0, toolCalls: 0, toolErrors: 0, outputTokens: 0, reasoningTokens: 0 },
 	} as any);
 	const call = () => lines(renderHarnessToolCall("subagent_spawn", { agent: "investigator", mode: "background", task: "Inspect" }, theme, false, false, { uiRef }, () => Date.parse("2026-01-01T00:00:04.000Z"), lookup));
-	assert.match(call()[0] ?? "", /^[◐◓◑◒] investigator$/);
+	assert.match(call()[0] ?? "", /^[◐◓◑◒] \u{f06a9} investigator$/u);
 	assert.match(call()[1] ?? "", /^└─ Stopping · Low/);
 	state = "failed";
-	assert.match(call()[0] ?? "", /^✗ investigator$/);
+	assert.match(call()[0] ?? "", /^✗ \u{f06a9} investigator$/u);
 	assert.match(call()[1] ?? "", /^└─ Failed · Low/);
 	state = "cancelled";
-	assert.match(call()[0] ?? "", /^○ investigator$/);
+	assert.match(call()[0] ?? "", /^○ \u{f06a9} investigator$/u);
 	assert.match(call()[1] ?? "", /^└─ Stopped · Low/);
 
 	const launchError = lines(renderHarnessToolCall("subagent_spawn", { agent: "investigator", task: "Inspect" }, theme, false, true));
-	assert.match(launchError[0] ?? "", /^✗ investigator$/);
+	assert.match(launchError[0] ?? "", /^✗ \u{f06a9} investigator$/u);
 	assert.equal(launchError[1], "└─ Failed");
 });
 
@@ -172,7 +172,7 @@ test("composes one lifecycle status before prompt and foreground report", () => 
 	const output = lines(renderHarnessToolResult("subagent_spawn", { content: [{ type: "text", text: "Report\n  proof" }], details }, true, theme, false));
 	const composed = [...call, ...output];
 	assert.deepEqual(composed, [
-		"✓ investigator Inspect layout",
+		"✓ \u{f06a9} investigator Inspect layout",
 		"└─ Done",
 		"   Prompt:",
 		"      Check ordering",
@@ -191,7 +191,7 @@ test("renders continuation foreground progress and prose like spawn", () => {
 	const call = renderHarnessToolCall("subagent_continue", {
 		agentId: "agent-1", agent: "model-supplied-role", task: "Inspect the follow-up",
 	}, theme, true, false, { uiRef }, () => Date.parse("2026-01-01T00:00:03.000Z"), () => projection);
-	assert.match(lines(call)[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Continue subagent agent-1$/, "the identity-free fallback stays unchanged");
+	assert.match(lines(call)[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \u{f06a9} Continue subagent agent-1$/u, "the identity-free fallback stays unchanged");
 
 	projection = {
 		agentId: "agent-1", agent: "investigator", title: "Trace fallback routing", state: "running", presentation: "foreground",
@@ -204,12 +204,12 @@ test("renders continuation foreground progress and prose like spawn", () => {
 		},
 	};
 	const rendered = lines(call);
-	assert.match(rendered[0] ?? "", /^[·•●] Continue investigator Trace fallback routing$/);
+	assert.match(rendered[0] ?? "", /^[·•●] \u{f06a9} Continue investigator Trace fallback routing$/u);
 	assert.doesNotMatch(rendered[0] ?? "", /model-supplied-role|agent-1|Inspect the follow-up/);
 	assert.equal(rendered[1], "└─ Running · High (openai-codex/gpt-5.6-sol#high) · 3s · 1 turn · 2 tools · ↓ 200");
 	const narrowHeadline = stripTerminalSequences(call.render(30)[0] ?? "");
-	assert.match(narrowHeadline, /^[·•●] Continue investigator/, "Continue survives narrow-width truncation before retained identity details");
-	assert.ok(narrowHeadline.length <= 30);
+	assert.match(narrowHeadline, /^[·•●] \u{f06a9} Continue investigator/u, "Continue survives narrow-width truncation before retained identity details");
+	assert.ok(visibleWidth(narrowHeadline) <= 30);
 
 	const report = Array.from({ length: 11 }, (_, index) => `line ${index + 1}`).join("\n");
 	const result = lines(renderHarnessToolResult("subagent_continue", { content: [{ type: "text", text: report }] }, false, theme, false));
@@ -232,14 +232,14 @@ test("renders fallback provenance and sanitizes title control sequences", () => 
 			attempts: [{ model: "requested/model", effort: "high", status: "effort_unsupported" }],
 		},
 	}));
-	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] general-purpose Audit routing$/);
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \u{f06a9} general-purpose Audit routing$/u);
 	assert.equal(rendered[1], "└─ Starting · Medium (selected/actual#medium) · Fallback requested/model#high → selected/actual#medium (effort unsupported)");
 	assert.doesNotMatch(rendered.join(" "), /owned|[\u0000-\u001f\u007f]/);
 });
 
 test("renders paged subagent reads as historical prose with identity", () => {
 	assert.equal(isHarnessTool("subagent_read"), true);
-	assert.deepEqual(lines(renderHarnessToolCall("subagent_read", { agentId: "agent-1", offset: 10, limit: 20 }, theme, false, false)), ["✓ Read subagent agent-1"]);
+	assert.deepEqual(lines(renderHarnessToolCall("subagent_read", { agentId: "agent-1", offset: 10, limit: 20 }, theme, false, false)), ["✓ \u{f06a9} Read subagent agent-1"]);
 	const rendered = lines(renderHarnessToolResult("subagent_read", {
 		content: [{ type: "text", text: "terminal report\n  indented proof" }],
 		details: {
@@ -262,7 +262,7 @@ test("renders wait timers with an animated countdown and elapsed completion", ()
 		kind: "time", durationMs: 30_000, startedAt,
 	}, () => now);
 	const rendered = lines(live);
-	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Waiting 20s remaining$/);
+	assert.match(rendered[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \u{f0e8} Waiting 20s remaining$/u);
 	assert.equal(rendered[1], "└─ Timer · 30s total · 10s elapsed");
 	now += 90;
 	assert.notEqual(lines(live)[0]?.[0], rendered[0]?.[0], "the wait indicator advances with the shared animation cadence");
@@ -270,7 +270,7 @@ test("renders wait timers with an animated countdown and elapsed completion", ()
 
 	assert.deepEqual(lines(renderHarnessToolCall("wait", { durationMs: 30_000 }, theme, false, false, {
 		kind: "time", durationMs: 30_000, startedAt, elapsedMs: 30_000,
-	})), ["✓ Waited 30s"]);
+	})), ["✓ \u{f0e8} Waited 30s"]);
 	assert.deepEqual(lines(renderHarnessToolResult("wait", {
 		content: [{ type: "text", text: "Waited 30000 ms." }],
 		details: { kind: "time", durationMs: 30_000, startedAt, elapsedMs: 30_000 },
@@ -282,12 +282,12 @@ test("renders event waits with the event, elapsed time, pending count, and settl
 	const live = lines(renderHarnessToolCall("wait", { event: "subagent_settled" }, theme, true, false, {
 		kind: "event", event: "subagent_settled", startedAt, pendingCount: 2,
 	}, () => startedAt + 72_000));
-	assert.match(live[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Waiting for next subagent settlement$/);
+	assert.match(live[0] ?? "", /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] \u{f0e8} Waiting for next subagent settlement$/u);
 	assert.equal(live[1], "└─ Event: subagent_settled · 1m 12s elapsed · 2 subagents pending");
 
 	assert.deepEqual(lines(renderHarnessToolCall("wait", { event: "subagent_settled" }, theme, false, false, {
 		kind: "event", event: "subagent_settled", startedAt, elapsedMs: 74_000,
-	})), ["✓ Event received subagent_settled"]);
+	})), ["✓ \u{f0e8} Event received subagent_settled"]);
 	assert.deepEqual(lines(renderHarnessToolResult("wait", {
 		content: [{ type: "text", text: "dependency report" }],
 		details: {
@@ -305,7 +305,7 @@ test("renders distillation calls with scope-specific titles", () => {
 	assert.deepEqual(lines(renderHarnessToolCall("distill_prepare", {
 		baseline: "v1.0",
 		target: "main",
-	}, theme, false, false)), ["✓ Preview distillation v1.0..main"]);
+	}, theme, false, false)), ["✓ \u{f0e8} Preview distillation v1.0..main"]);
 });
 
 test("renders memory calls with action-specific titles", () => {
@@ -314,7 +314,7 @@ test("renders memory calls with action-specific titles", () => {
 		action: "recall",
 		query: "audio interruption semantics",
 	}, theme, false, false)), [
-		"✓ Recall memories “audio interruption semantics”",
+		"✓ \u{f0e8} Recall memories “audio interruption semantics”",
 	]);
 });
 
@@ -355,9 +355,9 @@ test("renders memory audit findings with bounded review reasons", () => {
 
 test("renders specialized workflow authoring calls", () => {
 	for (const name of ["story_write", "e2e_write", "task_write", "stage_write", "workflow_compile"]) assert.equal(isHarnessTool(name), true, name);
-	assert.deepEqual(lines(renderHarnessToolCall("story_write", { id: "checkout", title: "Reliable checkout" }, theme, false, false)), ["✓ Create story checkout · Reliable checkout"]);
-	assert.deepEqual(lines(renderHarnessToolCall("e2e_write", { story: "work-item:checkout", id: "E2E-001", title: "Submit checkout" }, theme, false, false)), ["✓ Create E2E case work-item:checkout · E2E-001 · Submit checkout"]);
-	assert.deepEqual(lines(renderHarnessToolCall("workflow_compile", {}, theme, false, false)), ["✓ Compile workflow"]);
+	assert.deepEqual(lines(renderHarnessToolCall("story_write", { id: "checkout", title: "Reliable checkout" }, theme, false, false)), ["✓ \u{f0e8} Create story checkout · Reliable checkout"]);
+	assert.deepEqual(lines(renderHarnessToolCall("e2e_write", { story: "work-item:checkout", id: "E2E-001", title: "Submit checkout" }, theme, false, false)), ["✓ \u{f0e8} Create E2E case work-item:checkout · E2E-001 · Submit checkout"]);
+	assert.deepEqual(lines(renderHarnessToolCall("workflow_compile", {}, theme, false, false)), ["✓ \u{f0e8} Compile workflow"]);
 });
 
 test("renders resource lists as concise tree rows instead of raw JSON", () => {

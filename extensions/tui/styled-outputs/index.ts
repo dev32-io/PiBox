@@ -22,13 +22,14 @@ import { createPrefixedMarkdown } from "./components/message-layout.js";
 import { renderToolCall, renderToolResult } from "./components/tool-renderers.js";
 import { formatToolDuration, markToolTiming, resetToolActivity, runningGlyph, runningStatus, toolActivity } from "./components/tool-activity.js";
 import { plural } from "./components/plural.js";
+import { decoratedToolIcon } from "../icons.js";
 import { LinePrefixedComponent } from "./components/tool-shell.js";
 import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
 
 const PATCH_FLAG = Symbol.for("pibox:styled-outputs:patched:v4");
 // Version tool patches separately so /reload can replace an older shell patch.
-const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v20");
+const TOOL_PATCH_FLAG = Symbol.for("pibox:styled-outputs:tool-patched:v21");
 const TOOL_BOUNDARY_FLAG = Symbol.for("pibox:styled-outputs:tool-boundary:v1");
 const STATE_KEY = Symbol.for("pibox:styled-outputs:state");
 type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
@@ -268,9 +269,10 @@ function installToolPatch(): void {
 			if (theme && call) {
 				const partial = this.isPartial;
 				const symbol = this.result?.isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-				const prefix = () => `${shellIndent}${partial ? theme.fg("muted", runningGlyph()) : symbol} `;
+				const icon = theme.fg("toolTitle", decoratedToolIcon(this.toolName));
+				const prefix = () => `${shellIndent}${partial ? theme.fg("muted", runningGlyph()) : symbol} ${icon} `;
 				// Wrapped call rows keep a rail under the glyph when a `└─` status branch follows.
-				const continuation = result ? `${shellIndent}${theme.fg("dim", "│")}  ` : `${shellIndent}   `;
+				const continuation = result ? `${shellIndent}${theme.fg("dim", "│")}   ` : `${shellIndent}    `;
 				renderContainer.children[0] = retainRegion(callRegion, new LinePrefixedComponent(
 					call, prefix, continuation, visibleWidth(prefix()), visibleWidth(continuation),
 				));

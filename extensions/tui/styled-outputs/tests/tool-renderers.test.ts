@@ -23,7 +23,7 @@ test("renders skill and rule reads as compact loaded resources", () => {
 	assert.equal(classifyLoadedResource("/repo/src/rules.ts"), undefined);
 
 	const call = renderToolCall("read", { path: "/repo/.pi/rules/typescript.md" }, theme, { cwd: "/repo", isPartial: false, isError: false });
-	assert.equal(call.render(100).join("\n").trimEnd(), "✓ Loaded rule typescript");
+	assert.equal(call.render(100).join("\n").trimEnd(), "✓ \u{f15c} Loaded rule typescript");
 	const collapsed = renderToolResult("read", { content: [{ type: "text", text: "rule body" }] }, { expanded: false }, theme, {
 		args: { path: "/repo/.pi/rules/typescript.md" }, isError: false, state: {},
 	});
@@ -36,7 +36,7 @@ test("caps read previews at ten lines", () => {
 		isPartial: false,
 		isError: false,
 	});
-	assert.match(call.render(100).join("\n"), /^✓ Read file\.ts/);
+	assert.match(call.render(100).join("\n"), /^✓ \u{f15c} Read file\.ts/u);
 
 	const lines = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`);
 	const result = renderToolResult("read", { content: [{ type: "text", text: lines.join("\n") }] }, { expanded: false }, theme, {
@@ -85,10 +85,10 @@ test("long single-line bash commands wrap in full under a hanging indent", () =>
 	for (const expanded of [false, true]) {
 		const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded, state: {} }).render(80));
 		assert.ok(rows.length > 1, "the command wraps instead of being cut");
-		assert.match(rows[0]!, /^✓ Bash cd /);
+		assert.match(rows[0]!, /^✓ \u{f489} Bash cd /u);
 		for (const row of rows) assert.ok(row.length <= 80, row);
-		for (const row of rows.slice(1)) assert.match(row, /^│ {6}\S/, "continuations align under the command, with a rail joining the glyph to the status branch");
-		assert.equal(rows.map((row) => row.slice(7)).join(" ").replace(/ +/g, " "), command.replace(/ +/g, " "));
+		for (const row of rows.slice(1)) assert.match(row, /^│ {8}\S/, "continuations align under the command, with a rail joining the glyph to the status branch");
+		assert.equal(rows.map((row) => row.slice(9)).join(" ").replace(/ +/g, " "), command.replace(/ +/g, " "));
 		assert.doesNotMatch(rows.join("\n"), /to expand/, "a merely wrapped single-line command is never collapsed");
 	}
 });
@@ -97,15 +97,15 @@ test("multi-line commands collapse to three rows and expand with preserved newli
 	const command = "cat > /tmp/script.sh <<'EOF'\nset -e\n  echo one\n  echo two\necho three\nEOF";
 	const collapsed = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(80));
 	assert.deepEqual(collapsed, [
-		"✓ Bash cat > /tmp/script.sh <<'EOF'",
-		"│      set -e",
-		"│        echo one",
-		"│      … +3 lines (ctrl+o to expand)",
+		"✓ \u{f489} Bash cat > /tmp/script.sh <<'EOF'",
+		"│        set -e",
+		"│          echo one",
+		"│        … +3 lines (ctrl+o to expand)",
 	]);
 	const hosted = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {}, keyText: () => "ctrl+shift+o/f2" }).render(80));
 	assert.match(hosted.at(-1)!, /\(ctrl\+shift\+o to expand\)$/, "Pi 1.5 host keybinding labels win");
 	const expanded = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: true, state: {} }).render(80));
-	assert.deepEqual(expanded, ["✓ Bash cat > /tmp/script.sh <<'EOF'", "│      set -e", "│        echo one", "│        echo two", "│      echo three", "│      EOF"]);
+	assert.deepEqual(expanded, ["✓ \u{f489} Bash cat > /tmp/script.sh <<'EOF'", "│        set -e", "│          echo one", "│          echo two", "│        echo three", "│        EOF"]);
 });
 
 test("expanded output is not capped by the collapsed character limit", () => {
@@ -131,9 +131,9 @@ test("running rows show live elapsed time and partial output without a premature
 	t.mock.method(Date, "now", () => 20_000);
 	const state = { piboxTiming: { startedAt: 7_600 } };
 	const call = plain(renderToolCall("bash", { command: "sleep 30" }, theme, { isPartial: true, isError: false, state }).render(80));
-	assert.deepEqual(call, ["✽ Bash sleep 30", "└─ Running… 12s"]);
+	assert.deepEqual(call, ["✽ \u{f489} Bash sleep 30", "└─ Running… 12s"]);
 	const before = plain(renderToolCall("bash", { command: "sleep 30" }, theme, { isPartial: true, isError: false, state: {} }).render(80));
-	assert.deepEqual(before, ["✽ Bash sleep 30", "└─ Running…"], "no start timestamp means no invented elapsed time");
+	assert.deepEqual(before, ["✽ \u{f489} Bash sleep 30", "└─ Running…"], "no start timestamp means no invented elapsed time");
 	const partial = plain(renderToolResult("bash", { content: [{ type: "text", text: "tick" }] }, { expanded: false }, theme, { args: { command: "x" }, isPartial: true, isError: false, state }).render(80));
 	assert.deepEqual(partial, ["   tick"]);
 });
@@ -144,7 +144,7 @@ test("narrow widths never cut a single-line command or collapse it behind a hint
 		const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(width));
 		assert.ok(rows.length > 4, "wraps to more than the collapsed row count");
 		assert.doesNotMatch(rows.join("\n"), /to expand|\+\d+ lines?/);
-		assert.equal(rows.map((row, index) => row.slice(index === 0 ? 7 : 7)).join("").replace(/ /g, ""), command.replace(/ /g, ""));
+		assert.equal(rows.map((row, index) => row.slice(9)).join("").replace(/ /g, ""), command.replace(/ /g, ""));
 		for (const row of rows) assert.ok(row.length <= width, row);
 	}
 	const target = "x".repeat(200);
@@ -156,13 +156,13 @@ test("narrow multi-line commands collapse by real lines, each wrapped in full, w
 	const long = "echo " + "word ".repeat(20).trim();
 	const command = ["set -e", long, "echo three", "echo four", "echo five"].join("\n");
 	const rows = plain(renderToolCall("bash", { command }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
-	assert.equal(rows.at(-1), "│      … +2 lines (ctrl+o to expand)");
+	assert.equal(rows.at(-1), "│        … +2 lines (ctrl+o to expand)");
 	const body = rows.slice(0, -1);
 	assert.ok(body.length > 3, "the long second line is wrapped in full, not cut to three rows");
-	assert.equal(body.map((row, index) => row.slice(index === 0 ? 7 : 7)).join(" ").replace(/ +/g, " ").trim(), `set -e ${long} echo three`.replace(/ +/g, " "));
+	assert.equal(body.map((row, index) => row.slice(9)).join(" ").replace(/ +/g, " ").trim(), `set -e ${long} echo three`.replace(/ +/g, " "));
 	for (const row of rows) assert.ok(row.length <= 40, row);
 	const four = plain(renderToolCall("bash", { command: "a\nb\nc\nd" }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
-	assert.equal(four.at(-1), "│      … +1 line (ctrl+o to expand)", "singular count");
+	assert.equal(four.at(-1), "│        … +1 line (ctrl+o to expand)", "singular count");
 	const three = plain(renderToolCall("bash", { command: "a\nb\nc" }, theme, { isPartial: false, isError: false, expanded: false, state: {} }).render(40));
 	assert.doesNotMatch(three.join("\n"), /to expand/, "three real lines fit without a hint");
 });

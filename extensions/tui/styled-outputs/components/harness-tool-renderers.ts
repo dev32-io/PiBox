@@ -2,6 +2,7 @@ import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { currentSubagentIndicator, renderSubagentLiveStatus, sanitizeSubagentTitle } from "../../../subagent/display.js";
 import { getSubagentUiProjectionRegistry, type SubagentUiAgentProjection, type SubagentUiAgentRef } from "../../../subagent/ui-projection.js";
+import { harnessToolIcon } from "../../icons.js";
 import { plural } from "./plural.js";
 import { renderSubagentPrompt } from "./subagent-prompt.js";
 
@@ -179,7 +180,7 @@ class WaitCallComponent implements Component {
 			target = event;
 		}
 
-		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", action))}${target ? ` ${this.theme.fg("dim", target)}` : ""}`;
+		const headline = `${icon} ${this.theme.fg("toolTitle", harnessToolIcon("wait"))} ${this.theme.bold(this.theme.fg("toolTitle", action))}${target ? ` ${this.theme.fg("dim", target)}` : ""}`;
 		const lines = [truncateToWidth(headline, width, "…")];
 		if (detail) lines.push(truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", detail)}`, width, "…"));
 		return lines;
@@ -268,7 +269,7 @@ class HarnessCallComponent implements Component {
 		if (isSubagent) {
 			const now = this.now();
 			const state = subagentDisplayState(this.name, this.args, this.partial, this.error, this.details, projection);
-			const headline = `${subagentLifecycleIcon(state, this.theme, now)} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
+			const headline = `${subagentLifecycleIcon(state, this.theme, now)} ${this.theme.fg("toolTitle", harnessToolIcon(this.name))} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
 			return [
 				truncateToWidth(headline, width, "…"),
 				truncateToWidth(renderSubagentStatusRow(state, details, this.args, this.theme, now), width, "…"),
@@ -279,7 +280,7 @@ class HarnessCallComponent implements Component {
 		const icon = this.partial
 			? this.theme.fg(indicatorState === "starting" ? "muted" : "accent", currentSubagentIndicator(indicatorState, this.now()))
 			: this.error ? this.theme.fg("error", "✗") : this.theme.fg("success", "✓");
-		const headline = `${icon} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
+		const headline = `${icon} ${this.theme.fg("toolTitle", harnessToolIcon(this.name))} ${this.theme.bold(this.theme.fg("toolTitle", label.action))}${label.target ? ` ${this.theme.fg("dim", label.target)}` : ""}`;
 		if (!this.partial) return [truncateToWidth(headline, width, "…")];
 		return [truncateToWidth(headline, width, "…"), truncateToWidth(`${this.theme.fg("dim", "└─")} ${this.theme.fg("muted", "running")}`, width, "…")];
 	}

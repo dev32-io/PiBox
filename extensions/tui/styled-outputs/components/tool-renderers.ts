@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 import { DEFAULT_MAX_LINES, renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, sliceByColumn, Text, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { builtinToolIcon } from "../../icons.js";
 import { formatToolDuration, runningGlyph, runningStatus, type ToolTiming } from "./tool-activity.js";
 import { plural } from "./plural.js";
 import { highlightSnippet, INVERSE_OFF, languageForPath, renderSyntaxDiff, type StyledLine } from "./syntax.js";
@@ -205,6 +206,7 @@ class ToolCallHeader implements Component {
 
 	constructor(
 		private readonly theme: Theme,
+		private readonly icon: string,
 		private readonly action: string,
 		private readonly target: string,
 		private readonly status: "running" | "done" | "error",
@@ -228,7 +230,7 @@ class ToolCallHeader implements Component {
 	private body(width: number): string[] {
 		if (this.cache?.width === width) return this.cache.lines;
 		const theme = this.theme;
-		const lead = ` ${theme.bold(theme.fg("toolTitle", this.action))}`;
+		const lead = ` ${theme.fg("toolTitle", this.icon)} ${theme.bold(theme.fg("toolTitle", this.action))}`;
 		const indent = 1 + visibleWidth(lead) + 1;
 		const available = Math.max(1, width - indent);
 		// A rail under the lifecycle glyph joins wrapped header rows to the `└─` status branch below.
@@ -267,7 +269,7 @@ export function renderToolCall(name: ToolName, args: any, theme: Theme, ctx: any
 	const action = loadedResource ? ctx.isPartial ? "Loading" : isError ? "Load" : "Loaded" : actionLabel(name, ctx);
 	const target = displayTarget(name, loadedResource ? `${loadedResource.kind} ${loadedResource.label}` : summary(name, args, ctx.cwd ?? process.cwd()));
 	const status = ctx.isPartial ? "running" : isError ? "error" : "done";
-	return new ToolCallHeader(theme, action, target, status, !ctx.expanded, expandKeyLabel(ctx), ctx.state?.piboxTiming);
+	return new ToolCallHeader(theme, builtinToolIcon(name), action, target, status, !ctx.expanded, expandKeyLabel(ctx), ctx.state?.piboxTiming);
 }
 
 export function renderToolResult(name: ToolName, result: any, options: { expanded: boolean }, theme: Theme, ctx: any): Container {
