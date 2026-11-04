@@ -279,7 +279,7 @@ test("renders rounded cumulative cache percentage inside cached tokens", () => {
 	}
 });
 
-test("cwd and git render as agnoster-style powerline blocks; other segments keep │ dividers", () => {
+test("cwd and git render as agnoster-style powerline blocks; settings render as separate pills", () => {
 	const ansi: Record<string, string> = { accent: "\x1b[38;2;98;184;214m", borderMuted: "\x1b[38;2;83;101;112m", border: "\x1b[38;2;71;139;199m", success: "\x1b[38;2;79;183;167m", warning: "\x1b[38;2;214;164;95m" };
 	const colorTheme = { ...theme, getFgAnsi: (token: string) => ansi[token] ?? "\x1b[39m" } as unknown as Theme;
 	const strip = (value: string) => value.replace(/\x1b\[[0-9;]*m/g, "");
@@ -302,7 +302,6 @@ test("cwd and git render as agnoster-style powerline blocks; other segments keep
 	assert.ok(strip(renderStatusBar(140, { ...data, theme: colorTheme, selectedInteractiveId: "work-mode" } as any)[1]!).startsWith(` › \u{e0b6}${mark}`), "selection marker stays outside the chain");
 	const narrow = strip(renderStatusBar(40, { ...data, theme: colorTheme })[1]!);
 	assert.ok(narrow.startsWith(` \u{e0b6}${mark}`), narrow);
-	assert.doesNotMatch(strip(settingsRow!), /\u{e0b1}/u);
-	assert.match(strip(settingsRow!), / │ /);
+	assert.match(strip(settingsRow!), /^ \u{e0b6}\u{f132} Permissions Enforced\u{e0b4} \u{e0b6}\u{f0eb} Effort Medium\u{e0b4} /u);
 	for (const width of [60, 90, 140]) for (const line of renderStatusBar(width, { ...data, theme: colorTheme })) assert.ok(visibleWidth(line) <= width);
 });

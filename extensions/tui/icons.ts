@@ -19,6 +19,17 @@ export const ICON_GIT_BRANCH = "\u{e725}"; // nf-dev-git_branch
 export const ICON_POWERLINE_BRANCH = "\u{e0a0}"; // nf-pl-branch (agnoster/oh-my-zsh branch mark)
 export const ICON_POWERLINE_ARROW = "\u{e0b0}"; // nf-pl-left_hard_divider (filled segment end)
 export const ICON_POWERLINE_CAP = "\u{e0b6}"; // nf-ple-left_half_circle_thick (rounded chain start)
+export const ICON_POWERLINE_END = "\u{e0b4}"; // nf-ple-right_half_circle_thick (rounded pill/chain end)
+export const ICON_POWERLINE_BACK = "\u{e0b2}"; // nf-pl-right_hard_divider (left-pointing arrow for right-aligned chains)
+export const ICON_PERMISSIONS = "\u{f132}"; // nf-fa-shield
+export const ICON_EFFORT = "\u{f0eb}"; // nf-fa-lightbulb_o
+export const ICON_TIER = "\u{f1de}"; // nf-fa-sliders
+export const ICON_FAST = "\u{f0e7}"; // nf-fa-bolt
+export const ICON_TOKENS = "\u{f0ec}"; // nf-fa-exchange
+export const ICON_SERVICE_DATABASE = "\u{f1c0}"; // nf-fa-database (Mem0)
+export const ICON_SERVICE_SEARCH = "\u{f002}"; // nf-fa-search (SearXNG)
+export const ICON_SERVICE_VIEW = "\u{f06e}"; // nf-fa-eye (Visual companion)
+export const ICON_SERVICE_SERVER = "\u{f233}"; // nf-fa-server (any other service)
 
 const BUILTIN_TOOL_ICONS: Record<string, string> = {
 	bash: ICON_BASH,

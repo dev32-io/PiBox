@@ -3,8 +3,11 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { StatusBarConfig } from "./config.js";
 import type { GitSnapshot } from "./git.js";
 import type { SessionMetrics } from "./metrics.js";
-import { renderPermissionMode } from "../../permissions/display.js";
-import { ICON_FOLDER, ICON_POWERLINE_ARROW, ICON_POWERLINE_BRANCH, ICON_POWERLINE_CAP } from "../icons.js";
+import { permissionModeDisplay, renderPermissionMode } from "../../permissions/display.js";
+import {
+	ICON_EFFORT, ICON_FAST, ICON_FOLDER, ICON_PERMISSIONS, ICON_POWERLINE_ARROW, ICON_POWERLINE_BACK, ICON_POWERLINE_BRANCH, ICON_POWERLINE_CAP,
+	ICON_POWERLINE_END, ICON_SERVICE_DATABASE, ICON_SERVICE_SEARCH, ICON_SERVICE_SERVER, ICON_SERVICE_VIEW, ICON_TIER, ICON_TOKENS,
+} from "../icons.js";
 import { formatCwd, formatGit } from "./segments/format.js";
 import { formatUsageSnapshot, type UsageSnapshot } from "../../providers/shared/usage.js";
 import type { FastModeStatus } from "../../fast-mode/policy.js";
@@ -125,6 +128,10 @@ function contextSegment(data: StatusRenderData, mode: LayoutMode): string {
 	const contextWindow = usage?.contextWindow ?? data.ctx.model?.contextWindow;
 	if (!contextWindow) return data.theme.fg("dim", "ctx —");
 	const gaugeWidth = mode === "narrow" ? 8 : mode === "medium" ? data.config.mediumGaugeWidth : data.config.wideGaugeWidth;
+	if (hasAnsiTheme(data.theme)) {
+		const percent = usage && usage.percent !== null ? Math.max(0, usage.percent) : undefined;
+		return gaugePill(percent, formatTokens(contextWindow), gaugeWidth, data);
+	}
 	if (!usage || usage.percent === null) {
 		return `${gauge(0, gaugeWidth, data.theme, data.config)} ${data.theme.fg("dim", `— / ${formatTokens(contextWindow)}`)}`;
 	}
@@ -175,6 +182,55 @@ function hasAnsiTheme(theme: Theme): boolean {
 	return typeof theme.getFgAnsi === "function";
 }
 
+const RESET = "\x1b[0m";
+const BOLD = "\x1b[1m";
+
+interface Shade {
+	fg: string;
+	bg: string;
+}
+
+/** Theme-token color usable as foreground or background. */
+function tokenShade(theme: Theme, token: ThemeColor): Shade {
+	const fg = theme.getFgAnsi(token);
+	return { fg, bg: backgroundOf(fg) };
+}
+
+/**
+ * Fixed dark pill shades (rattle's slate family, like the header's dark/light
+ * text): no theme token is dark enough to sit under light text as a pill body.
+ */
+function fixedShade(red: number, green: number, blue: number): Shade {
+	return { fg: `\x1b[38;2;${red};${green};${blue}m`, bg: `\x1b[48;2;${red};${green};${blue}m` };
+}
+
+const SHADE_SERVICE = fixedShade(30, 44, 53); // #1E2C35
+const SHADE_SETTING = fixedShade(38, 54, 63); // #26363F, also the gauge track
+
+/** Rounded pill: cap, body on `shade`, end cap. The body brings its own foreground. */
+function pill(shade: Shade, body: string): string {
+	return `${shade.fg}${ICON_POWERLINE_CAP}${shade.bg}${body}${RESET}${shade.fg}${ICON_POWERLINE_END}${RESET}`;
+}
+
+/**
+ * Context gauge: a pill whose background fills left to right with usage. The
+ * left edge is square; filled cells use the accent (amber/red past the
+ * thresholds) with dark text, the rest a dark track with muted text.
+ */
+function gaugePill(percent: number | undefined, windowText: string, minWidth: number, data: StatusRenderData): string {
+	const { theme, config } = data;
+	const label = percent === undefined ? "—" : `${percent.toFixed(1)}%`;
+	const cells = [...` ${label} / ${windowText} `];
+	while (cells.length < minWidth) cells.push(" ");
+	const clamped = Math.min(100, percent ?? 0);
+	const filled = Math.round((clamped / 100) * cells.length);
+	const fill = tokenShade(theme, clamped >= config.errorPercent ? "error" : clamped >= config.warningPercent ? "warning" : "accent");
+	const track = SHADE_SETTING;
+	const body = (filled > 0 ? `${fill.bg}${DARK_TEXT}${cells.slice(0, filled).join("")}` : "")
+		+ (filled < cells.length ? `${track.bg}${theme.getFgAnsi("muted")}${cells.slice(filled).join("")}` : "");
+	return `${body}${RESET}${(filled >= cells.length ? fill : track).fg}${ICON_POWERLINE_END}${RESET}`;
+}
+
 /**
  * One continuous oh-my-zsh agnoster-style chain: a rounded cap, then filled
  * blocks, each ending in a hard powerline arrow drawn in its own color on the
@@ -217,40 +273,85 @@ function headerChain(data: StatusRenderData, mode: LayoutMode, depth: number): s
 	return data.selectedInteractiveId === "work-mode" ? `${data.theme.fg("accent", "›")} ${chain}` : chain;
 }
 
-function permissionSegment(data: StatusRenderData): string {
-	return renderPermissionMode(data.permissionMode, data.theme);
-}
-
 function capitalize(value: string): string {
 	return value ? `${value[0]!.toUpperCase()}${value.slice(1).toLowerCase()}` : value;
 }
 
-function effortSegment(data: StatusRenderData): string {
+/** What a settings or service pill shows; `plain` is the text fallback for hosts without ANSI theme access. */
+interface PillSpec {
+	kind: "setting" | "service";
+	icon: string;
+	label: string;
+	value?: string;
+	valueToken: ThemeColor;
+	/** Alarm settings (permission Bypass) keep a warning-colored pill even when unselected. */
+	alarm?: boolean;
+}
+
+interface InteractiveSegment {
+	id: string;
+	plain: string;
+	pill: PillSpec;
+}
+
+function renderPill(spec: PillSpec, selected: boolean, theme: Theme): string {
+	if (selected || spec.alarm) {
+		const value = spec.value ? ` ${spec.kind === "setting" ? BOLD : ""}${spec.value}` : "";
+		return pill(tokenShade(theme, selected ? "accent" : "warning"), `${DARK_TEXT}${spec.icon} ${spec.label}${value}`);
+	}
+	const service = spec.kind === "service";
+	const value = spec.value ? ` ${theme.getFgAnsi(spec.valueToken)}${spec.value}` : "";
+	return pill(service ? SHADE_SERVICE : SHADE_SETTING, `${theme.getFgAnsi(service ? "muted" : "dim")}${spec.icon} ${spec.label}${value}`);
+}
+
+function interactiveText(segment: InteractiveSegment, data: StatusRenderData, selected: boolean): string {
+	if (hasAnsiTheme(data.theme)) return renderPill(segment.pill, selected, data.theme);
+	return selected ? `${data.theme.fg("accent", "›")} ${segment.plain}` : segment.plain;
+}
+
+function settingSegment(id: string, pillSpec: Omit<PillSpec, "kind">, plain: string): InteractiveSegment {
+	return { id, plain, pill: { kind: "setting", ...pillSpec } };
+}
+
+function labeledPlain(label: string, value: string, token: ThemeColor, theme: Theme): string {
+	return `${theme.fg("dim", `${label}:`)} ${theme.fg(token, value)}`;
+}
+
+function permissionSegment(data: StatusRenderData): InteractiveSegment {
+	const { value, token } = permissionModeDisplay(data.permissionMode);
+	return settingSegment("permissions", { icon: ICON_PERMISSIONS, label: "Permissions", value, valueToken: token, alarm: data.permissionMode === "bypass" }, renderPermissionMode(data.permissionMode, data.theme));
+}
+
+function effortSegment(data: StatusRenderData): InteractiveSegment {
 	const level = data.thinkingLevel || "off";
 	const labels: Record<string, string> = { off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
 	const colors: Record<string, "dim" | "muted" | "warning" | "success" | "thinkingHigh" | "thinkingXhigh" | "thinkingMax"> = {
 		off: "dim", minimal: "muted", low: "warning", medium: "success", high: "thinkingHigh", xhigh: "thinkingXhigh", max: "thinkingMax",
 	};
-	return `${data.theme.fg("dim", "Effort:")} ${data.theme.fg(colors[level] ?? "muted", labels[level] ?? capitalize(level))}`;
+	const value = labels[level] ?? capitalize(level);
+	const token = colors[level] ?? "muted";
+	return settingSegment("effort", { icon: ICON_EFFORT, label: "Effort", value, valueToken: token }, labeledPlain("Effort", value, token, data.theme));
 }
 
-function tierProfileSegment(data: StatusRenderData): string {
-	if (!data.tierProfile) return "";
-	return `${data.theme.fg("dim", "Tier:")} ${data.theme.fg("muted", capitalize(data.tierProfile.profile))}`;
+function tierProfileSegment(data: StatusRenderData): InteractiveSegment | undefined {
+	if (!data.tierProfile) return undefined;
+	const value = capitalize(data.tierProfile.profile);
+	return settingSegment("tier-profile", { icon: ICON_TIER, label: "Tier", value, valueToken: "muted" }, labeledPlain("Tier", value, "muted", data.theme));
 }
 
-function fastModeSegment(data: StatusRenderData): string {
+function fastModeSegment(data: StatusRenderData): InteractiveSegment | undefined {
 	const status = data.fastMode;
-	if (!status) return "";
+	if (!status) return undefined;
 	const scopes: string[] = [];
 	if (status.mainEnabled) scopes.push("Main");
 	if (status.subagents !== "off") {
 		const labels = { low: "Low", medium: "Med", high: "High", max: "Max" } as const;
 		scopes.push(`Sub≤${labels[status.subagents]}`);
 	}
-	if (scopes.length === 0 && !status.mainAvailable) return "";
+	if (scopes.length === 0 && !status.mainAvailable) return undefined;
 	const value = scopes.length > 0 ? scopes.join("+") : "Off";
-	return `${data.theme.fg("dim", "Fast:")} ${data.theme.fg(scopes.length > 0 ? "warning" : "dim", value)}`;
+	const token = scopes.length > 0 ? "warning" : "dim";
+	return settingSegment("fast-mode", { icon: ICON_FAST, label: "Fast", value, valueToken: token }, labeledPlain("Fast", value, token, data.theme));
 }
 
 function rowFits(leftParts: string[], rightParts: string[], width: number): boolean {
@@ -280,30 +381,46 @@ function costSegment(data: StatusRenderData): string {
 	return data.theme.fg("muted", `$${(data.metrics.cost ?? 0).toFixed(2)}`);
 }
 
-interface InteractiveSegment {
-	id: string;
-	text: string;
+/**
+ * Session stats as a back-chain: blocks joined by left-pointing arrows, each
+ * arrow in the next block's color on the previous block's background, ending in
+ * a rounded cap. Darker blocks first; the cost block is the lighter slate.
+ */
+function statsChain(data: StatusRenderData): string {
+	const { metrics, theme } = data;
+	const [dim, muted] = [theme.getFgAnsi("dim"), theme.getFgAnsi("muted")];
+	const cached = metrics.cacheRead + metrics.cacheWrite;
+	const cacheRate = metrics.cacheHitPercent === undefined ? "" : ` ${dim}~${Math.round(metrics.cacheHitPercent)}%`;
+	const cost = costSegment(data) ? `$${(metrics.cost ?? 0).toFixed(2)}` : "";
+	const blocks: Array<{ shade: Shade; text: string }> = [
+		{ shade: SHADE_SERVICE, text: `${muted}${ICON_TOKENS} ${formatTokens(metrics.input + metrics.output + cached)}${cacheRate}` },
+		{ shade: SHADE_SETTING, text: `${dim}↑${muted}${formatTokens(metrics.input)} ${dim}↓${muted}${formatTokens(metrics.output)}` },
+		...(cost ? [{ shade: tokenShade(theme, "borderMuted"), text: `${theme.getFgAnsi("text")}${cost}` }] : []),
+	];
+	return blocks.map(({ shade, text }, index) => `${shade.fg}${index === 0 ? RESET_BG : blocks[index - 1]!.shade.bg}${ICON_POWERLINE_BACK}${shade.bg} ${text}`).join("")
+		+ `${RESET}${blocks.at(-1)!.shade.fg}${ICON_POWERLINE_END}${RESET}`;
 }
 
-function decorateInteractiveSegment(segment: InteractiveSegment, data: StatusRenderData): string {
-	return segment.id === data.selectedInteractiveId ? `${data.theme.fg("accent", "›")} ${segment.text}` : segment.text;
+/** Row parts for a left-aligned group: pills sit one space apart, plain segments keep │ dividers. */
+function interactiveParts(segments: InteractiveSegment[], data: StatusRenderData, selectedId?: string): string[] {
+	const texts = segments.map((segment) => interactiveText(segment, data, segment.id === selectedId));
+	if (hasAnsiTheme(data.theme)) return texts;
+	const divider = separator(data.theme);
+	return texts.flatMap((text, index) => index === 0 ? [text] : [divider, text]);
 }
 
-function segmentTexts(segments: InteractiveSegment[], divider: string): string[] {
-	return segments.flatMap((segment, index) => index === 0 ? [segment.text] : [divider, segment.text]);
-}
-
-function fitLeftInteractiveSegments(segments: InteractiveSegment[], rightParts: string[], width: number, divider: string): InteractiveSegment[] {
-	const contentWidth = Math.max(0, width - 2);
-	const right = rightParts.filter(Boolean).join(" ");
-	if (visibleWidth(right) >= contentWidth) return [];
-	const available = Math.max(0, contentWidth - visibleWidth(right) - (right ? 1 : 0));
+/**
+ * Greedy prefix that fits `available` columns. Pills measure their real width
+ * (identical selected or not); the plain layout also reserves the two-column
+ * selection marker so entering footer mode never hides the selected element.
+ */
+function fitInteractiveSegments(segments: InteractiveSegment[], available: number, data: StatusRenderData): InteractiveSegment[] {
+	const pills = hasAnsiTheme(data.theme);
+	const gap = pills ? 1 : visibleWidth(` ${separator(data.theme)} `);
 	const fitted: InteractiveSegment[] = [];
 	let used = 0;
 	for (const segment of segments) {
-		// Reserve the two-column selection marker even while inactive so entering
-		// footer mode cannot make the selected element disappear.
-		const extra = (fitted.length > 0 ? visibleWidth(` ${divider} `) : 0) + visibleWidth(segment.text) + 2;
+		const extra = (fitted.length > 0 ? gap : 0) + visibleWidth(interactiveText(segment, data, false)) + (pills ? 0 : 2);
 		if (used + extra > available) break;
 		fitted.push(segment);
 		used += extra;
@@ -311,30 +428,40 @@ function fitLeftInteractiveSegments(segments: InteractiveSegment[], rightParts: 
 	return fitted;
 }
 
-function fitServiceSegments(services: ServiceStatusSegment[], width: number, divider: string): ServiceStatusSegment[] {
+function fitLeftInteractiveSegments(segments: InteractiveSegment[], rightParts: string[], width: number, data: StatusRenderData): InteractiveSegment[] {
 	const contentWidth = Math.max(0, width - 2);
-	const fitted: ServiceStatusSegment[] = [];
-	let used = 0;
-	for (const service of services) {
-		// Reserve the selection marker for every service so moving selection does
-		// not make an otherwise reachable trailing service disappear.
-		const extra = (fitted.length > 0 ? visibleWidth(` ${divider} `) : 0) + visibleWidth(service.text) + 2;
-		if (used + extra > contentWidth) break;
-		fitted.push(service);
-		used += extra;
-	}
+	const right = rightParts.filter(Boolean).join(" ");
+	if (visibleWidth(right) >= contentWidth) return [];
+	return fitInteractiveSegments(segments, Math.max(0, contentWidth - visibleWidth(right) - (right ? 1 : 0)), data);
+}
+
+function fitServiceSegments(services: InteractiveSegment[], width: number, data: StatusRenderData): InteractiveSegment[] {
+	const fitted = fitInteractiveSegments(services, Math.max(0, width - 2), data);
 	// Keep the first service reachable when even one full segment cannot fit;
 	// buildRow will safely truncate that one visible segment.
 	return fitted.length > 0 ? fitted : services.slice(0, 1);
+}
+
+const SERVICE_ICONS: Array<[RegExp, string]> = [[/mem0/i, ICON_SERVICE_DATABASE], [/searx/i, ICON_SERVICE_SEARCH], [/visual/i, ICON_SERVICE_VIEW]];
+const SERVICE_STATES: Record<string, ThemeColor> = { "●": "success", "○": "dim", "◌": "warning", "!": "error" };
+
+/** Adapt a service status ("● Mem0", possibly themed) into a pill: the leading state glyph becomes the value. */
+function serviceSegment(service: ServiceStatusSegment): InteractiveSegment {
+	const text = service.text.replace(/\x1b\[[0-9;]*m/g, "");
+	const state = /^([●○◌!]) (.*)$/.exec(text);
+	const label = state ? state[2]! : text;
+	const icon = SERVICE_ICONS.find(([pattern]) => pattern.test(`${service.id} ${label}`))?.[1] ?? ICON_SERVICE_SERVER;
+	return { id: service.id, plain: service.text, pill: { kind: "service", icon, label, ...(state ? { value: state[1]! } : {}), valueToken: state ? SERVICE_STATES[state[1]!]! : "muted" } };
 }
 
 export function renderStatusBarLayout(width: number, data: StatusRenderData): StatusBarLayout {
 	if (width <= 0) return { lines: [], interactiveRows: [] };
 	const mode = layoutMode(width, data.config);
 	const divider = separator(data.theme);
+	const pills = hasAnsiTheme(data.theme);
 	const piMark = workModeMark(data);
 	const model = modelSegment(data);
-	const row1LeftCandidates = hasAnsiTheme(data.theme)
+	const row1LeftCandidates = pills
 		? [4, 3, 2, 1].map((depth) => [headerChain(data, mode, depth)])
 		: [
 			[piMark, divider, model, divider, formatCwd(data.ctx.cwd, mode === "wide"), formatGit(data.git) ?? ""],
@@ -348,28 +475,33 @@ export function renderStatusBarLayout(width: number, data: StatusRenderData): St
 	let row1Left = row1LeftCandidates.find((candidate) => rowFits(candidate, row1Right, width)) ?? row1LeftCandidates.at(-1)!;
 	if (!rowFits(row1Left, row1Right, width)) row1Right = [];
 	const row1 = buildRow(row1Left, row1Right, width);
-	const row2Right = [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
-	const baseSegments: InteractiveSegment[] = [
-		{ id: "permissions", text: permissionSegment(data) },
-		{ id: "effort", text: effortSegment(data) },
-	];
+	let row2Right = pills ? [statsChain(data)] : [tokenSegment(data), ...(costSegment(data) ? [divider, costSegment(data)] : [])];
+	const baseSegments: InteractiveSegment[] = [permissionSegment(data), effortSegment(data)];
 	const tierProfile = tierProfileSegment(data);
-	const profileSegments = [...baseSegments, ...(tierProfile ? [{ id: "tier-profile", text: tierProfile }] : [])];
+	const profileSegments = [...baseSegments, ...(tierProfile ? [tierProfile] : [])];
 	const fastMode = fastModeSegment(data);
-	const allSegments = [...profileSegments, ...(fastMode ? [{ id: "fast-mode", text: fastMode }] : [])];
-	const chosenSegments = mode !== "narrow" && rowFits(segmentTexts(allSegments, divider), row2Right, width)
-		? allSegments
-		: mode !== "narrow" && rowFits(segmentTexts(profileSegments, divider), row2Right, width) ? profileSegments : baseSegments;
-	const visibleSettings = fitLeftInteractiveSegments(chosenSegments, row2Right, width, divider);
-	const row2Left = segmentTexts(visibleSettings.map((segment) => ({ ...segment, text: decorateInteractiveSegment(segment, data) })), divider);
-	const row2 = buildRow(row2Left, row2Right, width);
+	const allSegments = [...profileSegments, ...(fastMode ? [fastMode] : [])];
+	const fitSettings = (right: string[]) => {
+		const chosen = mode !== "narrow" && rowFits(interactiveParts(allSegments, data), right, width)
+			? allSegments
+			: mode !== "narrow" && rowFits(interactiveParts(profileSegments, data), right, width) ? profileSegments : baseSegments;
+		return fitLeftInteractiveSegments(chosen, right, width, data);
+	};
+	let visibleSettings = fitSettings(row2Right);
+	// Pill layout: settings are interactive, so stats yield when Permissions and Effort do not both fit beside them.
+	if (pills && visibleSettings.length < baseSegments.length) {
+		row2Right = [];
+		visibleSettings = fitSettings(row2Right);
+	}
+	const row2 = buildRow(interactiveParts(visibleSettings, data, data.selectedInteractiveId), row2Right, width);
 	const lines = ["", row1, data.theme.fg("dim", "─".repeat(width)), row2];
 	const interactiveRows: string[][] = width >= 5 ? [["work-mode"]] : [];
 	if (visibleSettings.length > 0) interactiveRows.push(visibleSettings.map((segment) => segment.id));
 	if (data.serviceStatuses?.length) {
-		const services = data.serviceStatuses.map((status, index): ServiceStatusSegment => typeof status === "string" ? { id: `service:${index}`, text: status } : status);
-		const visibleServices = fitServiceSegments(services, width, divider);
-		lines.push(buildRow([visibleServices.map((service) => decorateInteractiveSegment(service, data)).join(` ${divider} `)], [], width));
+		const services = data.serviceStatuses.map((status, index) => serviceSegment(typeof status === "string" ? { id: `service:${index}`, text: status } : status));
+		const visibleServices = fitServiceSegments(services, width, data);
+		const parts = interactiveParts(visibleServices, data, data.selectedInteractiveId);
+		lines.push(buildRow([parts.join(" ")], [], width));
 		interactiveRows.push(visibleServices.map((service) => service.id));
 	}
 	if (data.subagents) {
