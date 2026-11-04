@@ -57,6 +57,8 @@ export function stableSystemPromptPath(transcriptPath: string): string {
 }
 
 /** Attempt-specific sidecar transformed into the exact user message by the child bridge. */
+const MCP_OFF_EXCLUDES = "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource";
+
 export function attemptUserPromptPath(transcriptPath: string, attemptId: string): string {
 	return `${transcriptPath}.${attemptId}.user-prompt.md`;
 }
@@ -93,6 +95,8 @@ export function createPiInvocationResolver(options: PiInvocationResolverOptions 
 		const toolArgs = allTools
 			? ["--exclude-tools", SUBAGENT_CONTROL_TOOLS.join(",")]
 			: tools.length > 0 ? ["--tools", tools.join(",")] : ["--no-tools"];
+		// Pi >=1.0.4 `--tools` keeps MCP tools unless an entry starts with mcp__; MCP-off must exclude them explicitly.
+		if (mcpEnvironment[PIBOX_MCP_ENABLED_ENV] === "0") toolArgs.push("--exclude-tools", MCP_OFF_EXCLUDES);
 		const args = [
 			...pi.args,
 			"--extension", REPORT_BRIDGE_EXTENSION_PATH,

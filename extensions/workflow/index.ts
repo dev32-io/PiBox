@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../core/string-enum.js";
 import { Type } from "typebox";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";

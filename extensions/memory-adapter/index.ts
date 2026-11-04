@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../core/string-enum.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -460,7 +460,7 @@ export default function memoryAdapter(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		const messages = buildSessionContext(ctx.sessionManager.getBranch()).messages;
-		const content = (await retrieveForRun(event.prompt, messages, ctx.cwd))?.content;
+		const content = (await retrieveForRun(event.messageType === "custom" ? messageText(event.message) : event.prompt, messages, ctx.cwd))?.content;
 		if (!content) return;
 		const previous = [...messages].reverse().find(message => message.role === "custom" && message.customType === "pibox-memory");
 		if (previous && messageText(previous) === content) {

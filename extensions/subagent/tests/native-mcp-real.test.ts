@@ -111,7 +111,7 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 		assert.ok(report.identities.every((entry) => !entry.identity));
 		assert.ok(report.schemas.every((schema) => !schema.some(isMcpTool)));
 		assert.ok(report.systems.every((system) => !/mcp_servers|PRIVATE fixture|fixture instructions|mcp__dev_radius|mcp__two|list_mcp_resources|read_mcp_resource/.test(system)));
-		assert.deepEqual(JSON.parse(report.results[1]!.content[1]!.text!), { all: [], search: [], describe: null, namespaces: [null, null, null, null] });
+		assert.deepEqual(JSON.parse(report.results[1]!.content[1]!.text!.split(/\n?==> text \d+\/\d+ <==\n/).filter(Boolean)[0]!), { all: [], search: [], describe: null, namespaces: [null, null, null, null] });
 		for (const index of [2, 3, 4, 5]) assert.equal(report.results[index]!.isError, true, "native dispatch blocked even in bypass");
 		for (const index of [0, 6, 8]) {
 			assert.equal(report.results[index]!.isError, false, "ordinary direct/nested read stays available");
@@ -151,8 +151,8 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 				assert.ok(report.results[7]!.isError);
 				assert.ok(report.schemas.every((schema) => !JSON.stringify(schema).includes("Ordinary excluded fixture tool")));
 				assert.ok(!report.registry.some((tool) => tool.name === "mcp__two__late"));
-				const discovery = JSON.parse(report.results[0]!.content[1]!.text!);
-				const ordinaryDiscovery = JSON.parse(report.results[5]!.content[1]!.text!);
+				const discovery = JSON.parse(report.results[0]!.content[1]!.text!.split(/\n?==> text \d+\/\d+ <==\n/).filter(Boolean)[0]!);
+				const ordinaryDiscovery = JSON.parse(report.results[5]!.content[1]!.text!.split(/\n?==> text \d+\/\d+ <==\n/).filter(Boolean)[0]!);
 				assert.deepEqual(ordinaryDiscovery.search, []);
 				assert.ok(!ordinaryDiscovery.all.some((tool: CapabilityTool) => tool.name === "ungranted_extension"));
 				assert.equal(ordinaryDiscovery.describe, null);
@@ -191,7 +191,7 @@ test("real native children enforce binary MCP across exposure, discovery, resour
 	}
 	const identity = await run(["*"], snapshot, [code("for (const {name} of ALL_TOOLS.filter(t => t.name.startsWith('mcp__'))) text({name,result:await tools[name]({})});")], { mode: "bypass" });
 	assert.equal(identity.report.results[0]!.isError, false);
-	const returned = identity.report.results[0]!.content.slice(1).map((part) => JSON.parse(part.text!));
+	const returned = identity.report.results[0]!.content.slice(1).flatMap((part) => part.text!.split(/\n?==> text \d+\/\d+ <==\n/).filter(Boolean)).map((text) => JSON.parse(text));
 	for (const pair of returned) {
 		const original = JSON.parse(pair.result.content[0].text);
 		assert.deepEqual(identity.report.identities.find((entry) => entry.name === pair.name)?.identity, { server: original.server, tool: original.original });

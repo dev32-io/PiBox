@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { normalizeContext, Type, type Provider } from "@earendil-works/pi-ai";
+import { normalizeContext, type Provider } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { toPiModels } from "../../shared/openai-compatible.js";
 import localLlmProvider, { LOCAL_LLM_THINKING_LEVEL_MAP, normalizeLocalLlmModels } from "../index.js";

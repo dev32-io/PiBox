@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "../core/string-enum.js";
 import { Type } from "typebox";
 import { activateWorkflowBypass, confirmCriticalRisk, confirmWorkflowBypass, currentPermissionMode } from "../permissions/runtime.js";
 import { SUBAGENT_ANIMATION_INTERVAL_MS } from "../subagent/display.js";

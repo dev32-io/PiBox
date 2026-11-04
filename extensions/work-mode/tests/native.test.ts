@@ -22,7 +22,7 @@ test("native direct workflow registrations disappear from codemode after leaving
 			await h.session.prompt(`/mode ${mode}`);
 			const exposed = mode === "workflow";
 			for (const name of WORKFLOW_TOOL_NAMES) assert.equal(h.session.getActiveToolNames().includes(name), exposed, `${mode}: ${name}`);
-			const requests = await h.call("codemode", { code: "text({all:ALL_TOOLS,search:await searchTools('workflow_status'),describe:(await describeTool('workflow_status'))??null,callable:typeof tools.workflow_status});" });
+			const requests = await h.call("codemode", { code: "text({all:ALL_TOOLS,search:await searchTools('workflow_status'),describe:(await describeTool('workflow_status'))??null,callable:'workflow_status' in tools ? typeof tools.workflow_status : 'undefined'});" });
 			assert.equal(requests.length, 2);
 			const result = [...requests[1]!.messages].reverse().find((message) => message.role === "toolResult");
 			assert.ok(result && !result.isError, JSON.stringify(result));
