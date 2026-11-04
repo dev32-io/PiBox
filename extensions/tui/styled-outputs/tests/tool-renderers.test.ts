@@ -124,7 +124,7 @@ test("finished status lines report duration only when it is known", () => {
 	assert.equal(status({ state: {} }), "└─ Done • 3 lines", "unknown (restored) duration is omitted");
 	assert.equal(status({}), "└─ Done • 3 lines");
 	const error = renderToolResult("bash", { content: [{ type: "text", text: "boom" }] }, { expanded: false }, theme, { args: { command: "x" }, isError: true, durationMs: 65_000 });
-	assert.equal(plain(error.render(80))[0], "└─ Error • 1 lines • 1m 05s");
+	assert.equal(plain(error.render(80))[0], "└─ Error • 1 line • 1m 05s");
 });
 
 test("running rows show live elapsed time and partial output without a premature Done", (t) => {

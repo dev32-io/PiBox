@@ -21,6 +21,7 @@ import { DEFAULT_STYLED_OUTPUTS_CONFIG } from "./config.js";
 import { createPrefixedMarkdown } from "./components/message-layout.js";
 import { renderToolCall, renderToolResult } from "./components/tool-renderers.js";
 import { formatToolDuration, markToolTiming, resetToolActivity, runningGlyph, runningStatus, toolActivity } from "./components/tool-activity.js";
+import { plural } from "./components/plural.js";
 import { LinePrefixedComponent } from "./components/tool-shell.js";
 import { getSubagentUiProjectionRegistry } from "../../subagent/ui-projection.js";
 import { isHarnessTool, renderHarnessToolCall, renderHarnessToolResult } from "./components/harness-tool-renderers.js";
@@ -292,7 +293,7 @@ function installToolPatch(): void {
 					0,
 					collapsed ? 3 : undefined,
 					collapsed ? (text) => theme.fg("muted", text) : undefined,
-					collapsed ? (omitted) => theme.fg("dim", `… +${omitted} lines (${toggle} to expand)`) : undefined,
+					collapsed ? (omitted) => theme.fg("dim", `… +${plural(omitted, "line")} (${toggle} to expand)`) : undefined,
 				));
 			}
 		}

@@ -6,6 +6,8 @@ Provides Pikit-style visual structure adapted to `rattle`:
 - Compact built-in tool headers with running/success/error symbols. Commands and targets are never cut: long ones wrap under a hanging indent, and collapsed multi-line commands (heredocs, scripts) show three rows plus a `… +N lines (ctrl+o to expand)` hint using the configured key.
 - Running built-in and third-party rows show `└─ Running… 12s`; finished rows add their duration (`└─ Done • 3 lines • 2.1s`). Duration comes from Pi's `ctx.durationMs` (Pi ≥1.1) or from start/end times kept in renderer state; rows restored from a saved session omit it.
 - In fullscreen mode the running glyph twinkles (`· ✢ ✶ ✻ ✽ ✻ ✶ ✢`) on the shared 90ms clock, driven by one render timer that runs only while a tool row is running. Regular (main-screen) mode keeps a static `✽` and no timer to avoid scrollback redraws; the mode is read from the TUI reference's `mode` property.
+- Read previews and edit/write diffs are syntax-highlighted by file language with Pi's highlighter and the active theme's `syntax*` colors. Diff rows keep the `±NN` gutter colored, tint added/removed rows (`toolSuccessBg`/`toolErrorBg`), and reverse-video the changed span of single-line modifications. Unknown languages, highlighter failures, and skill/rule resource reads fall back to the plain dim preview or Pi's own diff rendering.
+- Counts pluralize (`1 line`, `1 match`, `1 file`, `1 entry`, `+1 more line`)
 - Single-line `Loaded skill …` and `Loaded rule …` rows without redundant collapsed previews
 - Shared lifecycle symbols and `└─ Done`/`Error` branches around third-party renderers
 - Child-lifecycle icons and one status row for subagent spawn/continue: Starting, Running, Stopping, Done, Failed, Stopped, or detached-history Launched. Status precedes the indented Prompt and Result blocks; background acknowledgment instructions and AgentId stay in expanded details.
@@ -21,6 +23,7 @@ Provides Pikit-style visual structure adapted to `rattle`:
 - Compact tool padding without transcript-wide background blocks
 - Tight tool stacks with no automatic blank row between consecutive calls
 - One explicit turn boundary before user prompts instead of stacked shell padding
+- Inline code spans use the theme's `mdCode` (rattle: periwinkle `#B1B9F9`, distinct from text, accent, links, and success) with no backticks or background
 - Inline truecolor previews for `#RGB` and `#RRGGBB`
 
 Color previews preserve the exact visible hexadecimal text. URLs, Markdown link destinations, existing ANSI escapes, and fenced code are protected. Preview styling is deferred until a streamed message is finalized.

@@ -2,6 +2,7 @@ import { renderDiff, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, getKeybindings, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { currentSubagentIndicator, renderSubagentLiveStatus, sanitizeSubagentTitle } from "../../../subagent/display.js";
 import { getSubagentUiProjectionRegistry, type SubagentUiAgentProjection, type SubagentUiAgentRef } from "../../../subagent/ui-projection.js";
+import { plural } from "./plural.js";
 import { renderSubagentPrompt } from "./subagent-prompt.js";
 
 const EXACT_HARNESS_TOOLS = new Set(["memory_adapter", "wait"]);
@@ -345,7 +346,7 @@ function appendTreeRows(container: Container, rows: string[], theme: Theme, expa
 	});
 	if (rows.length > shown.length) {
 		const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-		container.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("dim", `… +${rows.length - shown.length} more lines (${toggle} to expand)`)}`, 3, 0));
+		container.addChild(new Text(`${theme.fg("dim", "└─")} ${theme.fg("dim", `… +${plural(rows.length - shown.length, "more line")} (${toggle} to expand)`)}`, 3, 0));
 	}
 }
 
@@ -364,7 +365,7 @@ function appendOutputBlock(container: Container, text: string, theme: Theme, exp
 	container.addChild(new Text(theme.fg("muted", shown.join("\n")), indent, 0));
 	if (rows.length > shown.length) {
 		const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-		container.addChild(new Text(theme.fg("dim", `… +${rows.length - shown.length} more lines (${toggle} to expand)`), indent, 0));
+		container.addChild(new Text(theme.fg("dim", `… +${plural(rows.length - shown.length, "more line")} (${toggle} to expand)`), indent, 0));
 	}
 }
 
@@ -542,7 +543,7 @@ function renderHarnessToolResultSnapshot(name: string, result: any, expanded: bo
 		for (const line of shown) component.addChild(new Text(line, 3, 0));
 		if (lines.length > shown.length) {
 			const toggle = getKeybindings().getKeys("app.tools.expand")[0] ?? "ctrl+o";
-			component.addChild(new Text(theme.fg("dim", `… ${lines.length - shown.length} more diff lines (${toggle} to expand)`), 3, 0));
+			component.addChild(new Text(theme.fg("dim", `… ${plural(lines.length - shown.length, "more diff line")} (${toggle} to expand)`), 3, 0));
 		}
 		return component;
 	}

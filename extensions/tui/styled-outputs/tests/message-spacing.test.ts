@@ -483,7 +483,7 @@ test("fullscreen rows animate on the shared timer and report elapsed and final d
 
 		now = start + 2_100;
 		bash.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
-		assert.match(rows(bash).join("\n"), /✓ Bash sleep 2\n {3}└─ Done • 1 lines • 2\.1s/, "duration from renderer state when the host has none");
+		assert.match(rows(bash).join("\n"), /✓ Bash sleep 2\n {3}└─ Done • 1 line • 2\.1s/, "duration from renderer state when the host has none");
 		assert.equal(toolActivity().animating, true, "the other row keeps the timer alive");
 
 		now = start + 3_000;
@@ -506,7 +506,7 @@ test("fullscreen rows animate on the shared timer and report elapsed and final d
 
 		const restored = new ToolExecutionComponent("bash", "restored-bash", { command: "ls" }, {}, definitions.get("bash"), ui as any, process.cwd());
 		restored.updateResult({ content: [{ type: "text", text: "a" }], isError: false });
-		assert.match(rows(restored).join("\n"), /└─ Done • 1 lines$/m, "restored rows omit unknown durations");
+		assert.match(rows(restored).join("\n"), /└─ Done • 1 line$/m, "restored rows omit unknown durations");
 	} finally {
 		handlers.get("session_shutdown")?.({}, {});
 	}
